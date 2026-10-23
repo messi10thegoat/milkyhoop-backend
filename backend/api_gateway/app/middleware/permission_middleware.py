@@ -136,6 +136,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bill-payments/summary$", ["GET"], "send_payment", "R"),
     (r"^/api/bill-payments$", ["GET"], "send_payment", "R"),
     (r"^/api/bill-payments$", ["POST"], "send_payment", "C"),
+    (r"^/api/bill-payments/preview$", ["POST"], "send_payment", "C"),  # PAY-PREVIEW U1 23 Okt 2026 (pratinjau buat = izin buat)
     (r"^/api/bill-payments/[^/]+$", ["GET"], "send_payment", "R"),
     (r"^/api/bill-payments/[^/]+$", ["PATCH", "PUT"], "send_payment", "U"),
     (r"^/api/bill-payments/[^/]+$", ["DELETE"], "send_payment", "D"),
@@ -222,6 +223,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/fixed-assets/post-depreciation$", ["POST"], "fixed_asset", "P"),  # (baru)
     # menulis lewat DELEGASI ke service (tulis=0 di handler, tapi bukan baca)
     (r"^/api/bills/[^/]+/payments$", ["POST"], "send_payment", "C"),
+    (r"^/api/bills/[^/]+/payments/preview$", ["POST"], "send_payment", "C"),  # PAY-PREVIEW U1
     (r"^/api/sales-invoices/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
     # Rute CW (26 Sep+): PRATINJAU = izin yang SAMA dengan tulisnya (1 Okt 2026, insiden ADMIN grapgrap
     # 403 PERMISSION_UNMAPPED di halaman Pembayaran). Dijaga test_izin_rute_pratinjau: tiap .../preview

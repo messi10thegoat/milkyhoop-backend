@@ -1410,158 +1410,17 @@ class BillsService:
                     f"BILL_PAYMENT:{str(bill_id)}",
                 )
 
-                # 2. Get bill with row lock
-                bill = await conn.fetchrow(
-                    """
-                    SELECT id, amount, amount_paid, status, status_v2, ap_id, vendor_id, vendor_name
-                    FROM bills
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                    """,
-                    bill_id,
-                    tenant_id,
-                )
-
-                if not bill:
-                    return {"success": False, "message": "Bill not found", "data": None}
-
-                if (
-                    bill["status"] in ("void",)
-                    or (bill.get("status_v2") or "") == "void"
-                ):
-                    return {
-                        "success": False,
-                        "message": "Cannot pay voided bill",
-                        "data": None,
-                    }
-
-                # 3. Compute remaining from journal (Law 16) — NOT cached amount_paid
-                journal_remaining = await conn.fetchval(
-                    """
-                    WITH bill_obligation AS (
-                        SELECT COALESCE(SUM(jl.credit), 0) AS total_credit
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.credit > 0
-                          AND je.source_type = 'BILL' AND je.source_id = $2
-                    ),
-                    bill_payments_settled AS (
-                        SELECT COALESCE(SUM(jl.debit), 0) AS total_debit
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                        WHERE je.tenant_id = $1 AND je.status = 'POSTED'
-                          AND je.reversed_by_id IS NULL
-                          AND coa.account_type = 'PAYABLE' AND jl.debit > 0
-                          AND (
-                              -- Via bill_payment_allocations
-                              EXISTS (
-                                  SELECT 1 FROM bill_payment_allocations bpa
-                                  JOIN bill_payments_v2 bp ON bp.id = bpa.payment_id
-                                  WHERE bpa.bill_id = $3 AND bp.journal_id = je.id
-                              )
-
-                              -- Via source_id match for PAYMENT_BILL or BILL_PAYMENT
-                              -- source_type fallback removed: covered by bill_payments + bill_payment_allocations
-                          )
-                    )
-                    SELECT GREATEST(0, bo.total_credit - bps.total_debit)
-                    FROM bill_obligation bo, bill_payments_settled bps
-                    """,
-                    tenant_id,
-                    str(bill_id),
-                    bill_id,
-                )
-                remaining = int(journal_remaining or 0)
-
-                # Fallback: if no journal obligation yet (bill not posted via kernel),
-                # use cached amount
-                if remaining == 0 and bill["amount_paid"] == 0 and bill["amount"] > 0:
-                    remaining = int(bill["amount"] - bill["amount_paid"])
-
-                payment_amount = _Dec(str(request["amount"]))
-
-                if payment_amount <= 0:
-                    return {
-                        "success": False,
-                        "message": "Payment amount must be positive",
-                        "data": None,
-                    }
-
-                if payment_amount > remaining:
-                    return {
-                        "success": False,
-                        "message": f"Jumlah pembayaran ({payment_amount:,}) melebihi sisa tagihan ({remaining:,})",
-                        "data": None,
-                    }
-
-                payment_date = request.get("payment_date") or await tanggal_dokumen(
-                    conn, tenant_id
-                )
-                if isinstance(payment_date, str):
-                    payment_date = date.fromisoformat(payment_date)
-
-                # Fase 2.3: PPh withholding
-                pph_tax_code_id = request.get("pph_tax_code_id")
-                pph_amount = _Dec(str(request.get("pph_amount") or 0))
-
-                # 4. Resolve bank account → coa_id (BankSync Rule 2)
-                bank_account_id = request.get("bank_account_id")
-                coa_id = request.get("account_id")
-                bank_coa_id = None
-                bank_account = None
-
-                if bank_account_id:
-                    if isinstance(bank_account_id, str):
-                        bank_account_id = UUID(bank_account_id)
-
-                    bank_account = await conn.fetchrow(
-                        """
-                        SELECT ba.id, ba.coa_id, ba.account_type, ba.account_name,
-                               coa.is_header, coa.name as coa_name
-                        FROM bank_accounts ba
-                        JOIN chart_of_accounts coa ON coa.id = ba.coa_id
-                        WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.is_active = true
-                        """,
-                        bank_account_id,
-                        tenant_id,
-                    )
-
-                    if not bank_account:
-                        return {
-                            "success": False,
-                            "message": "Bank account not found or inactive",
-                            "data": None,
-                        }
-
-                    if bank_account["is_header"]:
-                        return {
-                            "success": False,
-                            "message": f"Akun '{bank_account['coa_name']}' adalah akun induk. Pilih akun anak (leaf).",
-                            "data": None,
-                        }
-
-                    bank_coa_id = bank_account["coa_id"]
-                    coa_id = bank_coa_id
-
-                elif coa_id:
-                    if isinstance(coa_id, str):
-                        coa_id = UUID(coa_id)
-                    bank_coa_id = coa_id
-                else:
-                    return {
-                        "success": False,
-                        "message": "bank_account_id atau account_id wajib diisi",
-                        "data": None,
-                    }
-
-                # 5. Resolve AP account (Law 27 + Fase D2.3 role)
-                ap_account_id = await resolve_account_id_by_role(
-                    conn, tenant_id, AccountRole.AP_TRADE
-                )
+                # 2–5. PENENTU SATU dengan pratinjau POST /bills/{id}/payments/preview (services/bayar_keluar_rencana, PAY-PREVIEW U1
+                # 23 Okt 2026): tagihan FOR UPDATE · void · sisa (SQL lama + cadangan cache -- U2a tiket pemilik) · nominal · rekening/akun ·
+                # akun Hutang + PPh. URUTAN + PESAN == kode lama; blok pertama -> {"success": False, "message"} seperti dulu.
+                from . import bayar_keluar_rencana as BKR
+                _r = await BKR.rencana_bayar_tagihan(conn, tenant_id, bill_id, request)
+                if _r["blocks"]:
+                    return {"success": False, "message": _r["blocks"][0]["message"], "data": None}
+                bill, remaining, payment_amount = _r["bill"], _r["remaining"], _r["payment_amount"]
+                payment_date, pph_tax_code_id, pph_amount = _r["payment_date"], _r["pph_tax_code_id"], _r["pph_amount"]
+                bank_account_id, bank_account, bank_coa_id = _r["bank_account_id"], _r["bank_account"], _r["bank_coa_id"]
+                ap_account_id, pph_coa_id = _r["ap_account_id"], _r["pph_coa_id"]
 
                 # 6. Generate payment number
                 payment_number = (
@@ -1595,71 +1454,22 @@ class BillsService:
                     user_id,
                 )
 
-                # Fase 2.3: Resolve PPh CoA
-                pph_coa_id = None
-                if pph_amount > 0 and pph_tax_code_id:
-                    from uuid import UUID as _UUID
-
-                    pph_coa_id = await conn.fetchval(
-                        "SELECT coa_id FROM tax_codes WHERE id = $1",
-                        _UUID(pph_tax_code_id)
-                        if isinstance(pph_tax_code_id, str)
-                        else pph_tax_code_id,
-                    )
-                    if not pph_coa_id:
-                        # Fase D2.3: dedicated WHT_PPH_PAYABLE (2-10320 post-D1
-                        # V155), NOT polluted 2-10300 fallback.
-                        pph_coa_id = await resolve_account_id_by_role(
-                            conn, tenant_id, AccountRole.WHT_PPH_PAYABLE
-                        )
-
-                line_number = 0
-
-                # Dr. Accounts Payable (reduces liability)
-                line_number += 1
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, $3, $4, $5, 0, $6)
-                    """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    ap_account_id,
-                    payment_amount,
-                    f"Pelunasan hutang - {bill['vendor_name']}",
-                )
-
-                # Cr. Bank/Cash (money going out) — reduced by PPh
-                actual_transfer = payment_amount - pph_amount
-                line_number += 1
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, $3, $4, 0, $5, $6)
-                    """,
-                    uuid_module.uuid4(),
-                    journal_id,
-                    line_number,
-                    bank_coa_id,
-                    actual_transfer,
-                    f"Pembayaran dari bank - {payment_number}",
-                )
-
-                # Cr. Utang Pajak / PPh Withheld (Fase 2.3)
-                if pph_amount > 0 and pph_coa_id:
-                    line_number += 1
+                # Baris jurnal = BKR.baris_tagihan_lama (SATU sumber dengan pratinjau): Dr Hutang · Cr Kas/Bank (bayar − PPh) · Cr Utang PPh
+                for line_number, (_akun, _d, _k, _memo) in enumerate(
+                    BKR.baris_tagihan_lama(ap_account_id, bank_coa_id, pph_coa_id, payment_amount, pph_amount, bill["vendor_name"], payment_number), 1
+                ):
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, 0, $5, $6)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
                         uuid_module.uuid4(),
                         journal_id,
                         line_number,
-                        pph_coa_id,
-                        pph_amount,
-                        "PPh dipotong dari pembayaran vendor",
+                        _akun,
+                        _d,
+                        _k,
+                        _memo,
                     )
 
                 # DRAFT → POSTED (triggers hash chain)

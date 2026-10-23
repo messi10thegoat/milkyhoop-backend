@@ -1334,6 +1334,31 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
         raise HTTPException(status_code=500, detail=f"Gagal mencatat pembayaran: {e}")
 
 
+@router.post("/{bill_id}/payments/preview")
+async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPaymentRequest):
+    """Pratinjau POST /bills/{id}/payments (PAY-PREVIEW U1, 23 Okt 2026; mode jalur lama, nomor BP- lahir saat simpan). READ ONLY
+    tanpa kunci; penentu = services/bayar_keluar_rencana.rencana_bayar_tagihan (SAMA dengan record_payment, dipanggil lagi di bawah
+    kunci). Bentuk == POST /bill-payments/preview."""
+    ctx = get_user_context(request)
+    from ..services import bayar_keluar_rencana as BKR
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            r = await BKR.pratinjau_bayar_tagihan(conn, ctx["tenant_id"], bill_id, body.model_dump())
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    if r["after"] is None:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    return {"success": True, "data": {
+        "bill_id": str(bill_id), "action": "pay", "can_proceed": not r["blocks"],
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
+        "bills": r["bills"], "payload": body.model_dump(mode="json"), "preview": True}}
+
+
 # =============================================================================
 # MARK AS PAID (Quick Action)
 # =============================================================================

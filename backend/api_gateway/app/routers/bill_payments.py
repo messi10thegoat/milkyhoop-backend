@@ -12,7 +12,8 @@ from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.rp_periode import batas_periode, argumen_kueri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
-from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
+from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama  # noqa: F401
+from ..services import bayar_keluar_rencana as BKR
 import uuid as uuid_module
 import logging
 import asyncpg
@@ -195,56 +196,14 @@ async def create_bill_payment_journal(
 
     Returns: (journal_id, journal_number)
     """
-    # Get bank account COA ID
-    bank_coa_id = None
-    if bank_account_id:
-        bank = await conn.fetchrow(
-            "SELECT coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-            bank_account_id
-            if isinstance(bank_account_id, UUID)
-            else UUID(str(bank_account_id)),
-            ctx["tenant_id"],
-        )
-        if bank:
-            bank_coa_id = bank["coa_id"]
-
-    # Get AP account (Fase D2.3: role-based resolution).
-    ap_account_id = await resolve_account_id_by_role(
-        conn, ctx["tenant_id"], AccountRole.AP_TRADE
+    # Baris = BKR.baris_jurnal_bayar (PAY-PREVIEW U1 23 Okt 2026): SATU sumber akun/nominal/memo dengan POST /bill-payments/preview.
+    baris, total_debit = await BKR.baris_jurnal_bayar(
+        conn, ctx["tenant_id"], payment_number=payment_number, vendor_name=vendor_name, bank_account_id=bank_account_id,
+        total_amount=total_amount, allocated_amount=allocated_amount, discount_amount=discount_amount,
+        discount_account_id=discount_account_id, bank_fee_amount=bank_fee_amount, bank_fee_account_id=bank_fee_account_id,
+        source_type=source_type, source_deposit_id=source_deposit_id, unapplied_amount=unapplied_amount,
+        pph_tax_code_id=pph_tax_code_id, pph_amount=pph_amount,
     )
-
-    # Get or default purchase discount account (D2-wrap B: role-based).
-    purchase_discount_account_id = discount_account_id
-    if discount_amount > 0 and not purchase_discount_account_id:
-        purchase_discount_account_id = await resolve_account_id_by_role(
-            conn, ctx["tenant_id"], AccountRole.PURCHASE_DISCOUNT
-        )
-
-    # D2-wrap B: vendor advance (Uang Muka Pembelian) resolved via AP_PREPAID
-    # role (1-10550). Replaced legacy 1-10500 (AR_OTHER) literal — semantically
-    # wrong: 1-10500 = Piutang Lain-lain (receivables non-trade), NOT vendor
-    # advance asset.
-    vendor_deposit_account_id = None
-    if unapplied_amount > 0:
-        vendor_deposit_account_id = await resolve_account_id_by_role(
-            conn, ctx["tenant_id"], AccountRole.AP_PREPAID
-        )
-
-    # Resolve PPh CoA (Fase 2.3) — Utang Pajak
-    pph_coa_id = None
-    if pph_amount > 0 and pph_tax_code_id:
-        pph_coa_id = await conn.fetchval(
-            "SELECT coa_id FROM tax_codes WHERE id = $1",
-            pph_tax_code_id
-            if isinstance(pph_tax_code_id, UUID)
-            else UUID(str(pph_tax_code_id)),
-        )
-        if not pph_coa_id:
-            # Fase D2.3: dedicated WHT_PPH_PAYABLE (2-10320 post-D1 V155),
-            # NOT polluted 2-10300 fallback. Closes AP-PPh pollution source.
-            pph_coa_id = await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.WHT_PPH_PAYABLE
-            )
 
     # Generate journal number using database function
     journal_number = await conn.fetchval(
@@ -252,13 +211,6 @@ async def create_bill_payment_journal(
     )
     if not journal_number:
         journal_number = f"JRN-{payment_number}"
-
-    # Calculate total debit (must equal total credit for balanced journal)
-    # Law 4: header total = total_amount + discount + bank_fee
-    # Debit side: AP(allocated) + BankFee(bank_fee) + VendorDeposit(unapplied)
-    # Credit side: Bank(total+bank_fee) + Discount(discount)
-    # Both equal total_amount + discount + bank_fee (since unapplied = total + discount - allocated)
-    total_debit = total_amount + discount_amount + bank_fee_amount
 
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
@@ -283,151 +235,19 @@ async def create_bill_payment_journal(
         ctx["user_id"],
     )
 
-    line_number = 0
-
-    # Dr. Accounts Payable (reduces liability)
-    if allocated_amount > 0:
-        line_number += 1
+    for line_number, (_akun, _d, _k, _memo) in enumerate(baris, 1):
         await conn.execute(
             """
             INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, $5, 0, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             """,
             uuid_module.uuid4(),
             journal_id,
             line_number,
-            ap_account_id,
-            allocated_amount,
-            f"Pelunasan hutang usaha - {vendor_name}",
-        )
-
-    # Dr. Bank Fee (expense)
-    # Law 4 + Law 27: kalau FE tak mengirim akun biaya, JANGAN buang barisnya —
-    # cash_out di bawah tetap memasukkan bank_fee_amount, jadi membuang baris ini
-    # membuat jurnal timpang. Resolusi runtime by account_code, fail-closed.
-    if bank_fee_amount > 0 and not bank_fee_account_id:
-        for _code in ("5-20850", "5-20800"):
-            bank_fee_account_id = await resolve_account_id_or_none(
-                conn, ctx["tenant_id"], _code
-            )
-            if bank_fee_account_id:
-                logger.info(
-                    f"bank_fee_account_id absent from payload; resolved {_code} "
-                    f"for tenant={ctx['tenant_id']}"
-                )
-                break
-        if not bank_fee_account_id:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Biaya bank diisi tetapi akun biaya bank tidak ditemukan "
-                    "(5-20850/5-20800). Tambahkan akun tersebut di Daftar Akun "
-                    "atau kosongkan biaya bank."
-                ),
-            )
-
-    if bank_fee_amount > 0 and bank_fee_account_id:
-        line_number += 1
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, $5, 0, $6)
-            """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            bank_fee_account_id
-            if isinstance(bank_fee_account_id, UUID)
-            else UUID(str(bank_fee_account_id)),
-            bank_fee_amount,
-            "Biaya administrasi bank",
-        )
-
-    # Dr. Vendor Deposit (if overpaying)
-    if unapplied_amount > 0 and vendor_deposit_account_id:
-        line_number += 1
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, $5, 0, $6)
-            """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            vendor_deposit_account_id,
-            unapplied_amount,
-            f"Uang muka vendor - {vendor_name}",
-        )
-
-    # Cr. Bank/Cash (money going out) — reduced by PPh (Phase E: actual transfer)
-    cash_out = total_amount + bank_fee_amount - pph_amount
-    if cash_out > 0 and bank_coa_id:
-        line_number += 1
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            bank_coa_id,
-            cash_out,
-            f"Pembayaran dari bank - {payment_number}",
-        )
-    elif cash_out > 0 and source_type == "deposit" and source_deposit_id:
-        # D2-wrap B: vendor advance via AP_PREPAID role (1-10550).
-        # Replaced legacy 1-10500 (AR_OTHER) literal.
-        deposit_coa = await resolve_account_id_by_role(
-            conn, ctx["tenant_id"], AccountRole.AP_PREPAID
-        )
-        if deposit_coa:
-            line_number += 1
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                VALUES ($1, $2, $3, $4, 0, $5, $6)
-                """,
-                uuid_module.uuid4(),
-                journal_id,
-                line_number,
-                deposit_coa,
-                cash_out,
-                f"Aplikasi uang muka vendor - {payment_number}",
-            )
-
-    # Cr. Potongan Pembelian (discount received)
-    if discount_amount > 0 and purchase_discount_account_id:
-        line_number += 1
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            purchase_discount_account_id
-            if isinstance(purchase_discount_account_id, UUID)
-            else UUID(str(purchase_discount_account_id)),
-            discount_amount,
-            "Potongan pembelian",
-        )
-
-    # Cr. Utang Pajak / PPh Withheld (Fase 2.3 — PPh rider)
-    if pph_amount > 0 and pph_coa_id:
-        line_number += 1
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            pph_coa_id,
-            pph_amount,
-            "PPh dipotong dari pembayaran vendor",
+            _akun,
+            _d,
+            _k,
+            _memo,
         )
 
     # Law 4 GUARD: baris HARUS seimbang dan HARUS sama dengan header, sebelum POSTED.
@@ -534,6 +354,32 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         ]
 
         return {"journal_lines": lines}
+
+
+# === PRATINJAU BUAT (PAY-PREVIEW U1, 23 Okt 2026; pola NetSuite/QBO "tinjau sebelum bayar", kembar /vendor-deposits/preview) ===
+# READ ONLY tanpa kunci; penentu = services/bayar_keluar_rencana.rencana_bayar (SAMA dengan POST /bill-payments, yang memanggilnya
+# lagi di bawah kunci). Jurnal = RENCANA tanpa nomor (journal_number null; nomor pembayaran & jurnal lahir saat simpan -- pratinjau
+# tak pernah menyentuh sequence). Bentuk: {action, can_proceed, blocks[], before, after, journals[], bank_transactions[], bills[],
+# payload, preview:true}.
+
+
+@router.post("/preview")
+async def preview_create_bill_payment(request: Request, payload: CreateBillPaymentRequest):
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            r = await BKR.rencana_bayar(conn, ctx, payload, pratinjau=True)
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    return {"success": True, "data": {
+        "payment_id": None, "action": "create", "can_proceed": not r["blocks"],
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
+        "bills": r["bills"], "payload": payload.model_dump(mode="json"), "preview": True}}
 
 
 @router.get("", response_model=BillPaymentListResponse)
@@ -1121,82 +967,14 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 # Law 14: bungkus seluruh operasi -> request kedua me-REPLAY hasil,
                 # bukan menerima error atas sesuatu yang sudah berhasil.
                 async def _op():
-                    if not payload.save_as_draft:
-                        await check_period_is_open(
-                            conn, ctx["tenant_id"], payload.payment_date
-                        )
-
-                    # Validate optional UUID fields before INSERT
-                    for _field_name, _field_val in [
-                        ("discount_account_id", payload.discount_account_id),
-                        ("bank_fee_account_id", payload.bank_fee_account_id),
-                        ("source_deposit_id", payload.source_deposit_id),
-                    ]:
-                        if _field_val:
-                            validate_uuid(_field_val, _field_name)
-
-                    # Auto-lookup vendor_name if not provided
-                    if not payload.vendor_name:
-                        vendor = await conn.fetchrow(
-                            "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                            validate_uuid(payload.vendor_id, "vendor_id"),
-                            ctx["tenant_id"],
-                        )
-                        if not vendor:
-                            raise HTTPException(status_code=400, detail="Vendor not found")
-                        vendor_name = vendor["name"]
-                    else:
-                        vendor_name = payload.vendor_name
-
-                    # Auto-lookup bank_account_name if not provided
-                    if not payload.bank_account_name:
-                        bank = await conn.fetchrow(
-                            "SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                            validate_uuid(payload.bank_account_id, "bank_account_id"),
-                            ctx["tenant_id"],
-                        )
-                        if not bank:
-                            raise HTTPException(
-                                status_code=400, detail="Bank account not found"
-                            )
-                        bank_account_name = bank["account_name"]
-                    else:
-                        bank_account_name = payload.bank_account_name
-
-                    # PIHAK + TENANT (13 Sep 2026): dulu alokasi TIDAK memeriksa vendor maupun
-                    # tenant -- terbukti (eksekusi, ROLLBACK) pembayaran vendor X di-POST ke tagihan
-                    # vendor Y: outstanding Y turun, amount_paid Y naik. Lintas tenant hanya ditolak
-                    # KEBETULAN oleh pemeriksaan sisa. Semua alokasi diperiksa di sini, di dalam
-                    # lock, SEBELUM tulis apa pun (termasuk nomor pembayaran). Tagihan tenant lain
-                    # dijawab persis seperti id karangan ("not found") -- tak membocorkan keberadaan.
-                    vendor_bayar = normalisasi_pihak(payload.vendor_id, "Vendor pembayaran")
-                    for _alloc in payload.allocations:
-                        _bill = await conn.fetchrow(
-                            "SELECT invoice_number, vendor_id FROM bills WHERE id = $1::uuid AND tenant_id = $2",
-                            _alloc.bill_id,
-                            ctx["tenant_id"],
-                        )
-                        if not _bill:
-                            raise HTTPException(
-                                status_code=400, detail=f"Bill {_alloc.bill_id} not found"
-                            )
-                        pastikan_pihak_sama(
-                            vendor_bayar, _bill["vendor_id"], f"Tagihan {_bill['invoice_number']}", "vendor"
-                        )
-
+                    # PENENTU SATU dengan POST /bill-payments/preview (services/bayar_keluar_rencana, PAY-PREVIEW U1 23 Okt 2026):
+                    # periode · UUID opsional · vendor · rekening · tagihan milik tenant & vendor sama (PIHAK + TENANT 13 Sep) ·
+                    # alokasi ≤ total + potongan · per alokasi FOR UPDATE + sisa jurnal (Law 16). URUTAN + PESAN == kode lama;
+                    # blok pertama dilempar sebagai HTTPException yang sama. Nomor pembayaran lahir SESUDAH semua cek lolos.
+                    _r = await BKR.rencana_bayar(conn, ctx, payload)
+                    vendor_name, bank_account_name = _r["vendor_name"], _r["bank_account_name"]
+                    allocated_amount, unapplied_amount = _r["allocated_amount"], _r["unapplied_amount"]
                     payment_number = await generate_payment_number(conn, ctx["tenant_id"])
-                    allocated_amount = sum(a.amount_applied for a in payload.allocations)
-                    # Law 4 fix: unapplied = total_amount + discount - allocated
-                    # Mirrors receive_payments formula for balanced journal
-                    unapplied_amount = (
-                        payload.total_amount + payload.discount_amount - allocated_amount
-                    )
-
-                    if allocated_amount > payload.total_amount + payload.discount_amount:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Allocations exceed payment amount plus discount",
-                        )
 
                     status = "draft" if payload.save_as_draft else "posted"
                     payment_id = uuid_module.uuid4()
@@ -1257,37 +1035,16 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         Decimal(str(payload.pph_amount or 0)),
                     )
 
-                    for alloc in payload.allocations:
-                        bill = await conn.fetchrow(
-                            "SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid AND tenant_id = $2 FOR UPDATE",
-                            alloc.bill_id,
-                            ctx["tenant_id"],
-                        )
-                        if not bill:
-                            raise HTTPException(
-                                status_code=400, detail=f"Bill {alloc.bill_id} not found"
-                            )
-
-                        # Law 16: compute remaining from journal, not amount_paid
-                        remaining_before = await get_bill_remaining_from_journal(
-                            conn, ctx["tenant_id"], alloc.bill_id
-                        )
-                        if alloc.amount_applied > remaining_before:
-                            raise HTTPException(
-                                status_code=400, detail="Amount exceeds remaining"
-                            )
-
-                        remaining_after = remaining_before - alloc.amount_applied
-
+                    for _al in _r["alokasi"]:  # tagihan sudah FOR UPDATE + sisa dicek di rencana_bayar
                         await conn.execute(
                             """
                             INSERT INTO bill_payment_allocations (id, payment_id, bill_id, remaining_before, amount_applied, remaining_after, created_at)
                             VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, $5, NOW())""",
                             payment_id,
-                            alloc.bill_id,
-                            remaining_before,
-                            alloc.amount_applied,
-                            remaining_after,
+                            _al["bill_id"],
+                            _al["remaining_before"],
+                            _al["amount_applied"],
+                            _al["remaining_after"],
                         )
 
                     # Create journal entry for posted payments
@@ -1381,22 +1138,10 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
 
                         # === ARTIFACT 4: bank_transaction (BankSync Rule 1) ===
                         if payload.bank_account_id:
-                            bank_acct = await conn.fetchrow(
-                                "SELECT id, account_name, account_type FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
-                                validate_uuid(
-                                    str(payload.bank_account_id), "bank_account_id"
-                                ),
-                                ctx["tenant_id"],
-                            )
-                            if bank_acct:
-                                pph_amt = payload.pph_amount or 0
-                                actual_transfer = payload.total_amount - pph_amt
-                                if bank_acct["account_type"] == "credit_card":
-                                    bt_amount = actual_transfer
-                                    bt_type = "charge"
-                                else:
-                                    bt_amount = -actual_transfer
-                                    bt_type = "payment_made"
+                            _cb = await BKR.cermin_bank(conn, ctx["tenant_id"], payload.bank_account_id, payload.total_amount,
+                                                        payload.pph_amount or 0)  # SATU sumber dgn pratinjau
+                            if _cb:
+                                bt_amount, bt_type = _cb["amount"], _cb["transaction_type"]
 
                                 await conn.execute(
                                     """
@@ -1417,7 +1162,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                                     """,
                                     uuid_module.uuid4(),
                                     ctx["tenant_id"],
-                                    bank_acct["id"],
+                                    _cb["bank_account_id"],
                                     payload.payment_date,
                                     bt_type,
                                     bt_amount,
