@@ -93,7 +93,7 @@ def test_penulis_mencatat_di_transaksi_yang_sama():
     for f, ev in ((CD.void_deposit_core, "DEPOSIT_VOIDED"), (CD.apply_deposit_core, "DEPOSIT_APPLIED"),
                   (CD.refund_deposit_core, "DEPOSIT_REFUNDED"),
                   (CD.reverse_deposit_application_core, "DEPOSIT_APPLICATION_REVERSED"),
-                  (CD.update_customer_deposit, "DEPOSIT_UPDATED")):
+                  (CD._ubah_dp, "DEPOSIT_UPDATED")):  # AS-G10: penulis ubah = _ubah_dp (dipanggil PATCH)
         s = _rata(f)
         assert "await catat_riwayat(conn," in s and f'"{ev}"' in s, f.__name__
         assert "ctx[\"user_id\"]" in s[s.index("await catat_riwayat"):], f.__name__     # beraktor
@@ -105,7 +105,7 @@ def test_penulis_mencatat_di_transaksi_yang_sama():
     assert v.index("set_config('app.user_id', $1, true)") < v.index("DELETE FROM customer_deposits")
     assert v.index('"DEPOSIT_VOIDED"') < v.rindex("return {")
     # update: hanya bila ada medan yang BENAR-BENAR berubah
-    u = _rata(CD.update_customer_deposit)
+    u = _rata(CD._ubah_dp)
     assert "if berubah:" in u and u.index("lama = await conn.fetchrow(") < u.index("await conn.execute(query, *params)")
 
 

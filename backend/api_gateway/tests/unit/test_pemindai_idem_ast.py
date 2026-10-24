@@ -3,6 +3,7 @@
 docstring, dan string tak dihitung. Daftar WAJIB = handler tulis yang SUDAH dijanjikan idem (kontrak Asisten); celah yang diketahui
 dicatat di CELAH (ber-tiket), bukan disembunyikan."""
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,10 @@ WAJIB = {
     "routers/receive_payments.py": ["void_receive_payment", "create_receive_payment"],
     "routers/bill_payments.py": ["create_bill_payment"],
     "routers/sales_invoices.py": ["update_invoice", "post_invoice", "void_invoice", "delete_invoice"],
+    # AS-G10 (24 Okt): UM pelanggan -- create = mekanisme KOLOM lama (kunci_dari + cari idempotency_key, indeks unik V179)
+    "routers/customer_deposits.py": ["create_customer_deposit", "update_customer_deposit", "delete_customer_deposit",
+                                     "post_customer_deposit", "apply_customer_deposit", "reverse_customer_deposit_application",
+                                     "refund_customer_deposit", "void_customer_deposit"],
 }
 # Celah TERUKUR (24 Okt, BACKEND2): penawaran -> faktur tanpa kunci/FOR UPDATE/idem -- tiket ke MASTER. Pemindai MEMASTIKAN masih tercatat
 # sebagai celah (bila diperbaiki, pindahkan ke WAJIB -- tes ini merah supaya daftar tak basi).
@@ -33,12 +38,17 @@ CELAH = {}  # AS-G15: convert_to_invoice pindah ke WAJIB
 
 FUNGSI_IDEM = {"mulai", "mulai_aksi"}          # services/idem_buat
 PANGGILAN_LAIN = {"execute_idempotent"}       # utils/idempotency (mekanisme lama, tetap idem)
+# Mekanisme KOLOM lama (AS-G10, syarat MASTER: dikenali sebagai pola SAH dengan kontrol positif, bukan daftar komentar): handler
+# MEMBACA kunci (idem_buat.kunci_dari, alias apa pun) DAN MENCARI baris ber-kunci itu lewat panggilan DB yang SQL-nya memuat
+# "idempotency_key = $" (kolom dokumen + indeks unik, mis. customer_deposits V179). Membaca kunci saja / mencari tanpa kunci = BUKAN.
+FUNGSI_KUNCI = {"kunci_dari"}
+PANGGILAN_DB = {"fetchrow", "fetchval", "fetch", "execute"}
 
 
 def _alias(pohon) -> tuple:
     """(nama modul idem_buat di berkas ini, {nama lokal fungsi idem}) -- `import idem_buat as _ib`, `from ..services.idem_buat import
     mulai_aksi as idem_mulai_aksi` ikut terhitung (pemindai teks & AST lama melewatkan alias -> negatif palsu)."""
-    modul, fungsi = {"idem_buat"}, set(PANGGILAN_LAIN)
+    modul, fungsi, kunci = {"idem_buat"}, set(PANGGILAN_LAIN), set(FUNGSI_KUNCI)
     for n in ast.walk(pohon):
         if isinstance(n, ast.ImportFrom):
             for a in n.names:
@@ -46,22 +56,33 @@ def _alias(pohon) -> tuple:
                     modul.add(a.asname or a.name)
                 elif (n.module or "").endswith("idem_buat") and a.name in FUNGSI_IDEM:
                     fungsi.add(a.asname or a.name)
+                elif (n.module or "").endswith("idem_buat") and a.name in FUNGSI_KUNCI:
+                    kunci.add(a.asname or a.name)
                 elif a.name in PANGGILAN_LAIN:
                     fungsi.add(a.asname or a.name)
         elif isinstance(n, ast.Import):
             for a in n.names:
                 if a.name.endswith("idem_buat"):
                     modul.add(a.asname or a.name.split(".")[-1])
-    return modul, fungsi
+    return modul, fungsi, kunci
+
+
+def _cari_kolom_kunci(c) -> bool:
+    """Panggilan conn.<fetch*/execute>(SQL, ...) yang SQL-nya (literal, boleh disambung +) memuat `idempotency_key = $`."""
+    if not (isinstance(c.func, ast.Attribute) and c.func.attr in PANGGILAN_DB and c.args):
+        return False
+    return any(isinstance(s, ast.Constant) and isinstance(s.value, str) and re.search(r"\bidempotency_key\s*=\s*\$", s.value)
+               for s in ast.walk(c.args[0]))
 
 
 def handler_ber_idem(sumber: str, nama: str) -> bool:
     """True bila fungsi `nama` (async/def) di `sumber` MEMANGGIL penolong idem (AST, bukan teks): <alias idem_buat>.mulai/mulai_aksi,
     fungsi idem yang diimpor dengan alias, atau execute_idempotent. Komentar/docstring/string TAK dihitung."""
     pohon = ast.parse(sumber)
-    modul, fungsi = _alias(pohon)
+    modul, fungsi, kunci = _alias(pohon)
     for n in ast.walk(pohon):
         if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == nama:
+            baca_kunci = cari_kolom = False
             for c in ast.walk(n):
                 if not isinstance(c, ast.Call):
                     continue
@@ -70,7 +91,10 @@ def handler_ber_idem(sumber: str, nama: str) -> bool:
                     return True
                 if isinstance(f, ast.Name) and f.id in fungsi:
                     return True
-            return False
+                baca_kunci |= (isinstance(f, ast.Name) and f.id in kunci) or (
+                    isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in modul and f.attr in FUNGSI_KUNCI)
+                cari_kolom |= _cari_kolom_kunci(c)
+            return baca_kunci and cari_kolom  # mekanisme kolom lama: KEDUANYA wajib
     raise LookupError(f"handler {nama} tak ditemukan")
 
 
@@ -118,6 +142,41 @@ def test_kontrol_merah_komentar_dan_string_tak_dihitung():
     assert handler_ber_idem(KOMENTAR_SAJA, "tetangga") is True  # kontrol positif
     with pytest.raises(LookupError):
         handler_ber_idem(KOMENTAR_SAJA, "tak_ada")
+
+
+KOLOM_LAMA = '''
+from ..services.idem_buat import kunci_dari as _kd
+
+
+async def kolom(request, conn, body):
+    k = _kd(request, body.idempotency_key)
+    return await conn.fetchrow("""SELECT id FROM t
+        WHERE tenant_id = $1 AND idempotency_key = $2""" + "", "t", k)
+
+
+async def kolom_di_docstring(request, conn, body):
+    """SELECT id FROM t WHERE idempotency_key = $2"""
+    # conn.fetchrow("SELECT id FROM t WHERE idempotency_key = $2")
+    return _kd(request, body.idempotency_key)
+
+
+async def cari_tanpa_baca_kunci(request, conn):
+    return await conn.fetchrow("SELECT id FROM t WHERE idempotency_key = $1", "tetap")
+
+
+async def kunci_sebagai_teks_bukan_sql(request, conn, body):
+    k = _kd(request, body.idempotency_key)
+    return await conn.fetchrow("SELECT id FROM t WHERE id = $1", "idempotency_key = $1")
+'''
+
+
+def test_kolom_lama_sah_hanya_bila_baca_kunci_dan_cari_kolom():
+    assert handler_ber_idem(KOLOM_LAMA, "kolom") is True  # kontrol positif fixture
+    assert handler_ber_idem(KOLOM_LAMA, "kolom_di_docstring") is False  # docstring/komentar tak dihitung
+    assert handler_ber_idem(KOLOM_LAMA, "cari_tanpa_baca_kunci") is False
+    assert handler_ber_idem(KOLOM_LAMA, "kunci_sebagai_teks_bukan_sql") is False  # teks di argumen ke-2, bukan SQL
+    # kontrol positif NYATA: buat UM pelanggan (V179) dikenali; buat penawaran (mulai) tetap dikenali lewat jalur lain
+    assert handler_ber_idem((APP / "routers/customer_deposits.py").read_text(), "create_customer_deposit")
 
 
 def test_alias_impor_terbaca_dan_baca_kunci_saja_bukan_idem():

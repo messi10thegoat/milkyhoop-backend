@@ -29,7 +29,7 @@ JALUR = [
     ("quotes.py", "_ubah_penawaran", "UPDATE quotes"),
     ("receive_payments.py", "update_receive_payment", "UPDATE receive_payments"),
     ("customer_deposits.py", "create_customer_deposit", "INSERT INTO customer_deposits"),
-    ("customer_deposits.py", "update_customer_deposit", "UPDATE customer_deposits"),
+    ("customer_deposits.py", "_ubah_dp", "UPDATE customer_deposits"),  # AS-G10: PATCH + pratinjau ubah memakai _ubah_dp
     ("cheques.py", "receive_cheque", "INSERT INTO cheques"),
     ("sales_receipts.py", "create_sales_receipt", "INSERT INTO sales_receipts"),
     ("production.py", "create_production_order", "INSERT INTO production_orders"),

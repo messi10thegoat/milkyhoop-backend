@@ -305,6 +305,7 @@ POST /api/customer-deposits/{deposit_id}/applications/{application_id}/reverse/p
 POST /api/customer-deposits/{deposit_id}/apply
 POST /api/customer-deposits/{deposit_id}/apply/preview
 POST /api/customer-deposits/{deposit_id}/attachments
+POST /api/customer-deposits/{deposit_id}/edit/preview
 POST /api/customer-deposits/{deposit_id}/move-proforma
 POST /api/customer-deposits/{deposit_id}/move-proforma/preview
 POST /api/customer-deposits/{deposit_id}/post

@@ -47,6 +47,7 @@ Endpoints:
 
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File
 from fastapi import Response as _Response
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.metode_pembayaran import label_metode_layar
@@ -1300,145 +1301,35 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
 
 @router.patch("/{deposit_id}", response_model=CustomerDepositResponse)
 async def update_customer_deposit(
-    request: Request, deposit_id: UUID, body: UpdateCustomerDepositRequest
+    request: Request, deposit_id: UUID, body: UpdateCustomerDepositRequest, response: _Response = None
 ):
     """
     Update a draft customer deposit.
 
     Only draft deposits can be updated.
+    AS-G10 (24 Okt 2026): dulu status dibaca tanpa kunci dan UPDATE tanpa syarat status -> PATCH bersamaan dengan /post bisa
+    mengubah nominal uang muka yang BARU diposting (dokumen != jurnal). Kini idem DEPOSIT_UPDATE -> kunci DEPOSIT_POST (SAMA
+    dengan /post dan hapus) -> _ubah_dp(tulis=True) = penentu yang SAMA dengan POST /{id}/edit/preview.
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        # Optimistic concurrency (opt-in If-Match): reject a stale write.
         from ..services.optimistic_concurrency import assert_if_match_row
-        await assert_if_match_row(request, "customer_deposits", deposit_id)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
-
-                # Check status
-                dep = await conn.fetchrow(
-                    """
-                    SELECT id, status, sales_order_id, proforma_id
-                    FROM customer_deposits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    deposit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not dep:
-                    raise HTTPException(
-                        status_code=404, detail="Uang muka tidak ditemukan."
-                    )
-
-                if dep["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Hanya uang muka berstatus Draf yang bisa diubah."
-                    )
-
-                # Build update
-                update_data = body.model_dump(exclude_unset=True)
-                if "customer_id" in update_data:  # pelanggan WAJIB milik tenant ini (30 Sep 2026), sama dengan create
-                    update_data["customer_id"] = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
-
-                if not update_data:
-                    return {
-                        "success": True,
-                        "message": "No changes provided",
-                        "data": {"id": str(deposit_id)},
-                    }
-
-                # Validate account if provided
-                if "account_id" in update_data and update_data["account_id"]:
-                    account = await conn.fetchrow(
-                        """
-                        SELECT id, account_type FROM chart_of_accounts
-                        WHERE id = $1 AND tenant_id = $2
-                    """,
-                        UUID(update_data["account_id"]),
-                        ctx["tenant_id"],
-                    )
-
-                    if not account:
-                        raise HTTPException(
-                            status_code=400, detail="Rekening pembayaran tidak ditemukan."
-                        )
-
-                    if account["account_type"] != "ASSET":
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Rekening pembayaran harus akun Kas/Bank.",
-                        )
-
-                # T204 2026-09-01: PAGAR PLAFON UANG MUKA — JALUR PATCH.
-                # T203 memasang pagar di POST saja; PATCH menerima `amount` baru
-                # sehingga plafon bisa dilewati dengan membuat DP kecil lalu
-                # menaikkan nilainya selagi draft. Pagar yang bisa dilewati lewat
-                # pintu sebelah bukan pagar. `exclude_id` WAJIB: deposit yang
-                # sedang diedit tidak boleh menghitung dirinya sendiri.
-                # sales_order_id/proforma_id TIDAK dapat diubah lewat PATCH
-                # (tidak ada di UpdateCustomerDepositRequest), jadi SO acuan =
-                # SO deposit itu sendiri.
-                if "amount" in update_data and update_data["amount"] is not None:
-                    _guard_order_id = await resolve_order_id_for_deposit(
-                        conn,
-                        ctx["tenant_id"],
-                        dep["sales_order_id"],
-                        dep["proforma_id"],
-                    )
-                    await assert_deposit_within_order_total(
-                        conn,
-                        ctx["tenant_id"],
-                        _guard_order_id,
-                        update_data["amount"],
-                        exclude_id=deposit_id,
-                    )
-
-                # Build update query
-                updates = []
-                params = []
-                param_idx = 1
-
-                for field, value in update_data.items():
-                    if field in ("account_id", "bank_account_id") and value:
-                        updates.append(f"{field} = ${param_idx}")
-                        params.append(UUID(value))
-                    else:
-                        updates.append(f"{field} = ${param_idx}")
-                        params.append(value)
-                    param_idx += 1
-
-                lama = await conn.fetchrow(
-                    "SELECT deposit_number, " + ", ".join(f'"{m}"' for m in update_data)
-                    + " FROM customer_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, ctx["tenant_id"])
-
-                params.extend([deposit_id, ctx["tenant_id"]])
-                query = f"""
-                    UPDATE customer_deposits
-                    SET {', '.join(updates)}, updated_at = NOW()
-                    WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                """
-                await conn.execute(query, *params)
-
-                berubah = {m: {"lama": None if lama[m] is None else str(lama[m]), "baru": None if v is None else str(v)}
-                           for m, v in update_data.items() if str(lama[m]) != str(v)}
-                if berubah:
-                    from ..services.so_riwayat import label_medan
-                    await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, lama["deposit_number"],
-                                        "DEPOSIT_UPDATED", ctx["user_id"],
-                                        f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {lama['deposit_number']} diubah: {label_medan(list(berubah))}",
-                                        {"fields": sorted(berubah), "perubahan": berubah})
-
-                logger.info(f"Customer deposit updated: {deposit_id}")
-
-                return {
-                    "success": True,
-                    "message": "Uang muka diperbarui",
-                    "data": {"id": str(deposit_id)},
-                }
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_UPDATE", deposit_id,
+                                                       lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:
+                    return _lama
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPOSIT_POST:{deposit_id}")
+                # Optimistic concurrency (opt-in If-Match): reject a stale write. AS-G10: SESUDAH replay (ulang ber-kunci = jawaban
+                # pertama, bukan 412 karena updated_at sudah maju oleh tulisan pertama) dan SESUDAH kunci (PATCH lain menunggu).
+                await assert_if_match_row(request, "customer_deposits", deposit_id)
+                return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_UPDATE",
+                                        await _ubah_dp(conn, ctx, deposit_id, body, tulis=True), deposit_id)
 
     except HTTPException:
         raise
@@ -1449,17 +1340,149 @@ async def update_customer_deposit(
         raise HTTPException(status_code=500, detail="Gagal memperbarui uang muka pelanggan.")
 
 
+async def _ubah_dp(conn, ctx: dict, deposit_id: UUID, body: UpdateCustomerDepositRequest, tulis: bool) -> dict:
+    """AS-G10 (24 Okt 2026): SATU penentu + penulis ubah uang muka DRAF. tulis=True (PATCH, sudah memegang kunci DEPOSIT_POST):
+    baca FOR UPDATE -> pemeriksaan -> UPDATE ... AND status = 'draft'. tulis=False (POST /{id}/edit/preview, transaksi READ ONLY
+    tanpa kunci): pemeriksaan YANG SAMA lalu berhenti sebelum menulis -> {"changes": ...}. Pesan galat = pesan lama PATCH."""
+    dep = await conn.fetchrow(
+        """
+        SELECT id, status, sales_order_id, proforma_id
+        FROM customer_deposits
+        WHERE id = $1 AND tenant_id = $2
+    """ + ("FOR UPDATE" if tulis else ""),
+        deposit_id,
+        ctx["tenant_id"],
+    )
+
+    if not dep:
+        raise HTTPException(
+            status_code=404, detail="Uang muka tidak ditemukan."
+        )
+
+    if dep["status"] != "draft":
+        raise HTTPException(
+            status_code=400, detail="Hanya uang muka berstatus Draf yang bisa diubah."
+        )
+
+    # Build update
+    update_data = body.model_dump(exclude_unset=True)
+    if "customer_id" in update_data:  # pelanggan WAJIB milik tenant ini (30 Sep 2026), sama dengan create
+        update_data["customer_id"] = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], update_data["customer_id"])
+
+    if not update_data:
+        return {
+            "success": True,
+            "message": "No changes provided",
+            "data": {"id": str(deposit_id)},
+        }
+
+    # Validate account if provided
+    if "account_id" in update_data and update_data["account_id"]:
+        account = await conn.fetchrow(
+            """
+            SELECT id, account_type FROM chart_of_accounts
+            WHERE id = $1 AND tenant_id = $2
+        """,
+            UUID(update_data["account_id"]),
+            ctx["tenant_id"],
+        )
+
+        if not account:
+            raise HTTPException(
+                status_code=400, detail="Rekening pembayaran tidak ditemukan."
+            )
+
+        if account["account_type"] != "ASSET":
+            raise HTTPException(
+                status_code=400,
+                detail="Rekening pembayaran harus akun Kas/Bank.",
+            )
+
+    # T204 2026-09-01: PAGAR PLAFON UANG MUKA — JALUR PATCH.
+    # T203 memasang pagar di POST saja; PATCH menerima `amount` baru
+    # sehingga plafon bisa dilewati dengan membuat DP kecil lalu
+    # menaikkan nilainya selagi draft. Pagar yang bisa dilewati lewat
+    # pintu sebelah bukan pagar. `exclude_id` WAJIB: deposit yang
+    # sedang diedit tidak boleh menghitung dirinya sendiri.
+    # sales_order_id/proforma_id TIDAK dapat diubah lewat PATCH
+    # (tidak ada di UpdateCustomerDepositRequest), jadi SO acuan =
+    # SO deposit itu sendiri.
+    if "amount" in update_data and update_data["amount"] is not None:
+        _guard_order_id = await resolve_order_id_for_deposit(
+            conn,
+            ctx["tenant_id"],
+            dep["sales_order_id"],
+            dep["proforma_id"],
+        )
+        await assert_deposit_within_order_total(
+            conn,
+            ctx["tenant_id"],
+            _guard_order_id,
+            update_data["amount"],
+            exclude_id=deposit_id,
+        )
+
+    if not tulis:  # POST /{id}/edit/preview: pemeriksaan SAMA, nol tulis
+        return {"changes": jsonable_encoder(update_data)}
+
+    # Build update query
+    updates = []
+    params = []
+    param_idx = 1
+
+    for field, value in update_data.items():
+        if field in ("account_id", "bank_account_id") and value:
+            updates.append(f"{field} = ${param_idx}")
+            params.append(UUID(value))
+        else:
+            updates.append(f"{field} = ${param_idx}")
+            params.append(value)
+        param_idx += 1
+
+    lama = await conn.fetchrow(
+        "SELECT deposit_number, " + ", ".join(f'"{m}"' for m in update_data)
+        + " FROM customer_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, ctx["tenant_id"])
+
+    params.extend([deposit_id, ctx["tenant_id"]])
+    query = f"""
+        UPDATE customer_deposits
+        SET {', '.join(updates)}, updated_at = NOW()
+        WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1} AND status = 'draft'
+    """
+    n = await conn.execute(query, *params)
+    if n != "UPDATE 1":  # kunci DEPOSIT_POST + FOR UPDATE membuat ini mustahil; pagar SQL tetap
+        raise HTTPException(status_code=409, detail="Uang muka sudah berubah status.")
+
+    berubah = {m: {"lama": None if lama[m] is None else str(lama[m]), "baru": None if v is None else str(v)}
+               for m, v in update_data.items() if str(lama[m]) != str(v)}
+    if berubah:
+        from ..services.so_riwayat import label_medan
+        await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, lama["deposit_number"],
+                            "DEPOSIT_UPDATED", ctx["user_id"],
+                            f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {lama['deposit_number']} diubah: {label_medan(list(berubah))}",
+                            {"fields": sorted(berubah), "perubahan": berubah})
+
+    logger.info(f"Customer deposit updated: {deposit_id}")
+
+    return {
+        "success": True,
+        "message": "Uang muka diperbarui",
+        "data": {"id": str(deposit_id)},
+    }
+
+
 # =============================================================================
 # DELETE CUSTOMER DEPOSIT (DRAFT ONLY)
 # =============================================================================
 
 
 @router.delete("/{deposit_id}", response_model=CustomerDepositResponse)
-async def delete_customer_deposit(request: Request, deposit_id: UUID):
+async def delete_customer_deposit(request: Request, deposit_id: UUID, response: _Response = None):
     """
     Delete a draft customer deposit.
 
     Only draft deposits can be deleted. Use void for posted deposits.
+    AS-G10 (24 Okt 2026): idem DEPOSIT_DELETE -- ulang ber-kunci = jawaban pertama (200), bukan 404.
     """
     try:
         ctx = get_user_context(request)
@@ -1467,6 +1490,10 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
 
         async with pool.acquire() as conn:
           async with conn.transaction():
+            from ..services import idem_buat as _ib
+            _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_DELETE", deposit_id, {}, response)
+            if _lama is not None:
+                return _lama
             # 4 Okt 2026 (U3a): dulu status dibaca DI LUAR transaksi tanpa kunci, lalu DELETE tanpa syarat status ->
             # bisa menghapus uang muka yang baru saja diposting (jurnal POSTED tanpa dokumen). Kini kunci /post +
             # kunci uang muka (urutan sama dengan /post dan /void), baca ulang di bawah kunci, hapus bersyarat.
@@ -1516,14 +1543,14 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
 
             logger.info(f"Customer deposit deleted: {deposit_id}")
 
-            return {
+            return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_DELETE", {
                 "success": True,
                 "message": "Uang muka dihapus",
                 "data": {
                     "id": str(deposit_id),
                     "deposit_number": dep["deposit_number"],
                 },
-            }
+            }, deposit_id)
 
     except HTTPException:
         raise
@@ -1540,12 +1567,13 @@ async def delete_customer_deposit(request: Request, deposit_id: UUID):
 
 
 async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
-    """Internal function to post a deposit to accounting."""
-    # Get deposit
+    """Internal function to post a deposit to accounting. Pemanggil WAJIB sudah memegang kunci DEPOSIT_POST:{id}."""
+    # Get deposit -- AS-G10: FOR UPDATE (dulu baca biasa -> PATCH bersamaan bisa mengubah nominal di antara baca & posting)
     dep = await conn.fetchrow(
         """
         SELECT * FROM customer_deposits
         WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
     """,
         deposit_id,
         ctx["tenant_id"],
@@ -1725,7 +1753,7 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
 
 
 @router.post("/{deposit_id}/post", response_model=CustomerDepositResponse)
-async def post_customer_deposit(request: Request, deposit_id: UUID):
+async def post_customer_deposit(request: Request, deposit_id: UUID, response: _Response = None):
     """
     Post customer deposit to accounting.
 
@@ -1748,6 +1776,11 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+                # AS-G10: idem DEPOSIT_POST -- ulang ber-kunci = jawaban pertama, bukan 400 "sudah diposting"
+                from ..services import idem_buat as _ib
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "DEPOSIT_POST", deposit_id, {}, response)
+                if _lama is not None:
+                    return _lama
 
                 # Law 13: Advisory lock
                 await conn.execute(
@@ -1761,7 +1794,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
                     f"Customer deposit posted: {deposit_id}, journal={result['journal_id']}"
                 )
 
-                return {
+                return await _ib.simpan(conn, ctx, _kp, _sd, "DEPOSIT_POST", {
                     "success": True,
                     "message": "Uang muka diposting",
                     "data": {
@@ -1770,7 +1803,7 @@ async def post_customer_deposit(request: Request, deposit_id: UUID):
                         "journal_number": result["journal_number"],
                         "status": "posted",
                     },
-                }
+                }, deposit_id)
 
     except HTTPException:
         raise
@@ -3155,6 +3188,30 @@ async def preview_apply_customer_deposit(request: Request, deposit_id: UUID, bod
     """Pratinjau terapkan: jurnal + sisa faktur sebelum -> sesudah + saldo uang muka."""
     ctx = await _ctx_pratinjau(request)
     return {"success": True, "data": await _pratinjau_dp(ctx, deposit_id, "apply", body)}
+
+
+@router.post("/{deposit_id}/edit/preview")
+async def preview_edit_customer_deposit(request: Request, deposit_id: UUID, body: UpdateCustomerDepositRequest):
+    """AS-G10 (24 Okt 2026): pratinjau ubah DRAF -- penentu SAMA dengan PATCH (_ubah_dp tulis=False), transaksi READ ONLY tanpa
+    kunci. Nol jurnal (draf belum diposting). Blok = pesan yang AKAN dikembalikan PATCH."""
+    ctx = await _ctx_pratinjau(request)
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+            sebelum = await _keadaan_dp(conn, tid, deposit_id)
+            blok, ubah = [], {}
+            try:
+                ubah = (await _ubah_dp(conn, ctx, deposit_id, body, tulis=False)).get("changes", {})
+            except HTTPException as e:
+                blok.append(_blok_dp("EDIT_REJECTED", e.status_code, e.detail))
+    sesudah = {**sebelum, **({"amount": float(ubah["amount"])} if "amount" in ubah else {})} if not blok else sebelum
+    return {"success": True, "data": {
+        "deposit_id": str(deposit_id), "action": "edit", "can_proceed": not blok,
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
+        "before": sebelum, "after": sesudah, "changes": ubah, "journals": [], "bank_transactions": [], "invoices": [],
+        "payload": body.model_dump(mode="json", exclude_unset=True), "preview": True}}
 
 
 class PratinjauReverseDp(BaseModel):
