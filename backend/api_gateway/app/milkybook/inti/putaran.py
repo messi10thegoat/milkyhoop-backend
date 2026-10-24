@@ -132,6 +132,41 @@ def _ringkas(isi: Any) -> str:
 _BENDERA_BOLEH = ("ok", "can_proceed", "can_cancel", "can_close", "can_delete", "can_void", "boleh")
 
 
+def _sama(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b or a == b
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return (a or None) == (b or None) if isinstance(a, str) or isinstance(b, str) else a == b
+
+
+_MEDAN_BARIS = ("description", "quantity", "unit_price", "discount_percent", "tax_rate", "tax_id", "unit", "item_id")
+
+
+def buang_medan_tak_berubah(payload: dict, sekarang: dict) -> dict:
+    """PATCH hanya medan yang berubah. `items`: dibuang bila setiap baris (dicocokkan lewat `id`, atau urutan bila
+    tanpa id) sama pada medan yang dikirim dan jumlah baris sama; bila ada yang beda, `items` dikirim utuh."""
+    hasil = {}
+    for k, v in payload.items():
+        if k == "items" and isinstance(v, list) and isinstance(sekarang.get("items"), list):
+            lama = sekarang["items"]
+            peta = {str(b.get("id")): b for b in lama if b.get("id") is not None}
+            if len(v) == len(lama) and all(
+                all(_sama(bv, (peta.get(str(b.get("id"))) if b.get("id") is not None else lama[i]).get(bk))
+                    for bk, bv in b.items() if bk in _MEDAN_BARIS)
+                for i, b in enumerate(v)
+                if (b.get("id") is None or str(b.get("id")) in peta)
+            ) and all(b.get("id") is None or str(b.get("id")) in peta for b in v):
+                continue
+            hasil[k] = v
+        elif k in sekarang and _sama(v, sekarang.get(k)):
+            continue
+        else:
+            hasil[k] = v
+    return hasil
+
+
 def _ada_blok(isi: Any) -> bool:
     """Pratinjau menolak? Bentuk BE beragam (diukur c8c24092): `blocks` di atas ATAU di dalam `data`
     (void penawaran quotes.py:1750 `{"success", "data": {"ok", "blocks"}}`), atau bendera boleh = False
@@ -367,6 +402,15 @@ class Putaran:
             pr_jalur, _ = pr.jalur_konkret(c.masukan)
         except ValueError as ex:
             return f"Masukan tidak sah untuk pratinjau: {ex}", True, write_dipakai
+        if t.pembanding:
+            pb = self.registri.ambil(t.pembanding)
+            jb_now = await pelaksana.kirim("GET", pb.jalur_konkret(c.masukan)[0])
+            sekarang = jb_now.isi.get("data", jb_now.isi) if isinstance(jb_now.isi, dict) else {}
+            if jb_now.status < 400 and isinstance(sekarang, dict):
+                sisa = buang_medan_tak_berubah(sisa, sekarang)
+                if not sisa:
+                    return ("Tidak ada perubahan: semua medan yang diusulkan sama dengan isi dokumen sekarang. "
+                            "Tanyakan ke pengguna apa yang ingin diubah."), True, write_dipakai
         jbp = await pelaksana.kirim(pr.metode, pr_jalur, badan=badan_kanonik(sisa))
         sesi.sumber_angka.append(jbp.isi)
         if jbp.status >= 400 or _ada_blok(jbp.isi):

@@ -49,6 +49,9 @@ class Tool:
     tunda: bool = False
     # Judul kartu Tinjau di FE.
     judul_kartu: Optional[str] = None
+    # WRITE PATCH: tool READ untuk membaca keadaan sekarang; medan yang nilainya sama dibuang sebelum pratinjau
+    # (temuan eval 24 Okt PNW-015: PATCH ikut mengirim `items` yang tidak berubah).
+    pembanding: Optional[str] = None
 
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)
