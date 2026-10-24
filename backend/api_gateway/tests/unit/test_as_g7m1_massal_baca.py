@@ -36,7 +36,7 @@ def test_pratinjau_batal_proforma_tanpa_kunci_dan_tanpa_inti():
 
 def test_rute_pratinjau_baca_saja():
     assert "baca_saja=True" in inspect.getsource(BS._pasang)
-    assert BQ.AKSI_BACA_SAJA == ("delete",) and "baca_saja=aksi in AKSI_BACA_SAJA" in inspect.getsource(BQ._pasang)
+    assert BQ.AKSI_BACA_SAJA == ("delete", "send") and "baca_saja=aksi in AKSI_BACA_SAJA" in inspect.getsource(BQ._pasang)
     assert "baca_saja=True" in inspect.getsource(BP.bulk_cancel_preview)
 
 

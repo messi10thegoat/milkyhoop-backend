@@ -60,7 +60,9 @@ def test_kontrol_dokumen_aktif_tetap_dibagikan(monkeypatch, kind, status):
 
 
 def test_satu_penentu_tunggal_dan_massal():
-    assert "tolak_batal(kind, dok)" in inspect.getsource(DK._bagikan)
+    # AS-G7-M2: penentu share = rencana_bagikan (penulis _bagikan memanggilnya dengan kunci=True; pratinjau kunci=False)
+    assert "tolak_batal(kind, dok)" in inspect.getsource(DK.rencana_bagikan)
+    assert "rencana_bagikan(conn, request, ctx, kind, uid, kunci=True)" in inspect.getsource(DK._bagikan)
     src = inspect.getsource(BK._periksa_bagikan)
     assert "D.tolak_batal(kind, dok)" in src and "_BATAL" not in src
     assert not hasattr(BK, "_BATAL")

@@ -5,6 +5,8 @@ import ast
 import inspect
 import re
 import uuid
+
+PENULIS_BAGIKAN = re.compile(r"(?<![A-Za-z_])_bagikan\(conn")  # 'rencana_bagikan(conn' bukan panggilan penulis
 from datetime import date, timedelta
 
 import pytest
@@ -39,7 +41,10 @@ def test_penulis_bagikan_memakai_penentu_berkunci_lalu_tautan():
 
 def test_pratinjau_tanpa_penulis_dan_read_only():
     p = inspect.getsource(D.pratinjau_bagikan_dokumen)
-    assert "conn.transaction(readonly=True)" in p and "kunci=False" in p and "_bagikan(conn" not in p
+    assert "conn.transaction(readonly=True)" in p and "kunci=False" in p and not PENULIS_BAGIKAN.search(p)
+    # kontrol: pola menangkap panggilan penulis, tak tertipu nama penentu
+    assert PENULIS_BAGIKAN.search("_, info = await _bagikan(conn, request, ctx, kind, uid, channel)")
+    assert not PENULIS_BAGIKAN.search("info, _ = await rencana_bagikan(conn, request, ctx, kind, uid, kunci=False)")
     assert not hasattr(D, "_BatalkanBagikan")
     _, pv = BD._fungsi_bagikan(None, "invoice", "link")
     assert "_bagikan" not in _panggil(pv) and "rencana_bagikan" in _panggil(pv)

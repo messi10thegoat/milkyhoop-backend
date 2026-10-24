@@ -20,13 +20,17 @@ class _Conn:
     def __init__(self, status, expiry=date(2026, 10, 17)):
         self.status, self.expiry = status, expiry
         self.dalam, self.tulis, self.log = 0, [], []
+        self.ro = False  # AS-G7-M2: pratinjau membuka transaksi READ ONLY (penentu tanpa kunci)
 
-    def transaction(self):
+    def transaction(self, **kw):
         c = self
+        if kw:
+            c.log.append(("tx", kw))
 
         class _T:
             async def __aenter__(s):
                 c.dalam += 1
+                c.ro = bool(kw.get("readonly"))
 
             async def __aexit__(s, et, e, tb):
                 c.dalam -= 1
@@ -43,7 +47,7 @@ class _Conn:
     async def fetchrow(self, q, *a):
         s = " ".join(q.split())
         if s.startswith("SELECT id, quote_number, status, expiry_date FROM quotes"):
-            assert a == (QID, T) and "FOR UPDATE" in s
+            assert a == (QID, T) and ("FOR UPDATE" in s) == (not self.ro), s  # tulis berkunci; pratinjau READ ONLY tanpa
             return {"id": QID, "quote_number": "QUO-1", "status": self.status, "expiry_date": self.expiry}
         if s.startswith("SELECT quote_number AS nomor, status FROM quotes"):
             return {"nomor": "QUO-1", "status": self.status}
@@ -139,7 +143,8 @@ async def test_pratinjau_draf_rollback_dan_bentuk(pasang):
     r = await D.pratinjau_bagikan_dokumen(_req(), "quotation", str(QID))
     assert r == {"success": True, "data": {"status_now": "draft", "akan_ditandai_terkirim": True, "boleh": True,
                                            "code": None, "message": None, "number": "QUO-1"}}
-    assert c.log == ["rollback"], c.log  # jalur sama dijalankan, lalu dibatalkan: nol tulis
+    # AS-G7-M2: penentu YANG SAMA (rencana_bagikan) di transaksi READ ONLY tanpa kunci; nol tulis (dulu _bagikan lalu ROLLBACK)
+    assert c.log == [("tx", {"readonly": True}), "commit"] and c.tulis == [], (c.log, c.tulis)
 
 
 @pytest.mark.asyncio

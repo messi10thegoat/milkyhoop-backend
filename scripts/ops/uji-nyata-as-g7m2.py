@@ -76,6 +76,13 @@ async def semua(cx, uid, k):
     from app.routers import bulk_quote as BQ, bulk_dokumen as BD, dokumen as D
     BQ.get_pool = BD.get_pool = pool_untuk(cx)
     D._pool = pool_untuk(cx)
+    # izin kuitansi (_wajib_izin) butuh PolicyEngineClient yang tak dinyalakan di kontainer harness -> PEREKAM (dua pohon SAMA): apakah
+    # pemeriksaan dipanggil + aksi/modulnya ikut DIBANDINGKAN LAMA == BARU (M2 tak mengubah izin; hanya memindahkannya ke penentu).
+    izin = []
+
+    async def rekam_izin(request, aksi, modul):
+        izin.append([aksi, modul])
+    D._wajib_izin = rekam_izin
 
     async def coba(aw):
         try:
@@ -91,6 +98,7 @@ async def semua(cx, uid, k):
             continue
         pv = next(r.endpoint for r in BD.ROUTERS[m].routes if r.endpoint.__name__ == "bulk_share_preview")
         out["sharem"][m] = await coba(pv(req(uid), BD.BulkShareRequest(ids=ids, channel="link")))
+    out["izin"] = izin
     return out
 
 
@@ -203,6 +211,9 @@ def banding():
     bd = jalur_beda(lama["share1"], baru["share1"])
     galat = sorted({str(x["galat"][0]) for v in lama["share1"].values() for x in v if "galat" in x})
     cek(not bd and n1 > 1, f"(P-share1) pratinjau bagikan TUNGGAL LAMA == BARU semua medan ({n1} dokumen, 7 jenis, galat {galat})", "; ".join(bd[:5]))
+    cek(lama["izin"] == baru["izin"] and len(lama["izin"]) > 0,
+        f"(IZIN) pemeriksaan izin kuitansi dipanggil SAMA (LAMA == BARU, {len(lama['izin'])} panggilan {sorted({tuple(x) for x in lama['izin']})})",
+        f"{len(lama['izin'])} / {len(baru['izin'])}")
     bd = jalur_beda(lama["sharem"], baru["sharem"])
     cek(not bd and lama["sharem"], f"(P-sharem) pratinjau bagikan MASSAL LAMA == BARU semua medan ({len(lama['sharem'])} modul)", "; ".join(bd[:5]))
     if pemb != "baru":
