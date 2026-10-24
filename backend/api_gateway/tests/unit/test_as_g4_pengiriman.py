@@ -35,3 +35,53 @@ def test_rute_dan_izin_nyata():
     assert izin_untuk_jalur("/api/deliveries/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/serah/preview", "POST") == ("sales_invoice", "U")
     assert izin_untuk_jalur("/api/deliveries/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/serah", "PUT") == ("sales_invoice", "U")
     assert izin_untuk_jalur("/api/deliveries/6a263caa-0ea6-47e1-aa78-fc6575e38ff0/void", "POST") == ("sales_invoice", "V")
+
+
+def test_ulang_berkunci_tak_memanggil_void_lagi_asal_apa_pun(monkeypatch):
+    """Unit (berlaku asal PESANAN maupun FAKTUR -- idem di RUTE sebelum S.void): ulang ber-kunci = replay, S.void dipanggil SEKALI."""
+    import asyncio
+    from types import SimpleNamespace
+    from app.services import idem_buat
+    panggil, simpan = [], {}
+
+    class Tr:
+        async def __aenter__(s): return s
+        async def __aexit__(s, *a): return False
+
+    class Kon:
+        async def execute(s, *a): return None
+        def transaction(s): return Tr()
+
+    class CM:
+        async def __aenter__(s): return Kon()
+        async def __aexit__(s, *a): return False
+
+    class P:
+        def acquire(s): return CM()
+
+    async def pool(): return P()
+
+    async def void(conn, ctx, fid, alasan):
+        panggil.append(fid)
+        return {"ulang": False}
+
+    async def mulai_aksi(conn, ctx, kunci, prefix, doc, isi, response=None):
+        assert prefix == "SJ_VOID"
+        return ("k", "s", simpan.get("r"))
+
+    async def simpan_(conn, ctx, kp, sidik, src, resp, rid):
+        simpan["r"] = resp
+        return resp
+    monkeypatch.setattr(SJ, "_pool", pool)
+    monkeypatch.setattr(SJ.S, "void", void)
+    monkeypatch.setattr(idem_buat, "kunci_dari", lambda request, kunci_body=None: "kunci-1")
+    monkeypatch.setattr(idem_buat, "mulai_aksi", mulai_aksi)
+    monkeypatch.setattr(idem_buat, "simpan", simpan_)
+    req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": "t", "user_id": "u"}))
+    fid = "6a263caa-0ea6-47e1-aa78-fc6575e38ff0"
+    r1 = asyncio.run(SJ.void_sj(req, fid, SJ.AlasanIn(reason="x")))
+    r2 = asyncio.run(SJ.void_sj(req, fid, SJ.AlasanIn(reason="x")))
+    assert r1 == r2 and len(panggil) == 1  # kontrol: tanpa replay (simpan kosong) panggilan kedua AKAN memanggil void lagi
+    simpan.clear()
+    asyncio.run(SJ.void_sj(req, fid, SJ.AlasanIn(reason="x")))
+    assert len(panggil) == 2

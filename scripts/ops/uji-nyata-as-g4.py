@@ -134,6 +134,33 @@ async def main():
             e, _ = await galat(RD.ubah_serah_surat_jalan(str(pilih["id"]), req(), PS.SerahIn(kirim_ke="x"), Response()))
             cek("serah atas SJ batal: blok SJ_VOID == galat PUT 409", [b["code"] for b in pv["blocks"]] == ["SJ_VOID"]
                 and e is not None and e.status_code == 409 and e.detail.get("code") == "SJ_VOID", (pv, e and e.detail))
+        # ───────── jalur ASAL PESANAN (syarat MASTER): SJ TES E2E dari SO kaos di rollback -> batal ber-kunci 2x ─────────
+        so_calon = await c.fetch("""SELECT id, order_number FROM sales_orders WHERE tenant_id = $1 AND status IN ('confirmed', 'partially_shipped',
+                                    'partial', 'in_progress') ORDER BY created_at DESC LIMIT 40""", T)
+        so_ok = None
+        for so in so_calon:
+            e, p = await galat(RS.preview_sj_so(req(), str(so["id"]), RS.S.SJSOIn(notes="TES E2E AS-G4")))
+            if p and p["data"]["ok"] and p["data"]["lines"]:
+                so_ok = so
+                break
+        if so_ok is None:
+            print(f"INFO jalur asal pesanan: tak ada SO kaos yang bisa dikirim ({len(so_calon)} calon) -- diliput tes unit saja", flush=True)
+        else:
+            r = await RS.create_sj_so(req(f"TES-E2E-{uuid4()}"), Response(), str(so_ok["id"]), RS.S.SJSOIn(notes="TES E2E AS-G4"))
+            from uuid import UUID as _U
+            fr = await c.fetchrow("SELECT id, journal_id, revenue_journal_id, asal FROM invoice_fulfillments WHERE id = $1", _U(r["data"]["id"]))
+            jur = [j for j in (fr["journal_id"], fr["revenue_journal_id"]) if j]
+            hitung2 = lambda: c.fetchval("SELECT count(*) FROM journal_entries WHERE reversal_of_id = ANY($1::uuid[])", jur)  # noqa: E731
+            k5 = f"TES-E2E-{uuid4()}"
+            hv2 = Response()
+            e1, v1 = await galat(RS.void_sj(req(k5), str(fr["id"]), RS.AlasanIn(reason="TES E2E AS-G4 SO"), Response()))
+            m1 = await hitung2()
+            e2, v2 = await galat(RS.void_sj(req(k5), str(fr["id"]), RS.AlasanIn(reason="TES E2E AS-G4 SO"), hv2))
+            m2 = await hitung2()
+            print(f"INFO jalur asal pesanan NYATA: SJ dari {so_ok['order_number']} asal={fr['asal']} berjurnal={len(jur)}", flush=True)
+            cek(f"batal SJ asal PESANAN: ulang kunci sama = replay, pembalik TETAP ({m1} -> {m2})",
+                v1 is not None and v1["ulang"] is False and v2 == v1 and hv2.headers.get("X-Idempotent-Replay") == "true" and m2 == m1
+                and (m1 >= 1 or not jur), (e1 and e1.detail, v1, e2 and e2.detail, v2, m1, m2))
     finally:
         await luar.rollback()
         sisa = await c.fetchval("SELECT count(*) FROM pengiriman_serah WHERE tenant_id = $1 AND kirim_ke LIKE 'TES E2E%'", T)
