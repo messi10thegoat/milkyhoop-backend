@@ -544,7 +544,7 @@ async def test_hibrida_perlu_penulis_dialihkan_ke_model_tulis_riwayat_utuh():
     # model tulis melihat riwayat model baca (append-only): pesan pertama sama, lalu tool_use perlu_penulis
     assert mt.permintaan[0]["messages"][0] == mb.permintaan[0]["messages"][0]
     assert any(b.get("name") == "perlu_penulis" for b in mt.permintaan[0]["messages"][1]["content"])
-    assert mt.permintaan[0]["messages"][-1]["content"][0]["content"].startswith("Dialihkan")
+    assert mt.permintaan[0]["messages"][-1]["content"][0]["content"].startswith("[sistem] Giliran ini dialihkan")
     assert s.mode_tulis is True
 
 
@@ -566,3 +566,12 @@ async def test_tanpa_pemanggil_baca_perilaku_lama():
     p, m = putaran([teks("ok")])
     await p.giliran(sesi(), "x", be_standar(), izin_semua)
     assert "perlu_penulis" not in {t["name"] for t in m.permintaan[0]["tools"]}
+
+
+
+async def test_hibrida_teks_model_baca_saat_alih_tidak_ditampilkan():
+    p, mb, mt = _hibrida([panggil(("perlu_penulis", {"alasan": "x"}), teks_awal="Sudah saya teruskan ke asisten penulis.")],
+                         [panggil(("buat_x", {"jumlah": 2})), teks("Kartu Tinjau sudah tampil.")])
+    ev = await p.giliran(sesi(), "buat 2", be_standar(), izin_semua)
+    semua = " ".join(e.get("teks", "") for e in ev if e["jenis"] == "teks")
+    assert "teruskan" not in semua and "Kartu Tinjau sudah tampil." in semua
