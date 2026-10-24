@@ -199,7 +199,8 @@ def test_tulis_meneruskan_kunci_modul_dan_fungsi(monkeypatch):
     th = inspect.getsource(BQ._tulis_hapus)
     assert "Q.rencana_hapus_penawaran(" in th and "Q.hapus_penawaran_core(" in th
     ph = inspect.getsource(BQ._pratinjau_hapus)
-    assert "Q.rencana_hapus_penawaran(" in ph and "Q.hapus_penawaran_core(" in ph
+    # AS-G7-M1: pratinjau = penentu yang SAMA dengan tulis, BACA SAJA -- inti penulis tak lagi dijalankan lalu di-rollback
+    assert "Q.rencana_hapus_penawaran(" in ph and "Q.hapus_penawaran_core(" not in ph
 
 
 def test_kode_galat_kirim_stabil_dan_hapus_tulis_sekode_pratinjau(monkeypatch, alasan, terkirim):

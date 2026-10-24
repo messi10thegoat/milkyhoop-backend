@@ -257,7 +257,8 @@ def test_tulis_meneruskan_kunci_batch_nomor_dan_fungsi_tunggal(monkeypatch):
     assert "_konfirmasi(" in inspect.getsource(BS._tulis_konfirmasi) and "_konfirmasi(" in inspect.getsource(BS._pratinjau_konfirmasi)
     assert "SO.rencana_hapus_so(" in inspect.getsource(BS._tulis_hapus)  # tulis memakai penentu yang sama dgn pratinjau
     ph = inspect.getsource(BS._pratinjau_hapus)
-    assert "SO.rencana_hapus_so(" in ph and "SO.hapus_so_draf_core(" in ph
+    # AS-G7-M1: pratinjau = penentu yang SAMA dengan tulis, BACA SAJA -- inti penulis tak lagi dijalankan lalu di-rollback
+    assert "SO.rencana_hapus_so(" in ph and "SO.hapus_so_draf_core(" not in ph
 
 
 # ---------------- izin ----------------

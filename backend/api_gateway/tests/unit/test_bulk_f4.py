@@ -32,6 +32,10 @@ class _K:
 
     async def execute(self, sql, *a): self.sql.append(("exec", " ".join(sql.split()), a))
 
+    async def fetchval(self, sql, *a):  # AS-G7-M1: pratinjau membaca nomor proforma (bukan dari inti penulis)
+        self.sql.append(("val", " ".join(sql.split()), a))
+        return "PRO-1"
+
 
 def _cur(status="draft"):
     return {"id": _id(), "status": status, "sales_order_id": _id(), "proforma_number": "PRO-1", "amount": 100}
@@ -64,7 +68,15 @@ def pf(monkeypatch):
         state["tulis_dipanggil"] += 1
         return {"id": cur["id"], "proforma_number": "PRO-1", "status": "cancelled"}
 
+    async def baca(conn, ctx, pid):  # AS-G7-M1: jalur pratinjau tanpa kunci (bulk_proforma._baca_proforma)
+        jejak.append("baca")
+        c = state["cur"]
+        if c is None:
+            raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
+        return c
+
     monkeypatch.setattr(PF, "_kunci_proforma", kunci)
+    monkeypatch.setattr(BP, "_baca_proforma", baca)
     monkeypatch.setattr(PF, "_rencana_batal", rencana)
     monkeypatch.setattr(PF, "_angkat_blok_pertama", angkat)
     monkeypatch.setattr(PF, "_tulis_batal", tulis)
@@ -160,9 +172,10 @@ def test_blok_semua_penghalang_bukan_draf_plus_penentu(pf):
 
 def test_tulis_dan_pratinjau_memakai_penentu_dan_inti_yang_sama(pf):
     tulis, pratinjau = BP._fungsi("alasan")
-    # pratinjau: bersih -> ringkasan dari inti; terblok -> blok tanpa menulis
+    # AS-G7-M1: pratinjau bersih -> ringkasan dari penentu BACA SAJA (tanpa kunci, inti penulis TAK dipanggil); terblok -> blok
     blok, ringkas = _jalan(pratinjau(_K(), CTX, _id()))
-    assert blok == [] and ringkas == {"proforma_number": "PRO-1", "status": "cancelled"} and pf["tulis_dipanggil"] == 1
+    assert blok == [] and ringkas == {"proforma_number": "PRO-1", "status": "cancelled"} and pf["tulis_dipanggil"] == 0
+    assert "kunci" not in pf["jejak"] and "baca" in pf["jejak"]
     pf["blocks"] = [{"code": "PROFORMA_HAS_PAYMENT", "status": 400, "message": "m"}]
     pf["tulis_dipanggil"] = 0
     blok2, r2 = _jalan(pratinjau(_K(), CTX, _id()))
