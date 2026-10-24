@@ -160,10 +160,12 @@ TOOLS = [
          halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan"),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru", butuh=(AS_G14,),
-         halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan"),
+         halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan",
+         tak_didukung=((r"saldo\s+(piutang\s+)?awal|opening\s+balance", "Saldo awal piutang TIDAK ikut dicatat. Isi di halaman Pelanggan setelah pelanggan tersimpan."),)),
     Tool("buat_barang", Kelas.WRITE, "Usulkan barang/jasa baru (tanpa stok awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_BARANG, "POST", "/api/items", pratinjau="pratinjau_barang_baru", butuh=(AS_G14,),
-         halaman="/persediaan/barang", judul_kartu="Buat barang"),
+         halaman="/persediaan/barang", judul_kartu="Buat barang",
+         tak_didukung=((r"stok\s+awal|opening\s+stock", "Stok awal TIDAK ikut dicatat. Isi di halaman Barang & Jasa setelah barang tersimpan."),)),
 
     # ---------------- NAV (izin aksi diperiksa, rute tidak dipanggil)
     Tool("buka_kirim_penawaran", Kelas.NAV, "Buka halaman penawaran untuk mengirimnya ke pelanggan.",

@@ -55,6 +55,10 @@ class Tool:
     # False = hanya dipakai inti (mis. pratinjau pasangan WRITE yang skemanya identik), tidak dikirim ke model:
     # prefiks lebih kecil (diukur 24 Okt: pasangan pratinjau ~21% karakter prefiks). Izinnya tetap diperiksa.
     tampil_ke_model: bool = True
+    # WRITE: (pola regex atas ucapan pengguna, catatan). Bila cocok, kartu + tool_result membawa catatan "TIDAK dicatat"
+    # (mis. saldo awal / stok awal yang tak bisa dibawa tool ini). Jaring pengaman: model sempat diam soal ini
+    # (eval 24 Okt PNW-059, 1 dari 2 run walau aturan prompt ada). Bukan penentu maksud; hanya menambah peringatan.
+    tak_didukung: Tuple[Tuple[str, str], ...] = ()
 
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)
