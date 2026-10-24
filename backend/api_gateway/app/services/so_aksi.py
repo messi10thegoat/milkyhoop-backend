@@ -32,6 +32,14 @@ Filter ?aksi=, kolom aksi per baris, dan /summary <kunci>_count/_value memanggil
 Kartu dashboard "N pesanan harus dikirim" (?tugas=harus_kirim) = dashboard_v2.pilih_harus_kirim atas fakta yang SAMA:
 telat_kirim | perlu_dikirim | siap_diserahkan dengan tanggal kirim <= akhir minggu ATAU kosong (DASBOR-SATU-SUMBER 15 Okt).
 _value = Σ total_amount SO, KECUALI kunci bayar: menunggu_pembayaran = Σ sisa proforma terbit belum lunas, perlu_minta_dp = DP syarat SO.
+
+KUNCI LAPORAN (BELUM-DIFAKTUR 24 Okt 2026, pemilik; pola NetSuite Pending Billing / Odoo To Invoice; BUKAN piutang, nol jurnal):
+  belum_difaktur     = berjalan DAN nilai_belum_difaktur > 0. nilai_belum_difaktur = proforma_terbayar.belum_ditagih (Q-011, SATU
+                       definisi dengan payment_summary detail + aggregate?q=uninvoiced): total SO − Σ debit piutang jurnal INVOICE faktur
+                       non-draf non-void (bruto, turunan jurnal; faktur draf = belum difaktur). dp_belum_dipakai = ringkasan_pesanan.dp_unapplied
+                       (jurnal). sisa_belum_difaktur = max(0, nilai − dp). SO yang tertutup DP penuh TETAP terhitung (masih perlu faktur), Rp 0.
+                       _value = Σ sisa_belum_difaktur (kartu pemilik: angka SESUDAH DP). Diterima ?aksi= + summary + medan baris/detail, TAPI
+                       BUKAN kunci kolom `aksi` baris (angka laporan, bukan tindakan). Dihitung hanya bila fakta(..., laporan=True).
 """
 from datetime import date
 from decimal import Decimal
@@ -49,6 +57,8 @@ KUNCI_BAYAR = ("perlu_minta_dp", "menunggu_pembayaran")  # saling lepas; kartu d
 # ({k}_count/_value == menunggu_pembayaran) dan TETAP nilai aksi/aksi_semua baris (FE CW memetakan label dari kunci lama) sampai
 # rilis FE yang memakai menunggu_pembayaran TERVERIFIKASI + nol pemanggil terbukti; lalu dicabut.
 AKSI_USANG = {"menunggu_dp": "menunggu_pembayaran"}        # masukan ?aksi= / kunci summary lama -> kunci kanonik
+KUNCI_LAPORAN = ("belum_difaktur",)  # BELUM-DIFAKTUR: ?aksi= + summary + medan, BUKAN kolom aksi baris
+MEDAN_BELUM_DIFAKTUR = ("nilai_belum_difaktur", "dp_belum_dipakai", "sisa_belum_difaktur")
 AKSI_BARIS_USANG = {"menunggu_pembayaran": "menunggu_dp"}  # nilai aksi baris selama transisi FE
 FASE_SIAP = "tersedia"  # = so_agregat.PREDIKAT_TERSEDIA (fase_lokasi = 'tersedia')
 STATUS_DRAF = "draft"
@@ -102,12 +112,30 @@ def aksi_so(status: str, expected_ship_date: Optional[date], hari_ini: date, bar
     return out
 
 
+def angka_belum_difaktur(total_amount, r: Optional[dict]) -> dict:
+    """Murni. r = proforma_terbayar.ringkasan_pesanan[so] (None = SO tak berjalan -> nol). Definisi di docstring modul."""
+    if r is None:
+        return {k: NOL for k in MEDAN_BELUM_DIFAKTUR}
+    from .proforma_terbayar import belum_ditagih
+    nilai = belum_ditagih(total_amount, r)
+    dp = max(NOL, _d(r["dp_unapplied"]))
+    return {"nilai_belum_difaktur": nilai, "dp_belum_dipakai": dp, "sisa_belum_difaktur": max(NOL, nilai - dp)}
+
+
+def medan_belum_difaktur(v: Optional[dict]) -> dict:
+    """Medan JSON baris daftar / detail SO dari satu entri fakta(..., laporan=True); absen -> 0."""
+    b = (v or {}).get("belum_difaktur") or {}
+    return {k: float(b.get(k, NOL)) for k in MEDAN_BELUM_DIFAKTUR}
+
+
 def aksi_utama(daftar: list) -> Optional[str]:
     return daftar[0] if daftar else None
 
 
-async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = None) -> dict:
-    """-> {so_id: {"aksi": [...], "total": Decimal}} untuk SEMUA SO tenant (so_ids None) atau so_ids saja."""
+async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = None, laporan: bool = False) -> dict:
+    """-> {so_id: {"aksi": [...], "total": Decimal}} untuk SEMUA SO tenant (so_ids None) atau so_ids saja.
+    laporan=True (BELUM-DIFAKTUR): + "laporan": [kunci KUNCI_LAPORAN] dan "belum_difaktur": angka_belum_difaktur (ringkasan_pesanan,
+    turunan jurnal). Bawaan False: pemanggil lama (dashboard, pengingat) tak menanggung kueri jurnal tambahan."""
     if so_ids is None:
         so = await conn.fetch(
             "SELECT id, order_number, status, expected_ship_date, total_amount, fase_lokasi, dp_percent, dp_amount "
@@ -134,6 +162,10 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
             per_so.setdefault(b["so_id"], []).append({
                 "quantity": b["quantity"], "perlu": b["perlu"], "stok": b["stok"],
                 "terkirim": terkirim.get(b["id"], NOL), "difaktur": difaktur.get(b["id"], NOL)})
+    ring = {}
+    if laporan and jalan:
+        from .proforma_terbayar import ringkasan_pesanan
+        ring = await ringkasan_pesanan(conn, tenant_id, jalan)
     out = {}
     for r in so:
         kd, nilai = dp.get(r["id"], (None, None))
@@ -141,17 +173,24 @@ async def fakta(conn, tenant_id: str, hari_ini: date, so_ids: Optional[list] = N
                                         dp=kd, fase_lokasi=r.get("fase_lokasi"), tagih_sebelum_kirim=sebelum),
                         "total": _d(r["total_amount"]), "nilai": ({kd: nilai} if kd else {}),
                         "nomor": r.get("order_number"), "tanggal_kirim": r["expected_ship_date"]}
+        if laporan:
+            bd = angka_belum_difaktur(r["total_amount"], ring.get(r["id"]))
+            masuk = r["status"] not in AKTIF_TIDAK and bd["nilai_belum_difaktur"] > NOL
+            out[r["id"]]["belum_difaktur"] = bd
+            out[r["id"]]["laporan"] = ["belum_difaktur"] if masuk else []
+            if masuk:
+                out[r["id"]]["nilai"]["belum_difaktur"] = bd["sisa_belum_difaktur"]
     return out
 
 
 def id_aksi(f: dict, aksi: str) -> list:
     aksi = AKSI_USANG.get(aksi, aksi)
-    return [i for i, v in f.items() if aksi in v["aksi"]]
+    return [i for i, v in f.items() if aksi in v["aksi"] or aksi in v.get("laporan", ())]
 
 
 def kunci_sah(aksi) -> bool:
     """?aksi= dikenal (kanonik atau alias usang). Periksa TIPE: panggilan langsung tanpa argumen membawa objek Query."""
-    return isinstance(aksi, str) and (aksi in AKSI or aksi in AKSI_USANG)
+    return isinstance(aksi, str) and (aksi in AKSI or aksi in AKSI_USANG or aksi in KUNCI_LAPORAN)
 
 
 def aksi_baris(daftar: list) -> list:
@@ -159,9 +198,11 @@ def aksi_baris(daftar: list) -> list:
     return [AKSI_BARIS_USANG.get(k, k) for k in daftar]
 
 
-def ringkasan(f: dict) -> dict:
+def ringkasan(f: dict, laporan: bool = False) -> dict:
     """-> {<kunci>_count: int, <kunci>_value: float} untuk tiap AKSI (satu SO boleh di beberapa kunci).
-    _value = Σ total SO; kunci DP memakai nilai DP-nya (fakta[..]["nilai"])."""
+    _value = Σ total SO; kunci DP memakai nilai DP-nya (fakta[..]["nilai"]). laporan=True (f dari fakta(..., laporan=True)):
+    + belum_difaktur_count/_value (_value = Σ sisa sesudah DP) + total medan nilai_belum_difaktur/dp_belum_dipakai/sisa_belum_difaktur
+    atas SO yang SAMA (predikat kartu == ?aksi=belum_difaktur)."""
     out = {}
     for k in AKSI:
         isi = [v.get("nilai", {}).get(k, v["total"]) for v in f.values() if k in v["aksi"]]
@@ -169,6 +210,14 @@ def ringkasan(f: dict) -> dict:
         out[f"{k}_value"] = float(sum(isi, NOL))
     for lama, baru in AKSI_USANG.items():  # USANG: alias (KONTRAK-menunggu-bayar §4)
         out[f"{lama}_count"], out[f"{lama}_value"] = out[f"{baru}_count"], out[f"{baru}_value"]
+    if laporan:
+        for k in KUNCI_LAPORAN:
+            isi = [v for v in f.values() if k in v.get("laporan", ())]
+            out[f"{k}_count"] = len(isi)
+            out[f"{k}_value"] = float(sum((v["nilai"][k] for v in isi), NOL))
+        bd = [v["belum_difaktur"] for v in f.values() if "belum_difaktur" in v.get("laporan", ())]
+        for m in MEDAN_BELUM_DIFAKTUR:
+            out[m] = float(sum((b[m] for b in bd), NOL))
     return out
 
 

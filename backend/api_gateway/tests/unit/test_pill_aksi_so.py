@@ -215,8 +215,8 @@ async def test_fakta_subset_id_dan_kosong():
 def test_kunci_rute_skema_sama_dengan_AKSI():
     ann = typing.get_type_hints(SO.list_sales_orders)["aksi"]
     lit = next(x for x in typing.get_args(ann) if x is not type(None))
-    assert set(typing.get_args(lit)) == set(A.AKSI) | set(A.AKSI_USANG)  # 23 Okt: + alias usang menunggu_dp
-    for k in A.AKSI:
+    assert set(typing.get_args(lit)) == set(A.AKSI) | set(A.AKSI_USANG) | set(A.KUNCI_LAPORAN)  # 23 Okt alias usang; 24 Okt kunci laporan
+    for k in A.AKSI + A.KUNCI_LAPORAN:
         assert f"{k}_count" in SalesOrderSummary.model_fields and f"{k}_value" in SalesOrderSummary.model_fields
     assert "aksi" in SalesOrderListItem.model_fields
 

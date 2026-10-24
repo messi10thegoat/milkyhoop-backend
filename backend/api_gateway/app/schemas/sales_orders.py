@@ -343,6 +343,10 @@ class SalesOrderListItem(BaseModel):
     # 21 Okt 2026 (MASTER, audit pill): SEMUA kunci aksi yang berlaku (urut so_aksi.AKSI; aksi = aksi_semua[0]).
     # ?aksi=<k> = KEANGGOTAAN k dalam daftar ini; FE: chip k aktif -> pill baris = k, tanpa filter -> aksi (utama).
     aksi_semua: List[str] = []
+    # BELUM-DIFAKTUR (24 Okt 2026): so_aksi.angka_belum_difaktur (Q-011 turunan jurnal); BUKAN piutang. 0 untuk SO tak berjalan.
+    nilai_belum_difaktur: float = 0
+    dp_belum_dipakai: float = 0
+    sisa_belum_difaktur: float = 0
     created_at: str
 
 
@@ -388,6 +392,10 @@ class SalesOrderDetail(BaseModel):
     # 21 Okt 2026 (paritas detail == baris): aksi utama + semua kunci, dari so_aksi.fakta YANG SAMA dgn daftar
     aksi: Optional[str] = None
     aksi_semua: List[str] = []
+    # BELUM-DIFAKTUR (24 Okt 2026): so_aksi.angka_belum_difaktur (Q-011 turunan jurnal); BUKAN piutang. 0 untuk SO tak berjalan.
+    nilai_belum_difaktur: float = 0
+    dp_belum_dipakai: float = 0
+    sisa_belum_difaktur: float = 0
     order_date: str
     expected_ship_date: Optional[str] = None
     customer_id: str
@@ -521,6 +529,13 @@ class SalesOrderSummary(BaseModel):
     perlu_minta_dp_value: float = 0  # Σ DP syarat SO (dp_amount, atau dp_percent x total)
     siap_diserahkan_count: int = 0
     siap_diserahkan_value: float = 0
+    # BELUM-DIFAKTUR (24 Okt 2026, kartu pemilik "BELUM DIFAKTUR"): ?aksi=belum_difaktur; _value = Σ sisa SESUDAH DP belum dipakai;
+    # total medan atas SO yang SAMA (detail/kontrak; dp tak tampil di kartu). Hormati ?search= seperti kunci pill lain.
+    belum_difaktur_count: int = 0
+    belum_difaktur_value: float = 0
+    nilai_belum_difaktur: float = 0
+    dp_belum_dipakai: float = 0
+    sisa_belum_difaktur: float = 0
 
 
 class SalesOrderSummaryResponse(BaseModel):

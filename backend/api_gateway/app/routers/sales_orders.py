@@ -158,7 +158,7 @@ async def list_sales_orders(
     sort_dir: Literal["asc", "desc"] = Query("desc"),
     # 14 Okt 2026 (AKSI-SO): pill aksi, aditif; kunci asing -> 422. Satu sumber dengan summary <kunci>_count
     aksi: Optional[Literal["telat_kirim", "perlu_minta_dp", "menunggu_pembayaran", "menunggu_dp", "perlu_dikonfirmasi", "perlu_dikirim",
-                           "siap_diserahkan", "perlu_ditagih"]] = Query(None),
+                           "siap_diserahkan", "perlu_ditagih", "belum_difaktur"]] = Query(None),  # + kunci LAPORAN (so_aksi.KUNCI_LAPORAN)
     # 16 Okt 2026 (LISTPAGE-DATA): sum_total/sum_sisa atas SEMUA hasil filter. Opt-in: Sisa = turunan jurnal per SO
     # (ringkasan_pesanan) atas seluruh hasil -> biaya; pemanggil lama tak membayarnya. FE: kirim pada muat pertama saja.
     with_totals: bool = Query(False),
@@ -187,7 +187,8 @@ async def list_sales_orders(
 
             if so_aksi.kunci_sah(aksi):  # 23 Okt: + alias usang menunggu_dp -> menunggu_pembayaran (so_aksi.AKSI_USANG)
                 conditions.append(f"id = ANY(${param_idx}::uuid[])")
-                params.append(so_aksi.id_aksi(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini), aksi))
+                params.append(so_aksi.id_aksi(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini,
+                                                                 laporan=aksi in so_aksi.KUNCI_LAPORAN), aksi))
                 param_idx += 1
 
             if customer_id:
@@ -244,7 +245,7 @@ async def list_sales_orders(
             penanda = await penanda_faktur_so(conn, ctx["tenant_id"], [row["id"] for row in rows])
             # P1 SO-dokumen: Posisi/Kirim/jumlah dokumen dari SATU fungsi (services/so_posisi), tanggal usaha zona tenant
             posisi = await fakta_daftar(conn, ctx["tenant_id"], rows, hari_ini)
-            _aksi_baris = await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, [row["id"] for row in rows])
+            _aksi_baris = await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, [row["id"] for row in rows], laporan=True)
             from ..services.kode_order import muat_setelan as _setelan_kode
             _st_kode = await _setelan_kode(conn, ctx["tenant_id"])
             _label_kode, _label_judul = _st_kode["label"], _st_kode["title_label"]
@@ -275,6 +276,7 @@ async def list_sales_orders(
                     **posisi[str(row["id"])],
                     aksi=so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_baris.get(row["id"], {}).get("aksi", []))),
                     aksi_semua=so_aksi.aksi_baris(_aksi_baris.get(row["id"], {}).get("aksi", [])),  # transisi: kunci lama
+                    **so_aksi.medan_belum_difaktur(_aksi_baris.get(row["id"])),  # BELUM-DIFAKTUR (24 Okt)
                     created_at=row["created_at"].isoformat(),
                 )
                 for row in rows
@@ -410,7 +412,7 @@ async def get_sales_order_summary(request: Request, search: Optional[str] = Quer
             belum = await so_agregat.uninvoiced(conn, ctx["tenant_id"])
             kirim = await so_kirim.ringkasan_belum_dikirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
             menunggu = await so_kirim.ringkasan_menunggu_kirim(conn, ctx["tenant_id"], so_agregat.AKTIF_TIDAK)
-            pill = so_aksi.ringkasan(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, id_cari))
+            pill = so_aksi.ringkasan(await so_aksi.fakta(conn, ctx["tenant_id"], hari_ini, id_cari, laporan=True), laporan=True)
 
             return SalesOrderSummaryResponse(
                 success=True,
@@ -595,7 +597,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
             _hari_det = await tanggal_dokumen(conn, ctx["tenant_id"])
             _pos = (await fakta_daftar(conn, ctx["tenant_id"], [order], _hari_det))[str(order["id"])]
             # 21 Okt 2026: aksi/aksi_semua detail == baris daftar (so_aksi.fakta, fungsi SAMA)
-            _aksi_det = list((await so_aksi.fakta(conn, ctx["tenant_id"], _hari_det, [order["id"]])).get(order["id"], {}).get("aksi", []))
+            _fakta_det = (await so_aksi.fakta(conn, ctx["tenant_id"], _hari_det, [order["id"]], laporan=True)).get(order["id"], {})
+            _aksi_det = list(_fakta_det.get("aksi", []))
 
             return SalesOrderDetailResponse(
                 success=True,
@@ -603,6 +606,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     position_text=_pos["position_text"], ship_text=_pos["ship_text"],
                     kirim_hari=_pos["kirim_hari"], kirim_terbuka=_pos["kirim_terbuka"], kirim_keadaan=_pos["kirim_keadaan"],
                     aksi=so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_det)), aksi_semua=so_aksi.aksi_baris(_aksi_det),
+                    **so_aksi.medan_belum_difaktur(_fakta_det),  # BELUM-DIFAKTUR (24 Okt) == baris daftar
                     order_code=order.get("order_code"),
                     order_title=order.get("order_title"),
                     order_code_source=order.get("order_code_source"),
