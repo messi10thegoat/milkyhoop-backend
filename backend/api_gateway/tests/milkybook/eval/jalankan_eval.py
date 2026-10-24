@@ -204,11 +204,11 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
             gagal.append(f"barang baru tak cocok: {x} vs {[(b['name'], b['item_type'], b['bisa_dikirim']) for b in baru_b]}")
     baru_q = [q for q in be.penawaran if q["id"] not in awal["penawaran"]]
     for x in h.get("penawaran_baru", []):
-        cocok = [q for q in baru_q if x["customer_mengandung"] in q["customer_name"].lower()]
-        if not cocok:
+        q_cocok = [q for q in baru_q if x["customer_mengandung"] in q["customer_name"].lower()]
+        if not q_cocok:
             gagal.append(f"penawaran baru tak ada: {x['customer_mengandung']}")
             continue
-        q = cocok[-1]
+        q = q_cocok[-1]
         for i, bx in enumerate(x.get("baris", [])):
             bq = (q["items"] or [{}])[i] if i < len(q["items"] or []) else {}
             for k, v in bx.items():
