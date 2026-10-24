@@ -13,6 +13,7 @@ Skema tool = SUBSET medan Pydantic BE (dikunci tests/milkybook/test_paket_penawa
 Gerbang T0 (putusan MASTER 24 Okt): WRITE tanpa idempotency `butuh` AS-G1 (ubah/batal/jadikan pesanan
 Penawaran) atau AS-G14 (pratinjau + idempotency buat pelanggan/barang). Sebelum mendarat -> NAV otomatis.
 Buat penawaran TIDAK butuh: sudah idempoten (idem_buat QUOTE_CREATE, quotes.py:691, diukur c8c24092).
+Jadikan pesanan TIDAK butuh: idempoten alami (satu penawaran = paling banyak satu SO; ulang = SO yang sama).
 Rute pratinjau pelanggan/barang (`/api/customers/preview`, `/api/items/preview`) BELUM ADA di BE
 c8c24092: kontrak yang DIASUMSIKAN untuk T0, lihat tests/milkybook/eval/stub_be.py.
 """
@@ -119,7 +120,7 @@ TOOLS = [
     Tool("daftar_penawaran", Kelas.READ, "Daftar penawaran. aksi: perlu_dikirim | tunggu_jawaban | segera_habis | lewat_masa | perlu_dipesan.",
          _obj({"search": S(), "status": S(), "aksi": {"type": "string", "enum": ["perlu_dikirim", "tunggu_jawaban", "segera_habis", "lewat_masa", "perlu_dipesan"]},
                "customer_id": ID, "limit": I()}), "GET", _Q),
-    Tool("detail_penawaran", Kelas.READ, "Detail satu penawaran, termasuk baris, total, status, dan aksi yang sah sekarang.",
+    Tool("detail_penawaran", Kelas.READ, "Detail satu penawaran: baris, total, status, dan `aksi` (kunci tindak lanjut dari server: perlu_dikirim | tunggu_jawaban | segera_habis | lewat_masa | perlu_dipesan, atau kosong).",
          SKEMA_ID, "GET", f"{_Q}/{{id}}"),
     Tool("ringkasan_penawaran", Kelas.READ, "Ringkasan jumlah dan nilai penawaran per status.", _obj({}), "GET", f"{_Q}/summary"),
     Tool("penawaran_segera_kedaluwarsa", Kelas.READ, "Penawaran yang akan segera kedaluwarsa.", _obj({}), "GET", f"{_Q}/expiring"),
@@ -152,7 +153,8 @@ TOOLS = [
          SKEMA_BATAL, "POST", f"{_Q}/{{id}}/void", pratinjau="pratinjau_batal_penawaran", butuh=(AS_G1,),
          halaman=f"{_PEN}/{{id}}", judul_kartu="Batalkan penawaran"),
     Tool("jadikan_pesanan", Kelas.WRITE, "Usulkan penawaran dijadikan pesanan penjualan. Kartu Tinjau; terjadi sesudah Setuju.",
-         SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order", pratinjau="pratinjau_jadi_pesanan", butuh=(AS_G1,),
+         SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order", pratinjau="pratinjau_jadi_pesanan",
+         # idempoten alami: kunci QUOTE + FOR UPDATE, ulang = SO yang sama (quotes.py _konversi_penawaran :2160)
          halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan"),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru", butuh=(AS_G14,),

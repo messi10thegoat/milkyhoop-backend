@@ -34,17 +34,40 @@ class BatasBiaya(RuntimeError):
     pass
 
 
+class BukuBiaya:
+    """Σ biaya SELURUH seri eval (lintas jalan), disimpan di berkas JSON di luar repo. Pemutus keras."""
+
+    def __init__(self, path, batas_seri):
+        self.path, self.batas = path, batas_seri
+        self.data = json.load(open(path)) if path and os.path.exists(path) else {"total_usd": 0.0, "jalan": []}
+
+    @property
+    def total(self):
+        return self.data["total_usd"]
+
+    def tambah(self, usd):
+        self.data["total_usd"] = round(self.data["total_usd"] + usd, 6)
+        if self.path:
+            with open(self.path, "w") as f:
+                json.dump(self.data, f, indent=1)
+
+
 class PemanggilTerbatas:
-    def __init__(self, dalam, batas):
+    def __init__(self, dalam, batas, buku=None):
         self.dalam, self.batas, self.total, self.panggilan = dalam, batas, 0.0, []
+        self.buku = buku
 
     async def __call__(self, **kw):
         if self.total >= self.batas:
             raise BatasBiaya(f"batas US${self.batas} tercapai (Σ {self.total:.4f})")
+        if self.buku and self.buku.total >= self.buku.batas:
+            raise BatasBiaya(f"batas SERI US${self.buku.batas} tercapai (Σ seri {self.buku.total:.4f})")
         t0 = time.time()
         h = await self.dalam(**kw)
         b = biaya_usd(h.model or self.dalam.model, h.usage)
         self.total += b
+        if self.buku:
+            self.buku.tambah(b)
         self.panggilan.append({"model": h.model, "stop": h.stop_reason, "usage": h.usage, "biaya": round(b, 6),
                                "detik": round(time.time() - t0, 2)})
         return h
@@ -52,6 +75,14 @@ class PemanggilTerbatas:
 
 async def izin_owner(jalur, metode):
     return {j: True for j in jalur}
+
+
+async def izin_baca_saja(jalur, metode):
+    """Peran hanya-baca: rute GET boleh, rute tulis/pratinjau tidak (cermin huruf R saja)."""
+    return {j: metode == "GET" for j in jalur}
+
+
+IZIN = {"owner": izin_owner, "baca_saja": izin_baca_saja}
 
 
 def _semua_teks(ev):
@@ -62,14 +93,16 @@ async def jalankan_kasus(kasus, pemanggil, effort):
     be = StubBE()
     awal = {"pelanggan": {c["id"] for c in be.pelanggan}, "barang": {b["id"] for b in be.barang},
             "penawaran": {q["id"] for q in be.penawaran}}
+    gap = tuple(kasus.get("gap", [pw.AS_G1, pw.AS_G14]))
+    izin_owner_k = IZIN[kasus.get("izin", "owner")]
     putaran = Putaran(Registri([pw.paket()]), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
-                      gap_mendarat=(pw.AS_G1, pw.AS_G14), effort=effort)
+                      gap_mendarat=gap, effort=effort)
     sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24. Usaha: Kaos Biru Konveksi (konveksi kaos).")
     semua_ev, transkrip, galat = [], [], None
     try:
         for lk in kasus["langkah"]:
             if "user" in lk:
-                ev = await putaran.giliran(sesi, lk["user"], be, izin_owner)
+                ev = await putaran.giliran(sesi, lk["user"], be, izin_owner_k)
                 transkrip.append({"user": lk["user"], "milkybook": _semua_teks(ev)})
                 semua_ev += ev
             elif "autopilot" in lk:
@@ -77,13 +110,13 @@ async def jalankan_kasus(kasus, pemanggil, effort):
                     k = sesi.kartu_menunggu()
                     if k is not None:
                         be.kunci_disetujui.add(k.kunci)
-                        ev = await putaran.setujui(sesi, k.kartu_id, be, izin_owner)
+                        ev = await putaran.setujui(sesi, k.kartu_id, be, izin_owner_k)
                         transkrip.append({"setuju": k.tool, "milkybook": _semua_teks(ev)})
                         semua_ev += ev
                         continue
                     terakhir = transkrip[-1]["milkybook"] if transkrip else ""
                     if "?" in terakhir[-300:]:
-                        ev = await putaran.giliran(sesi, lk["jawaban_default"], be, izin_owner)
+                        ev = await putaran.giliran(sesi, lk["jawaban_default"], be, izin_owner_k)
                         transkrip.append({"user": lk["jawaban_default"], "milkybook": _semua_teks(ev)})
                         semua_ev += ev
                         continue
@@ -149,6 +182,20 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
                     gagal.append(f"baris {i} {k}={bq.get(k)} != {v}")
         if "total_amount" in x and float(q["total_amount"]) != float(x["total_amount"]):
             gagal.append(f"total {q['total_amount']} != {x['total_amount']}")
+    nav = [e["tool"] for e in ev if e["jenis"] == "nav"]
+    for t in h.get("nav_wajib", []):
+        if t not in nav:
+            gagal.append(f"nav wajib tak dibuka: {t}")
+    log_teks = json.dumps(be.log, ensure_ascii=False).lower()
+    for kata in h.get("log_dilarang_mengandung", []):
+        if kata.lower() in log_teks:
+            gagal.append(f"permintaan BE memuat '{kata}' (lintas tenant?)")
+    for kunci_maks, daftar in (("pelanggan_baru_maks", baru_c), ("barang_baru_maks", baru_b), ("penawaran_baru_maks", baru_q)):
+        if kunci_maks in h and len(daftar) > h[kunci_maks]:
+            gagal.append(f"{kunci_maks}: {len(daftar)} > {h[kunci_maks]}")
+    for kata in h.get("teks_wajib_salah_satu", []) and [h["teks_wajib_salah_satu"]]:
+        if not any(k.lower() in teks for k in kata):
+            gagal.append(f"teks wajib (salah satu) tak ada: {kata}")
     for nomor, st in h.get("status_akhir", {}).items():
         q = next((q for q in be.penawaran if q["quote_number"] == nomor), None)
         if not q or q["status"] != st:
@@ -168,10 +215,13 @@ async def utama(a):
     kunci = os.environ.get("ANTHROPIC_API_KEY")
     if not kunci:
         sys.exit("ANTHROPIC_API_KEY tidak ada di env subproses")
-    data = json.load(open(os.path.join(os.path.dirname(__file__), "kasus_penawaran.json")))
+    data = json.load(open(os.path.join(os.path.dirname(__file__), a.berkas_kasus)))
     pilih = set(a.kasus.split(",")) if a.kasus else None
     kasus = [k for k in data["kasus"] if not pilih or k["id"] in pilih]
-    pemanggil = PemanggilTerbatas(PemanggilAnthropic(model=a.model, api_key=kunci), a.batas_usd)
+    buku = BukuBiaya(a.buku_biaya, a.batas_seri_usd)
+    if buku.total >= buku.batas:
+        sys.exit(f"batas SERI US${buku.batas} sudah tercapai (Σ {buku.total})")
+    pemanggil = PemanggilTerbatas(PemanggilAnthropic(model=a.model, api_key=kunci), a.batas_usd, buku)
     del kunci
     hasil = []
     for k in kasus:
@@ -181,12 +231,12 @@ async def utama(a):
               f"kartu={r['kartu']} tulis={len(r['tulis_sah'])} biaya=${r['biaya_usd']:.4f}  Σ=${pemanggil.total:.4f}")
         for g in r["gagal"]:
             print("    -", g)
-        if pemanggil.total >= a.batas_usd:
+        if pemanggil.total >= a.batas_usd or buku.total >= buku.batas:
             print("BATAS BIAYA tercapai; kasus sisanya dilewati.")
             break
     ringkas = {"model": a.model, "effort": a.effort, "kasus": len(hasil), "lulus": sum(r["lulus"] for r in hasil),
                "mutlak_lulus": sum(r["mutlak_lulus"] for r in hasil), "biaya_total_usd": round(pemanggil.total, 6),
-               "panggilan_model": len(pemanggil.panggilan),
+               "panggilan_model": len(pemanggil.panggilan), "seri_total_usd": buku.total,
                "token": {k: sum(p["usage"].get(k, 0) or 0 for p in pemanggil.panggilan if isinstance(p["usage"].get(k, 0), int))
                          for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")}}
     print(json.dumps(ringkas, ensure_ascii=False))
@@ -201,5 +251,8 @@ if __name__ == "__main__":
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--batas-usd", type=float, default=0.9)
     ap.add_argument("--kasus", default="")
+    ap.add_argument("--buku-biaya", default="", help="berkas JSON Σ biaya seri (di luar repo)")
+    ap.add_argument("--batas-seri-usd", type=float, default=25.0)
+    ap.add_argument("--berkas-kasus", default="kasus_penawaran.json")
     ap.add_argument("--keluar", default="")
     asyncio.run(utama(ap.parse_args()))
