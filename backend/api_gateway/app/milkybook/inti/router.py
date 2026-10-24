@@ -1,27 +1,21 @@
-"""Rute percakapan Milkybook (kontrak rancangan §11.5). BELUM didaftarkan di main.py.
+"""Rute percakapan Milkybook (kontrak rancangan §11.10). Didaftarkan lewat app/milkybook/pasang.py (cabang aktivasi).
 
-Sebelum didaftarkan (tiket terpisah, izin pemilik + jendela):
-- tambah pola izin `/api/milkybook/*` di permission_middleware + inventaris rute (tests/unit),
-- terapkan migrasi asisten_aksi, ganti AuditMemori -> AuditPostgres,
-- ganti PenyimpananSesiMemori -> penyimpanan bersama (Redis) bila worker > 1,
-- kunci API Milkybook terpisah di .env server.
-
-SSE token-per-token menyusul T3; sekarang respons = daftar peristiwa per giliran (JSON).
+- Pengguna, tenant, dan izin dari token (request.state.user, diisi middleware autentikasi); badan tak pernah memuat tenant.
+- Flag tenant `milkybook_v1` mati = 404.
+- Penyimpanan sesi bersama (Redis; gateway 2 worker), kunci per sesi: giliran berbarengan untuk sesi sama = 409.
+- v1 = JSON sekali jawab; SSE menyusul dengan objek peristiwa yang sama.
 """
 from __future__ import annotations
 
-import time
-import uuid
-from typing import Callable, Dict, Optional
+from typing import Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from .pelaksana import PelaksanaASGI
-from .putaran import Putaran, Sesi
+from .penyimpanan import SesiSibuk
 
 FLAG = "milkybook_v1"
-UMUR_SESI_DETIK = 6 * 3600
 
 
 class PesanMasuk(BaseModel):
@@ -29,34 +23,11 @@ class PesanMasuk(BaseModel):
     teks: str
 
 
-class PenyimpananSesiMemori:
-    """Satu proses saja. Kunci = (tenant, user, sesi): sesi orang lain = 404 (bukan 403)."""
-
-    def __init__(self):
-        self._isi: Dict[tuple, tuple] = {}
-
-    def buat(self, tenant_id: str, user_id: str, konteks: str = "") -> Sesi:
-        s = Sesi(sesi_id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user_id, konteks=konteks)
-        self._isi[(tenant_id, user_id, s.sesi_id)] = (s, time.time())
-        return s
-
-    def ambil(self, tenant_id: str, user_id: str, sesi_id: str) -> Optional[Sesi]:
-        v = self._isi.get((tenant_id, user_id, sesi_id))
-        if v is None or time.time() - v[1] > UMUR_SESI_DETIK:
-            return None
-        return v[0]
-
-    def cari_kartu(self, tenant_id: str, user_id: str, kartu_id: str) -> Optional[Sesi]:
-        for (t, u, _), (s, _) in self._isi.items():
-            if t == tenant_id and u == user_id and kartu_id in s.kartu:
-                return s
-        return None
-
-
-def buat_router(putaran: Putaran, penyimpanan: PenyimpananSesiMemori, *, app_fn: Callable, izin_fn_untuk: Callable,
+def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_untuk: Callable,
                 flag_fn: Callable, hari_ini_fn: Callable) -> APIRouter:
-    """app_fn() -> app FastAPI; izin_fn_untuk(user) -> IzinFn; flag_fn(tenant_id) -> awaitable bool;
-    hari_ini_fn(tenant_id) -> awaitable date (tanggal bisnis tenant, mis. utils/tanggal_tenant.tanggal_dokumen)."""
+    """putaran_fn() -> Putaran (dibuat malas: kunci API & model dari env saat permintaan pertama);
+    app_fn() -> app FastAPI; izin_fn_untuk(user) -> IzinFn; flag_fn(tenant_id) -> awaitable bool;
+    hari_ini_fn(tenant_id) -> awaitable date (tanggal bisnis tenant)."""
     r = APIRouter()
 
     async def _pengguna(request: Request) -> dict:
@@ -70,36 +41,51 @@ def buat_router(putaran: Putaran, penyimpanan: PenyimpananSesiMemori, *, app_fn:
     def _pelaksana(request: Request) -> PelaksanaASGI:
         return PelaksanaASGI(app_fn(), request.headers.get("Authorization", ""))
 
+    async def _jalankan(user, sesi_id, fn):
+        try:
+            async with penyimpanan.kunci(user["tenant_id"], user["user_id"], sesi_id):
+                s = await penyimpanan.ambil(user["tenant_id"], user["user_id"], sesi_id)
+                if s is None:
+                    raise HTTPException(404, "Sesi tidak ditemukan")
+                try:
+                    peristiwa = await fn(s)
+                finally:
+                    await penyimpanan.simpan(s)  # simpan juga bila galat di tengah: riwayat append-only tetap utuh
+                return {"peristiwa": peristiwa}
+        except SesiSibuk:
+            raise HTTPException(409, "Percakapan ini sedang diproses. Tunggu sebentar.")
+
     @r.post("/sesi")
     async def sesi_baru(request: Request):
         user = await _pengguna(request)
         hari_ini = await hari_ini_fn(user["tenant_id"])
-        s = penyimpanan.buat(user["tenant_id"], user["user_id"], konteks=f"Hari ini {hari_ini.isoformat()}.")
-        s.hari_ini = hari_ini
+        s = await penyimpanan.buat(user["tenant_id"], user["user_id"], konteks=f"Hari ini {hari_ini.isoformat()}.",
+                                   hari_ini=hari_ini)
         return {"sesi_id": s.sesi_id}
 
     @r.post("/sesi/{sesi_id}/pesan")
     async def pesan(sesi_id: str, body: PesanMasuk, request: Request):
         user = await _pengguna(request)
-        s = penyimpanan.ambil(user["tenant_id"], user["user_id"], sesi_id)
-        if s is None:
-            raise HTTPException(404, "Sesi tidak ditemukan")
-        return {"peristiwa": await putaran.giliran(s, body.teks, _pelaksana(request), izin_fn_untuk(user))}
+        return await _jalankan(user, sesi_id, lambda s: putaran_fn().giliran(
+            s, body.teks, _pelaksana(request), izin_fn_untuk(user)))
+
+    async def _sesi_kartu(user, kartu_id):
+        sid = await penyimpanan.sesi_untuk_kartu(user["tenant_id"], user["user_id"], kartu_id)
+        if not sid:
+            raise HTTPException(404, "Kartu tidak ditemukan")
+        return sid
 
     @r.post("/kartu/{kartu_id}/setuju")
     async def setuju(kartu_id: str, request: Request):
         user = await _pengguna(request)
-        s = penyimpanan.cari_kartu(user["tenant_id"], user["user_id"], kartu_id)
-        if s is None:
-            raise HTTPException(404, "Kartu tidak ditemukan")
-        return {"peristiwa": await putaran.setujui(s, kartu_id, _pelaksana(request), izin_fn_untuk(user))}
+        sid = await _sesi_kartu(user, kartu_id)
+        return await _jalankan(user, sid, lambda s: putaran_fn().setujui(
+            s, kartu_id, _pelaksana(request), izin_fn_untuk(user)))
 
     @r.post("/kartu/{kartu_id}/tolak")
     async def tolak(kartu_id: str, request: Request):
         user = await _pengguna(request)
-        s = penyimpanan.cari_kartu(user["tenant_id"], user["user_id"], kartu_id)
-        if s is None:
-            raise HTTPException(404, "Kartu tidak ditemukan")
-        return {"peristiwa": await putaran.tolak(s, kartu_id)}
+        sid = await _sesi_kartu(user, kartu_id)
+        return await _jalankan(user, sid, lambda s: putaran_fn().tolak(s, kartu_id))
 
     return r
