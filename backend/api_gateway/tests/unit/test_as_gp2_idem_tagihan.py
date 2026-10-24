@@ -33,13 +33,24 @@ def _svc(nama):
     return ast.get_source_segment(SVC, f)
 
 
+def _fn_ast(nama):
+    t = ast.parse(SVC)
+    kelas = next(n for n in t.body if isinstance(n, ast.ClassDef) and n.name == "BillsService")
+    return next(n for n in kelas.body if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
+
+
 @pytest.mark.parametrize("nama", list(AKSI))
 def test_idem_sebelum_kunci_domain_dan_simpan_di_jalur_sukses(nama):
     f, awal = _svc(nama), AKSI[nama]
+    fn = _fn_ast(nama)
+    doc = fn.body[0].value if isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) else None
+    # baris SQL kunci NYATA (konstanta string, bukan docstring/komentar) vs baris panggilan _idem_mulai
+    kunci = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n is not doc
+             and ("pg_advisory_xact_lock" in n.value or "FOR UPDATE" in n.value)]
+    idem = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_idem_mulai"]
+    tx = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "transaction"]
+    assert len(idem) == 1 and kunci and min(tx) < idem[0] < min(kunci), (nama, tx, idem, kunci)
     i_idem = f.index(f'_idem_mulai(conn, idem, "{awal}", bill_id)')
-    i_tx = f.index("conn.transaction()")
-    kunci = [f.index(k) for k in ("pg_advisory_xact_lock", "FOR UPDATE") if k in f]
-    assert i_tx < i_idem < min(kunci), (nama, i_tx, i_idem, kunci)
     assert "if _lama is not None:\n" in f[i_idem:i_idem + 200] and "return _lama" in f[i_idem:i_idem + 260]
     i_simpan = f.index(f'_idem_simpan(conn, idem, _kp, _sidik, "{awal}"')
     assert SUKSES[nama] in f[i_simpan:i_simpan + 300]  # yang dicatat = respons SUKSES (galat tak pernah dicatat)
@@ -54,14 +65,21 @@ def test_awalan_per_aksi_unik():
 
 def test_void_pracek_sesudah_idem_di_dalam_transaksi():
     f = _svc("void_bill")
-    assert f.index('_idem_mulai(conn, idem, "BILL_VOID"') < f.index('"Bill is already voided"') < f.index('f"BILL_VOID:{str(bill_id)}"')
-    assert f.index("conn.transaction()") < f.index('"Bill is already voided"')
+    fn = _fn_ast("void_bill")
+    idem = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_idem_mulai"]
+    pracek = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and n.value == "Bill is already voided"]
+    adv = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and "pg_advisory_xact_lock" in n.value]
+    tx = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "transaction"]
+    assert min(tx) < idem[0] < min(pracek) < min(adv), (tx, idem, pracek, adv)
 
 
 def test_ubah_v2_blok_sesudah_kunci_baris_di_dalam_transaksi():
     f = _svc("update_bill_v2")
-    i_tx, i_fu, i_blok = f.index("conn.transaction()"), f.index("FOR UPDATE"), f.index("await TR.blok_ubah(")
-    assert i_tx < i_fu < i_blok
+    fn = _fn_ast("update_bill_v2")
+    fu = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and "FOR UPDATE" in n.value]
+    blok = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "blok_ubah"]
+    tx = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "transaction"]
+    assert fu and blok and min(tx) < min(fu) < min(blok)
     assert f.count("await TR.blok_ubah(") == 1
 
 

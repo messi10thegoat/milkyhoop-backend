@@ -129,10 +129,14 @@ async def tulis():
             p1 = await coba(BR.post_bill(req(uid, "TESGP2-K2"), b, **kw()))
             p2 = await coba(BR.post_bill(req(uid, "TESGP2-K2"), b, **kw()))
             jp = await jurnal_bill(b, "BILL")
-            x1 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="TES E2E void"), **kw()))
-            x2 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="TES E2E void"), **kw()))
-            x3 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="alasan lain"), **kw()))
-            jv = await jurnal_bill(b, "BILL_VOID")
+            if os.environ.get("TANPA_VOID") == "1":  # kontrol merah pencari pembalik: void TAK dijalankan -> reversal_of_id = 0 -> WAJIB merah
+                x1 = x2 = x3 = "DILEWATI"
+            else:
+                x1 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="TES E2E void"), **kw()))
+                x2 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="TES E2E void"), **kw()))
+                x3 = await coba(BR.void_bill(req(uid, "TESGP2-K2"), b, VR(reason="alasan lain"), **kw()))
+            jv = [r["id"] for r in await c.fetch(  # pembalik void = source_type REVERSAL + reversal_of_id jurnal posting (diukur 24 Okt)
+                "SELECT id FROM journal_entries WHERE tenant_id = $1 AND reversal_of_id = $2 AND status = 'POSTED'", T, jp[0])] if jp else []
             h["P"] = {"r1": p1, "r2": p2, "n_jurnal": len(jp), "baris": await baris(jp[0] if jp else None)}
             h["X"] = {"r1": x1, "r2": x2, "r3": x3, "n_balik": len(jv), "baris": await baris(jv[0] if jv else None),
                       "status": await c.fetchval("SELECT status_v2 FROM bills WHERE id = $1", b)}
@@ -261,6 +265,9 @@ async def main():
     for kk in SQL_JEPRET:
         cek(s[kk] == e[kk] and "GALAT" not in s[kk][0], f"NET 0 rollback (sesudah proses): {kk}", "" if s[kk] == e[kk] else f"{s[kk]} / {e[kk]}")
     if not os.path.exists("/out/konk.json"):
+        if os.environ.get("LEWATI_KONK") == "1":  # ulang rollback saja; bukti KONK dari jalan sebelumnya (tanpa COMMIT kedua)
+            print("INFO KONK dilewati (LEWATI_KONK=1): bukti KONK = log jalan pertama")
+            print(f"RINGKAS gagal={len(gagal)} {gagal[:6]}"); sys.exit(1 if gagal else 0)
         cek(False, "(K) KONK tak dijalankan (MERAH=1 sengaja melewatinya: tanpa COMMIT kedua)")
         print(f"RINGKAS gagal={len(gagal)} {gagal[:6]}"); sys.exit(1)
     k = json.load(open("/out/konk.json"))
