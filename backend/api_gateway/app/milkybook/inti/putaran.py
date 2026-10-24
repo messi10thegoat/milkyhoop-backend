@@ -46,8 +46,12 @@ ATURAN_MODE_BACA = """
 
 # Mode baca
 Di giliran ini kamu hanya bisa MEMBACA dan menjelaskan. Kamu tidak punya tool tulis. Bila pengguna meminta membuat,
-mengubah, membatalkan, atau mencatat apa pun, atau kamu ragu, panggil tool perlu_penulis. Jangan menjanjikan tulis.
+mengubah, membatalkan, atau mencatat apa pun, atau kamu ragu, LANGSUNG panggil tool perlu_penulis TANPA menulis
+teks apa pun (jangan bertanya, jangan menjelaskan, jangan menyebut "asisten penulis"). Jangan menjanjikan tulis.
 """
+PESAN_ALIH = ("[sistem] Giliran ini dialihkan kepadamu (asisten penulis). Teks asisten sebelumnya di giliran ini TIDAK "
+              "ditampilkan ke pengguna. Kerjakan permintaan pengguna sekarang: baca data yang perlu, lalu usulkan "
+              "kartu Tinjau bila ada yang harus ditulis, atau tanyakan yang kurang.")
 
 TOOL_HITUNG_TANGGAL = {
     "name": "hitung_tanggal",
@@ -371,7 +375,8 @@ class Putaran:
                 continue
 
             sesi.messages.append({"role": "assistant", "content": hasil.konten})
-            if teks:
+            akan_alih = baca and any(c.nama == TOOL_PERLU_PENULIS["name"] for c in calls)
+            if teks and not akan_alih:
                 ev = {"jenis": "teks", "teks": teks}
                 if salah_tanggal:
                     ev["tanggal_tak_cocok"] = salah_tanggal
@@ -392,8 +397,7 @@ class Putaran:
             for c in calls:
                 if baca and c.nama == TOOL_PERLU_PENULIS["name"]:
                     alihkan = True
-                    hasil_tool.append({"type": "tool_result", "tool_use_id": c.id,
-                                       "content": "Dialihkan ke asisten penulis untuk giliran ini."})
+                    hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "content": PESAN_ALIH})
                     continue
                 if baca and c.nama == TOOL_TUTUP_KARTU["name"]:
                     hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "is_error": True,
