@@ -948,13 +948,13 @@ async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> 
 @router.patch("/{quote_id}", response_model=QuoteResponse)
 async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest, response: _Response = None):
     """Ubah penawaran: draf, terkirim, dilihat, kedaluwarsa (STATUS_BOLEH_UBAH). Isi + aturan: _ubah_penawaran
-    (juga dipakai pratinjau POST /{id}/edit/preview)."""
+    (juga dipakai pratinjau POST /{id}/edit/preview).
+    AS-G1b (24 Okt 2026): If-Match diperiksa SESUDAH replay idem QUOTE_UPDATE dan SESUDAH kunci QUOTE (dulu sebelum keduanya: ulang ber-kunci
+    dengan If-Match lama = 412 alih-alih jawaban pertama -- jalur PATCH Milkybook "ubah penawaran" -- dan If-Match berpacu tanpa kunci)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        # Optimistic concurrency (opt-in If-Match): reject a stale write.
         from ..services.optimistic_concurrency import assert_if_match_row
-        await assert_if_match_row(request, "quotes", quote_id)
 
         from ..services import idem_buat
         _kunci = idem_buat.kunci_dari(request)  # AS-G1 (Milkybook T0, 24 Okt 2026): X-Idempotency-Key opsional
@@ -965,6 +965,10 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     conn, ctx, _kunci, "QUOTE_UPDATE", quote_id, lambda: body.model_dump(mode="json", exclude_unset=True), response)
                 if _lama is not None:
                     return _lama
+                # Optimistic concurrency (opt-in If-Match): reject a stale write -- sesudah replay & kunci QUOTE (kunci SAMA dengan
+                # _ubah_penawaran / konversi AS-G15; kunci xact boleh diambil ulang oleh sesi yang sama)
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
+                await assert_if_match_row(request, "quotes", quote_id)
                 _hasil = await _ubah_penawaran(conn, ctx, quote_id, body)
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_UPDATE", _hasil, quote_id) if _kp else _hasil
 
