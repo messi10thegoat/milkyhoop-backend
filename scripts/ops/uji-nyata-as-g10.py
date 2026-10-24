@@ -45,7 +45,7 @@ async def main():
     # pelanggan + rekening Kas/Bank + cara bayar dari UM kaos yang SUDAH ada (bukan dipatok)
     acu = await c.fetchrow("""SELECT cd.customer_id, cu.nama, cd.account_id::text AS account_id, cd.bank_account_id::text AS bank_account_id,
                                      cd.payment_method
-                              FROM customer_deposits cd JOIN customers cu ON cu.id::text = cd.customer_id AND cu.tenant_id = cd.tenant_id
+                              FROM customer_deposits cd JOIN customers cu ON cu.id = cd.customer_id AND cu.tenant_id = cd.tenant_id  -- keduanya uuid (skema 24 Okt)
                               WHERE cd.tenant_id = $1 AND cd.status <> 'void' AND cd.account_id IS NOT NULL ORDER BY cd.created_at DESC LIMIT 1""", T)
     if acu is None:
         sys.exit("TAK ADA UM kaos acuan (pelanggan + rekening)")
