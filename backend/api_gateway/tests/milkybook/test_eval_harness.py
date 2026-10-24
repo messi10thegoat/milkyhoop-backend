@@ -55,3 +55,21 @@ async def test_stub_idem_replay_dan_409():
     j3 = await be.kirim("POST", "/api/quotes", badan=json.dumps({**QT, "notes": "x"}).encode(), header={"X-Idempotency-Key": "k1"})
     assert j1.status == 201 and j2.replay and j2.isi == j1.isi and j3.status == 409
     assert len([q for q in be.penawaran if q["customer_name"] == "CV Maju Bersama"]) == 2  # 1 lama + 1 baru
+
+
+async def test_set60_kasus_tulis_dinilai_tanpa_galat_harness():
+    """Uji kering yang MELAHIRKAN kartu (24 Okt: penilai crash UnboundLocalError hanya di jalur kartu_tool)."""
+    import json as _json
+    import os as _os
+    d = _json.load(open(_os.path.join(_os.path.dirname(__file__), "eval", "kasus_pnw60.json")))
+    k = next(x for x in d["kasus"] if x["id"] == "PNW-001")
+    qt = {"quote_date": "2026-10-24", "expiry_date": "2026-11-07", "customer_id": "C-MEL", "customer_name": "Toko Melati",
+          "items": [{"description": "Kaos Hitam 24s", "quantity": 10, "unit_price": 85000, "item_id": "I-KAOS"}]}
+    p = _Pembungkus([panggil(("buat_penawaran", qt)), teks("Silakan tinjau kartunya.")])
+    r = await je.jalankan_kasus(k, p, "medium")
+    assert r["lulus"], r["gagal"]
+    k2 = next(x for x in d["kasus"] if x["id"] == "PNW-027")
+    p2 = _Pembungkus([panggil(("daftar_faktur", {"customer_id": "C-MEL", "status": "unpaid"})),
+                      teks("Tidak ada faktur Toko Melati yang belum lunas saat ini menurut data server.")])
+    r2 = await je.jalankan_kasus(k2, p2, "medium")
+    assert r2["lulus"], r2["gagal"]
