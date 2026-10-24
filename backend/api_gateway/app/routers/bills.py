@@ -17,6 +17,7 @@ from pathlib import Path as _Path
 import asyncpg
 
 from ..services.nama_pengguna import nama_pengguna, nama_untuk
+from ..services import idem_buat  # AS-GP2: idempotensi aksi post/void/hapus/ubah v2 (kunci klien saja)
 from ..utils.sorting import parse_sort_param
 
 # Import schemas
@@ -1262,7 +1263,7 @@ async def update_bill(request: Request, bill_id: UUID, body: UpdateBillRequest):
 # DELETE BILL
 # =============================================================================
 @router.delete("/{bill_id}", response_model=DeleteBillResponse)
-async def delete_bill(request: Request, bill_id: UUID):
+async def delete_bill(request: Request, bill_id: UUID, response: Response = None):
     """
     Delete a bill.
 
@@ -1274,8 +1275,10 @@ async def delete_bill(request: Request, bill_id: UUID):
         ctx = get_user_context(request)
         service = await get_bills_service()
 
+        kunci = idem_buat.kunci_dari(request)  # AS-GP2 Law 14: kunci klien saja (BILL_DELETE)
         result = await service.delete_bill(
-            tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"]
+            tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "isi": {}, "response": response} if kunci else None,
         )
 
         if not result["success"]:
@@ -1402,7 +1405,7 @@ async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest)
 # VOID BILL
 # =============================================================================
 @router.post("/{bill_id}/void", response_model=VoidBillResponse)
-async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest):
+async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest, response: Response = None):
     """
     Void a bill.
 
@@ -1420,11 +1423,13 @@ async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest):
 
         service = await get_bills_service()
 
+        kunci = idem_buat.kunci_dari(request)  # AS-GP2 Law 14: kunci klien saja (BILL_VOID; alasan beda = 409)
         result = await service.void_bill(
             tenant_id=ctx["tenant_id"],
             bill_id=bill_id,
             request=body.model_dump(),
             user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "isi": body.model_dump(mode="json"), "response": response} if kunci else None,
         )
 
         if not result["success"]:
@@ -1755,7 +1760,7 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: 
 
 
 @router.post("/{bill_id}/post", response_model=CreateBillResponseV2)
-async def post_bill(request: Request, bill_id: UUID):
+async def post_bill(request: Request, bill_id: UUID, response: Response = None):
     """
     Post a draft bill to accounting.
 
@@ -1773,8 +1778,10 @@ async def post_bill(request: Request, bill_id: UUID):
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
+        kunci = idem_buat.kunci_dari(request)  # AS-GP2 Law 14: kunci klien saja (BILL_POST)
         result = await service.post_bill(
-            tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"]
+            tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "isi": {}, "response": response} if kunci else None,
         )
 
         if not result["success"]:
@@ -1790,7 +1797,7 @@ async def post_bill(request: Request, bill_id: UUID):
 
 
 @router.patch("/v2/{bill_id}", response_model=CreateBillResponseV2)
-async def update_bill_v2(request: Request, bill_id: UUID, body: UpdateBillRequestV2):
+async def update_bill_v2(request: Request, bill_id: UUID, body: UpdateBillRequestV2, response: Response = None):
     """
     Update a draft bill (V2).
 
@@ -1807,11 +1814,13 @@ async def update_bill_v2(request: Request, bill_id: UUID, body: UpdateBillReques
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
 
         service = await get_bills_service()
+        kunci = idem_buat.kunci_dari(request)  # AS-GP2 Law 14: kunci klien saja (BILL_UPDATE; badan beda = 409)
         result = await service.update_bill_v2(
             tenant_id=ctx["tenant_id"],
             bill_id=bill_id,
             request=body.model_dump(exclude_unset=True),
             user_id=ctx["user_id"],
+            idem={"ctx": ctx, "kunci": kunci, "isi": body.model_dump(mode="json", exclude_unset=True), "response": response} if kunci else None,
         )
 
         if not result["success"]:

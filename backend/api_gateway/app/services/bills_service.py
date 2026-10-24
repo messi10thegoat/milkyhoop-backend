@@ -356,6 +356,23 @@ def _bill_line_allocs(items, calc, request, has_per_item_tax):
     return allocate(total, nets)
 
 
+
+# AS-GP2 (24 Okt 2026): idempotensi AKSI tagihan (post/void/hapus/ubah v2) = kunci klien saja, pola BILL_PAY (idem_buat.mulai_aksi). Awalan PER AKSI
+# (BILL_POST/BILL_VOID/BILL_DELETE/BILL_UPDATE): FE CW mengirim SATU kunci per buka halaman -> posting lalu void dgn kunci sama = dua kunci penuh beda,
+# keduanya jalan. Dipanggil DI DALAM transaksi SEBELUM kunci domain; respons dicatat HANYA di jalur sukses (galat {"success": False} tak dicatat).
+async def _idem_mulai(conn, idem, prefix: str, doc_id):
+    if not (idem and idem.get("kunci")):
+        return None, None, None
+    from . import idem_buat
+    return await idem_buat.mulai_aksi(conn, idem["ctx"], idem["kunci"], prefix, doc_id, idem["isi"], idem.get("response"))
+
+
+async def _idem_simpan(conn, idem, kp, sidik, prefix: str, hasil: dict, doc_id):
+    if not kp:
+        return hasil
+    from . import idem_buat
+    return await idem_buat.simpan(conn, idem["ctx"], kp, sidik, prefix, hasil, doc_id)
+
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
 
@@ -1296,7 +1313,7 @@ class BillsService:
     # DELETE BILL
     # =========================================================================
     async def delete_bill(
-        self, tenant_id: str, bill_id: UUID, user_id: str | None = None
+        self, tenant_id: str, bill_id: UUID, user_id: str | None = None, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Hard-delete a draft bill. Only allowed if doc_status='draft' AND
@@ -1313,6 +1330,9 @@ class BillsService:
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)", tenant_id
                 )
+                _kp, _sidik, _lama = await _idem_mulai(conn, idem, "BILL_DELETE", bill_id)  # AS-GP2: hapus ulang = respons asli (bukan 404)
+                if _lama is not None:
+                    return _lama
 
                 bill = await conn.fetchrow(
                     """
@@ -1356,6 +1376,8 @@ class BillsService:
                     )
                     if _po_ids:
                         await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
+                    _hasil = await _idem_simpan(conn, idem, _kp, _sidik, "BILL_DELETE",
+                                                {"success": True, "message": "Bill deleted successfully"}, bill_id)
                 except asyncpg.ForeignKeyViolationError as fk_err:
                     return {
                         "success": False,
@@ -1367,7 +1389,7 @@ class BillsService:
 
         # Transaksi sudah COMMIT di sini (jalur gagal di atas sudah return lebih dulu).
         await hapus_objek_sesudah_commit(berkas, f"hapus draf tagihan {bill_id}")
-        return {"success": True, "message": "Bill deleted successfully"}
+        return _hasil
 
     # =========================================================================
     # RECORD PAYMENT
@@ -1726,7 +1748,7 @@ class BillsService:
     # VOID BILL
     # =========================================================================
     async def void_bill(
-        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID
+        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Void a bill following Iron Laws:
@@ -1750,22 +1772,26 @@ class BillsService:
 
         async with self.pool.acquire() as conn:
             await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
-            # Pre-check: fast fail before lock (non-authoritative)
-            bill_exists = await conn.fetchrow(
-                "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
-                bill_id,
-                tenant_id,
-            )
-            if not bill_exists:
-                return {"success": False, "message": "Bill not found", "data": None}
-            if bill_exists["status"] == "void":
-                return {
-                    "success": False,
-                    "message": "Bill is already voided",
-                    "data": None,
-                }
-
             async with conn.transaction():
+                # AS-GP2: idempotensi SEBELUM pra-cek (void ulang dgn kunci sama = respons asli, bukan "already voided"); alasan beda = 409
+                _kp, _sidik, _lama = await _idem_mulai(conn, idem, "BILL_VOID", bill_id)
+                if _lama is not None:
+                    return _lama
+                # Pre-check: fast fail before lock (non-authoritative) -- isi & urutan lama, kini di dalam transaksi
+                bill_exists = await conn.fetchrow(
+                    "SELECT id, status FROM bills WHERE id = $1 AND tenant_id = $2",
+                    bill_id,
+                    tenant_id,
+                )
+                if not bill_exists:
+                    return {"success": False, "message": "Bill not found", "data": None}
+                if bill_exists["status"] == "void":
+                    return {
+                        "success": False,
+                        "message": "Bill is already voided",
+                        "data": None,
+                    }
+
                 # D1 FIX: Advisory lock FIRST — Law 13
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -2038,7 +2064,7 @@ class BillsService:
 
                 logger.info(f"Bill voided: {bill_id}, reason: {reason}")
 
-                return {
+                return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_VOID", {
                     "success": True,
                     "message": "Bill voided successfully",
                     "data": {
@@ -2051,7 +2077,7 @@ class BillsService:
                         if reversal_journal_id
                         else None,
                     },
-                }
+                }, bill_id)
 
     # =========================================================================
     # GET SUMMARY
@@ -3261,7 +3287,7 @@ class BillsService:
         return ln
 
     async def post_bill(
-        self, tenant_id: str, bill_id: UUID, user_id: UUID
+        self, tenant_id: str, bill_id: UUID, user_id: UUID, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Transition bill from draft to posted.
@@ -3280,6 +3306,11 @@ class BillsService:
                 await conn.execute(
                     "SELECT set_config('app.tenant_id', $1, true)", tenant_id
                 )
+
+                # AS-GP2: idempotensi SEBELUM kunci domain (posting ulang dgn kunci sama = respons asli, bukan "bukan draf")
+                _kp, _sidik, _lama = await _idem_mulai(conn, idem, "BILL_POST", bill_id)
+                if _lama is not None:
+                    return _lama
 
                 # 1. Advisory lock (Law 13)
                 await conn.execute(
@@ -3665,7 +3696,7 @@ class BillsService:
 
                 logger.info(f"Bill posted: {bill_id}")
 
-                return {
+                return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_POST", {
                     "success": True,
                     "message": "Bill posted successfully",
                     "data": {
@@ -3673,10 +3704,10 @@ class BillsService:
                         "status": "posted",
                         "posted_at": datetime.now().isoformat(),
                     },
-                }
+                }, bill_id)
 
     async def update_bill_v2(
-        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID
+        self, tenant_id: str, bill_id: UUID, request: Dict[str, Any], user_id: UUID, idem: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Update a draft bill (V2). Only draft bills can be edited.
@@ -3685,25 +3716,31 @@ class BillsService:
             {success: bool, message: str, data: {...}}
         """
         async with self.pool.acquire() as conn:
-            # Check bill exists and is draft
-            bill = await conn.fetchrow(
-                """
-                SELECT id, status_v2, vendor_id, tax_rate FROM bills
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                bill_id,
-                tenant_id,
-            )
-
-            if not bill:
-                return {"success": False, "message": "Bill not found", "data": None}
-
-            # Blok (penentu SATU dgn POST /bills/{id}/edit/preview; tagihan_rencana.blok_ubah): pertama -> pesan.
-            _bloks = await TR.blok_ubah(conn, tenant_id, bill, request)
-            if _bloks:
-                return {"success": False, "message": _bloks[0]["message"], "data": None}
-
             async with conn.transaction():
+                # AS-GP2: idempotensi (isi = badan; kunci sama + badan beda = 409), lalu tagihan FOR UPDATE SEBELUM blok_ubah. Dulu cek draf
+                # di LUAR transaksi tanpa kunci baris (TOCTOU: ubah bisa menimpa baris sesudah posting bersamaan memutuskan). Urutan kunci =
+                # posting/void/hapus: kunci advisory (bila ada) lalu baris tagihan -> terserialkan, tanpa siklus.
+                _kp, _sidik, _lama = await _idem_mulai(conn, idem, "BILL_UPDATE", bill_id)
+                if _lama is not None:
+                    return _lama
+                bill = await conn.fetchrow(
+                    """
+                    SELECT id, status_v2, vendor_id, tax_rate FROM bills
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    bill_id,
+                    tenant_id,
+                )
+
+                if not bill:
+                    return {"success": False, "message": "Bill not found", "data": None}
+
+                # Blok (penentu SATU dgn POST /bills/{id}/edit/preview; tagihan_rencana.blok_ubah): pertama -> pesan.
+                _bloks = await TR.blok_ubah(conn, tenant_id, bill, request)
+                if _bloks:
+                    return {"success": False, "message": _bloks[0]["message"], "data": None}
+
                 # Resolve vendor if changed
                 vendor_id = request.get("vendor_id", bill["vendor_id"])
                 vendor_name = request.get("vendor_name")
@@ -3882,11 +3919,11 @@ class BillsService:
 
                 logger.info(f"Bill V2 updated: {bill_id}")
 
-                return {
+                return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_UPDATE", {
                     "success": True,
                     "message": "Bill updated successfully",
                     "data": {"id": str(bill_id), "calculation": calc},
-                }
+                }, bill_id)
 
     def _money_str(self, value: int) -> str:
         """Convert money value to string with .00 suffix."""
