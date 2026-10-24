@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -35,12 +35,14 @@ TOOL_TUTUP_KARTU = {
 }
 TOOL_HITUNG_TANGGAL = {
     "name": "hitung_tanggal",
-    "description": "Hitung selisih hari kalender dan nama hari antara dua tanggal (bawaan `dari` = hari ini). "
-                   "WAJIB dipakai sebelum menulis 'besok', 'N hari lagi', 'lewat N hari', dan sejenisnya.",
+    "description": "Kalender dari server. Isi `sampai` untuk selisih hari antara dua tanggal, ATAU `tambah_hari` untuk "
+                   "tanggal N hari sesudah `dari` (mis. berlaku 2 minggu = 14). Bawaan `dari` = hari ini. WAJIB dipakai "
+                   "sebelum menulis 'besok', 'N hari lagi', 'lewat N hari', atau menghitung tanggal berlaku.",
     "input_schema": {"type": "object", "properties": {
         "dari": {"type": "string", "format": "date", "description": "YYYY-MM-DD; kosong = hari ini"},
-        "sampai": {"type": "string", "format": "date", "description": "YYYY-MM-DD"}},
-        "required": ["sampai"], "additionalProperties": False},
+        "sampai": {"type": "string", "format": "date", "description": "YYYY-MM-DD"},
+        "tambah_hari": {"type": "integer", "description": "Jumlah hari ditambahkan ke `dari` (boleh negatif)"}},
+        "required": [], "additionalProperties": False},
 }
 MAKS_COBA_ULANG = 2
 
@@ -125,8 +127,21 @@ def _ringkas(isi: Any) -> str:
     return s
 
 
+_BENDERA_BOLEH = ("ok", "can_proceed", "can_cancel", "can_close", "can_delete", "can_void", "boleh")
+
+
 def _ada_blok(isi: Any) -> bool:
-    return isinstance(isi, dict) and bool(isi.get("blocks"))
+    """Pratinjau menolak? Bentuk BE beragam (diukur c8c24092): `blocks` di atas ATAU di dalam `data`
+    (void penawaran quotes.py:1750 `{"success", "data": {"ok", "blocks"}}`), atau bendera boleh = False
+    (can_proceed proforma, can_cancel/can_close SO, ok penawaran). Ragu = anggap menolak."""
+    if not isinstance(isi, dict):
+        return False
+    for lapis in (isi, isi.get("data") if isinstance(isi.get("data"), dict) else {}):
+        if lapis.get("blocks"):
+            return True
+        if any(lapis.get(k) is False for k in _BENDERA_BOLEH):
+            return True
+    return False
 
 
 class Putaran:
@@ -296,11 +311,14 @@ class Putaran:
         if c.nama == TOOL_HITUNG_TANGGAL["name"]:
             try:
                 dari = date.fromisoformat(c.masukan["dari"]) if c.masukan.get("dari") else sesi.hari_ini
-                sampai = date.fromisoformat(c.masukan["sampai"])
-            except (KeyError, ValueError, TypeError):
-                return "Masukan tidak sah: tanggal harus YYYY-MM-DD.", True, write_dipakai
-            if dari is None:
-                return "Tanggal hari ini tidak diketahui; isi `dari`.", True, write_dipakai
+                if dari is None:
+                    return "Tanggal hari ini tidak diketahui; isi `dari`.", True, write_dipakai
+                if c.masukan.get("tambah_hari") is not None:
+                    sampai = dari + timedelta(days=int(c.masukan["tambah_hari"]))
+                else:
+                    sampai = date.fromisoformat(c.masukan["sampai"])
+            except (KeyError, ValueError, TypeError, OverflowError):
+                return "Masukan tidak sah: isi `sampai` (YYYY-MM-DD) atau `tambah_hari` (bilangan bulat).", True, write_dipakai
             hasil = penjaga_tanggal.hitung(dari, sampai)
             sesi.sumber_angka.append(hasil)
             return json.dumps(hasil), False, write_dipakai

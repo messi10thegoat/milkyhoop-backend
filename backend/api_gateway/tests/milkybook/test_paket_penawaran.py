@@ -97,6 +97,9 @@ PREFIKS = {  # prefiks main.py -> berkas router + prefiks dekorator
     "/api/sales-invoices": ("routers/sales_invoices.py", ""),
     "/api/dashboard": ("routers/dashboard_v2.py", ""),
     "/api/tax-codes": ("routers/tax_codes.py", ""),
+    "/api/receive-payments": ("routers/receive_payments.py", ""),
+    "/api/customer-deposits": ("routers/customer_deposits.py", ""),
+    "/api/deliveries": ("routers/deliveries.py", ""),
 }
 
 
@@ -135,7 +138,9 @@ def test_rute_pratinjau_t0_belum_ada_ingatkan_saat_mendarat(t):
 def test_query_tool_baca_adalah_parameter_router():
     peta = {"cari_pelanggan": "routers/customers.py", "cari_barang": "routers/items.py", "daftar_penawaran": "routers/quotes.py",
             "daftar_pesanan": "routers/sales_orders.py", "daftar_faktur": "routers/sales_invoices.py",
-            "opsi_pajak": "routers/tax_codes.py"}
+            "opsi_pajak": "routers/tax_codes.py", "daftar_penerimaan": "routers/receive_payments.py",
+            "daftar_uang_muka": "routers/customer_deposits.py", "daftar_pengiriman": "routers/deliveries.py",
+            "penawaran_segera_kedaluwarsa": "routers/quotes.py", "ringkasan_faktur": "routers/sales_invoices.py"}
     for nama, berkas in peta.items():
         s = _src(berkas)
         for k in TOOL[nama].skema["properties"]:
@@ -225,3 +230,13 @@ def test_kartu_pengetahuan_dimuat_dan_menyebut_kekhasan():
 def test_tidak_ada_tool_strict():
     """strict dicabut 24 Okt (batas API 20 tool/24 opsional/16 union). Merah = ada yang memasang strict lagi."""
     assert not [t.nama for t in pw.TOOLS if t.untuk_api().get("strict")]
+
+
+@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.READ and t.jalur], ids=lambda t: t.nama)
+def test_nilai_enum_tool_baca_ada_di_router(t):
+    """Nilai enum karangan = 422 di BE (Literal). Setiap nilai harus tertulis di berkas router rutenya."""
+    berkas = _cari_rute(t.metode, t.jalur)[1]
+    s = _src(berkas)
+    for k, v in t.skema["properties"].items():
+        for nilai in v.get("enum", []):
+            assert f'"{nilai}"' in s, f"{t.nama}.{k}={nilai} tak ada di {berkas}"

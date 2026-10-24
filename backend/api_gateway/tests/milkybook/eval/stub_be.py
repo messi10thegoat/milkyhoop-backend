@@ -48,8 +48,10 @@ class StubBE:
         d = copy.deepcopy(data or DATA_AWAL)
         self.pelanggan: List[dict] = d["pelanggan"]
         self.barang: List[dict] = d["barang"]
-        self.pajak: List[dict] = d["pajak"]
+        self.pajak: List[dict] = d.get("pajak") or copy.deepcopy(DATA_AWAL["pajak"])
         self.penawaran: List[dict] = d["penawaran"]
+        self.pkp: bool = d.get("pkp", True)
+        self.respons: Dict[str, Any] = d.get("respons_server", {})
         self.idem: Dict[str, Tuple[str, JawabanBE]] = {}
         self.log: List[dict] = []
         # Kunci kartu yang DISETUJUI pengguna (diisi harness tepat sebelum setujui()). Tulis tanpa kunci ini = pelanggaran.
@@ -78,9 +80,37 @@ class StubBE:
     def tulisan(self) -> List[dict]:
         return [l for l in self.log if l["tulis"]]
 
+    @classmethod
+    def dari_konteks(cls, k: dict) -> "StubBE":
+        """Data stub dari `konteks` kasus eval (format laporan11: pelanggan/barang/penawaran/tenant/respons_server)."""
+        pel = [{"id": c["id"], "name": c["nama"], "code": c["id"], "phone": None, "company_name": None, "display_name": c["nama"]}
+               for c in k.get("pelanggan", [])]
+        bar = [{"id": b["id"], "name": b["nama"], "item_type": b.get("item_type", "non_inventory"), "track_inventory": False,
+                "bisa_dikirim": b.get("bisa_dikirim", False), "base_unit": b.get("satuan", "pcs"), "sales_price": b.get("harga_jual"),
+                "purchase_price": None, "sales_tax": None, "status": "active"} for b in k.get("barang", [])]
+        qs = []
+        for q in k.get("penawaran", []):
+            nama = q.get("pelanggan") or "Pelanggan"
+            cid = next((c["id"] for c in pel if c["name"] == nama), f"C-{q['id']}")
+            baris = [{"id": b.get("id"), "description": b.get("description", "Barang"), "quantity": b.get("quantity", 1),
+                      "unit_price": b.get("unit_price", 0), "tax_rate": b.get("tax_rate", 0)} for b in q.get("baris", [])]
+            h = cls._hitung({"items": baris})
+            qs.append({"id": q["id"], "quote_number": q["nomor"], "status": q["status"], "quote_date": q.get("quote_date", "2026-10-15"),
+                       "expiry_date": q.get("expiry_date"), "customer_id": cid, "customer_name": nama, "notes": q.get("notes"),
+                       "items": baris, "sent_at": q.get("sent_at"), "converted_to_id": q.get("converted_to"),
+                       "_so_number": q.get("converted_to"), **{x: h[x] for x in ("subtotal", "tax_amount", "total_amount")}})
+        return cls(data={"pelanggan": pel, "barang": bar, "penawaran": qs, "pkp": k.get("tenant", {}).get("pkp", True),
+                         "respons_server": k.get("respons_server", {})})
+
     # ------------------------------------------------------------------ rute
     def _rute(self, m, j, q, isi, h) -> JawabanBE:
+        timpa = self.respons.get(f"{m} {j}")
+        if isinstance(timpa, dict) and "status" in timpa:
+            return JawabanBE(int(timpa["status"]), {k: v for k, v in timpa.items() if k != "status"})
         p = j.strip("/").split("/")
+        hasil = self._rute_baca_lain(m, j, q)
+        if hasil is not None:
+            return hasil
         if m == "GET" and j == "/api/customers/autocomplete":
             k = (q.get("q") or "").lower()
             hasil = [self._ringkas_pelanggan(c) for c in self.pelanggan if k in c["name"].lower()][: int(q.get("limit") or 10)]
@@ -102,12 +132,15 @@ class StubBE:
         if m == "GET" and j == "/api/quotes/summary":
             return JawabanBE(200, {"success": True, "data": {"draft_count": sum(1 for x in self.penawaran if x["status"] == "draft"),
                                                              "sent_count": sum(1 for x in self.penawaran if x["status"] == "sent")}})
-        if m == "POST" and j == "/api/quotes/calculate":
-            return JawabanBE(200, {"success": True, "data": self._hitung(isi)})
-        if m == "POST" and j == "/api/quotes":
+        if m == "POST" and j in ("/api/quotes/calculate", "/api/quotes"):
+            hitung = self._hitung(isi)
+            if hitung["tax_amount"] > 0 and not self.pkp:  # services/pkp_guard.py:17 (calculate DAN create)
+                return JawabanBE(422, {"detail": "Tenant non-PKP tidak dapat memungut PPN. Hapus pajak dari baris atau aktifkan status PKP."})
+            if j.endswith("/calculate"):
+                return JawabanBE(200, {"success": True, "data": hitung})
             return self._dengan_idem("QUOTE_CREATE", isi, h, lambda: self._buat_penawaran(isi))
         if m == "POST" and len(p) == 5 and p[1] == "quotes" and p[3:] == ["void", "preview"]:
-            return self._pratinjau_void(p[2])
+            return self._pratinjau_void(p[2], isi)
         if m == "POST" and len(p) == 4 and p[1] == "quotes" and p[3] == "void":
             return self._dengan_idem(f"QUOTE_VOID:{p[2]}", isi, h, lambda: self._void(p[2], isi))
         if m == "POST" and len(p) == 5 and p[1] == "quotes" and p[3:] == ["edit", "preview"]:
@@ -246,13 +279,53 @@ class StubBE:
         qt.update({k: v for k, v in self._hitung(qt).items() if k in ("subtotal", "tax_amount", "total_amount")})
         return JawabanBE(200, {"success": True, "message": "Penawaran diubah.", "data": {"id": qid, "status": qt["status"], "fields": sorted(isi)}})
 
-    def _pratinjau_void(self, qid):
+    def _rute_baca_lain(self, m, j, q) -> Optional[JawabanBE]:
+        """Rute baca di luar Penawaran: daftar kosong kecuali konteks menyediakan (bentuk ringkas, belum disalin penuh)."""
+        if m != "GET":
+            return None
+        kosong = {"/api/receive-payments": "data", "/api/customer-deposits": "data", "/api/deliveries": "data",
+                  "/api/sales-orders": "data", "/api/sales-invoices": "data"}
+        if j in kosong:
+            isi = self.respons.get(j, [])
+            return JawabanBE(200, {"success": True, "data": isi, "total": len(isi)})
+        if j == "/api/sales-invoices/summary":
+            return JawabanBE(200, self.respons.get(j, {"success": True, "data": {"total_count": 0, "total_value": 0, "overdue_count": 0, "overdue_value": 0}}))
+        if j == "/api/sales-invoices/outstanding-summary":
+            return JawabanBE(200, self.respons.get(j, {"success": True, "data": {"total_outstanding": 0, "customers": []}}))
+        if j == "/api/quotes/expiring":
+            hari = int(q.get("days") or 7)
+            from datetime import date
+            hasil = [{k: r.get(k) for k in ("id", "quote_number", "customer_name", "expiry_date", "total_amount")}
+                     for r in self.penawaran if r["status"] in ("sent", "viewed") and r.get("expiry_date")
+                     and 0 <= (date.fromisoformat(r["expiry_date"]) - date.fromisoformat(self.HARI_INI)).days <= hari]
+            return JawabanBE(200, {"success": True, "data": hasil})
+        pp = j.strip("/").split("/")
+        if len(pp) == 4 and pp[1] == "quotes" and pp[3] == "history":
+            qt = next((x for x in self.penawaran if x["id"] == pp[2]), None)
+            if not qt:
+                return JawabanBE(404, {"detail": "Penawaran tidak ditemukan."})
+            return JawabanBE(200, {"success": True, "data": self.respons.get("history", [
+                {"waktu": "2026-10-15T09:00:00+08:00", "pengguna": "Pemilik", "aksi": "dibuat", "rincian": None}])})
+        return None
+
+    def _pratinjau_void(self, qid, isi=None):
+        """Bentuk = quotes.py:1750 {"success", "data": {"ok", "quote_number", "status", "alasan_wajib", "blocks"}}."""
         qt = self._qt(qid)
         if not qt:
             return JawabanBE(404, {"detail": "Penawaran tidak ditemukan."})
+        def tolak(kode, pesan):
+            return JawabanBE(200, {"success": True, "data": {"ok": False, "quote_number": qt["quote_number"], "status": qt["status"],
+                                                             "alasan_wajib": qt["status"] == "accepted", "blocks": [{"code": kode, "message": pesan}]}})
+        if qt.get("converted_to_id"):
+            return tolak("QUOTE_SUDAH_DIKONVERSI", f"Penawaran {qt['quote_number']} sudah jadi pesanan {qt.get('_so_number')}.")
+        if qt["status"] == "void":
+            return tolak("QUOTE_SUDAH_BATAL", f"Penawaran {qt['quote_number']} sudah dibatalkan.")
+        if qt["status"] == "accepted" and not ((isi or {}).get("reason") or "").strip():
+            return tolak("ALASAN_WAJIB", "Alasan pembatalan wajib diisi untuk penawaran yang sudah diterima.")
         if qt["status"] not in ("draft", "sent", "viewed", "accepted"):
-            return JawabanBE(200, {"blocks": [{"code": "QUOTE_STATUS_TAK_BOLEH_BATAL", "message": f"Penawaran {qt['quote_number']} berstatus {qt['status']}."}]})
-        return JawabanBE(200, {"blocks": [], "alasan_wajib": qt["status"] == "accepted", "quote_number": qt["quote_number"]})
+            return tolak("QUOTE_STATUS_TAK_BOLEH_BATAL", f"Penawaran {qt['quote_number']} berstatus {qt['status']}.")
+        return JawabanBE(200, {"success": True, "data": {"ok": True, "quote_number": qt["quote_number"], "status": qt["status"],
+                                                         "alasan_wajib": qt["status"] == "accepted", "blocks": []}})
 
     def _void(self, qid, isi):
         qt = next((x for x in self.penawaran if x["id"] == qid), None)
