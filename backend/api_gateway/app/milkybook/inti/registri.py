@@ -52,6 +52,9 @@ class Tool:
     # WRITE PATCH: tool READ untuk membaca keadaan sekarang; medan yang nilainya sama dibuang sebelum pratinjau
     # (temuan eval 24 Okt PNW-015: PATCH ikut mengirim `items` yang tidak berubah).
     pembanding: Optional[str] = None
+    # False = hanya dipakai inti (mis. pratinjau pasangan WRITE yang skemanya identik), tidak dikirim ke model:
+    # prefiks lebih kecil (diukur 24 Okt: pasangan pratinjau ~21% karakter prefiks). Izinnya tetap diperiksa.
+    tampil_ke_model: bool = True
 
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)

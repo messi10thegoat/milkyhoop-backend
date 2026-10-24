@@ -259,3 +259,19 @@ def test_model_bawaan_sonnet_medium():
     """Putusan MASTER 24 Okt (rancangan §11.8)."""
     from app.milkybook.inti import model
     assert model.MODEL_BAWAAN == "claude-sonnet-5-5" and model.EFFORT_BAWAAN == "medium"
+
+
+async def test_pratinjau_pasangan_tersembunyi_dari_model_tetap_dipakai_inti():
+    from app.milkybook.inti.audit import AuditMemori
+    from app.milkybook.inti.putaran import Putaran, Sesi
+    from .conftest import BEPalsu, ModelPalsu, teks
+    m = ModelPalsu([teks("ok")])
+    p = Putaran(Registri(semua_paket()), m, AuditMemori(), gap_mendarat=(pw.AS_G1, pw.AS_G14))
+    await p.giliran(Sesi("s", "t", "u"), "halo", BEPalsu(), izin_semua)
+    dikirim = {t["name"] for t in m.permintaan[0]["tools"]}
+    for nama in ("pratinjau_ubah_penawaran", "pratinjau_batal_penawaran", "pratinjau_jadi_pesanan",
+                 "pratinjau_pelanggan_baru", "pratinjau_barang_baru"):
+        assert nama not in dikirim
+        assert any(t.pratinjau == nama for t in pw.TOOLS)  # masih jadi pasangan WRITE
+    for nama in ("hitung_penawaran", "hitung_tanggal", "buat_penawaran", "ubah_penawaran", "tutup_kartu_tinjau"):
+        assert nama in dikirim  # tool harga/tanggal TIDAK ikut disembunyikan (syarat MASTER)
