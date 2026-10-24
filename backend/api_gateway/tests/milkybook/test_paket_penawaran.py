@@ -172,10 +172,23 @@ def test_rute_tool_terpetakan_di_tabel_izin(t):
 async def test_sebelum_t0_semua_write_jadi_nav_dan_pratinjau_t0_hilang():
     r = Registri([pw.paket()])
     efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=())}
-    for nama in ("buat_penawaran", "ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"):
+    for nama in ("ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"):
         assert efektif[nama].kelas == Kelas.NAV, nama
     assert "pratinjau_pelanggan_baru" not in efektif and "pratinjau_barang_baru" not in efektif
-    assert not [t for t in efektif.values() if t.kelas == Kelas.WRITE]
+    assert [t.nama for t in efektif.values() if t.kelas == Kelas.WRITE] == ["buat_penawaran"]
+
+
+@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.WRITE], ids=lambda t: t.nama)
+def test_write_tanpa_butuh_harus_idempoten_di_be(t):
+    """WRITE aktif tanpa gerbang T0 hanya bila handler BE-nya membaca kunci idempotency."""
+    if t.butuh:
+        return
+    berkas = _cari_rute(t.metode, t.jalur)[1]
+    s = _src(berkas)
+    m = re.search(r'@router\.' + t.metode.lower() + r'\(\s*""', s) if t.jalur == "/api/quotes" else None
+    assert m, t.nama
+    badan = s[m.end(): m.end() + 6000]
+    assert re.search(r"idem_buat\.kunci_dari\(request\)", badan) and "idem_buat.mulai(" in badan, t.nama
 
 
 async def test_sesudah_t0_write_aktif():
@@ -188,7 +201,7 @@ async def test_sesudah_t0_write_aktif():
 async def test_hanya_as_g1_pelanggan_barang_tetap_nav():
     r = Registri([pw.paket()])
     efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1,))}
-    assert efektif["buat_penawaran"].kelas == Kelas.WRITE
+    assert efektif["ubah_penawaran"].kelas == Kelas.WRITE
     assert efektif["buat_pelanggan"].kelas == Kelas.NAV and efektif["buat_barang"].kelas == Kelas.NAV
 
 
