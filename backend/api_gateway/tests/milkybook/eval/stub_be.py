@@ -17,7 +17,12 @@ Sumber bentuk respons:
   POST /api/quotes/{id}/to-order(/preview) routers/quotes.py:2378/:2407 + _konversi_penawaran :2160 (idempoten alami)
   POST /api/quotes/{id}/edit/preview (bentuk ringkas, BELUM disalin dari kode)
 
-KONTRAK T0 YANG DIASUMSIKAN (belum ada di BE c8c24092 -> perbarui saat T0 mendarat):
+KONTRAK T0 (rancangan BACKEND2 24 Okt; belum live -> perbarui ke contoh JSON harness nyata saat mendarat):
+  Pratinjau AS-G14: 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{..., efek[]}, payload}};
+  kode blok = kosakata BE yang ada: NAMA_PELANGGAN_DIPAKAI, KODE_PELANGGAN_DIPAKAI, SALDO_AWAL_SAAT_BUAT,
+  NAMA_BARANG_DIPAKAI, KODE_BARANG_DIPAKAI, BARCODE_BARANG_DIPAKAI; galat skema -> DATA_TIDAK_SAH (+field) di 200.
+  Idem: CUSTOMER_CREATE / ITEM_CREATE / QUOTE_UPDATE / QUOTE_VOID via X-Idempotency-Key. Izin pratinjau = huruf C.
+Teks lama (asumsi sebelum rancangan BACKEND2):
   POST /api/customers/preview   (AS-G14) -> 200 {blocks:[], rencana:{name, customer_type, payment_terms_days}};
                                 kembar nama -> blocks [{code: CUSTOMER_NAMA_KEMBAR}] (cermin "Customer name must be unique", customers.py:688)
   POST /api/customers           (AS-G14) -> idem pola idem_buat (header X-Idempotency-Key), 201 bentuk CustomerResponse ringkas
@@ -162,24 +167,39 @@ class StubBE:
             return self._ke_pesanan(p[2], isi, pratinjau=True)
         if m == "POST" and len(p) == 4 and p[1] == "quotes" and p[3] == "to-order":
             return self._ke_pesanan(p[2], isi, pratinjau=False)
-        if m == "POST" and j == "/api/customers/preview":  # ASUMSI T0 (AS-G14)
+        if m == "POST" and j == "/api/customers/preview":  # KONTRAK T0 BACKEND2 24 Okt (AS-G14), belum live
+            blok = []
+            if not (isi.get("name") or "").strip():
+                blok.append({"code": "DATA_TIDAK_SAH", "message": "Nama pelanggan wajib diisi.", "field": "name"})
             kembar = [c for c in self.pelanggan if c["name"].strip().lower() == (isi.get("name") or "").strip().lower()]
             if kembar:
-                return JawabanBE(200, {"blocks": [{"code": "CUSTOMER_NAMA_KEMBAR", "message": f"Pelanggan {kembar[0]['name']} sudah ada.", "id": kembar[0]["id"]}]})
-            return JawabanBE(200, {"blocks": [], "rencana": {"name": isi["name"], "customer_type": isi.get("customer_type"),
-                                                            "payment_terms_days": isi.get("payment_terms_days", 30)}})
+                blok.append({"code": "NAMA_PELANGGAN_DIPAKAI", "message": f"Pelanggan {kembar[0]['name']} sudah ada.", "id": kembar[0]["id"]})
+            if isi.get("ar_opening_balance"):
+                blok.append({"code": "SALDO_AWAL_SAAT_BUAT", "message": "Saldo awal diisi di halaman Pelanggan.", "field": "ar_opening_balance"})
+            return self._pratinjau_t0(blok, {"name": isi.get("name"), "customer_type": isi.get("customer_type"),
+                                             "payment_terms_days": isi.get("payment_terms_days", 30), "efek": []}, isi)
         if m == "POST" and j == "/api/customers":  # ASUMSI T0 (AS-G14)
             return self._dengan_idem("CUSTOMER_CREATE", isi, h, lambda: self._buat_pelanggan(isi))
-        if m == "POST" and j == "/api/items/preview":  # ASUMSI T0 (AS-G14)
+        if m == "POST" and j == "/api/items/preview":  # KONTRAK T0 BACKEND2 24 Okt (AS-G14), belum live
+            blok = []
             if isi.get("item_type") == "service" and isi.get("bisa_dikirim"):
-                return JawabanBE(200, {"blocks": [{"code": "JASA_TAK_BISA_DIKIRIM", "message": "Jasa tidak bisa ditandai 'bisa dikirim'"}]})
+                blok.append({"code": "DATA_TIDAK_SAH", "message": "Jasa tidak bisa ditandai 'bisa dikirim'", "field": "bisa_dikirim"})
+            for k in ("name", "base_unit"):
+                if not (isi.get(k) or "").strip():
+                    blok.append({"code": "DATA_TIDAK_SAH", "message": f"{k} wajib diisi.", "field": k})
             kembar = [b for b in self.barang if b["name"].strip().lower() == (isi.get("name") or "").strip().lower()]
             if kembar:
-                return JawabanBE(200, {"blocks": [{"code": "ITEM_NAMA_KEMBAR", "message": f"Barang {kembar[0]['name']} sudah ada.", "id": kembar[0]["id"]}]})
-            return JawabanBE(200, {"blocks": [], "rencana": {k: isi.get(k) for k in ("name", "item_type", "bisa_dikirim", "base_unit", "sales_price")}})
+                blok.append({"code": "NAMA_BARANG_DIPAKAI", "message": f"Barang {kembar[0]['name']} sudah ada.", "id": kembar[0]["id"]})
+            return self._pratinjau_t0(blok, {**{k: isi.get(k) for k in ("name", "item_type", "bisa_dikirim", "base_unit", "sales_price")},
+                                             "efek": []}, isi)
         if m == "POST" and j == "/api/items":  # ASUMSI T0 (AS-G14)
             return self._dengan_idem("ITEM_CREATE", isi, h, lambda: self._buat_barang(isi))
         return JawabanBE(404, {"detail": f"STUB: rute tak ada {m} {j}"})
+
+    @staticmethod
+    def _pratinjau_t0(blok, rencana, isi) -> JawabanBE:
+        """Bentuk BACKEND2 24 Okt: 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{.., efek[]}, payload}}."""
+        return JawabanBE(200, {"success": True, "data": {"ok": not blok, "blocks": blok, "rencana": rencana, "payload": isi}})
 
     # ------------------------------------------------------------------ idempotency (pola idem_buat)
     def _dengan_idem(self, aksi, isi, h, fn) -> JawabanBE:
