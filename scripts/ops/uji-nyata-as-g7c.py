@@ -205,6 +205,8 @@ async def tulis():
                 hasil[nama] = r
             finally:
                 await sp.rollback()
+            # keadaan AKHIR sesudah rollback permintaan (yang dilihat siapa pun sesudah galat; penulis sukses: sama dengan sebelum)
+            hasil[nama]["akhir"] = await efek(c, None, None, [uuid.UUID(dep)], [uuid.UUID(i) for i in inv])
 
         lolos = lambda a: [x for x in k[a] if not x.get("lain")]
         for i, x in enumerate([x for x in k["void"] if x["body"]["reason"]][:6]):
@@ -328,9 +330,7 @@ def banding():
     if pemb != "baru":
         return
     tl, tb = json.load(open("/out/t-lama.json")), json.load(open("/out/t-baru.json"))
-    beda = [n for n in tl if tl[n] != tb.get(n)]
-    cek(bool(tl) and not beda and set(tl) == set(tb), f"(T) penulis LAMA == BARU: efek jurnal/baris/bank/uang muka/aplikasi/refund/faktur ({len(tl)} kasus: {sorted(tl)})",
-        "" if not beda else json.dumps([tl[beda[0]], tb.get(beda[0])])[:900])
+    periksa_t(tl, tb)
     kl, kb = json.load(open("/out/k-lama.json")), json.load(open("/out/k-baru.json"))
     if "lewat" in kb:
         cek(False, f"(K) kasus kunci tak bisa dijalankan: {kb['lewat']}")
@@ -347,6 +347,56 @@ def banding():
         cek(s[k] == e[k], f"NET 0 sesudah proses: {k}", "" if s[k] == e[k] else f"{s[k]} / {e[k]}")
 
 
+def periksa_t(tl, tb, label=""):
+    sukses = [n for n in tl if "ok" in tl[n]]
+    galat = [n for n in tl if "galat" in tl[n]]
+    beda_ok = [n for n in sukses if tl[n] != tb.get(n)]
+    cek(bool(sukses) and not beda_ok and set(tl) == set(tb),
+        f"(T{label}) penulis SUKSES LAMA == BARU: balasan + efek jurnal/baris/bank/uang muka/aplikasi/refund/faktur ({len(sukses)} kasus)",
+        "" if not beda_ok else f"{beda_ok[0]}: " + "; ".join(jalur_beda(tl[beda_ok[0]], tb.get(beda_ok[0]))[:6]))
+    beda_g = [n for n in galat if (tl[n]["galat"], tl[n]["akhir"]) != (tb[n].get("galat"), tb[n].get("akhir"))]
+    cek(not beda_g, f"(T-galat{label}) penulis DITOLAK: kode + teks galat + keadaan AKHIR sesudah rollback LAMA == BARU ({len(galat)} kasus: {galat})",
+        "" if not beda_g else f"{beda_g[0]}: " + "; ".join(jalur_beda(tl[beda_g[0]], tb.get(beda_g[0]))[:6]))
+    dalam = [n for n in galat if tl[n]["efek"] != tb[n]["efek"]]
+    print(f"BEDA-NYATA (dilaporkan, bukan disembunyikan): {len(dalam)} kasus galat berbeda DI DALAM transaksi sebelum rollback {dalam} -- "
+          "LAMA menulis baris sebelumnya lalu 400, BARU menolak sebelum menulis apa pun", flush=True)
+
+
+def jalur_beda(a, b, jalur=""):
+    """Daftar jalur medan yang berbeda (untuk laporan, bukan untuk menyembunyikan)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        out = []
+        for k in sorted(set(a) | set(b)):
+            out += jalur_beda(a.get(k), b.get(k), f"{jalur}.{k}")
+        return out
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        out = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            out += jalur_beda(x, y, f"{jalur}[{i}]")
+        return out
+    return [] if a == b else [f"{jalur}: {json.dumps(a, default=str)[:80]} != {json.dumps(b, default=str)[:80]}"]
+
+
+def laporan_tulis():
+    """HANYA_TULIS: LAMA vs LAMA2 (determinisme pohon LAMA) dan LAMA vs BARU, per kasus jalur medan yang beda."""
+    tl, t2, tb = (json.load(open(f"/out/t-{n}.json")) for n in ("lama", "lama2", "baru"))
+    for judul, x, y in (("LAMA vs LAMA2", tl, t2), ("LAMA vs BARU", tl, tb)):
+        for n in sorted(x):
+            bd = jalur_beda(x[n], y.get(n))
+            print(f"BEDA {judul} {n}: {len(bd)}" + ("".join(f"\n    {b}" for b in bd[:8]) if bd else ""), flush=True)
+    print("=== (T) BARU", flush=True)
+    periksa_t(tl, tb)
+    print("=== (T) kontrol: SALINAN tersabotase (memo refund) -> (T) WAJIB merah", flush=True)
+    n0 = len(gagal)
+    periksa_t(tl, json.load(open("/out/t-merah.json")), " MERAH")
+    print(f"KONTROL_T {'MERAH-OK' if len(gagal) > n0 else 'TIDAK-MERAH'}", flush=True)
+    del gagal[n0:]
+    sb, ss = json.load(open("/out/j-sebelum.json")), json.load(open("/out/j-sesudah.json"))
+    for k in SQL_JEPRET:
+        cek(sb[k] == ss[k], f"NET 0 sesudah proses: {k}", "" if sb[k] == ss[k] else f"{sb[k]} / {ss[k]}")
+    print(f"RINGKAS gagal={len(gagal)} {gagal}", flush=True)
+
+
 async def main():
     if MODE == "JEPRET":
         return await jepret()
@@ -356,6 +406,8 @@ async def main():
         return await tulis()
     if MODE == "KUNCI":
         return await kunci()
+    if MODE == "LAPOR":
+        return laporan_tulis()
     banding()
     print(f"RINGKAS gagal={len(gagal)} {gagal}")
     sys.exit(1 if gagal else 0)
