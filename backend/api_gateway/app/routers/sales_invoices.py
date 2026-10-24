@@ -26,6 +26,7 @@ from ..services import faktur_aksi as _fa
 from ..services.jatuh_tempo import UMUR_KUNCI as _UMUR_KUNCI  # T2: kunci saring umur_* (panggilan langsung: aksi = Query)
 from ..services import faktur_daftar as _fd  # LISTPAGE-DATA (16 Okt 2026)
 from fastapi import Response as _Response
+from ..services import idem_buat  # AS-G8: idempotensi aksi ubah/posting/void/hapus faktur (kunci klien saja)
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from ..schemas.sales_invoices import (
@@ -3746,7 +3747,7 @@ async def _pagar_ganti_nomor(conn, tenant_id, invoice_id, nomor_baru):
 
 @router.patch("/{invoice_id}", response_model=InvoiceResponse)
 async def update_invoice(
-    request: Request, invoice_id: UUID, body: UpdateInvoiceRequest
+    request: Request, invoice_id: UUID, body: UpdateInvoiceRequest, response: _Response = None
 ):
     """Update a draft invoice.
 
@@ -3770,387 +3771,397 @@ async def update_invoice(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check invoice exists and is draft
-            invoice = await conn.fetchrow(
-                """
-                SELECT id, status, updated_at FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
-
-            # Optimistic concurrency (opt-in): reject a stale write (lost-update guard).
-            from ..services.optimistic_concurrency import assert_if_match
-            assert_if_match(request, invoice["updated_at"])
-
-            from ..services.document_number import bersihkan_nomor_dokumen_opsional
-            _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
-            if _new_num is None:
-                body.__pydantic_fields_set__.discard("invoice_number")
-            else:
-                if invoice["status"] != "draft":
-                    raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
-                if await conn.fetchval(
-                    "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2 AND id <> $3",
-                    ctx["tenant_id"], _new_num, invoice_id):
-                    raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                body.invoice_number = _new_num
-
-            # Guard: Cannot update voided invoices
-            if invoice["status"] == "void":
-                raise HTTPException(
-                    status_code=400, detail="Faktur berstatus Batal tidak bisa diubah."
-                )
-
-            # Guard: Cannot update non-draft invoices
-            if invoice["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Faktur yang sudah diterbitkan tidak bisa diubah. Hanya faktur berstatus Draf yang bisa diubah.",
-                )
-
-            # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID) -- SEBELUM tulisan apa pun.
-            if "customer_id" in body.model_fields_set and body.customer_id:
-                body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
-
             async with conn.transaction():
-                # Hitung ulang bila BARIS atau DISKON DOKUMEN berubah. Diskon dokumen kini
-                # memengaruhi PPN tiap baris, jadi suntingan diskon-saja (tanpa `items`)
-                # WAJIB menghitung ulang dari baris tersimpan -- dulu total/pajaknya
-                # dibiarkan basi. Ongkir (dibawa dari SO) ikut di total, di luar DPP.
-                _fs = body.model_fields_set
-                _recalc = body.items is not None or bool(
-                    {"discount_amount", "discount_percent", "shipping_amount",
-                     "shipping_tax_code_id"} & _fs
+                # AS-G8 (24 Okt 2026): SEMUA cek (ada/If-Match/nomor/status/pelanggan) kini di DALAM transaksi, sesudah idempotensi
+                # (SI_UPDATE, isi = badan; badan beda = 409) dan di bawah kunci baris faktur (dulu dibaca tanpa kunci di luar transaksi).
+                # If-Match dinilai SESUDAH idem: replay sah tak gagal 412 karena updated_at sudah diubah panggilan pertama.
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SI_UPDATE", invoice_id,
+                                                             lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if lama is not None:
+                    return lama
+                # Check invoice exists and is draft
+                invoice = await conn.fetchrow(
+                    """
+                    SELECT id, status, updated_at FROM sales_invoices
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
                 )
-                if _recalc:
-                    _cur = await conn.fetchrow(
-                        """SELECT discount_amount, discount_percent, shipping_amount,
-                                  shipping_tax_code_id
-                           FROM sales_invoices WHERE id = $1""",
-                        invoice_id,
+
+                if not invoice:
+                    raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
+
+                # Optimistic concurrency (opt-in): reject a stale write (lost-update guard).
+                from ..services.optimistic_concurrency import assert_if_match
+                assert_if_match(request, invoice["updated_at"])
+
+                from ..services.document_number import bersihkan_nomor_dokumen_opsional
+                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
+                if _new_num is None:
+                    body.__pydantic_fields_set__.discard("invoice_number")
+                else:
+                    if invoice["status"] != "draft":
+                        raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
+                    if await conn.fetchval(
+                        "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2 AND id <> $3",
+                        ctx["tenant_id"], _new_num, invoice_id):
+                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    body.invoice_number = _new_num
+
+                # Guard: Cannot update voided invoices
+                if invoice["status"] == "void":
+                    raise HTTPException(
+                        status_code=400, detail="Faktur berstatus Batal tidak bisa diubah."
                     )
-                    _pct = (
-                        body.discount_percent
-                        if "discount_percent" in _fs and body.discount_percent is not None
-                        else _cur["discount_percent"]
-                    ) or 0
-                    _amt = (
-                        body.discount_amount
-                        if "discount_amount" in _fs and body.discount_amount is not None
-                        else _cur["discount_amount"]
-                    ) or 0
+
+                # Guard: Cannot update non-draft invoices
+                if invoice["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Faktur yang sudah diterbitkan tidak bisa diubah. Hanya faktur berstatus Draf yang bisa diubah.",
+                    )
+
+                # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID) -- SEBELUM tulisan apa pun.
+                if "customer_id" in body.model_fields_set and body.customer_id:
+                    body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+
+                async with conn.transaction():
+                    # Hitung ulang bila BARIS atau DISKON DOKUMEN berubah. Diskon dokumen kini
+                    # memengaruhi PPN tiap baris, jadi suntingan diskon-saja (tanpa `items`)
+                    # WAJIB menghitung ulang dari baris tersimpan -- dulu total/pajaknya
+                    # dibiarkan basi. Ongkir (dibawa dari SO) ikut di total, di luar DPP.
+                    _fs = body.model_fields_set
+                    _recalc = body.items is not None or bool(
+                        {"discount_amount", "discount_percent", "shipping_amount",
+                         "shipping_tax_code_id"} & _fs
+                    )
+                    if _recalc:
+                        _cur = await conn.fetchrow(
+                            """SELECT discount_amount, discount_percent, shipping_amount,
+                                      shipping_tax_code_id
+                               FROM sales_invoices WHERE id = $1""",
+                            invoice_id,
+                        )
+                        _pct = (
+                            body.discount_percent
+                            if "discount_percent" in _fs and body.discount_percent is not None
+                            else _cur["discount_percent"]
+                        ) or 0
+                        _amt = (
+                            body.discount_amount
+                            if "discount_amount" in _fs and body.discount_amount is not None
+                            else _cur["discount_amount"]
+                        ) or 0
+                        if body.items is not None:
+                            _src = [item.model_dump() for item in body.items]
+                            # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
+                            _warisi_jb(_src, [dict(r) for r in await conn.fetch(
+                                "SELECT sales_order_item_id, id, quantity, unit_price, jumlah_baris FROM sales_invoice_items "
+                                "WHERE invoice_id = $1 AND jumlah_baris IS NOT NULL", invoice_id)],
+                                key_item="sales_order_item_id", key_row="sales_order_item_id")
+                        else:
+                            _src = [
+                                dict(r)
+                                for r in await conn.fetch(
+                                    """SELECT id, quantity, unit_price, discount_percent,
+                                              discount_amount, tax_rate, tax_code_id, jumlah_baris
+                                       FROM sales_invoice_items
+                                       WHERE invoice_id = $1 ORDER BY line_number""",
+                                    invoice_id,
+                                )
+                            ]
+                        await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_code_id")
+                        _ship_amt = (
+                            body.shipping_amount
+                            if "shipping_amount" in _fs and body.shipping_amount is not None
+                            else _cur["shipping_amount"]
+                        ) or 0
+                        _ship_code = (
+                            (body.shipping_tax_code_id or None)
+                            if "shipping_tax_code_id" in _fs
+                            else (str(_cur["shipping_tax_code_id"]) if _cur["shipping_tax_code_id"] else None)
+                        )
+                        _ship = await resolve_shipping_tax(
+                            conn, ctx["tenant_id"], _ship_code, _src, _ship_amt, "tax_code_id"
+                        )
+                        try:
+                            _doc = compute_document(
+                                _src,
+                                doc_discount_amount=_amt,
+                                doc_discount_percent=_pct,
+                                shipping_amount=_ship_amt,
+                                shipping_tax=_ship,
+                            )
+                        except DocumentDiscountError as _e:
+                            raise HTTPException(status_code=400, detail=str(_e))
+                        except LineAmountError as _e:
+                            raise HTTPException(status_code=422, detail=str(_e))
+                        await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+                        subtotal = _doc["gross_subtotal"]
+                        invoice_discount = _doc["doc_discount"]
+                        total_tax = _doc["tax_amount"]
+                        total_amount = _doc["total_amount"]
+
                     if body.items is not None:
-                        _src = [item.model_dump() for item in body.items]
-                        # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
-                        _warisi_jb(_src, [dict(r) for r in await conn.fetch(
-                            "SELECT sales_order_item_id, id, quantity, unit_price, jumlah_baris FROM sales_invoice_items "
-                            "WHERE invoice_id = $1 AND jumlah_baris IS NOT NULL", invoice_id)],
-                            key_item="sales_order_item_id", key_row="sales_order_item_id")
-                    else:
-                        _src = [
-                            dict(r)
-                            for r in await conn.fetch(
-                                """SELECT id, quantity, unit_price, discount_percent,
-                                          discount_amount, tax_rate, tax_code_id, jumlah_baris
-                                   FROM sales_invoice_items
-                                   WHERE invoice_id = $1 ORDER BY line_number""",
-                                invoice_id,
+                        # 8a: tautan SO per baris WAJIB bertahan melewati hapus+sisip ulang,
+                        # dan quantity_invoiced SO WAJIB mengikuti perubahan qty. Dulu tautan
+                        # hilang -> void tak lagi mengurangi SO, baris SO macet "sudah
+                        # difakturkan" (V271 bergantung pada tautan ini).
+                        _old_linked = await conn.fetch(
+                            """SELECT id, item_id, description, quantity, sales_order_item_id
+                               FROM sales_invoice_items
+                               WHERE invoice_id = $1 AND sales_order_item_id IS NOT NULL
+                               ORDER BY line_number""",
+                            invoice_id,
+                        )
+                        try:
+                            _so_links, _so_deltas = _plan_so_link_edit(
+                                [dict(r) for r in _old_linked],
+                                [item.model_dump() for item in body.items],
                             )
-                        ]
-                    await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_code_id")
-                    _ship_amt = (
-                        body.shipping_amount
-                        if "shipping_amount" in _fs and body.shipping_amount is not None
-                        else _cur["shipping_amount"]
-                    ) or 0
-                    _ship_code = (
-                        (body.shipping_tax_code_id or None)
-                        if "shipping_tax_code_id" in _fs
-                        else (str(_cur["shipping_tax_code_id"]) if _cur["shipping_tax_code_id"] else None)
-                    )
-                    _ship = await resolve_shipping_tax(
-                        conn, ctx["tenant_id"], _ship_code, _src, _ship_amt, "tax_code_id"
-                    )
-                    try:
-                        _doc = compute_document(
-                            _src,
-                            doc_discount_amount=_amt,
-                            doc_discount_percent=_pct,
-                            shipping_amount=_ship_amt,
-                            shipping_tax=_ship,
+                        except ValueError as _e:
+                            raise HTTPException(status_code=400, detail=str(_e))
+
+                        # Delete existing items
+                        await conn.execute(
+                            "DELETE FROM sales_invoice_items WHERE invoice_id = $1",
+                            invoice_id,
                         )
-                    except DocumentDiscountError as _e:
-                        raise HTTPException(status_code=400, detail=str(_e))
-                    except LineAmountError as _e:
-                        raise HTTPException(status_code=422, detail=str(_e))
-                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
-                    subtotal = _doc["gross_subtotal"]
-                    invoice_discount = _doc["doc_discount"]
-                    total_tax = _doc["tax_amount"]
-                    total_amount = _doc["total_amount"]
 
-                if body.items is not None:
-                    # 8a: tautan SO per baris WAJIB bertahan melewati hapus+sisip ulang,
-                    # dan quantity_invoiced SO WAJIB mengikuti perubahan qty. Dulu tautan
-                    # hilang -> void tak lagi mengurangi SO, baris SO macet "sudah
-                    # difakturkan" (V271 bergantung pada tautan ini).
-                    _old_linked = await conn.fetch(
-                        """SELECT id, item_id, description, quantity, sales_order_item_id
-                           FROM sales_invoice_items
-                           WHERE invoice_id = $1 AND sales_order_item_id IS NOT NULL
-                           ORDER BY line_number""",
-                        invoice_id,
-                    )
-                    try:
-                        _so_links, _so_deltas = _plan_so_link_edit(
-                            [dict(r) for r in _old_linked],
-                            [item.model_dump() for item in body.items],
-                        )
-                    except ValueError as _e:
-                        raise HTTPException(status_code=400, detail=str(_e))
+                        for i, item in enumerate(body.items):
+                            calc = _doc["items"][i]
+                            calc["line_number"] = i + 1
 
-                    # Delete existing items
-                    await conn.execute(
-                        "DELETE FROM sales_invoice_items WHERE invoice_id = $1",
-                        invoice_id,
-                    )
+                            item_uuid = None
+                            if item.item_id:
+                                try:
+                                    item_uuid = UUID(item.item_id)
+                                except ValueError:
+                                    pass
 
-                    for i, item in enumerate(body.items):
-                        calc = _doc["items"][i]
-                        calc["line_number"] = i + 1
+                            # Auto-populate batch_no/exp_date from item_batches if only batch_id provided
+                            item_batch_no = item.batch_no
+                            item_exp_date = item.exp_date
+                            # Parse exp_date string (e.g. "2026-04" or "2026-04-01") to date object
+                            if isinstance(item_exp_date, str):
+                                try:
+                                    from datetime import date as _date
 
-                        item_uuid = None
-                        if item.item_id:
-                            try:
-                                item_uuid = UUID(item.item_id)
-                            except ValueError:
-                                pass
-
-                        # Auto-populate batch_no/exp_date from item_batches if only batch_id provided
-                        item_batch_no = item.batch_no
-                        item_exp_date = item.exp_date
-                        # Parse exp_date string (e.g. "2026-04" or "2026-04-01") to date object
-                        if isinstance(item_exp_date, str):
-                            try:
-                                from datetime import date as _date
-
-                                parts = item_exp_date.split("-")
-                                if len(parts) == 2:
-                                    item_exp_date = _date(
-                                        int(parts[0]), int(parts[1]), 1
-                                    )
-                                elif len(parts) == 3:
-                                    item_exp_date = _date(
-                                        int(parts[0]), int(parts[1]), int(parts[2])
-                                    )
-                                else:
+                                    parts = item_exp_date.split("-")
+                                    if len(parts) == 2:
+                                        item_exp_date = _date(
+                                            int(parts[0]), int(parts[1]), 1
+                                        )
+                                    elif len(parts) == 3:
+                                        item_exp_date = _date(
+                                            int(parts[0]), int(parts[1]), int(parts[2])
+                                        )
+                                    else:
+                                        item_exp_date = None
+                                except (ValueError, TypeError):
                                     item_exp_date = None
-                            except (ValueError, TypeError):
-                                item_exp_date = None
-                        item_batch_id = item.batch_id
-                        if item_batch_id and (not item_batch_no or not item_exp_date):
-                            batch_info = await conn.fetchrow(
-                                # PAGAR TENANT (3 Sep 2026). `batch_id` datang dari badan
-                                # permintaan dan TIDAK dipasangkan dengan apa pun yang
-                                # sudah diverifikasi -- beda dengan jalur fulfillment,
-                                # yang memasangkannya dengan warehouse_id ber-tenant
-                                # sehingga terlindung SECARA KEBETULAN.
-                                #
-                                # Tanpa saringan ini, nomor batch dan tanggal
-                                # kedaluwarsa milik tenant lain masuk ke baris faktur
-                                # penyerang. `item_batches` masih 0 baris saat ini,
-                                # tapi kosong itu PENUNDAAN, bukan perlindungan.
-                                "SELECT batch_number, expiry_date FROM item_batches "
-                                "WHERE id = $1 AND tenant_id = $2",
-                                UUID(item_batch_id)
-                                if isinstance(item_batch_id, str)
-                                else item_batch_id,
-                                ctx["tenant_id"],
-                            )
-                            if batch_info:
-                                if not item_batch_no:
-                                    item_batch_no = batch_info["batch_number"]
-                                if not item_exp_date:
-                                    item_exp_date = batch_info["expiry_date"]
+                            item_batch_id = item.batch_id
+                            if item_batch_id and (not item_batch_no or not item_exp_date):
+                                batch_info = await conn.fetchrow(
+                                    # PAGAR TENANT (3 Sep 2026). `batch_id` datang dari badan
+                                    # permintaan dan TIDAK dipasangkan dengan apa pun yang
+                                    # sudah diverifikasi -- beda dengan jalur fulfillment,
+                                    # yang memasangkannya dengan warehouse_id ber-tenant
+                                    # sehingga terlindung SECARA KEBETULAN.
+                                    #
+                                    # Tanpa saringan ini, nomor batch dan tanggal
+                                    # kedaluwarsa milik tenant lain masuk ke baris faktur
+                                    # penyerang. `item_batches` masih 0 baris saat ini,
+                                    # tapi kosong itu PENUNDAAN, bukan perlindungan.
+                                    "SELECT batch_number, expiry_date FROM item_batches "
+                                    "WHERE id = $1 AND tenant_id = $2",
+                                    UUID(item_batch_id)
+                                    if isinstance(item_batch_id, str)
+                                    else item_batch_id,
+                                    ctx["tenant_id"],
+                                )
+                                if batch_info:
+                                    if not item_batch_no:
+                                        item_batch_no = batch_info["batch_number"]
+                                    if not item_exp_date:
+                                        item_exp_date = batch_info["expiry_date"]
 
+                            await conn.execute(
+                                """
+                                INSERT INTO sales_invoice_items (
+                                    invoice_id, item_id, item_code, description,
+                                    quantity, unit, unit_price,
+                                    discount_percent, discount_amount,
+                                    tax_code, tax_rate, tax_amount,
+                                    subtotal, total, line_number,
+                                    batch_id, batch_no, exp_date,
+                                    tax_code_id, dpp, sales_order_item_id, dpp_harga_jual, jumlah_baris
+                                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+                            """,
+                                invoice_id,
+                                item_uuid,
+                                item.item_code,
+                                item.description,
+                                item.quantity,
+                                item.unit,
+                                item.unit_price,
+                                item.discount_percent,
+                                calc["discount_amount"],
+                                item.tax_code,
+                                item.tax_rate,
+                                calc["tax_amount"],
+                                calc["subtotal"],
+                                calc["total"],
+                                calc["line_number"],
+                                UUID(item_batch_id) if item_batch_id else None,
+                                item_batch_no,
+                                item_exp_date,
+                                UUID(str(item.tax_code_id))
+                                if getattr(item, "tax_code_id", None)
+                                else None,
+                                calc["dpp"],
+                                UUID(_so_links[i]) if _so_links[i] else None,
+                                calc["dpp_harga_jual"],
+                                calc["line_amount"] if calc.get("line_amount") is not None else calc.get("jumlah_baris"),  # V427
+                            )
+
+                        await _apply_so_invoiced_deltas(conn, _so_deltas)
+
+                    elif _recalc:
+                        # Suntingan diskon-saja: baris tetap, DPP/PPN tiap baris dihitung ulang.
+                        for _ln in _doc["items"]:
+                            await conn.execute(
+                                """UPDATE sales_invoice_items
+                                   SET subtotal = $2, discount_amount = $3, dpp = $4,
+                                       tax_amount = $5, total = $6, dpp_harga_jual = $7
+                                   WHERE id = $1""",
+                                _ln["id"],
+                                _ln["subtotal"],
+                                _ln["discount_amount"],
+                                _ln["dpp"],
+                                _ln["tax_amount"],
+                                _ln["total"],
+                                _ln["dpp_harga_jual"],
+                            )
+
+                    if _recalc:
                         await conn.execute(
                             """
-                            INSERT INTO sales_invoice_items (
-                                invoice_id, item_id, item_code, description,
-                                quantity, unit, unit_price,
-                                discount_percent, discount_amount,
-                                tax_code, tax_rate, tax_amount,
-                                subtotal, total, line_number,
-                                batch_id, batch_no, exp_date,
-                                tax_code_id, dpp, sales_order_item_id, dpp_harga_jual, jumlah_baris
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+                            UPDATE sales_invoices
+                            SET subtotal = $2, discount_percent = $3, discount_amount = $4,
+                                tax_amount = $5, total_amount = $6,
+                                shipping_amount = $7, shipping_tax_code_id = $8,
+                                shipping_tax_rate = $9, shipping_tax_amount = $10, shipping_dpp = $11
+                            WHERE id = $1
                         """,
                             invoice_id,
-                            item_uuid,
-                            item.item_code,
-                            item.description,
-                            item.quantity,
-                            item.unit,
-                            item.unit_price,
-                            item.discount_percent,
-                            calc["discount_amount"],
-                            item.tax_code,
-                            item.tax_rate,
-                            calc["tax_amount"],
-                            calc["subtotal"],
-                            calc["total"],
-                            calc["line_number"],
-                            UUID(item_batch_id) if item_batch_id else None,
-                            item_batch_no,
-                            item_exp_date,
-                            UUID(str(item.tax_code_id))
-                            if getattr(item, "tax_code_id", None)
-                            else None,
-                            calc["dpp"],
-                            UUID(_so_links[i]) if _so_links[i] else None,
-                            calc["dpp_harga_jual"],
-                            calc["line_amount"] if calc.get("line_amount") is not None else calc.get("jumlah_baris"),  # V427
+                            subtotal,
+                            _pct,
+                            invoice_discount,
+                            total_tax,
+                            total_amount,
+                            _doc["shipping_amount"],
+                            UUID(_ship_code) if _ship_code else None,
+                            _doc["shipping_tax_rate"],
+                            _doc["shipping_tax_amount"],
+                            _doc["shipping_dpp"],
                         )
 
-                    await _apply_so_invoiced_deltas(conn, _so_deltas)
+                    # Update other fields
+                    # `auto_post` BUKAN kolom sales_invoices; ia hanya sinyal niat dari FE.
+                    # Tanpa dikecualikan di sini, ia ikut masuk pembangun UPDATE
+                    # dinamis dan menghasilkan 500 (kolom tak ada) untuk
+                    # auto_post=false -- terungkap oleh gerbang T222 butir (3).
+                    # discount_amount/discount_percent ditulis HANYA oleh blok hitung-ulang
+                    # di atas. Dulu nilai mentah badan permintaan menimpa hasil hitungan
+                    # SESUDAHNYA (mis. percent=3 + amount=0 -> total berdiskon tapi
+                    # discount_amount tersimpan 0).
+                    update_data = body.model_dump(
+                        exclude_unset=True,
+                        exclude={"items", "auto_post", "discount_amount", "discount_percent",
+                                 "shipping_amount", "shipping_tax_code_id"},
+                    )
 
-                elif _recalc:
-                    # Suntingan diskon-saja: baris tetap, DPP/PPN tiap baris dihitung ulang.
-                    for _ln in _doc["items"]:
-                        await conn.execute(
-                            """UPDATE sales_invoice_items
-                               SET subtotal = $2, discount_amount = $3, dpp = $4,
-                                   tax_amount = $5, total = $6, dpp_harga_jual = $7
-                               WHERE id = $1""",
-                            _ln["id"],
-                            _ln["subtotal"],
-                            _ln["discount_amount"],
-                            _ln["dpp"],
-                            _ln["tax_amount"],
-                            _ln["total"],
-                            _ln["dpp_harga_jual"],
+                    # Ganti nomor faktur: pagar salinan SEBELUM menulis.
+                    if "invoice_number" in update_data:
+                        await _pagar_ganti_nomor(
+                            conn, ctx["tenant_id"], invoice_id,
+                            update_data["invoice_number"],
                         )
 
-                if _recalc:
-                    await conn.execute(
-                        """
-                        UPDATE sales_invoices
-                        SET subtotal = $2, discount_percent = $3, discount_amount = $4,
-                            tax_amount = $5, total_amount = $6,
-                            shipping_amount = $7, shipping_tax_code_id = $8,
-                            shipping_tax_rate = $9, shipping_tax_amount = $10, shipping_dpp = $11
-                        WHERE id = $1
-                    """,
+                    if update_data:
+                        updates = []
+                        params = []
+                        param_idx = 1
+
+                        for field, value in update_data.items():
+                            if field == "customer_id" and value:
+                                updates.append(f"{field} = ${param_idx}::uuid")
+                            else:
+                                updates.append(f"{field} = ${param_idx}")
+                            params.append(value)
+                            param_idx += 1
+
+                        if updates:
+                            updates.append("updated_at = NOW()")
+                            params.extend([invoice_id, ctx["tenant_id"]])
+                            query = f"""
+                                UPDATE sales_invoices
+                                SET {', '.join(updates)}
+                                WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+                            """
+                            try:
+                                await conn.execute(query, *params)
+                            except asyncpg.UniqueViolationError as e:
+                                # uq_sales_invoices_tenant_number. Tanpa tangkapan
+                                # ini, nomor kembar keluar sebagai 500 -- galat
+                                # basis data mentah untuk kesalahan yang sepenuhnya
+                                # bisa dijelaskan ke pengguna.
+                                if "uq_sales_invoices_tenant_number" not in str(e):
+                                    raise
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail=(
+                                        "Nomor faktur "
+                                        f"{update_data.get('invoice_number')!r} sudah "
+                                        "dipakai faktur lain di tenant ini."
+                                    ),
+                                ) from e
+
+                    logger.info(f"Invoice updated: {invoice_id}")
+
+                    # Fetch updated invoice for response
+                    updated = await conn.fetchrow(
+                        "SELECT id, invoice_number, total_amount, amount_paid, status, invoice_date, due_date, customer_id, customer_name, created_at FROM sales_invoices WHERE id = $1",
                         invoice_id,
-                        subtotal,
-                        _pct,
-                        invoice_discount,
-                        total_tax,
-                        total_amount,
-                        _doc["shipping_amount"],
-                        UUID(_ship_code) if _ship_code else None,
-                        _doc["shipping_tax_rate"],
-                        _doc["shipping_tax_amount"],
-                        _doc["shipping_dpp"],
                     )
-
-                # Update other fields
-                # `auto_post` BUKAN kolom sales_invoices; ia hanya sinyal niat dari FE.
-                # Tanpa dikecualikan di sini, ia ikut masuk pembangun UPDATE
-                # dinamis dan menghasilkan 500 (kolom tak ada) untuk
-                # auto_post=false -- terungkap oleh gerbang T222 butir (3).
-                # discount_amount/discount_percent ditulis HANYA oleh blok hitung-ulang
-                # di atas. Dulu nilai mentah badan permintaan menimpa hasil hitungan
-                # SESUDAHNYA (mis. percent=3 + amount=0 -> total berdiskon tapi
-                # discount_amount tersimpan 0).
-                update_data = body.model_dump(
-                    exclude_unset=True,
-                    exclude={"items", "auto_post", "discount_amount", "discount_percent",
-                             "shipping_amount", "shipping_tax_code_id"},
-                )
-
-                # Ganti nomor faktur: pagar salinan SEBELUM menulis.
-                if "invoice_number" in update_data:
-                    await _pagar_ganti_nomor(
-                        conn, ctx["tenant_id"], invoice_id,
-                        update_data["invoice_number"],
-                    )
-
-                if update_data:
-                    updates = []
-                    params = []
-                    param_idx = 1
-
-                    for field, value in update_data.items():
-                        if field == "customer_id" and value:
-                            updates.append(f"{field} = ${param_idx}::uuid")
-                        else:
-                            updates.append(f"{field} = ${param_idx}")
-                        params.append(value)
-                        param_idx += 1
-
-                    if updates:
-                        updates.append("updated_at = NOW()")
-                        params.extend([invoice_id, ctx["tenant_id"]])
-                        query = f"""
-                            UPDATE sales_invoices
-                            SET {', '.join(updates)}
-                            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                        """
-                        try:
-                            await conn.execute(query, *params)
-                        except asyncpg.UniqueViolationError as e:
-                            # uq_sales_invoices_tenant_number. Tanpa tangkapan
-                            # ini, nomor kembar keluar sebagai 500 -- galat
-                            # basis data mentah untuk kesalahan yang sepenuhnya
-                            # bisa dijelaskan ke pengguna.
-                            if "uq_sales_invoices_tenant_number" not in str(e):
-                                raise
-                            raise HTTPException(
-                                status_code=409,
-                                detail=(
-                                    "Nomor faktur "
-                                    f"{update_data.get('invoice_number')!r} sudah "
-                                    "dipakai faktur lain di tenant ini."
-                                ),
-                            ) from e
-
-                logger.info(f"Invoice updated: {invoice_id}")
-
-                # Fetch updated invoice for response
-                updated = await conn.fetchrow(
-                    "SELECT id, invoice_number, total_amount, amount_paid, status, invoice_date, due_date, customer_id, customer_name, created_at FROM sales_invoices WHERE id = $1",
-                    invoice_id,
-                )
-                return {
-                    "success": True,
-                    "message": "Faktur diperbarui",
-                    "data": {
-                        "id": str(updated["id"]),
-                        "invoice_number": updated["invoice_number"],
-                        "total_amount": float(updated["total_amount"] or 0),
-                        "amount_paid": float(updated["amount_paid"] or 0),
-                        "status": updated["status"] or "draft",
-                        "invoice_date": str(updated["invoice_date"])
-                        if updated["invoice_date"]
-                        else None,
-                        "due_date": str(updated["due_date"])
-                        if updated["due_date"]
-                        else None,
-                        "customer_id": str(updated["customer_id"])
-                        if updated["customer_id"]
-                        else None,
-                        "customer_name": updated["customer_name"],
-                        "created_at": str(updated["created_at"])
-                        if updated["created_at"]
-                        else None,
-                    },
-                }
+                    resp = {
+                        "success": True,
+                        "message": "Faktur diperbarui",
+                        "data": {
+                            "id": str(updated["id"]),
+                            "invoice_number": updated["invoice_number"],
+                            "total_amount": float(updated["total_amount"] or 0),
+                            "amount_paid": float(updated["amount_paid"] or 0),
+                            "status": updated["status"] or "draft",
+                            "invoice_date": str(updated["invoice_date"])
+                            if updated["invoice_date"]
+                            else None,
+                            "due_date": str(updated["due_date"])
+                            if updated["due_date"]
+                            else None,
+                            "customer_id": str(updated["customer_id"])
+                            if updated["customer_id"]
+                            else None,
+                            "customer_name": updated["customer_name"],
+                            "created_at": str(updated["created_at"])
+                            if updated["created_at"]
+                            else None,
+                        },
+                    }
+                    return (await idem_buat.simpan(conn, ctx, kp, sidik, "SI_UPDATE", resp, invoice_id)) if kp else resp
 
     except HTTPException:
         raise
@@ -4178,7 +4189,7 @@ async def terbitkan_faktur(conn, ctx, invoice_id, invoice_number, total_amount, 
 
 @router.post("/{invoice_id}/post", response_model=InvoiceResponse)
 async def post_invoice(
-    request: Request, invoice_id: UUID, body: PostInvoiceRequest = None
+    request: Request, invoice_id: UUID, body: PostInvoiceRequest = None, response: _Response = None
 ):
     """
     Post invoice to accounting (creates AR, journal entry).
@@ -4194,27 +4205,33 @@ async def post_invoice(
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
 
         async with pool.acquire() as conn:
-            # Check invoice exists and is draft
-            invoice = await conn.fetchrow(
-                """
-                SELECT id, invoice_number, customer_id, customer_name, total_amount,
-                       invoice_date, due_date, status, warehouse_id
-                FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
-
-            if invoice["status"] != "draft":
-                raise HTTPException(
-                    status_code=400, detail="Hanya faktur berstatus Draf yang bisa diterbitkan."
+            async with conn.transaction():
+                # AS-G8: idempotensi (SI_POST; isi = badan opsional) SEBELUM pra-cek -- posting ulang dgn kunci sama = respons asli,
+                # bukan "Hanya faktur berstatus Draf". Pra-cek (isi & teks lama) kini di dalam transaksi; kunci domain tetap di terbitkan_faktur.
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SI_POST", invoice_id,
+                                                             lambda: body.model_dump(mode="json") if body else {}, response)
+                if lama is not None:
+                    return lama
+                # Check invoice exists and is draft
+                invoice = await conn.fetchrow(
+                    """
+                    SELECT id, invoice_number, customer_id, customer_name, total_amount,
+                           invoice_date, due_date, status, warehouse_id
+                    FROM sales_invoices
+                    WHERE id = $1 AND tenant_id = $2
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
                 )
 
-            async with conn.transaction():
+                if not invoice:
+                    raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
+
+                if invoice["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400, detail="Hanya faktur berstatus Draf yang bisa diterbitkan."
+                    )
+
                 post_result = await terbitkan_faktur(
                     conn, ctx, invoice_id, invoice["invoice_number"], invoice["total_amount"],
                     invoice["invoice_date"],
@@ -4227,7 +4244,7 @@ async def post_invoice(
                     f"Invoice posted: {invoice_id}, AR: {post_result.get('ar_id')}"
                 )
 
-                return {
+                resp = {
                     "success": True,
                     "message": "Faktur diterbitkan",
                     "data": {
@@ -4241,6 +4258,7 @@ async def post_invoice(
                         "deposit_applications": deposit_applications,
                     },
                 }
+                return (await idem_buat.simpan(conn, ctx, kp, sidik, "SI_POST", resp, invoice_id)) if kp else resp
 
     except HTTPException:
         raise
@@ -5421,7 +5439,7 @@ async def preview_void_invoice(request: Request, invoice_id: UUID, body: VoidInv
 
 
 @router.post("/{invoice_id}/void", response_model=InvoiceResponse)
-async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequest):
+async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequest, response: _Response = None):
     """
     Void an invoice following Iron Laws + 3-Event Revenue Recognition:
     - Law 2: Journal Immutability - creates REVERSAL journals, not delete
@@ -5438,6 +5456,11 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # AS-G8: idempotensi (SI_VOID; alasan beda = 409) SEBELUM kunci advisory INVOICE_VOID
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SI_VOID", invoice_id,
+                                                             lambda: body.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
                 # Law 13: Advisory lock
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -5447,7 +5470,8 @@ async def void_invoice(request: Request, invoice_id: UUID, body: VoidInvoiceRequ
                 if r["blocks"]:
                     b = r["blocks"][0]
                     raise HTTPException(status_code=b["status"], detail=b["detail"])
-                return await _tulis_void_faktur(conn, ctx, invoice_id, r, body)
+                resp = await _tulis_void_faktur(conn, ctx, invoice_id, r, body)
+                return (await idem_buat.simpan(conn, ctx, kp, sidik, "SI_VOID", resp, invoice_id)) if kp else resp
 
     except HTTPException:
         raise
@@ -5601,40 +5625,18 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
 # DELETE INVOICE (Draft only)
 # =============================================================================
 @router.delete("/{invoice_id}", response_model=InvoiceResponse)
-async def delete_invoice(request: Request, invoice_id: UUID):
-    """Delete a draft invoice."""
+async def delete_invoice(request: Request, invoice_id: UUID, response: _Response = None):
+    """Delete a draft invoice.
+
+    AS-G8 (24 Okt 2026): idempotensi SI_DELETE + RACE ditutup. Dulu status dibaca di LUAR transaksi tanpa kunci baris lalu
+    `DELETE ... WHERE id = $1` TANPA syarat status/tenant -> posting bersamaan di antaranya bisa membuat faktur yang BARU diposting
+    ikut terhapus (atau gagal FK). Kini: idem -> baris faktur FOR UPDATE -> pagar yang sama (teks lama) -> DELETE bersyarat
+    tenant + status draft -> 409 bila berubah. Objek berkas tetap dihapus SESUDAH commit (replay tak menjalankannya ulang)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            invoice = await conn.fetchrow(
-                """
-                SELECT id, invoice_number, status
-                FROM sales_invoices
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                invoice_id,
-                ctx["tenant_id"],
-            )
-
-            if not invoice:
-                raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
-
-            # Guard: Cannot delete voided invoices
-            if invoice["status"] == "void":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Faktur berstatus Batal tidak bisa dihapus.",
-                )
-
-            # Guard: Cannot delete non-draft invoices
-            if invoice["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya.",
-                )
-
             # V230: siapa yang menghapus. Trigger `trg_log_deletion` membaca
             # `app.user_id`, dan GUC itu HANYA hidup di dalam transaksi —
             # terukur 2026-09-03: `SET LOCAL` sebagai statement lepas
@@ -5644,6 +5646,37 @@ async def delete_invoice(request: Request, invoice_id: UUID):
             # alih-alih `SET LOCAL` karena nilainya bisa diparameterkan,
             # sehingga tak ada interpolasi string ke dalam SQL.
             async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SI_DELETE", invoice_id, {}, response)
+                if lama is not None:
+                    return lama
+                invoice = await conn.fetchrow(
+                    """
+                    SELECT id, invoice_number, status
+                    FROM sales_invoices
+                    WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
+                """,
+                    invoice_id,
+                    ctx["tenant_id"],
+                )
+
+                if not invoice:
+                    raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
+
+                # Guard: Cannot delete voided invoices
+                if invoice["status"] == "void":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Faktur berstatus Batal tidak bisa dihapus.",
+                    )
+
+                # Guard: Cannot delete non-draft invoices
+                if invoice["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya.",
+                    )
+
                 await conn.execute(
                     "SELECT set_config('app.user_id', $1, true)",
                     str(ctx["user_id"] or ""),
@@ -5662,22 +5695,26 @@ async def delete_invoice(request: Request, invoice_id: UUID):
                 # #30: berkas MILIK faktur (sales_invoice_attachments tanpa FK) ikut dihapus
                 # barisnya di transaksi ini; objeknya SESUDAH commit. Tautan hub -> trigger V308.
                 berkas = await lepas_berkas_milik(conn, "sales_invoices", invoice_id)
-                await conn.execute(
-                    "DELETE FROM sales_invoices WHERE id = $1", invoice_id
-                )
+                if not await conn.fetchval(
+                    "DELETE FROM sales_invoices WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+                    invoice_id, ctx["tenant_id"],
+                ):
+                    raise HTTPException(status_code=409, detail="Faktur sudah berubah status. Muat ulang halaman.")
+                resp = {
+                    "success": True,
+                    "message": "Faktur dihapus",
+                    "data": {
+                        "status": "draft",
+                        "id": str(invoice_id),
+                        "invoice_number": invoice["invoice_number"],
+                    },
+                }
+                if kp:
+                    resp = await idem_buat.simpan(conn, ctx, kp, sidik, "SI_DELETE", resp, invoice_id)
 
             await hapus_objek_sesudah_commit(berkas, f"hapus draf faktur {invoice_id}")
             logger.info(f"Invoice deleted: {invoice_id}")
-
-            return {
-                "success": True,
-                "message": "Faktur dihapus",
-                "data": {
-                    "status": "draft",
-                    "id": str(invoice_id),
-                    "invoice_number": invoice["invoice_number"],
-                },
-            }
+            return resp
 
     except HTTPException:
         raise
