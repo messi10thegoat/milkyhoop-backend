@@ -88,10 +88,13 @@ async def _pratinjau_konfirmasi(conn, ctx, i):
 
 
 async def _pratinjau_hapus(conn, ctx, i):
+    """AS-G7-M1: penentu YANG SAMA dengan _tulis_hapus (rencana_hapus_so, baca saja) + nomor; inti penulis tak dijalankan."""
     blok = await SO.rencana_hapus_so(conn, ctx, str(i))
     if blok:
         return blok, None
-    return [], await SO.hapus_so_draf_core(conn, ctx, str(i))  # inti yang SAMA, di-rollback bersama transaksi pratinjau
+    nomor = await conn.fetchval("SELECT order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2", SO._so_uuid(str(i)),
+                                ctx["tenant_id"])
+    return [], {"order_number": nomor}  # bentuk SAMA dengan hapus_so_draf_core
 
 
 AKSI = {
@@ -110,7 +113,7 @@ def _pasang(aksi: str):
         ids = bulk.validasi_ids(body.ids, "tulis")
         pool = await get_pool()
         return {"success": True, "data": await bulk.pratinjau_per_item(
-            pool, ctx, aksi, ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids))}
+            pool, ctx, aksi, ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids), baca_saja=True)}  # confirm (G7a) + delete (M1)
 
     @router.post(f"/bulk/{aksi}")
     async def bulk_tulis(request: Request, body: BulkAksiRequest):

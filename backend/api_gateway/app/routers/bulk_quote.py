@@ -88,10 +88,12 @@ async def _tulis_hapus(conn, ctx, i):
 
 
 async def _pratinjau_hapus(conn, ctx, i):
+    """AS-G7-M1: penentu YANG SAMA dengan _tulis_hapus (rencana_hapus_penawaran, baca saja) + nomor; inti penulis tak dijalankan."""
     blok = await Q.rencana_hapus_penawaran(conn, ctx, i)
     if blok:
         return blok, None
-    return [], await Q.hapus_penawaran_core(conn, ctx, i)  # inti yang SAMA, di-rollback bersama transaksi pratinjau
+    nomor = await conn.fetchval("SELECT quote_number FROM quotes WHERE id = $1 AND tenant_id = $2", _uuid(i), ctx["tenant_id"])
+    return [], {"quote_number": nomor}  # bentuk SAMA dengan hapus_penawaran_core
 
 
 AKSI = {
@@ -99,6 +101,10 @@ AKSI = {
     "send": (_tulis_kirim, _pratinjau_kirim),
 }
 assert set(AKSI) <= bulk.AKSI_DIIZINKAN  # setiap aksi di berkas ini harus ada di daftar putih
+
+
+# AS-G7-M1: aksi yang pratinjaunya penentu baca saja (transaksi luar READ ONLY). "send" masih inti + rollback sampai AS-G7-M2.
+AKSI_BACA_SAJA = ("delete",)
 
 
 def _pasang(aksi: str):
@@ -110,7 +116,8 @@ def _pasang(aksi: str):
         ids = bulk.validasi_ids(body.ids, "tulis")
         pool = await get_pool()
         return {"success": True, "data": await bulk.pratinjau_per_item(
-            pool, ctx, aksi, ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids))}
+            pool, ctx, aksi, ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids),
+            baca_saja=aksi in AKSI_BACA_SAJA)}
 
     @router.post(f"/bulk/{aksi}")
     async def bulk_tulis(request: Request, body: BulkAksiRequest):

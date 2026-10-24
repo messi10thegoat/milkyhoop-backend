@@ -57,10 +57,11 @@ def _uuid(i):
     return i if isinstance(i, uuid.UUID) else uuid.UUID(str(i))
 
 
-async def _blok_batal(conn, ctx, i, alasan) -> list:
-    """SEMUA penghalang batal-draf tanpa menulis: 404 / bukan draf + blok penentu _rencana_batal (sudah batal, alasan, uang muka)."""
+async def _blok_batal(conn, ctx, i, alasan, kunci: bool = True) -> list:
+    """SEMUA penghalang batal-draf tanpa menulis: 404 / bukan draf + blok penentu _rencana_batal (sudah batal, alasan, uang muka).
+    kunci=True (tulis): kunci PROFORMA_SO lewat PF._kunci_proforma; kunci=False (pratinjau AS-G7-M1, READ ONLY): baca biasa, 404 sama."""
     try:
-        cur = await PF._kunci_proforma(conn, ctx, _uuid(i))
+        cur = await (PF._kunci_proforma(conn, ctx, _uuid(i)) if kunci else _baca_proforma(conn, ctx, _uuid(i)))
     except HTTPException as e:  # 404 teks -> kode stabil (satu blok oleh pemanggil)
         if e.status_code == 404 and not isinstance(e.detail, dict):
             raise HTTPException(status_code=404, detail={"code": "PROFORMA_TAK_ADA", "message": e.detail})
@@ -74,6 +75,14 @@ async def _blok_batal(conn, ctx, i, alasan) -> list:
     return blok
 
 
+async def _baca_proforma(conn, ctx, pid):
+    """Baca proforma TANPA kunci (pratinjau); 404 dengan teks YANG SAMA dengan PF._kunci_proforma."""
+    cur = await conn.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, ctx["tenant_id"])
+    if not cur:
+        raise HTTPException(status_code=404, detail="Proforma tidak ditemukan.")
+    return cur
+
+
 def _fungsi(alasan: Optional[str]):
     async def tulis(conn, ctx, i):
         blok = await _blok_batal(conn, ctx, i, alasan)
@@ -82,11 +91,12 @@ def _fungsi(alasan: Optional[str]):
         return await PF.batal_proforma_core(conn, ctx, _uuid(i), alasan, hanya_draf=True)
 
     async def pratinjau(conn, ctx, i):
-        blok = await _blok_batal(conn, ctx, i, alasan)
+        """AS-G7-M1: penentu YANG SAMA dengan tulis tanpa kunci; status sesudah = 'cancelled' (== _tulis_batal); inti tak dijalankan."""
+        blok = await _blok_batal(conn, ctx, i, alasan, kunci=False)
         if blok:
             return blok, None
-        data = await PF.batal_proforma_core(conn, ctx, _uuid(i), alasan, hanya_draf=True)  # inti yang SAMA, di-rollback bersama pratinjau
-        return [], {"proforma_number": data.get("proforma_number"), "status": data.get("status")}
+        nomor = await conn.fetchval("SELECT proforma_number FROM proformas WHERE id = $1 AND tenant_id = $2", _uuid(i), ctx["tenant_id"])
+        return [], {"proforma_number": nomor, "status": "cancelled"}
     return tulis, pratinjau
 
 
@@ -100,7 +110,8 @@ async def bulk_cancel_preview(request: Request, body: BulkBatalRequest):
     ids = bulk.validasi_ids(body.ids, "tulis")
     pool = await get_pool()
     _, pratinjau = _fungsi(body.reason)
-    return {"success": True, "data": await bulk.pratinjau_per_item(pool, ctx, "cancel", ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids))}
+    return {"success": True, "data": await bulk.pratinjau_per_item(pool, ctx, "cancel", ids, pratinjau, await _nomor(pool, ctx["tenant_id"], ids),
+                                                                   baca_saja=True)}
 
 
 @router.post("/bulk/cancel")

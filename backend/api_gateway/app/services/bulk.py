@@ -101,13 +101,16 @@ def _pesan(e: HTTPException) -> tuple:
 
 
 async def pratinjau_per_item(pool, ctx: dict, aksi: str, ids: List[UUID],
-                             fn: Callable[[object, dict, UUID], Awaitable[tuple]], nomor: Optional[dict] = None) -> dict:
+                             fn: Callable[[object, dict, UUID], Awaitable[tuple]], nomor: Optional[dict] = None,
+                             baca_saja: bool = False) -> dict:
     """Pratinjau massal: fn(conn, ctx, id) -> (blok: list[{code,message,...}], ringkasan|None) memakai penentu + inti tunggal YANG
     SAMA. SEMUA item berurutan di SATU transaksi lalu di-ROLLBACK (efek item sebelumnya terlihat oleh yang sesudahnya, mis. kode order
     berurutan, persis tulis nyata); tiap item di savepoint sendiri (HTTPException = blok, tak merusak item lain). Nol tulis."""
     items = []
     async with pool.acquire() as conn:
-        luar = conn.transaction()
+        # AS-G7-M1: aksi yang pratinjaunya penentu baca saja -> transaksi luar READ ONLY (tak ada kunci tulis yang tertahan sampai
+        # item terakhir; tulisan tak sengaja ditolak DB). Aksi lain tetap read-write + ROLLBACK (perilaku lama).
+        luar = conn.transaction(readonly=True) if baca_saja else conn.transaction()
         await luar.start()
         try:
             for i in ids:
