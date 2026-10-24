@@ -657,6 +657,9 @@ app.include_router(goods_receipts.router, prefix="/api/goods-receipts", tags=["g
 
 # Quotes router (Penawaran Harga)
 app.include_router(quotes.router, prefix="/api/quotes", tags=["quotes"])
+# Milkybook (paket aktivasi 24 Okt; flag tenant milkybook_v1 mati = 404). Impor berat malas di app/milkybook/pasang.py.
+from .milkybook.pasang import milkybook_router  # noqa: E402
+app.include_router(milkybook_router(), prefix="/api/milkybook", tags=["milkybook"])
 app.include_router(proformas.router, prefix="/api/proformas", tags=["proformas"])
 app.include_router(
     proformas.so_router, prefix="/api/sales-orders", tags=["proformas"]

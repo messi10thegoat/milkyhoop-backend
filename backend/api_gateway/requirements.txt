@@ -103,3 +103,5 @@ weasyprint==67.0
 webencodings==0.5.1
 websockets==15.0.1
 zopfli==0.4.3
+# Milkybook (24 Okt): SDK Anthropic, versi = yang dipakai eval (rancangan §11). Cek resolver di kontainer sekali-pakai sebelum build.
+anthropic==2.3.0

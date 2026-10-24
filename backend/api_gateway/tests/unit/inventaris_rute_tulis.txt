@@ -69,6 +69,10 @@ POST /api/deliveries/{doc_id}/attachments
 POST /api/deliveries/{delivery_id}/void
 POST /api/deliveries/{delivery_id}/void/preview
 POST /api/metode-serah
+POST /api/milkybook/kartu/{kartu_id}/setuju
+POST /api/milkybook/kartu/{kartu_id}/tolak
+POST /api/milkybook/sesi
+POST /api/milkybook/sesi/{sesi_id}/pesan
 POST /api/quotes/bulk/export
 POST /api/quotes/bulk/send
 POST /api/quotes/bulk/send/preview
