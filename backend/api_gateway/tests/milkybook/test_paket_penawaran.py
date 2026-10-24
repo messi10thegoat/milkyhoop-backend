@@ -10,6 +10,8 @@ import pytest
 
 from app.milkybook.inti.registri import Kelas, Registri
 from app.milkybook.paket import penawaran as pw
+from app.milkybook.paket import penjualan_baca as pb
+from app.milkybook.paket import semua as semua_paket
 
 from .conftest import izin_semua
 
@@ -56,7 +58,8 @@ PETA_SKEMA = {
     "pratinjau_barang_baru": ("schemas/items.py", "CreateItemRequest", None),
     "buat_barang": ("schemas/items.py", "CreateItemRequest", None),
 }
-TOOL = {t.nama: t for t in pw.TOOLS}
+SEMUA_TOOLS = pw.TOOLS + pb.TOOLS
+TOOL = {t.nama: t for t in SEMUA_TOOLS}
 
 
 @pytest.mark.parametrize("nama", sorted(PETA_SKEMA))
@@ -77,7 +80,7 @@ def test_medan_tool_subset_pydantic_dan_wajib_tercakup(nama):
 
 def test_medan_pembuat_jurnal_tidak_bisa_dikirim():
     terlarang = {"ar_opening_balance", "opening_balance_date", "opening_stock", "opening_stock_rate", "opening_stock_date"}
-    for t in pw.TOOLS:
+    for t in SEMUA_TOOLS:
         assert not terlarang & set(t.skema.get("properties", {})), t.nama
         assert t.skema.get("additionalProperties") is False
 
@@ -121,7 +124,7 @@ def test_main_py_memakai_prefiks_yang_diasumsikan():
         assert re.search(rf'include_router\(\s*{mod}\.router,\s*prefix="{re.escape(p)}"', main), (mod, p)
 
 
-@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.jalur and not (t.kelas == Kelas.PREVIEW and t.butuh)], ids=lambda t: t.nama)
+@pytest.mark.parametrize("t", [t for t in SEMUA_TOOLS if t.jalur and not (t.kelas == Kelas.PREVIEW and t.butuh)], ids=lambda t: t.nama)
 def test_rute_tool_ada_di_router_be(t):
     """Termasuk WRITE ber-butuh dan rute aksi NAV: rutenya SUDAH ada, hanya idempotency/pratinjau yang menunggu T0."""
     ada, berkas = _cari_rute(t.metode, t.jalur)
@@ -161,7 +164,7 @@ def _rute_izin():
 IZIN_SENDIRI = {"ringkasan_usaha"}
 
 
-@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.jalur], ids=lambda t: t.nama)
+@pytest.mark.parametrize("t", [t for t in SEMUA_TOOLS if t.jalur], ids=lambda t: t.nama)
 def test_rute_tool_terpetakan_di_tabel_izin(t):
     """Rute tak terpetakan = OWNER saja (izin_rute_pengguna) -> tool hilang untuk staf. Harus terpetakan."""
     j = t.jalur_contoh()
@@ -229,10 +232,10 @@ def test_kartu_pengetahuan_dimuat_dan_menyebut_kekhasan():
 
 def test_tidak_ada_tool_strict():
     """strict dicabut 24 Okt (batas API 20 tool/24 opsional/16 union). Merah = ada yang memasang strict lagi."""
-    assert not [t.nama for t in pw.TOOLS if t.untuk_api().get("strict")]
+    assert not [t.nama for t in SEMUA_TOOLS if t.untuk_api().get("strict")]
 
 
-@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.READ and t.jalur], ids=lambda t: t.nama)
+@pytest.mark.parametrize("t", [t for t in SEMUA_TOOLS if t.kelas == Kelas.READ and t.jalur], ids=lambda t: t.nama)
 def test_nilai_enum_tool_baca_ada_di_router(t):
     """Nilai enum karangan = 422 di BE (Literal). Setiap nilai harus tertulis di berkas router rutenya."""
     berkas = _cari_rute(t.metode, t.jalur)[1]
@@ -240,3 +243,19 @@ def test_nilai_enum_tool_baca_ada_di_router(t):
     for k, v in t.skema["properties"].items():
         for nilai in v.get("enum", []):
             assert f'"{nilai}"' in s, f"{t.nama}.{k}={nilai} tak ada di {berkas}"
+
+
+
+def test_paket_baca_hanya_read_dan_dimuat_semua():
+    assert all(t.kelas == Kelas.READ for t in pb.TOOLS)
+    nama = [p.modul for p in semua_paket()]
+    assert nama == ["penawaran", "penjualan_baca"]
+    r = Registri(semua_paket())
+    for kata in ("menunggu_pembayaran", "belum_diterapkan", "perlu_difaktur", "Jangan menghitung sisa"):
+        assert kata in r.pengetahuan()
+
+
+def test_model_bawaan_sonnet_medium():
+    """Putusan MASTER 24 Okt (rancangan §11.8)."""
+    from app.milkybook.inti import model
+    assert model.MODEL_BAWAAN == "claude-sonnet-5-5" and model.EFFORT_BAWAAN == "medium"
