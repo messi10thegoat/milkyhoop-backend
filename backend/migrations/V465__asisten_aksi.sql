@@ -1,5 +1,10 @@
--- DRAF Milkybook: tabel audit asisten_aksi (append-only). Nomor V ditetapkan MASTER sebelum diterapkan;
--- penerapan = izin pemilik langsung + slot. Tanpa prompt mentah / payload mentah: hanya hash + id (rancangan §3).
+-- V465 (24 Okt 2026, CONVERSATIONAL; blok V465-V469 dari MASTER): tabel audit Milkybook `asisten_aksi` (append-only).
+-- Rancangan FE docs/asisten-rancangan §3/§11.11. Penulis: app/milkybook/inti/audit.py AuditPostgres (kolom == _SQL, dikunci tes).
+-- Tanpa prompt mentah / payload mentah: hanya hash + id. PII hanya sebagai id.
+-- Schema-first (diukur 24 Okt, read-only): nama asisten_aksi / asisten_aksi_tolak_ubah / indeks asisten_aksi% = 0 di milkydb;
+-- tenant_id = TEXT (sama dengan tenant_features, quotes); user_id TEXT tanpa FK (audit append-only; quotes.created_by = uuid).
+-- Penerapan: merge_branch.sh (hanya migrasi) + apply_mig.sh dengan cadangan pg_dump; HANYA izin pemilik langsung + slot MASTER.
+-- Nol data lama disentuh (tabel baru).
 CREATE TABLE IF NOT EXISTS asisten_aksi (
     id                BIGSERIAL PRIMARY KEY,
     tenant_id         TEXT        NOT NULL,
