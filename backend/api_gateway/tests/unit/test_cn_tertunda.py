@@ -129,7 +129,7 @@ def test_router_menyambung_post_dan_void():
     src = open(__import__("app.routers.credit_notes", fromlist=["x"]).__file__).read()
     nkr = __import__("inspect").getsource(__import__("app.services.nota_kredit_rencana", fromlist=["x"]))
     # NK-RENCANA-B (23 Okt): porsi + penjagaan void = penentu bersama (services/nota_kredit_rencana), dipanggil inti SESUDAH kunci
-    assert "R.cn_tertunda.hitung_untuk_nk(conn, tid, cn, subtotal, kunci=not pratinjau)" in nkr and "cn_tertunda.catat_porsi(" in src
+    assert "R.cn_tertunda.hitung_untuk_nk(\n        conn, tid, cn, subtotal, kunci=not pratinjau," in nkr  # AS-G7b: + item_nk maya and "cn_tertunda.catat_porsi(" in src
     assert nkr.count("cn_tertunda.pulihkan_saat_void(") == 1 and "periksa_saja=True, kunci=not pratinjau" in nkr   # penjagaan
     inti = src[src.index("async def void_nota_kredit_core"):src.index('@router.post("/{credit_note_id}/void"')]
     assert inti.count("cn_tertunda.pulihkan_saat_void(") == 1         # pemulihan sesudah jurnal pembalik

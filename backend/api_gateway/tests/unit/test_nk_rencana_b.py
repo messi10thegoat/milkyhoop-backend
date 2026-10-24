@@ -68,4 +68,4 @@ def test_penentu_meneruskan_kunci_hanya_saat_tulis():
     b = inspect.getsource(NKR.rencana_batal_nk)
     assert "kunci=not pratinjau" in p and p.count("kunci=not pratinjau") == 2   # periksa_bisa_dinotakan + hitung_untuk_nk
     assert "kunci=not pratinjau" in b and '("" if pratinjau else " FOR UPDATE")' in b
-    assert "_rencana_restock_nk(conn, ctx, cn, bl) if pratinjau else []" in p   # restock tulis tetap di loop penulis
+    assert "_rencana_restock_nk(conn, ctx, cn, bl, items=baris_nk, semua=maya is not None) if pratinjau else []" in p  # AS-G7b: + maya   # restock tulis tetap di loop penulis

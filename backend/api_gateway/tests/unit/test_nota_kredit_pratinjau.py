@@ -1,8 +1,8 @@
 """POST /credit-notes/preview (30 Sep 2026, F2 c, halaman CW nota kredit).
 
 Rencana (_rencana_nota_kredit) mengumpulkan SEMUA penghalang lewat helper yang SAMA dengan inti; bila bersih,
-buat_nota_kredit + posting_nota_kredit (isi transaksi rute create/post lama, dipindah utuh; paritas byte 9 skenario di
-salinan DB, kontrol merah memerah) jalan di savepoint, jurnal yang lahir dibaca, transaksi SELALU di-ROLLBACK.
+AS-G7b (24 Okt 2026): penentu posting (nota_kredit_rencana.rencana_posting_nk) atas NK MAYA di transaksi READ ONLY -- dulu
+buat_nota_kredit + posting_nota_kredit NYATA di savepoint lalu rollback. Paritas LAMA == BARU = harness uji-nyata-as-g7b.
 """
 import os
 from datetime import date
@@ -71,7 +71,8 @@ class _C:
     def __init__(self, periode=None):
         self.periode, self.tx, self.q = periode, [], []
 
-    def transaction(self):
+    def transaction(self, **kw):
+        self.tx.append(("tx", kw))
         return _Tx(self)
 
     async def execute(self, sql, *a):
@@ -150,18 +151,35 @@ def pasang(monkeypatch):
             return Decimal("80000")
         monkeypatch.setattr(CN, "get_invoice_remaining_from_journal", sisa)
 
-        async def buat(conn, ctx, body):
+        async def buat(conn, ctx, body):  # AS-G7b: pratinjau TAK BOLEH memanggil penulis
             rekam["buat"] += 1
-            rekam["tx_buat"] = list(conn.tx)
-            return {"data": {"id": str(UUID(int=9)), "credit_note_number": "CN-2609-0031"}}
         monkeypatch.setattr(CN, "buat_nota_kredit", buat)
 
         async def post(conn, ctx, cid):
             rekam["post"] += 1
-            if inti_gagal:
-                raise HTTPException(400, inti_gagal)
-            return {"data": {"status": "posted"}}
         monkeypatch.setattr(CN, "posting_nota_kredit", post)
+
+        from app.services import nota_kredit_rencana as NKR
+
+        async def nomor(conn, tid):
+            return "CN-2609-0031"
+        monkeypatch.setattr(NKR, "perkiraan_nomor_nk", nomor, raising=False)
+
+        async def rencana(conn, ctx, cn_id, pratinjau=False, maya=None):
+            rekam["maya"] = maya
+            bl = NKR.Blok(True)
+            if inti_gagal:
+                bl.galat("CN_RETUR_MELEBIHI_TERKIRIM", 400, inti_gagal)
+            return {"blocks": bl, "cn": maya["cn"], "akun": {"ar": "AR", "retur": "RT", "dimuka": None, "pajak": None, "krd": None},
+                    "u": Decimal("0"), "subtotal": Decimal("50000"), "pajak": Decimal("0"), "porsi_ar": Decimal("50000"),
+                    "kelebihan": Decimal("0"), "restock": []}
+        monkeypatch.setattr(NKR, "rencana_posting_nk", rencana, raising=False)
+
+        async def tampil(conn, tid, baris):
+            nama = {"AR": ("1-10400", "Piutang Usaha"), "RT": ("4-10300", "Retur Penjualan")}
+            return [{"account_code": nama[a][0], "account_name": nama[a][1], "debit": float(d), "credit": float(k), "memo": m}
+                    for a, d, k, m in baris]
+        monkeypatch.setattr(NKR, "_tampil", tampil, raising=False)
 
         async def pra(*a, **k):
             return None
@@ -203,14 +221,18 @@ async def test_diskon_dan_lebih_faktur(pasang):
 
 
 @pytest.mark.asyncio
-async def test_bersih_buat_lalu_posting_di_savepoint_lalu_rollback(pasang):
+async def test_bersih_penentu_posting_atas_nk_maya_read_only(pasang):
+    """AS-G7b: penentu posting atas NK maya (id acak, baris dari kalkulator) di transaksi READ ONLY; penulis TAK dipanggil."""
     c = pasang(_C())
     d = await _pv()
     assert d["ok"] is True and d["blocks"] == []
-    assert pasang.rekam["buat"] == 1 and pasang.rekam["post"] == 1
-    assert pasang.rekam["tx_buat"][-1] == "sp"  # inti di savepoint
-    assert c.tx[0] == "start" and c.tx[-1] == "rollback"  # SELALU rollback
-    assert d["credit_note_number_preview"] == "CN-2609-0031" and d["total_amount"] == 55500.0
+    assert pasang.rekam["buat"] == 0 and pasang.rekam["post"] == 0
+    assert c.tx[0] == ("tx", {"readonly": True}) and c.tx[1] == "start" and c.tx[-1] == "rollback"
+    maya = pasang.rekam["maya"]
+    assert maya["cn"]["status"] == "draft" and maya["cn"]["original_invoice_id"] == INV and isinstance(maya["cn"]["id"], UUID)
+    assert [i["subtotal"] for i in maya["items"]] == [Decimal("50000")]
+    assert d["credit_note_number_preview"] == "CN-2609-0031" and d["credit_note_number_estimated"] is True
+    assert d["total_amount"] == 55500.0 and d["journals_on_post"][0]["journal_number"] is None
     assert d["journals_on_post"][0]["lines"][1] == {"account_code": "1-10400", "account_name": "Piutang Usaha",
                                                     "debit": 0.0, "credit": 50000.0}
     # 30 Sep: NK bertaut LANGSUNG memotong sisa tagihan saat posting (diukur nyata CN-2609-0030) -> sebelum/sesudah
@@ -223,8 +245,9 @@ async def test_bersih_buat_lalu_posting_di_savepoint_lalu_rollback(pasang):
 async def test_penolakan_inti_jadi_blok(pasang):
     pasang(_C(), inti_gagal="Retur X melebihi yang terkirim")
     d = await _pv()
-    assert _kode(d) == ["CN_REJECTED"] and d["blocks"][0]["message"] == "Retur X melebihi yang terkirim"
+    assert _kode(d) == ["CN_REJECTED"] and d["blocks"][0]["message"] == "Retur X melebihi yang terkirim"  # blok penentu posting
     assert d["payload"] is None and d["journals_on_post"] == [] and d["credit_note_number_preview"] is None
+    assert pasang.rekam["buat"] == 0 and pasang.rekam["post"] == 0
 
 
 def _fungsi(nama):
