@@ -173,6 +173,9 @@ class _ConnUrut:
 
     async def fetchval(self, q, *a):
         self._catat(q)
+        # DELETE bersyarat ... RETURNING id (AS-G8): baris induk masih draf -> terhapus -> id kembali
+        if q.lstrip().startswith("DELETE") and "RETURNING id" in q:
+            return self.baris_induk["id"]
         return None
 
     async def fetch(self, q, *a):

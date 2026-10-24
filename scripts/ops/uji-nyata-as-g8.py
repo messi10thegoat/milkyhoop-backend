@@ -112,18 +112,24 @@ async def tulis():
             u3 = await coba(SR.update_invoice(req(uid, "TESG8-K"), uuid.UUID(SI_U), UR(notes="TES E2E ubah B"), **kw()))
             e1 = await jepret(c, [SI_U])
             h["U"] = {"r": [u1, u2, u3], "notes": await c.fetchval("SELECT notes FROM sales_invoices WHERE id = $1", uuid.UUID(SI_U))}
+        finally:
+            await sp.rollback()
+        sp = c.transaction(); await sp.start()
+        try:
+            e1 = await jepret(c, [SI_U])
             p1 = await coba(SR.post_invoice(req(uid, "TESG8-K2"), uuid.UUID(SI_U), **kw()))
             e2 = await jepret(c, [SI_U])
             p2 = await coba(SR.post_invoice(req(uid, "TESG8-K2"), uuid.UUID(SI_U), **kw()))
             e3 = await jepret(c, [SI_U])
-            h["P"] = {"r": [p1, p2], "efek_1": beda(e1, e2), "efek_ulang": beda(e2, e3), "jurnal": e2["jurnal"], "keadaan1": e2}
+            h["P"] = {"r": [p1, p2], "efek_1": beda(e1, e2), "efek_ulang": beda(e2, e3), "jurnal": e2["jurnal"], "keadaan1": e2, "idem_1": int(e2["idem"][0]) - int(e1["idem"][0])}
             x1 = await coba(SR.void_invoice(req(uid, "TESG8-K2"), uuid.UUID(SI_U), VR(reason="TES E2E void"), **kw()))
             e4 = await jepret(c, [SI_U])
             x2 = await coba(SR.void_invoice(req(uid, "TESG8-K2"), uuid.UUID(SI_U), VR(reason="TES E2E void"), **kw()))
             x3 = await coba(SR.void_invoice(req(uid, "TESG8-K2"), uuid.UUID(SI_U), VR(reason="alasan lain"), **kw()))
             e5 = await jepret(c, [SI_U])
             h["X"] = {"r": [x1, x2, x3], "status": await c.fetchval("SELECT status FROM sales_invoices WHERE id = $1", uuid.UUID(SI_U)),
-                      "efek_1": beda(e3, e4), "efek_ulang": beda(e4, e5), "jurnal": e4["jurnal"]}
+                      "efek_1": beda(e3, e4), "efek_ulang": beda(e4, e5), "jurnal": e4["jurnal"], "keadaan1": e4,
+                      "idem_1": int(e4["idem"][0]) - int(e3["idem"][0])}
         finally:
             await sp.rollback()
         sp = c.transaction(); await sp.start()
@@ -134,7 +140,8 @@ async def tulis():
             d2 = await coba(SR.delete_invoice(req(uid, "TESG8-K3"), uuid.UUID(SI_D), **kw()))
             e2 = await jepret(c, [SI_D])
             h["D"] = {"r": [d1, d2], "ada": await c.fetchval("SELECT count(*) FROM sales_invoices WHERE id = $1", uuid.UUID(SI_D)),
-                      "efek_1": beda(e0, e1), "efek_ulang": beda(e1, e2), "audit_1": int(e1["audit"][0]) - int(e0["audit"][0]), "keadaan1": e1}
+                      "efek_1": beda(e0, e1), "efek_ulang": beda(e1, e2), "audit_1": int(e1["audit"][0]) - int(e0["audit"][0]), "keadaan1": e1,
+                      "idem_1": int(e1["idem"][0]) - int(e0["idem"][0])}
         finally:
             await sp.rollback()
         sp = c.transaction(); await sp.start()
@@ -240,6 +247,12 @@ async def konk():
     json.dump(out, open("/out/konk.json", "w"), default=str)
 
 
+def setara(lama, baru):
+    """LAMA == BARU pada SEMUA medan keadaan (nomor, status, catatan, total, jurnal, qty SO, audit) kecuali jumlah baris idem (diuji terpisah)."""
+    buang = lambda d: {kk: v for kk, v in d.items() if kk != "idem"}
+    return all(buang(lama[kk]["keadaan1"]) == buang(baru[kk]["keadaan1"]) for kk in "PXD")
+
+
 async def main():
     if MODE == "JEPRET":
         c = await asyncpg.connect(os.environ["DATABASE_URL"], server_settings={"default_transaction_read_only": "on"})
@@ -261,8 +274,10 @@ async def main():
     cek(D["r"] == ["OK", "OK"] and lama["D"]["r"][1] == "404" and D["ada"] == 0 and D["efek_ulang"] == [] and "so_qty" in D["efek_1"]
         and D["audit_1"] >= 1, "(D) hapus draf dari SO: replay (LAMA 404); qty SO dilepas SEKALI; log hapus SEKALI", f"lama {lama['D']['r']} / {D}")
     cek(baru["G"] == ["400", "400"] and lama["G"] == baru["G"], "(G) hapus faktur POSTED berkunci: 400 2x (galat tak dicatat)", f"{lama['G']} / {baru['G']}")
-    cek(lama["P"]["keadaan1"] == P["keadaan1"] and lama["D"]["keadaan1"] == D["keadaan1"] and lama["X"]["jurnal"] == X["jurnal"],
-        "(=) keadaan sesudah panggilan PERTAMA: LAMA == BARU (posting, void, hapus)")
+    cek(setara(lama, baru), "(=) keadaan sesudah panggilan PERTAMA: LAMA == BARU (posting, void, hapus; U dikecualikan: lama menerima badan beda, baru 409 -- diuji di (U))",
+        "" if setara(lama, baru) else str({kk: (lama[kk].get("keadaan1"), baru[kk].get("keadaan1")) for kk in "PXD"}))
+    cek([lama[kk]["idem_1"] for kk in "PXD"] == [0, 0, 0] and [baru[kk]["idem_1"] for kk in "PXD"] == [1, 1, 1],
+        "(=) baris idem panggilan PERTAMA: LAMA 0, BARU +1 (posting, void, hapus)", f"lama {[lama[kk]['idem_1'] for kk in 'PXD']} / baru {[baru[kk]['idem_1'] for kk in 'PXD']}")
     s, e = json.load(open("/out/sebelum.json")), json.load(open("/out/sesudah.json"))
     for kk in SQL_FIX:
         cek(s[kk] == e[kk], f"NET 0 rollback (sesudah proses): {kk}", "" if s[kk] == e[kk] else f"{s[kk]} / {e[kk]}")

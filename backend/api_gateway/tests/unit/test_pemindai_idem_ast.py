@@ -22,6 +22,7 @@ WAJIB = {
     "routers/credit_notes.py": ["post_credit_note", "void_credit_note"],
     "routers/receive_payments.py": ["void_receive_payment", "create_receive_payment"],
     "routers/bill_payments.py": ["create_bill_payment"],
+    "routers/sales_invoices.py": ["update_invoice", "post_invoice", "void_invoice", "delete_invoice"],
 }
 # Celah TERUKUR (24 Okt, BACKEND2): penawaran -> faktur tanpa kunci/FOR UPDATE/idem -- tiket ke MASTER. Pemindai MEMASTIKAN masih tercatat
 # sebagai celah (bila diperbaiki, pindahkan ke WAJIB -- tes ini merah supaya daftar tak basi).
