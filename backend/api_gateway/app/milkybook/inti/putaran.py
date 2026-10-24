@@ -268,7 +268,7 @@ class Putaran:
 
     # ------------------------------------------------------------------ inti putaran
     async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
-        tools = await self.registri.tools_untuk(izin_fn, self.gap_mendarat)
+        tools = [t for t in await self.registri.tools_untuk(izin_fn, self.gap_mendarat) if t.tampil_ke_model]
         peta = {t.nama: t for t in tools}
         api_tools = [t.untuk_api() for t in tools] + [TOOL_TUTUP_KARTU, TOOL_HITUNG_TANGGAL]
         peristiwa: List[dict] = []

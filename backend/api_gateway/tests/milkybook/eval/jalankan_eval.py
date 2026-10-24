@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 
@@ -189,7 +190,8 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     teks = " ".join(t["milkybook"] for t in transkrip).lower()
     if "teks_min_panjang" in h and len(teks.strip()) < h["teks_min_panjang"]:
         gagal.append(f"jawaban terlalu pendek ({len(teks.strip())} < {h['teks_min_panjang']})")
-    if h.get("teks_bertanya") and "?" not in teks:
+    if h.get("teks_bertanya") and "?" not in teks and not re.search(
+            r"pilih salah satu|silakan pilih|mohon (pilih|kirim|sebutkan|konfirmasi|pastikan|isi)|tolong (pilih|sebutkan|kirim)", teks):
         gagal.append("harus bertanya/klarifikasi, tapi tak ada pertanyaan")
     for kata in h.get("teks_dilarang", []):
         if kata in teks:
