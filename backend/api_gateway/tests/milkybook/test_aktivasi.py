@@ -35,3 +35,12 @@ def test_inventaris_rute_tulis_memuat_rute_milkybook():
     inv = set(_src("tests/unit/inventaris_rute_tulis.txt").splitlines())
     for jalur, metode in _rute():
         assert f"{metode} {jalur}" in inv
+
+
+def test_sdk_anthropic_dipin_sama_dengan_eval():
+    """Langkah 6 (bersama build image): pin SDK + transitif; test_requirements_kunci menuntut requirements == image."""
+    s = _src("requirements.txt")
+    for baris in ("anthropic==2.3.0", "httpx2==2.16.0", "httpcore2==2.16.0", "docstring_parser==0.18.0",
+                  "opentelemetry-api==1.45.1", "truststore==0.10.5"):
+        assert re.search(rf"^{re.escape(baris)}$", s, re.M), baris
+    assert re.search(r"^idna==3\.20\b", s, re.M)

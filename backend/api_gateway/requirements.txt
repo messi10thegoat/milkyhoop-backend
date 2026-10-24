@@ -48,7 +48,7 @@ h11==0.16.0
 httpcore==1.0.9
 httptools==0.6.4
 httpx==0.28.1
-idna==3.10
+idna==3.20  # 24 Okt: dinaikkan dari 3.10 — httpx2 2.16.0 (dependensi anthropic 2.3.0) menuntut idna>=3.18
 Jinja2==3.1.6
 jiter==0.10.0
 jmespath==1.1.0
@@ -103,3 +103,11 @@ weasyprint==67.0
 webencodings==0.5.1
 websockets==15.0.1
 zopfli==0.4.3
+# Milkybook (24 Okt): SDK Anthropic, versi = yang dipakai eval (rancangan §11). Cek resolver di kontainer sekali-pakai sebelum build.
+anthropic==2.3.0
+# transitif baru anthropic 2.3.0 (resolver di kontainer sekali-pakai dari image gateway, 24 Okt):
+docstring_parser==0.18.0
+httpx2==2.16.0
+httpcore2==2.16.0
+opentelemetry-api==1.45.1
+truststore==0.10.5
