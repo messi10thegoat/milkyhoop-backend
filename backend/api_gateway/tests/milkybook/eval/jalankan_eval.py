@@ -257,6 +257,12 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         calon = [l for l in be.log if l["metode"] == "GET" and l["jalur"] == qs["jalur"]]
         if not any(cocok(p, l.get("query") or {}) for p in qs["pilihan"] for l in calon):
             gagal.append(f"query {qs['jalur']} tak memuat salah satu {qs['pilihan']} (nyata {[l.get('query') for l in calon]})")
+    if h.get("diskon_10_persen"):
+        pl = next((e["payload"] for e in reversed(kartu) if e["tool"] == "buat_penawaran"), {})
+        dok = pl.get("discount_type") == "percentage" and float(pl.get("discount_value") or 0) == 10
+        brs = all(float(b.get("discount_percent") or 0) == 10 for b in pl.get("items") or [{}])
+        if not (dok or brs):
+            gagal.append(f"diskon 10% tidak ada (dokumen/baris): {pl}")
     if "nav_atau_tanya" in h:
         if h["nav_atau_tanya"] not in nav and "?" not in teks:
             gagal.append(f"tidak membuka {h['nav_atau_tanya']} dan tidak bertanya")

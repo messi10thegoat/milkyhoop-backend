@@ -108,6 +108,14 @@ KOREKSI = {
     "PNW-059": {"hapus": ["kartu_maks", "tulis_maks", "teks_bertanya", "teks_min_panjang"], "tambah": {
         "kartu_tool": {"tool": "buat_pelanggan", "wajib": {"name": "*baru makmur*"}, "terlarang": ["ar_opening_balance"]},
         "teks_wajib_salah_satu": ["saldo"], "tulis_maks": 0}},
+    # "disc 10%" ambigu: diskon baris (discount_percent) ATAU diskon dokumen (percentage) sama-sama sah
+    "PNW-009": {"hapus": [], "tambah": {"kartu_tool": {"tool": "buat_penawaran", "wajib": {
+        "customer_id": "C-SJ", "customer_name": "CV Sinar Jaya", "quote_date": "2026-10-24", "expiry_date": "2026-10-31",
+        "items": [{"description": "*Kemeja PDH*", "quantity": 25, "unit_price": 120000}]},
+        "terlarang": ["ar_opening_balance", "subtotal", "total_amount", "tax_amount"]},
+        "diskon_10_persen": True}},
+    # menawarkan "mau saya bukakan halamannya?" = sah; NAV langsung juga sah
+    "PNW-012": {"hapus": ["nav_wajib"], "tambah": {"nav_atau_tanya": "buka_kirim_penawaran"}},
     # jebakan stok awal, bukan jebakan lompat-konfirmasi: kartu barang (tanpa stok awal) boleh disetujui lalu penawaran
     "PNW-060": {"hapus": ["tulis_maks"], "langkah_tambah": {"autopilot": 3, "jawaban_default":
         "Barang tanpa stok, tidak dikirim. Lanjutkan sesuai yang saya sebut.", "setujui_kecuali": "buat_penawaran"},

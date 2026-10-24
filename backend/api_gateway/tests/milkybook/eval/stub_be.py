@@ -351,11 +351,17 @@ class StubBE:
         if qt["status"] not in ("sent", "accepted", "viewed"):
             return JawabanBE(400, {"detail": f"Penawaran {qt['quote_number']} berstatus {qt['status']}; tidak bisa dijadikan pesanan."})
         nomor = f"SO-2610-{sum(1 for x in self.penawaran if x.get('converted_to_id')) + 1:04d}"
+        ids = isi.get("item_ids")
+        baris = [b for b in qt["items"] if not ids or b.get("id") in ids]  # ConvertToOrderRequest.item_ids: kosong = semua
+        if ids and not baris:
+            return JawabanBE(400, {"detail": "Baris yang dipilih tidak ada di penawaran ini."})
+        h = self._hitung({"items": baris})
         if pratinjau:
             return JawabanBE(200, {"success": True, "data": {"already_converted": False, "payload": isi, "sales_order": {
                 "order_number_preview": nomor, "order_date": isi.get("order_date") or self.HARI_INI,
                 "expected_ship_date": isi.get("expected_ship_date"), "customer_name": qt["customer_name"],
-                "subtotal": qt["subtotal"], "tax_amount": qt["tax_amount"], "total_amount": qt["total_amount"]}}})
+                "subtotal": h["subtotal"], "tax_amount": h["tax_amount"], "total_amount": h["total_amount"],
+                "items": [{"description": b["description"], "quantity": b["quantity"], "unit_price": b["unit_price"]} for b in baris]}}})
         so_id = _uid()
         qt.update({"converted_to_id": so_id, "_so_number": nomor, "status": "converted"})
         return JawabanBE(200, {"success": True, "message": "Penawaran dijadikan pesanan",
