@@ -380,3 +380,34 @@ async def test_penjaga_tanggal_memaksa_koreksi_dan_hitung_tanggal_server():
     hasil = m.permintaan[2]["messages"][-1]["content"][0]["content"]
     assert '"selisih_hari": 2' in hasil and '"hari_sampai": "Senin"' in hasil
     assert any(t["name"] == "hitung_tanggal" for t in m.permintaan[0]["tools"])
+
+
+async def test_hitung_tanggal_tambah_hari():
+    p, m = putaran([panggil(("hitung_tanggal", {"tambah_hari": 14})), teks("Berlaku sampai 7 Nov 2026.")])
+    be, s = be_standar(), sesi()
+    s.hari_ini = HARI
+    await p.giliran(s, "berlaku 2 minggu", be, izin_semua)
+    assert '"sampai": "2026-11-07"' in m.permintaan[1]["messages"][-1]["content"][0]["content"]
+
+
+@pytest.mark.parametrize("isi", [
+    {"blocks": [{"code": "X"}]},
+    {"success": True, "data": {"ok": False, "blocks": [{"code": "ALASAN_WAJIB"}]}},   # void penawaran quotes.py:1750
+    {"success": True, "data": {"ok": False, "blocks": []}},
+    {"can_proceed": False, "blocks": []},                                            # proforma _pratinjau
+    {"success": True, "data": {"can_cancel": False}},
+])
+async def test_pratinjau_menolak_dalam_segala_bentuk_tanpa_kartu(isi):
+    p, _ = putaran([panggil(("ubah_x", {"id": "a1", "jumlah": 2})), teks("Tidak bisa.")])
+    be, s = be_standar(), sesi()
+    be.rute[("POST", "/api/x/a1/edit/preview")] = JawabanBE(200, isi)
+    ev = await p.giliran(s, "ubah", be, izin_semua)
+    assert not [e for e in ev if e["jenis"] == "kartu"] and not s.kartu
+
+
+async def test_pratinjau_lolos_bentuk_data_bersarang_melahirkan_kartu():
+    p, _ = putaran([panggil(("ubah_x", {"id": "a1", "jumlah": 2})), teks("Tinjau.")])
+    be, s = be_standar(), sesi()
+    be.rute[("POST", "/api/x/a1/edit/preview")] = JawabanBE(200, {"success": True, "data": {"ok": True, "blocks": []}})
+    ev = await p.giliran(s, "ubah", be, izin_semua)
+    assert len([e for e in ev if e["jenis"] == "kartu"]) == 1
