@@ -3,8 +3,8 @@
 - kode_order.perkiraan: kode yang AKAN terbit tanpa kunci advisory/penghitung; aturan lompat = _kode_terpakai (sama dengan penerbit).
 - Massal: 'dipesan' membuat kode item berikutnya berurutan persis tulis berurutan.
 Koneksi tiruan MENOLAK tulisan/kunci apa pun pada jalur pratinjau."""
-import ast
 import inspect
+import re
 import uuid
 from datetime import date
 
@@ -141,19 +141,28 @@ async def test_pratinjau_galat_sama_dengan_penulis(so, status, kode):
     assert e.value.status_code == kode
 
 
+PENULIS = re.compile(r"(?<![A-Za-z_])_konfirmasi_so\(")  # panggilan PENULIS; 'pratinjau_konfirmasi_so(' bukan
+
+
+def test_pola_penulis_bisa_gagal():
+    """Kontrol: pola menangkap panggilan penulis, tak tertipu nama pratinjau (dulu substring -> positif palsu)."""
+    assert PENULIS.search("h = await _konfirmasi_so(conn, ctx, oid)") and PENULIS.search("x = SO._konfirmasi_so(c)")
+    assert not PENULIS.search("h = await pratinjau_konfirmasi_so(conn, ctx, oid)")
+
+
 def test_penulis_memakai_penentu_berkunci_sebelum_update_dan_kode():
     src = inspect.getsource(SO._konfirmasi_so)
     i_r = src.index("rencana_konfirmasi_so(conn, ctx, order_id, kunci=True)")
     assert i_r < src.index("UPDATE sales_orders SET status = 'confirmed'") < src.index("_terbitkan_kode(")
     assert "AND status = 'draft'" in src  # UPDATE bersyarat tetap (sabuk pengaman)
     pr = inspect.getsource(SO.pratinjau_konfirmasi_so)
-    assert "kunci=False" in pr and "_konfirmasi_so(" not in pr and "_perkiraan_kode(" in pr
+    assert "kunci=False" in pr and not PENULIS.search(pr) and "_perkiraan_kode(" in pr
     assert '" FOR UPDATE" if kunci else ""' in inspect.getsource(SO.rencana_konfirmasi_so)
 
 
 def test_rute_pratinjau_read_only_tanpa_penulis():
     src = inspect.getsource(SO.preview_confirm_sales_order)
-    assert "conn.transaction(readonly=True)" in src and "pratinjau_konfirmasi_so(" in src and "_konfirmasi_so(conn" not in src
+    assert "conn.transaction(readonly=True)" in src and "pratinjau_konfirmasi_so(" in src and not PENULIS.search(src)
 
 
 @pytest.mark.asyncio
@@ -164,6 +173,7 @@ async def test_massal_pratinjau_kode_berurutan_tanpa_tulis(monkeypatch):
     ctx = dict(CTX)
     c = _BacaConn(last_seq=5, terpakai={"007-10-26"})
     hasil = [(await BS._pratinjau_konfirmasi(c, ctx, uuid.uuid4()))[1]["order_code"] for _ in range(3)]
+    assert not PENULIS.search(inspect.getsource(BS._pratinjau_konfirmasi))
     assert hasil == ["006-10-26", "008-10-26", "009-10-26"]  # 007 terpakai dilompati, tiap item nomor sesudahnya
 
 

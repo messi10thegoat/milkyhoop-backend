@@ -103,13 +103,18 @@ async def kunci():
             await pegang(ca)
             if tx_b:
                 tb = cb.transaction(); await tb.start()
-            t0 = time.monotonic()
-            tugas = asyncio.ensure_future(tantang(cb))
+            t0, selesai = time.monotonic(), {}
+
+            async def tantang_catat():
+                r = await tantang(cb)
+                selesai["t"] = time.monotonic()  # saat penantang SELESAI sendiri (bukan sesudah jeda tetap)
+                return r
+            tugas = asyncio.ensure_future(tantang_catat())
             await asyncio.sleep(jeda)
             menunggu = not tugas.done()
             await ta.rollback(); ta = None
             r = await asyncio.wait_for(tugas, 20)
-            return {"menunggu": menunggu, "detik": round(time.monotonic() - t0, 2), "hasil": r}
+            return {"menunggu": menunggu, "detik": round(selesai["t"] - t0, 2), "hasil": r}
         finally:
             if ta is not None: await ta.rollback()
             if tb is not None: await tb.rollback()
@@ -174,8 +179,10 @@ def banding():
     if pemb != "baru":
         return
     kl, kb = json.load(open("/out/k-lama.json")), json.load(open("/out/k-baru.json"))
-    cek(kl["K1"]["menunggu"] is True, "(K1 kontrol) LAMA: pratinjau MENUNGGU kunci penulis (alat ukur bisa merah)", str(kl["K1"]))
-    cek(kb["K1"]["menunggu"] is False and kb["K1"]["detik"] < 1.5, "(K1) BARU: pratinjau TIDAK menunggu kunci penulis", str(kb["K1"]))
+    # detik = saat pratinjau SELESAI sendiri; A memegang kunci 1,5 dtk lalu ROLLBACK
+    cek(kl["K1"]["menunggu"] is True and kl["K1"]["detik"] >= 1.5,
+        "(K1 kontrol) LAMA: pratinjau MENUNGGU kunci penulis >= 1,5 dtk (alat ukur bisa merah)", str(kl["K1"]))
+    cek(kb["K1"]["menunggu"] is False and kb["K1"]["detik"] < 1.0, "(K1) BARU: pratinjau selesai < 1 dtk walau kunci penulis dipegang", str(kb["K1"]))
     cek(kb["K2"]["menunggu"] is True and kb["K2"]["hasil"] == "confirmed" and kl["K2"]["menunggu"] is True,
         "(K2) penulis||penulis SO sama: penantang menunggu lalu jalan sesudah A rollback (LAMA == BARU)", f"{kl['K2']} / {kb['K2']}")
     if kb["kode_aktif"]:

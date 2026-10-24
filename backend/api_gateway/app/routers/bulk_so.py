@@ -59,7 +59,9 @@ async def _konfirmasi(conn, ctx, i, fn=None, *arg):
     """Jalur tunggal _konfirmasi_so (tulis) / pratinjau_konfirmasi_so (pratinjau, penentu yang sama); hanya memberi KODE stabil
     pada galat teksnya (FE/pratinjau/tulis seragam)."""
     try:
-        return await (fn or SO._konfirmasi_so)(conn, ctx, str(i), *arg)
+        if fn is None:
+            return await SO._konfirmasi_so(conn, ctx, str(i))
+        return await fn(conn, ctx, str(i), *arg)
     except HTTPException as e:
         if isinstance(e.detail, dict):
             raise
