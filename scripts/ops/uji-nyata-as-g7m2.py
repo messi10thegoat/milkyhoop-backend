@@ -102,6 +102,29 @@ async def semua(cx, uid, k):
     return out
 
 
+VARIAN_TES = [  # (status, selisih hari masa berlaku | None) -- syarat MASTER: jalur SUKSES kirim lebih dari satu kasus
+    ("draft", None), ("draft", 10), ("draft", 0), ("draft", -1), ("sent", 5), ("sent", -1)]
+
+
+async def penawaran_tes(c, uid):
+    """Penawaran TES E2E dibuat DI DALAM transaksi pemanggil (SELALU di-ROLLBACK; nol commit): klon baris penawaran kaos dengan id
+    deterministik (sama di pohon LAMA & BARU) + nomor/status/masa berlaku per varian. -> [id]."""
+    hari = await c.fetchval("SELECT tanggal_bisnis($1)", T)
+    dasar = await c.fetchval("SELECT id FROM quotes WHERE tenant_id = $1 ORDER BY created_at, id LIMIT 1", T)
+    assert dasar, "kaos tanpa penawaran dasar"
+    ids = []
+    for n, (st, sel) in enumerate(VARIAN_TES, 1):
+        qid = uuid.uuid5(uuid.NAMESPACE_URL, f"as-g7m2-tes-{n}")
+        await c.execute(
+            """INSERT INTO quotes SELECT (jsonb_populate_record(NULL::quotes, to_jsonb(q) || jsonb_build_object(
+                   'id', $2::uuid, 'quote_number', $3::text, 'status', $4::text, 'expiry_date', $5::date,
+                   'sent_at', CASE WHEN $4 = 'sent' THEN now() END, 'converted_to_id', NULL))).*
+               FROM quotes q WHERE q.id = $1""",
+            dasar, qid, f"TES-E2E-G7M2-{n}", st, (hari + __import__("datetime").timedelta(days=sel)) if sel is not None else None)
+        ids.append(str(qid))
+    return ids
+
+
 async def pratinjau():
     c = await asyncpg.connect(os.environ["DATABASE_URL"])
     if NAMA == "lama" or not os.path.exists("/out/kasus.json"):
@@ -109,6 +132,24 @@ async def pratinjau():
         json.dump({"uid": str(uid), "k": k}, open("/out/kasus.json", "w"))
     d = json.load(open("/out/kasus.json"))
     out = await semua(c, d["uid"], d["k"])
+    # jalur SUKSES kirim: penawaran TES E2E di transaksi luar yang SELALU di-ROLLBACK. Catatan: di dalam transaksi luar, transaksi READ ONLY
+    # pratinjau menjadi SAVEPOINT (asyncpg mengabaikan READ ONLY untuk transaksi bersarang) -- penjaga READ ONLY diuji di kasus utama di atas.
+    from fastapi import HTTPException
+    from app.routers import bulk_quote as BQ, dokumen as D
+    tx = c.transaction(); await tx.start()
+    try:
+        ids = await penawaran_tes(c, d["uid"])
+        pv = next(r.endpoint for r in BQ.router.routes if r.endpoint.__name__ == "bulk_send_preview")
+        tes = {"send": rapi(await pv(req(d["uid"]), BQ.BulkAksiRequest(ids=ids)))}
+        tes["share1"] = []
+        for i in ids:
+            try:
+                tes["share1"].append({"ok": rapi(await D.pratinjau_bagikan_dokumen(req(d["uid"]), "quotation", i))})
+            except HTTPException as e:
+                tes["share1"].append({"galat": [e.status_code, rapi(e.detail)]})
+        out["tes"] = tes
+    finally:
+        await tx.rollback()
     s = out["send"].get("ok", {}).get("data", {})
     print(f"REKAM {NAMA} send {s.get('total')} (lolos {s.get('ok_count')}); share1 " +
           ", ".join(f"{kd}:{len(v)}" for kd, v in out["share1"].items()) + f"; sharem {len(out['sharem'])} modul", flush=True)
@@ -203,6 +244,12 @@ def banding():
     lama = json.load(open("/out/p-lama.json"))
     pemb = os.environ.get("PEMBANDING", "baru")
     baru = json.load(open(f"/out/p-{pemb}.json"))
+    tl, tb = lama["tes"], baru["tes"]
+    lolos_tes = tl["send"]["data"]["ok_count"]
+    bd = jalur_beda(tl, tb)
+    kode = sorted({b["code"] for x in tl["send"]["data"]["items"] for b in x["blocks"]})
+    cek(not bd and lolos_tes >= 3, f"(P-send-tes) {len(VARIAN_TES)} penawaran TES E2E (ROLLBACK): kirim massal + bagikan tunggal LAMA == BARU "
+        f"semua medan (lolos kirim {lolos_tes}, blok {kode})", "; ".join(bd[:5]))
     s = lama["send"].get("ok", {}).get("data", {})
     bd = jalur_beda(lama["send"], baru["send"])
     cek(not bd and s.get("total", 0) > 1, f"(P-send) pratinjau kirim massal LAMA == BARU semua medan ({s.get('total')} item, lolos {s.get('ok_count')})",
