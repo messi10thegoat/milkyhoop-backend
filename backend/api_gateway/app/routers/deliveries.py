@@ -5,7 +5,7 @@ Read-only endpoints for delivery management (invoice_fulfillments wrapper).
 Create still uses POST /api/sales-invoices/{id}/fulfill.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from datetime import date
 import logging
@@ -669,13 +669,71 @@ async def get_delivery_history(delivery_id: str, request: Request, limit: int = 
     return {"success": True, "data": data}
 
 
+async def _rencana_serah(conn, tid: str, fid, body) -> dict:
+    """AS-G4 (24 Okt 2026): penentu ubah serah-terima SATU untuk PUT dan pratinjau (pratinjau == tulis). Baca saja (kunci di PUT).
+    Galat = HTTPException SAMA dengan sebelum refaktor: flag mati 409 SERAH_NONAKTIF, SJ tak ada 404, SJ_VOID 409, SERAH_TIDAK_SAH 422."""
+    await _serah.pastikan_aktif(conn, tid)
+    sj = await conn.fetchrow(
+        """SELECT f.id, f.fulfillment_number, f.status, COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id
+           FROM invoice_fulfillments f
+           LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
+           WHERE f.id = $1 AND f.tenant_id = $2""", fid, tid)
+    if not sj:
+        raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
+    if sj["status"] == "voided":
+        raise HTTPException(status_code=409, detail={
+            "code": "SJ_VOID", "message": "Surat Jalan ini sudah dibatalkan, serah-terimanya tak bisa diubah."})
+    lama = (await _serah.muat(conn, tid, [fid]))[str(fid)]
+    s = await _serah.selesaikan(conn, tid, sj["sales_order_id"], body, pakai_bawaan=False)
+    return {"sj": sj, "lama": lama, "s": s}
+
+
+@router.post("/{delivery_id}/serah/preview")
+async def preview_ubah_serah_surat_jalan(delivery_id: str, request: Request, body: dict):
+    """Pratinjau ubah serah-terima (AS-G4): penentu SAMA dengan PUT (_rencana_serah), transaksi READ ONLY, tanpa kunci, nol tulis.
+    200 {success, data:{ok, blocks[{code,message,field?}], sebelum, sesudah, payload}}; galat skema -> DATA_TIDAK_SAH (200)."""
+    from pydantic import ValidationError
+    from .customers import blok_dari_galat, blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        from uuid import UUID as _UUID
+        fid = _UUID(delivery_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
+    try:
+        b = _serah.SerahIn.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "sebelum": None, "sesudah": None, "payload": payload}}
+    bloks, sebelum, sesudah = [], None, None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            try:
+                r = await _rencana_serah(conn, ctx["tenant_id"], fid, b)
+                sebelum = {k: r["lama"][k] for k in ("metode", "kirim_ke", "kirim_ke_sumber", "diterima_pada", "resi")}
+                sesudah = _serah.bentuk(r["s"])
+            except HTTPException as e:
+                if e.status_code == 404:
+                    raise
+                bloks.append(blok_dari_galat(e))
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "sebelum": sebelum, "sesudah": sesudah, "payload": payload}}
+
+
 @router.put("/{delivery_id}/serah")
-async def ubah_serah_surat_jalan(delivery_id: str, request: Request, body: _serah.SerahIn):
+async def ubah_serah_surat_jalan(delivery_id: str, request: Request, body: _serah.SerahIn, response: Response = None):
     """Ganti-seluruhnya cara serah / alamat kirim / resi / tanggal diterima satu Surat Jalan (kontrak pengiriman serah).
     Metadata NON-keuangan: nol jurnal/stok/HPP, TIDAK meng-UPDATE invoice_fulfillments (trigger hitung-ulang SO tak
     terpancing). Periode tertutup BOLEH (K4, MASTER 11 Okt) -- jejaknya audit_logs di transaksi yang sama (Law 8/12).
-    SJ voided -> 409. Kosong = tanpa cara serah (bukan bawaan tenant; bawaan hanya saat membuat)."""
+    SJ voided -> 409. Kosong = tanpa cara serah (bukan bawaan tenant; bawaan hanya saat membuat).
+    AS-G4 (24 Okt 2026): penentu bersama _rencana_serah (== pratinjau POST /serah/preview); X-Idempotency-Key opsional (SJ_SERAH)."""
+    from ..services import idem_buat
     ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
     try:
         from uuid import UUID as _UUID
         fid = _UUID(delivery_id)
@@ -687,19 +745,12 @@ async def ubah_serah_surat_jalan(delivery_id: str, request: Request, body: _sera
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(tid))
             await _serah.pastikan_aktif(conn, tid)
+            kp, sidik, ulang = await idem_buat.mulai_aksi(conn, ctx, kunci, "SJ_SERAH", fid, lambda: body.model_dump(mode="json"), response)
+            if ulang is not None:
+                return ulang
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DELIVERY_SERAH:{tid}:{fid}")
-            sj = await conn.fetchrow(
-                """SELECT f.id, f.fulfillment_number, f.status, COALESCE(f.sales_order_id, si.sales_order_id) AS sales_order_id
-                   FROM invoice_fulfillments f
-                   LEFT JOIN sales_invoices si ON si.id = f.invoice_id AND si.tenant_id = f.tenant_id
-                   WHERE f.id = $1 AND f.tenant_id = $2""", fid, tid)
-            if not sj:
-                raise HTTPException(status_code=404, detail="Surat Jalan tidak ditemukan.")
-            if sj["status"] == "voided":
-                raise HTTPException(status_code=409, detail={
-                    "code": "SJ_VOID", "message": "Surat Jalan ini sudah dibatalkan, serah-terimanya tak bisa diubah."})
-            lama = (await _serah.muat(conn, tid, [fid]))[str(fid)]
-            s = await _serah.selesaikan(conn, tid, sj["sales_order_id"], body, pakai_bawaan=False)
+            r = await _rencana_serah(conn, tid, fid, body)
+            sj, lama, s = r["sj"], r["lama"], r["s"]
             await _serah.tulis(conn, tid, ctx["user_id"], fid, s)
             baru = _serah.bentuk(s)
             nomor = sj["fulfillment_number"]
@@ -708,7 +759,8 @@ async def ubah_serah_surat_jalan(delivery_id: str, request: Request, body: _sera
                 f"Serah-terima Surat Jalan {nomor} diubah",
                 {"lama": {k: lama[k] for k in ("metode", "kirim_ke", "kirim_ke_sumber", "diterima_pada", "resi")},
                  "baru": baru}, source="api:deliveries.serah")
-    return {"success": True, "data": {**baru, "lampiran_jumlah": lama["lampiran_jumlah"]}}
+            resp = {"success": True, "data": {**baru, "lampiran_jumlah": lama["lampiran_jumlah"]}}
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "SJ_SERAH", resp, fid) if kp else resp
 
 
 @router.get("/{delivery_id}/pdf")

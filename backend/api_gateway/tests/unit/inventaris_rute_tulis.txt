@@ -605,6 +605,7 @@ POST /api/vendors/{vendor_id}/opening-balance
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
 POST /{tenant_id}/chat
+POST /api/deliveries/{delivery_id}/serah/preview
 PUT /api/deliveries/{delivery_id}/serah
 PUT /api/employees/{employee_id}
 PUT /api/employees/{employee_id}/salary-config

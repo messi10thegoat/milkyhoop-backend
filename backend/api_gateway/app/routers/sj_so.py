@@ -133,15 +133,22 @@ async def preview_void_sj(request: Request, delivery_id: str, body: Optional[Ala
 
 
 @router.post("/deliveries/{delivery_id}/void")
-async def void_sj(request: Request, delivery_id: str, body: AlasanIn):
+async def void_sj(request: Request, delivery_id: str, body: AlasanIn, response: Response = None):
+    """Batal Surat Jalan. AS-G4 (24 Okt 2026): X-Idempotency-Key opsional (idem_buat.mulai_aksi SJ_VOID) -- ulang ber-kunci = respons
+    SAMA (replay) TANPA memanggil S.void lagi (nol jurnal pembalik kedua); kunci sama + alasan beda = 409."""
     ctx = _ctx(request)
     fid = _uuid(delivery_id)
+    kunci = idem_buat.kunci_dari(request)
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "SJ_VOID", fid, lambda: body.model_dump(mode="json"), response)
+            if lama is not None:
+                return lama
             h = await S.void(conn, ctx, fid, (body.reason or "").strip())  # flag asal 'so' dicek di rencana_void
-            return {"success": True, "ulang": h["ulang"], "message": "Surat Jalan dibatalkan"}
+            resp = {"success": True, "ulang": h["ulang"], "message": "Surat Jalan dibatalkan"}
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "SJ_VOID", resp, fid) if kp else resp
 
 
 # ---------------------------------------------------------------------------

@@ -932,6 +932,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/deliveries/[^/]+/pdf$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+/history$", ["GET"], "sales_invoice", "R"),  # U4 riwayat Surat Jalan
     # Serah-terima Surat Jalan (11 Okt 2026): rute /api/deliveries memakai modul sales_invoice (seperti di atas).
+    (r"^/api/deliveries/[^/]+/serah/preview$", ["POST"], "sales_invoice", "U"),  # AS-G4 pratinjau serah (huruf SAMA dgn PUT)
     (r"^/api/deliveries/[^/]+/serah$", ["PUT"], "sales_invoice", "U"),
     (r"^/api/deliveries/[^/]+/attachments$", ["POST"], "sales_invoice", "U"),
     (r"^/api/deliveries/[^/]+/attachments$", ["GET"], "sales_invoice", "R"),
