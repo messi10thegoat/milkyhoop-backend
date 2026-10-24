@@ -1,5 +1,5 @@
 """Cabang aktivasi Milkybook: rute terdaftar di main.py, setiap rute terpetakan izin (first-match), inventaris rute tulis
-memuatnya, dan SDK dipin. Tes teks-sumber (main.py menarik DB/Redis bila diimpor)."""
+memuatnya. Pin SDK ada di cabang feat/milkybook-image (langkah 6, bersama build image: test_requirements_kunci). Tes teks-sumber (main.py menarik DB/Redis bila diimpor)."""
 import ast
 import os
 import re
@@ -35,7 +35,3 @@ def test_inventaris_rute_tulis_memuat_rute_milkybook():
     inv = set(_src("tests/unit/inventaris_rute_tulis.txt").splitlines())
     for jalur, metode in _rute():
         assert f"{metode} {jalur}" in inv
-
-
-def test_sdk_anthropic_dipin_sama_dengan_eval():
-    assert re.search(r"^anthropic==2\.3\.0$", _src("requirements.txt"), re.M)
