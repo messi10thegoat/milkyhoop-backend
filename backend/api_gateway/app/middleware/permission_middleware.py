@@ -415,6 +415,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-deposits/[^/]+/refund/preview$", ["POST"], "vendor_deposit", "V"),
     (r"^/api/vendor-deposits/[^/]+/void/preview$", ["POST"], "vendor_deposit", "V"),
     (r"^/api/vendor-deposits/[^/]+/delete/preview$", ["POST"], "vendor_deposit", "D"),
+    (r"^/api/vendor-deposits/[^/]+/edit/preview$", ["POST"], "vendor_deposit", "U"),  # AS-GP4 pratinjau ubah (huruf SAMA dgn PATCH)
     (r"^/api/vendor-deposits/[^/]+/history$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+/applicable-bills$", ["GET"], "vendor_deposit", "R"),
     (r"^/api/vendor-deposits/[^/]+$", ["GET"], "vendor_deposit", "R"),

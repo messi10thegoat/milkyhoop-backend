@@ -386,9 +386,12 @@ async def create_vendor_deposit(request: Request, data: VendorDepositCreate, res
 
 @router.patch("/{deposit_id}", response_model=VendorDepositResponse)
 async def update_vendor_deposit(
-    request: Request, deposit_id: UUID, data: VendorDepositUpdate
+    request: Request, deposit_id: UUID, data: VendorDepositUpdate, response: Response = None
 ):
-    """Update vendor deposit (draft only)"""
+    """Update vendor deposit (draft only).
+    AS-GP4 (24 Okt 2026): dulu SELECT biasa tanpa kunci + UPDATE tanpa syarat status -> PATCH bersamaan dengan /post bisa mengubah nominal UM
+    yang BARU diposting (dokumen != jurnal). Kini: idem UMV_UPDATE -> kunci VENDOR_DEPOSIT:{id} + FOR UPDATE (urutan SAMA dengan posting /
+    hapus) -> penentu bersama R.rencana_ubah (== POST /{id}/edit/preview) -> UPDATE ... AND status = 'draft'."""
     ctx = get_user_context(request)
     pool = await get_pool()
     # Optimistic concurrency (opt-in If-Match): reject a stale write.
@@ -399,23 +402,41 @@ async def update_vendor_deposit(
         await conn.execute(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
-
-        existing = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id,
-            ctx["tenant_id"],
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Vendor deposit not found")
-
-        if existing["status"] != "draft":
-            raise HTTPException(
-                status_code=400, detail="Can only update draft deposits"
+        async with conn.transaction():
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "UMV_UPDATE", deposit_id,
+                                                         lambda: data.model_dump(mode="json", exclude_unset=True), response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
+            existing = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id,
+                ctx["tenant_id"],
             )
+            if not existing:
+                raise HTTPException(status_code=404, detail="Vendor deposit not found")
 
-        update_data = data.model_dump(exclude_unset=True)
-        if not update_data:
-            vd = await conn.fetchrow(
+            update_data = data.model_dump(exclude_unset=True)
+            _tolak((await R.rencana_ubah(conn, ctx, existing, update_data))["blocks"])  # = /edit/preview
+
+            if update_data:
+                if "payment_method" in update_data:
+                    update_data["payment_method"] = update_data["payment_method"].value
+                set_clauses, params = [], []
+                for i, (key, value) in enumerate(update_data.items(), start=1):
+                    set_clauses.append(f"{key} = ${i}")
+                    params.append(value)
+                set_clauses.append("updated_at = NOW()")
+                params.extend([deposit_id, ctx["tenant_id"]])
+                await conn.execute(
+                    f"""
+                    UPDATE vendor_deposits SET {', '.join(set_clauses)}
+                    WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)} AND status = 'draft'
+                    """,  # nosec B608 -- nama kolom dari skema VendorDepositUpdate, bukan masukan
+                    *params,
+                )
+
+            row = await conn.fetchrow(
                 """
                 SELECT vd.*, v.name as vendor_name, v.code as vendor_code,
                        ba.account_name as bank_account_name
@@ -426,46 +447,14 @@ async def update_vendor_deposit(
                 """,
                 deposit_id,
             )
-            return VendorDepositResponse(**dict(vd))
-
-        if "payment_method" in update_data:
-            update_data["payment_method"] = update_data["payment_method"].value
-
-        set_clauses = []
-        params = []
-        for i, (key, value) in enumerate(update_data.items(), start=1):
-            set_clauses.append(f"{key} = ${i}")
-            params.append(value)
-
-        set_clauses.append("updated_at = NOW()")
-        params.extend([deposit_id, ctx["tenant_id"]])
-
-        await conn.execute(
-            f"""
-            UPDATE vendor_deposits SET {', '.join(set_clauses)}
-            WHERE id = ${len(params) - 1} AND tenant_id = ${len(params)}
-            """,
-            *params,
-        )
-
-        row = await conn.fetchrow(
-            """
-            SELECT vd.*, v.name as vendor_name, v.code as vendor_code,
-                   ba.account_name as bank_account_name
-            FROM vendor_deposits vd
-            JOIN vendors v ON vd.vendor_id = v.id
-            LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id
-            WHERE vd.id = $1
-            """,
-            deposit_id,
-        )
-
-        return VendorDepositResponse(**dict(row))
+            resp = VendorDepositResponse(**dict(row))
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_UPDATE", resp, deposit_id) if kp else resp
 
 
 @router.delete("/{deposit_id}")
-async def delete_vendor_deposit(request: Request, deposit_id: UUID):
-    """Delete vendor deposit (draft only)"""
+async def delete_vendor_deposit(request: Request, deposit_id: UUID, response: Response = None):
+    """Delete vendor deposit (draft only). AS-GP4: idem UMV_DELETE (ulang = 200 replay, bukan 404) + kunci VENDOR_DEPOSIT + FOR UPDATE
+    (urutan SAMA dengan posting)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -474,18 +463,24 @@ async def delete_vendor_deposit(request: Request, deposit_id: UUID):
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        existing = await conn.fetchrow(
-            "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2",
-            deposit_id,
-            ctx["tenant_id"],
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+        async with conn.transaction():
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "UMV_DELETE", deposit_id, {}, response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
+            existing = await conn.fetchrow(
+                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                deposit_id,
+                ctx["tenant_id"],
+            )
+            if not existing:
+                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
 
-        _tolak((await R.rencana_hapus(conn, ctx, existing))["blocks"])  # = /delete/preview
+            _tolak((await R.rencana_hapus(conn, ctx, existing))["blocks"])  # = /delete/preview
 
-        await conn.execute("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", deposit_id, ctx["tenant_id"])
-        return {"message": "Vendor deposit deleted"}
+            await conn.execute("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", deposit_id, ctx["tenant_id"])
+            resp = {"message": "Vendor deposit deleted"}
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_DELETE", resp, deposit_id) if kp else resp
 
 
 # ============================================================================
@@ -860,7 +855,7 @@ async def apply_vendor_deposit(
 
 
 @router.post("/{deposit_id}/applications/{application_id}/unapply")
-async def unapply_vendor_deposit(request: Request, deposit_id: UUID, application_id: UUID):
+async def unapply_vendor_deposit(request: Request, deposit_id: UUID, application_id: UUID, response: Response = None):
     """Lepas SATU penerapan uang muka pembelian dari tagihan (pola QBO/Xero "unapply"). Penulis = services/uang_muka_vendor_lepas.lepas_penerapan
     (SATU penulis, dipakai juga void faktur pembelian -- putusan pemilik 22 Okt: lepas otomatis). Idempoten alami (lepas kedua = 200)."""
     from ..services.uang_muka_vendor_lepas import lepas_penerapan
@@ -869,7 +864,13 @@ async def unapply_vendor_deposit(request: Request, deposit_id: UUID, application
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
         async with conn.transaction():
-            return await lepas_penerapan(conn, ctx, deposit_id, application_id)
+            # AS-GP4: idem UMV_UNAPPLY per penerapan (ulang ber-kunci = respons SAMA); lepas_penerapan tetap idempoten alami tanpa kunci
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "UMV_UNAPPLY", application_id,
+                                                         {"deposit_id": str(deposit_id)}, response)
+            if lama is not None:
+                return lama
+            resp = await lepas_penerapan(conn, ctx, deposit_id, application_id)
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_UNAPPLY", resp, application_id) if kp else resp
 
 
 # ============================================================================
@@ -1062,7 +1063,7 @@ async def refund_vendor_deposit(
 
 
 @router.post("/{deposit_id}/void", response_model=VoidDepositResponse)
-async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional[VoidDepositRequest] = None):
+async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional[VoidDepositRequest] = None, response: Response = None):
     """
     Void vendor deposit (only if not applied).
 
@@ -1086,6 +1087,11 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
         )
 
         async with conn.transaction():
+            # AS-GP4: idem UMV_VOID SEBELUM kunci (ulang ber-kunci = respons SAMA, bukan 409 'sudah dibatalkan')
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "UMV_VOID", deposit_id,
+                                                         lambda: (body.model_dump(mode="json") if body else {}), response)
+            if lama is not None:
+                return lama
             # Law 13: Advisory lock FIRST in transaction
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -1256,12 +1262,13 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
                                 source="api:vendor_deposits.void")
             logger.info(f"Vendor deposit voided: {deposit_id}")
 
-            return VoidDepositResponse(
+            resp = VoidDepositResponse(
                 deposit_id=deposit_id,
                 deposit_number=vd["deposit_number"],
                 status=VendorDepositStatus.void,
                 reversal_journal_id=reversal_id,  # 23 Okt: dulu tak diisi (null) padahal jurnal pembalik ditulis
             )
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_VOID", resp, deposit_id) if kp else resp
 
 
 # ============================================================================
@@ -1452,6 +1459,19 @@ async def preview_delete_vendor_deposit(request: Request, deposit_id: UUID):
     async def isi(conn, ctx):
         vd = await _vd_baca(conn, ctx, deposit_id)
         return _jawab(deposit_id, "delete", await R.rencana_hapus(conn, ctx, vd, pratinjau=True), None)
+    return await _baca_pratinjau(request, isi)
+
+
+@router.post("/{deposit_id}/edit/preview")
+async def preview_edit_vendor_deposit(request: Request, deposit_id: UUID, data: VendorDepositUpdate):
+    """Pratinjau UBAH (AS-GP4): penentu SAMA dengan PATCH /{id} (R.rencana_ubah), READ ONLY tanpa kunci. payload = badan PATCH (exclude_unset)."""
+    async def isi(conn, ctx):
+        vd = await _vd_baca(conn, ctx, deposit_id)
+        perubahan = data.model_dump(exclude_unset=True)
+        r = await R.rencana_ubah(conn, ctx, vd, perubahan, pratinjau=True)
+        out = _jawab(deposit_id, "edit", r, data.model_dump(mode="json", exclude_unset=True))
+        out["data"]["changes"] = r["changes"]
+        return out
     return await _baca_pratinjau(request, isi)
 
 

@@ -41,6 +41,8 @@ KHUSUS = {
     # CW penuh UM Pembelian: buat = POST koleksi, hapus = DELETE (penentu bersama services/uang_muka_vendor_rencana)
     "POST /api/vendor-deposits/preview": "POST /api/vendor-deposits",
     "POST /api/vendor-deposits/{deposit_id}/delete/preview": "DELETE /api/vendor-deposits/{deposit_id}",
+    # AS-GP4 (24 Okt): ubah UM = PATCH (penentu bersama R.rencana_ubah)
+    "POST /api/vendor-deposits/{deposit_id}/edit/preview": "PATCH /api/vendor-deposits/{deposit_id}",
     # Faktur Pembelian tahap 2: ubah draf = PATCH /bills/v2/{id} (penentu bersama services/tagihan_rencana.blok_ubah + hitung)
     "POST /api/bills/{bill_id}/edit/preview": "PATCH /api/bills/v2/{bill_id}",
     "POST /api/bills/{bill_id}/delete/preview": "DELETE /api/bills/{bill_id}",

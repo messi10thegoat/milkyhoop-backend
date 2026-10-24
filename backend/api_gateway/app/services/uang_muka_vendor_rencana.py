@@ -327,6 +327,17 @@ async def rencana_batal(conn, ctx, vd, alasan: Optional[str], hari_ini, pratinja
 
 
 # ---------------------------------------------------------------- hapus (draf)
+async def rencana_ubah(conn, ctx, vd, perubahan: dict, pratinjau: bool = False) -> dict:
+    """AS-GP4 (24 Okt 2026): ubah uang muka DRAF -- penentu SATU untuk PATCH /{id} (sesudah kunci VENDOR_DEPOSIT + FOR UPDATE, urutan SAMA
+    dengan posting) dan POST /{id}/edit/preview (READ ONLY). Blok status = pesan lama (400 "Can only update draft deposits")."""
+    bloks = [] if vd["status"] == "draft" else [blok("BUKAN_DRAF", "Can only update draft deposits")]
+    sebelum = await keadaan(conn, ctx["tenant_id"], vd["id"]) if pratinjau else {}
+    jadi = {k: (str(v) if v is not None and not isinstance(v, (int, float, str, bool)) else v) for k, v in perubahan.items()}
+    return {"blocks": bloks, "before": sebelum, "after": ({**sebelum, **({"amount": _f(perubahan["amount"])} if "amount" in perubahan else {})}
+                                                         if not bloks else sebelum), "changes": jadi,
+            "journals": [], "bank_transactions": [], "bills": []}
+
+
 async def rencana_hapus(conn, ctx, vd, pratinjau: bool = False) -> dict:
     bloks = [] if vd["status"] == "draft" else [blok("BUKAN_DRAF", "Hanya uang muka draf yang bisa dihapus.")]
     sebelum = await keadaan(conn, ctx["tenant_id"], vd["id"]) if pratinjau else {}

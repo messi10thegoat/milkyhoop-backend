@@ -597,6 +597,7 @@ POST /api/vendor-deposits/{deposit_id}/applications/{application_id}/unapply/pre
 POST /api/vendor-deposits/{deposit_id}/apply
 POST /api/vendor-deposits/{deposit_id}/apply/preview
 POST /api/vendor-deposits/{deposit_id}/delete/preview
+POST /api/vendor-deposits/{deposit_id}/edit/preview
 POST /api/vendor-deposits/{deposit_id}/post
 POST /api/vendor-deposits/{deposit_id}/post/preview
 POST /api/vendor-deposits/{deposit_id}/refund

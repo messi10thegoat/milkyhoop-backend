@@ -18,6 +18,8 @@ WAJIB = {
     "routers/sj_so.py": ["create_sj_so", "void_sj"],
     "routers/deliveries.py": ["ubah_serah_surat_jalan"],
     "routers/goods_receipts.py": ["void_goods_receipt"],
+    "routers/vendor_deposits.py": ["create_vendor_deposit", "update_vendor_deposit", "delete_vendor_deposit", "post_vendor_deposit",
+                                   "apply_vendor_deposit", "unapply_vendor_deposit", "refund_vendor_deposit", "void_vendor_deposit"],  # AS-GP4
     # alias (_ib / idem_mulai_aksi) & mekanisme lama -- kontrol positif bahwa alias TERBACA
     "routers/credit_notes.py": ["post_credit_note", "void_credit_note"],
     "routers/receive_payments.py": ["void_receive_payment", "create_receive_payment"],
