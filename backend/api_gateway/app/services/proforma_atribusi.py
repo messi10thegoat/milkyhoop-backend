@@ -130,10 +130,12 @@ async def uang_muka_so(conn, tenant_id: str, so_id) -> list:
     return out
 
 
-async def muat_atribusi(conn, tenant_id: str, so_ids: list, exclude_proforma_id=None) -> dict:
+async def muat_atribusi(conn, tenant_id: str, so_ids: list, exclude_proforma_id=None, ganti_proforma=None) -> dict:
     """{so_id: hasil atribusikan()} — proforma SO (semua status; hanya 'issued' yang bisa dicocokkan) + uang muka SO
     (langsung ber-sales_order_id ATAU lewat proformanya) berstatus BUKAN void/draft. exclude_proforma_id: proforma itu
-    & uang muka yang menunjuknya dikeluarkan (pagar: menghitung ulang plafon untuk proforma yang sedang diubah)."""
+    & uang muka yang menunjuknya dikeluarkan (pagar: menghitung ulang plafon untuk proforma yang sedang diubah).
+    ganti_proforma {deposit_id: proforma_id}: proforma_id uang muka itu diganti SEBELUM disaring/diatribusikan (pratinjau
+    pindah uang muka baca saja, AS-G7c) -- hasil = seperti sesudah UPDATE customer_deposits.proforma_id, tanpa menulis."""
     so_ids = [s for s in {s for s in so_ids if s is not None}]
     if not so_ids:
         return {}
@@ -148,7 +150,10 @@ async def muat_atribusi(conn, tenant_id: str, so_ids: list, exclude_proforma_id=
     # tersedia = diterima − refund). Draf & void tetap di luar. Habis direfund (neto 0): yang TERTAUT tetap (tautannya
     # tampil, nilai 0); yang lepas dikeluarkan (nominal 0 tak boleh "tercocok" ke proforma yang sudah lunas).
     from .uang_muka_pesanan import per_uang_muka
-    deps = [{**d, "amount": d["neto"]} for d in await per_uang_muka(conn, tenant_id, so_ids)
+    baris = await per_uang_muka(conn, tenant_id, so_ids)
+    if ganti_proforma:
+        baris = [{**d, "proforma_id": ganti_proforma[d["id"]]} if d["id"] in ganti_proforma else d for d in baris]
+    deps = [{**d, "amount": d["neto"]} for d in baris
             if d["status"] != "draft" and (d["neto"] > 0 or d["proforma_id"] is not None)
             and (exclude_proforma_id is None or str(d["proforma_id"]) != str(exclude_proforma_id))]
     per_so_p, per_so_d = {s: [] for s in so_ids}, {s: [] for s in so_ids}

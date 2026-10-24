@@ -57,6 +57,7 @@ from ..services import uang_muka_daftar as _umd  # S2-UM (20 Okt 2026): aksi / s
 from ..services.so_riwayat import catat_riwayat
 from ..services.deposit_jenis import jenis_dari_purpose, label_deposit, label_jenis, label_kwitansi, sql_jenis_efektif
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama, segarkan_cache_piutang_faktur
+from ..services import uang_muka_rencana as UMR  # AS-G7c: penentu bersama aksi uang muka (penulis + pratinjau)
 from typing import Optional, Literal
 from uuid import UUID
 from ..services.pihak_helpers import pelanggan_kanonik_tenant
@@ -1818,10 +1819,9 @@ async def post_customer_deposit(request: Request, deposit_id: UUID, response: _R
 
 
 async def apply_deposit_core(conn, ctx, deposit_id, body):
-    """Apply a customer deposit to invoice(s) INSIDE the caller's transaction (unit 6).
-    Body moved verbatim from the /apply handler, which now just calls this -- so the
-    endpoint and posting-time auto-apply share ONE apply path (remaining =
-    compute_deposit_remaining, same guards, same journal). `body` needs .applications
+    """Apply a customer deposit to invoice(s) INSIDE the caller's transaction (unit 6). The endpoint and posting-time
+    auto-apply share ONE apply path. AS-G7c: pemeriksaan (urutan & teks lama) + rencana jurnal = UMR.rencana_terapkan
+    (SAMA dengan /apply/preview, yang kini baca saja), dipanggil SESUDAH kunci. `body` needs .applications
     (each .invoice_id, .amount) and .application_date."""
 
     # Law 13: Advisory lock
@@ -1829,137 +1829,12 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         f"DEPOSIT:{deposit_id}",
     )
-
-    # Get deposit
-    dep = await conn.fetchrow(
-        """
-        SELECT * FROM customer_deposits
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        deposit_id,
-        ctx["tenant_id"],
-    )
-
-    if not dep:
-        raise HTTPException(
-            status_code=404, detail="Uang muka tidak ditemukan."
-        )
-
-    if dep["status"] not in ("posted", "partial"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa diterapkan.",
-        )
-
-    # PIHAK SAMA (13 Sep 2026): dulu TIDAK diperiksa sama sekali -- DP pelanggan
-    # A terbukti (eksekusi, ROLLBACK) bisa melunasi faktur pelanggan B. Diperiksa
-    # di dalam lock, untuk SEMUA faktur, SEBELUM tulis apa pun. customer_deposits.
-    # customer_id VARCHAR vs sales_invoices.customer_id uuid -> dinormalisasi.
-    pelanggan_dp = normalisasi_pihak(dep["customer_id"], "Pelanggan uang muka")
-    for _app in body.applications:
-        _inv = await conn.fetchrow(
-            "SELECT invoice_number, customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
-            UUID(_app.invoice_id),
-            ctx["tenant_id"],
-        )
-        if not _inv:
-            raise HTTPException(
-                status_code=400,
-                detail="Faktur tidak ditemukan.",
-            )
-        pastikan_pihak_sama(
-            pelanggan_dp, _inv["customer_id"], f"Faktur {_inv['invoice_number']}"
-        )
-
-    # FIX_P1_DEPOSIT 2026-06-16 (b): authoritative remaining is
-    # journal-derived (net movement on CUSTOMER_DEPOSIT_LIABILITY
-    # over is_effective journals for this deposit), NOT the cache
-    # subtraction. Correct by construction after un-apply (Law 16).
-    remaining = await compute_deposit_remaining(
-        conn, ctx["tenant_id"], deposit_id
-    )
-    total_to_apply = sum(app.amount for app in body.applications)
-
-    if total_to_apply > remaining:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Nilai penerapan {_rp_dp(total_to_apply)} melebihi sisa {(await label_deposit(conn, ctx['tenant_id'], deposit_id)).lower()} {_rp_dp(remaining)}.",
-        )
-
-    application_date = body.application_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    p = await UMR.rencana_terapkan(conn, ctx, deposit_id, body)
+    dep, application_date = p["dep"], p["application_date"]
     applications_created = []
 
-    # Fase C1.4: Resolve via role mapping (Law 27).
-    # FIX: legacy AR_ACCOUNT_CODE constant (hardcoded 1-10300)
-    # pointed at Kas Kecil
-    # (Petty Cash), NOT Piutang Usaha (which is 1-10400). Apply-
-    # deposit credited the wrong account whenever it was used.
-    # No production records exist for this path (zero apply
-    # journals in DB at migration time) — historical data fix
-    # tracked separately if any tenant triggers it later.
-    deposit_account_id = await resolve_account_id_by_role(
-        conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
-    )
-    ar_account_id = await resolve_account_id_by_role(
-        conn, ctx["tenant_id"], AccountRole.AR_TRADE
-    )
-
-    # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the
-    # Cr line below MUST be AR_TRADE, never REVENUE_DEFERRED.
-    await _assert_ar_side_is_ar_trade(conn, ctx["tenant_id"], ar_account_id)
-
-    for app in body.applications:
-        # Validate invoice
-        # FIX_P1_DEPOSIT 2026-06-16: latent column bug — sales_invoices
-        # has total_amount, not grand_total (apply path never exercised
-        # against real data before P1). Was raising 500 on every apply.
-        invoice = await conn.fetchrow(
-            """
-            SELECT id, customer_id, customer_name, invoice_number,
-                   total_amount, status
-            FROM sales_invoices
-            WHERE id = $1 AND tenant_id = $2
-        """,
-            UUID(app.invoice_id),
-            ctx["tenant_id"],
-        )
-
-        if not invoice:
-            raise HTTPException(
-                status_code=400,
-                detail="Faktur tidak ditemukan.",
-            )
-
-        # Check invoice has balance (Law 16: journal-based)
-        invoice_remaining = await get_invoice_remaining_from_journal(
-            conn, ctx["tenant_id"], UUID(app.invoice_id)
-        )
-        if app.amount > invoice_remaining:
-            raise HTTPException(
-                status_code=400,
-                detail="Nilai penerapan melebihi sisa tagihan faktur.",
-            )
-
-        # Check for existing application.
-        # FIX_P1_DEPOSIT 2026-06-16: exclude reversed (un-applied)
-        # applications so the same deposit can be re-applied to the
-        # same invoice after an un-apply (dead-end fixed).
-        existing = await conn.fetchval(
-            """
-            SELECT id FROM customer_deposit_applications
-            WHERE deposit_id = $1 AND invoice_id = $2
-              AND COALESCE(status, 'active') <> 'reversed'
-        """,
-            deposit_id,
-            UUID(app.invoice_id),
-        )
-
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail="Uang muka ini sudah diterapkan ke faktur itu.",
-            )
-
+    for it in p["items"]:
+        invoice, j = it["invoice"], it["jurnal"]
         # Create journal entry for application
         journal_id = uuid_module.uuid4()
         trace_id = uuid_module.uuid4()
@@ -1980,46 +1855,22 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
                 id, tenant_id, journal_number, journal_date,
                 description, source_type, source_id, trace_id,
                 status, total_debit, total_credit, created_by
-            ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_APPLICATION', $6, $7, 'DRAFT', $8, $8, $9)
+            ) VALUES ($1, $2, $3, $4, $5, $10, $6, $7, 'DRAFT', $8, $8, $9)
         """,
             journal_id,
             ctx["tenant_id"],
             journal_number,
-            application_date,
-            f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
+            j["journal_date"],
+            j["description"],
             deposit_id,
             str(trace_id),
-            app.amount,
+            j["total"],
             ctx["user_id"],
+            j["source_type"],
         )
 
-        # Dr. Customer Deposit Liability
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-        """,
-            uuid_module.uuid4(),
-            journal_id,
-            deposit_account_id,
-            app.amount,
-            f"Aplikasi {await label_deposit(conn, ctx['tenant_id'], deposit_id, kapital=True)} - {invoice['invoice_number']}",
-        )
-
-        # Cr. Accounts Receivable
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-        """,
-            uuid_module.uuid4(),
-            journal_id,
-            ar_account_id,
-            app.amount,
-            f"Pelunasan dari Deposit - {dep['deposit_number']}",
-        )
+        # Dr. Customer Deposit Liability / Cr. Accounts Receivable (rencana; guard #7 AR_TRADE di rencana)
+        await UMR.tulis_baris(conn, journal_id, j["lines"])
 
         # Law 20: Promote DRAFT -> POSTED after all lines inserted
         await conn.execute(
@@ -2040,9 +1891,9 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
             app_id,
             ctx["tenant_id"],
             deposit_id,
-            UUID(app.invoice_id),
+            it["invoice_id"],
             invoice["invoice_number"],
-            app.amount,
+            it["amount"],
             application_date,
             journal_id,
             ctx["user_id"],
@@ -2051,19 +1902,19 @@ async def apply_deposit_core(conn, ctx, deposit_id, body):
         # Status/amount_paid faktur = SATU turunan (services/pihak_helpers.segarkan_cache_piutang_faktur,
         # dari compute_ar_outstanding) untuk SEMUA penulis. Dulu tiap jalur punya aturan sendiri: DP parsial
         # membiarkan 'posted' (25 Sep: 7 faktur grapgrap ber-DP tampil belum dibayar).
-        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], UUID(app.invoice_id))
+        await segarkan_cache_piutang_faktur(conn, ctx["tenant_id"], it["invoice_id"])
         await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_APPLIED",
                             ctx["user_id"],
-                            f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(app.amount)} diterapkan ke faktur {invoice['invoice_number']}",
-                            {"kunci": str(app_id), "application_id": str(app_id), "invoice_id": str(app.invoice_id),
-                             "invoice_number": invoice["invoice_number"], "amount": str(app.amount)})
+                            f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(it['amount'])} diterapkan ke faktur {invoice['invoice_number']}",
+                            {"kunci": str(app_id), "application_id": str(app_id), "invoice_id": str(it["invoice_key"]),
+                             "invoice_number": invoice["invoice_number"], "amount": str(it["amount"])})
 
         applications_created.append(
             {
                 "application_id": str(app_id),
-                "invoice_id": app.invoice_id,
+                "invoice_id": it["invoice_key"],
                 "invoice_number": invoice["invoice_number"],
-                "amount": app.amount,
+                "amount": it["amount"],
             }
         )
 
@@ -2135,9 +1986,8 @@ async def apply_customer_deposit(
 
 
 async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id):
-    """Reverse (un-apply) one application INSIDE the caller's transaction (unit 6).
-    Body moved verbatim from the /reverse handler -- void_invoice cascades through this,
-    so there is ONE un-apply path."""
+    """Reverse (un-apply) one application INSIDE the caller's transaction (unit 6). void_invoice cascades through this,
+    so there is ONE un-apply path. AS-G7c: pemeriksaan + rencana = UMR.rencana_lepas (SAMA dengan pratinjau baca saja)."""
 
     # Law 13: reuse the SAME lock key as apply so apply and
     # un-apply on the same deposit serialize and cannot race.
@@ -2145,27 +1995,11 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         f"DEPOSIT:{deposit_id}",
     )
-
-    # Fetch the application (scoped to deposit + tenant)
-    app_row = await conn.fetchrow(
-        """
-        SELECT * FROM customer_deposit_applications
-        WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3
-        """,
-        application_id,
-        deposit_id,
-        ctx["tenant_id"],
-    )
-    if not app_row:
-        raise HTTPException(
-            status_code=404,
-            detail="Penerapan uang muka tidak ditemukan.",
-        )
+    p = await UMR.rencana_lepas(conn, ctx, deposit_id, application_id)
+    app_row = p["app_row"]
 
     # Idempotency guard: already reversed -> return existing reversal.
-    if (app_row["status"] or "active") == "reversed" or app_row[
-        "reversed_by_id"
-    ]:
+    if p["sudah"]:
         return {
             "success": True,
             "message": "Penerapan sudah dilepas sebelumnya",
@@ -2181,66 +2015,9 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
             },
         }
 
-    original_journal_id = app_row["journal_id"]
-    if not original_journal_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Penerapan uang muka ini tidak punya jurnal untuk dibalik.",
-        )
-
-    # Law 5: period-open check (reversal posts at today).
-    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-    period_row = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-        ctx["tenant_id"],
-        hari_ini,
-    )
-    if period_row and period_row["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.periode_tertutup(None, period_row["status"]),
-        )
-
-    # Defensive: original must not already be reversed (Law 26).
-    orig_je = await conn.fetchrow(
-        "SELECT id, reversed_by_id, status FROM journal_entries WHERE id = $1 AND tenant_id = $2",
-        original_journal_id,
-        ctx["tenant_id"],
-    )
-    if orig_je and orig_je["reversed_by_id"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Jurnal penerapan uang muka ini sudah dibalik.",
-        )
-
-    # Fetch original application journal lines (Dr 2-10500 / Cr AR).
-    original_lines = await conn.fetch(
-        "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
-        original_journal_id,
-    )
-    if not original_lines:
-        raise HTTPException(
-            status_code=400,
-            detail="Jurnal penerapan uang muka ini kosong.",
-        )
-
-    # FIX_P1_DEPOSIT 2026-06-16 (d): invariant guard #7 — the AR
-    # side of the original apply (credit > 0) MUST be AR_TRADE.
-    ar_side_line = next(
-        (ln for ln in original_lines if (ln["credit"] or 0) > 0),
-        None,
-    )
-    if ar_side_line is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Invariant #7: original apply journal missing AR-side credit line",
-        )
-    await _assert_ar_side_is_ar_trade(
-        conn, ctx["tenant_id"], ar_side_line["account_id"]
-    )
-
+    original_journal_id, j = p["original_journal_id"], p["jurnal"]
     reversal_journal_id = uuid_module.uuid4()
-    reversal_amount = app_row["amount_applied"]
+    reversal_amount = p["amount"]
 
     journal_number = (
         await conn.fetchval(
@@ -2250,24 +2027,10 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
     )
 
     # Reversal header — MANDATORY reversal_of_id = original apply je.
-    #
-    # FIX_P1_DEPOSIT 2026-06-16 OPTION B: source_id = the INVOICE id
-    # (the real obligation that was settled), NOT the deposit id.
-    # This is the SAME ledger-honest mechanism an invoice posting
-    # uses to satisfy guard_arap_requires_obligation: the un-apply
-    # DEBITS RECEIVABLE, so the guard's AR-debit branch fires and
-    # checks EXISTS(SELECT 1 FROM sales_invoices WHERE id = source_id).
-    # Carrying the invoice id makes that EXISTS true -> the guard
-    # passes NATURALLY because the obligation genuinely exists, with
-    # NO source_type whitelist (Option A whitelist removed in V177).
-    #
-    # Balance integrity is unaffected: this reversal carries
-    # reversal_of_id, and the original apply gets reversed_by_id set
-    # below, so is_effective_journal() drops BOTH from the
-    # journal-derived deposit balance (net movement on 2-10500). The
-    # reversal therefore need not (and does not) join customer_deposits
-    # via source_id -- the restored balance comes from is_effective
-    # dropping the now-reversed original apply, leaving only the POST.
+    # FIX_P1_DEPOSIT 2026-06-16 OPTION B: source_id = the INVOICE id (the real obligation that was settled), NOT the
+    # deposit id -- guard_arap_requires_obligation's AR-debit branch checks EXISTS(sales_invoices WHERE id = source_id).
+    # Balance integrity: reversal carries reversal_of_id, the original gets reversed_by_id below, so is_effective_journal()
+    # drops BOTH from the journal-derived deposit balance.
     invoice_obligation_id = app_row["invoice_id"]
     await conn.execute(
         """
@@ -2275,35 +2038,22 @@ async def reverse_deposit_application_core(conn, ctx, deposit_id, application_id
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, reversal_of_id,
             status, total_debit, total_credit, created_by
-        ) VALUES ($1, $2, $3, $9, $4, 'DEPOSIT_APPLICATION', $5, $6, 'DRAFT', $7, $7, $8)
+        ) VALUES ($1, $2, $3, $9, $4, $10, $5, $6, 'DRAFT', $7, $7, $8)
         """,
         reversal_journal_id,
         ctx["tenant_id"],
         journal_number,
-        f"Un-apply Deposit application {app_row['invoice_number'] or application_id}",
+        j["description"],
         invoice_obligation_id,
         original_journal_id,
         reversal_amount,
         ctx["user_id"],
-        hari_ini,  # t10-tanggal-bisnis
+        j["journal_date"],  # t10-tanggal-bisnis
+        j["source_type"],
     )
 
-    # Reversed lines (swap debit/credit) -> Dr AR / Cr 2-10500.
-    for idx, line in enumerate(original_lines, 1):
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            uuid_module.uuid4(),
-            reversal_journal_id,
-            idx,
-            line["account_id"],
-            line["credit"],  # swap
-            line["debit"],  # swap
-            f"Reversal - {line['memo'] or ''}",
-        )
+    # Reversed lines (swap debit/credit) -> Dr AR / Cr 2-10500 (rencana).
+    await UMR.tulis_baris(conn, reversal_journal_id, j["lines"])
 
     # Law 20: promote DRAFT -> POSTED.
     await conn.execute(
@@ -2437,85 +2187,16 @@ async def reverse_customer_deposit_application(
 
 
 async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
-    """Inti refund (U3a 4 Okt 2026): SATU penulis untuk /refund DAN /refund/preview (yang di-rollback). Pemanggil memegang tx."""
+    """Inti refund (U3a 4 Okt 2026): penulis /refund. AS-G7c: pemeriksaan + rencana = UMR.rencana_kembalikan (SAMA dengan
+    /refund/preview, yang kini baca saja), dipanggil SESUDAH kunci. Pemanggil memegang tx."""
 
     # Law 13: Advisory lock
     await conn.execute(
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         f"DEPOSIT:{deposit_id}",
     )
-
-    # Get deposit
-    dep = await conn.fetchrow(
-        """
-        SELECT * FROM customer_deposits
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        deposit_id,
-        ctx["tenant_id"],
-    )
-
-    if not dep:
-        raise HTTPException(
-            status_code=404, detail="Uang muka tidak ditemukan."
-        )
-
-    if dep["status"] not in ("posted", "partial"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa dikembalikan.",
-        )
-
-    # Check remaining (Option B: journal-derived, SATU SUMBER dgn apply; bukan cache)
-    remaining = await compute_deposit_remaining(
-        conn, ctx["tenant_id"], deposit_id
-    )
-
-    if body.amount > remaining:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Pengembalian {_rp_dp(body.amount)} melebihi sisa {(await label_deposit(conn, ctx['tenant_id'], deposit_id)).lower()} {_rp_dp(remaining)}.",
-        )
-
-    # Validate account
-    account = await conn.fetchrow(
-        """
-        SELECT id, account_code, name, account_type FROM chart_of_accounts
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        UUID(body.account_id),
-        ctx["tenant_id"],
-    )
-
-    if not account:
-        raise HTTPException(
-            status_code=400, detail="Rekening pengembalian tidak ditemukan."
-        )
-
-    if account["account_type"] != "ASSET":
-        raise HTTPException(
-            status_code=400,
-            detail="Rekening pengembalian harus akun kas/bank.",
-        )
-
-    # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role
-    # mapping (Law 27). body.account_id is the user-picked Cr
-    # Kas/Bank (validated ASSET above).
-    deposit_account_id = await resolve_account_id_by_role(
-        conn, ctx["tenant_id"], AccountRole.CUSTOMER_DEPOSIT_LIABILITY
-    )
-
-    # Law 5: Period lock check
-    period_row = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-        ctx["tenant_id"],
-        body.refund_date,
-    )
-    if period_row and period_row["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.periode_tertutup(None, period_row["status"]),
-        )
+    p = await UMR.rencana_kembalikan(conn, ctx, deposit_id, body)
+    dep, j = p["dep"], p["jurnal"]
 
     # Create refund journal
     refund_id = uuid_module.uuid4()
@@ -2535,46 +2216,22 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
             id, tenant_id, journal_number, journal_date,
             description, source_type, source_id, trace_id,
             status, total_debit, total_credit, created_by
-        ) VALUES ($1, $2, $3, $4, $5, 'DEPOSIT_REFUND', $6, $7, 'DRAFT', $8, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $10, $6, $7, 'DRAFT', $8, $8, $9)
     """,
         journal_id,
         ctx["tenant_id"],
         journal_number,
-        body.refund_date,
-        f"Refund Deposit {dep['deposit_number']} - {dep['customer_name']}",
+        j["journal_date"],
+        j["description"],
         deposit_id,
         str(trace_id),
-        body.amount,
+        j["total"],
         ctx["user_id"],
+        j["source_type"],
     )
 
-    # Dr. Customer Deposit Liability
-    await conn.execute(
-        """
-        INSERT INTO journal_lines (
-            id, journal_id, line_number, account_id, debit, credit, memo
-        ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-    """,
-        uuid_module.uuid4(),
-        journal_id,
-        deposit_account_id,
-        body.amount,
-        f"Refund {await label_deposit(conn, ctx['tenant_id'], deposit_id, kapital=True)} - {dep['deposit_number']}",
-    )
-
-    # Cr. Cash/Bank
-    await conn.execute(
-        """
-        INSERT INTO journal_lines (
-            id, journal_id, line_number, account_id, debit, credit, memo
-        ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-    """,
-        uuid_module.uuid4(),
-        journal_id,
-        UUID(body.account_id),
-        body.amount,
-        f"Bayar Refund - {dep['customer_name']}",
-    )
+    # Dr. Customer Deposit Liability / Cr. Cash/Bank (rencana)
+    await UMR.tulis_baris(conn, journal_id, j["lines"])
 
     # Law 20: Promote DRAFT -> POSTED after all lines inserted
     await conn.execute(
@@ -2582,29 +2239,17 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
         journal_id,
     )
 
-    # Create bank transaction if bank account specified — canonical
-    # BankSync helper (Rule 1). FIX: previous inline INSERT used columns
-    # reference/source_type/source_id that DO NOT EXIST on bank_transactions
-    # (real: reference_number/reference_type/reference_id) -> refund-to-bank 500.
-    # FIX_R9_REFUND (2026-09-14): cermin diturunkan dari CoA KREDIT jurnal
-    # (body.account_id) via reverse-lookup, BUKAN body.bank_account_id. Sebelumnya
-    # refund deposit dg bank_account_id NULL (overpayment / deposit lama) mengkredit
-    # CoA bank TANPA cermin -> celah R9. account_id = sumber kebenaran (body.bank_account_id
-    # diabaikan: bila menunjuk bank lain, yang benar tetap akun yang DIKREDIT jurnal).
-    _refund_ba_id = await conn.fetchval(
-        "SELECT id FROM bank_accounts WHERE tenant_id = $1 AND coa_id = $2 AND is_active = true",
-        ctx["tenant_id"],
-        UUID(body.account_id),
-    )
-    if _refund_ba_id:
+    # Cermin bank -- canonical BankSync helper (Rule 1). FIX_R9_REFUND (2026-09-14): rekening diturunkan dari CoA KREDIT
+    # jurnal (body.account_id) via reverse-lookup di rencana, BUKAN body.bank_account_id.
+    if p["bank"]:
         await create_bank_transaction_for_journal(
             conn,
             tenant_id=ctx["tenant_id"],
-            bank_account_id=_refund_ba_id,
+            bank_account_id=p["bank"]["bank_account_id"],
             journal_id=journal_id,
             transaction_date=body.refund_date,
-            transaction_type="withdrawal",
-            amount=-body.amount,
+            transaction_type=p["bank"]["transaction_type"],
+            amount=p["bank"]["amount"],
             reference_type="DEPOSIT_REFUND",
             reference_id=deposit_id,
             reference_number=body.reference,
@@ -2627,7 +2272,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
         body.amount,
         body.refund_date,
         body.payment_method,
-        UUID(body.account_id),
+        p["akun_kas"],
         UUID(body.bank_account_id) if body.bank_account_id else None,
         body.reference,
         body.notes,
@@ -2636,7 +2281,7 @@ async def refund_deposit_core(conn, ctx: dict, deposit_id, body):
     )
 
     rek = await conn.fetchval("SELECT name FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                              UUID(body.account_id), ctx["tenant_id"])
+                              p["akun_kas"], ctx["tenant_id"])
     await catat_riwayat(conn, ctx["tenant_id"], "customer_deposit", deposit_id, dep["deposit_number"], "DEPOSIT_REFUNDED",
                         ctx["user_id"],
                         f"{await label_deposit(conn, ctx['tenant_id'], deposit_id)} {dep['deposit_number']} {tg.rp(body.amount)} dikembalikan ke pelanggan"
@@ -2711,7 +2356,8 @@ async def refund_customer_deposit(
 
 
 async def void_deposit_core(conn, ctx: dict, deposit_id, body):
-    """Inti void (U3a 4 Okt 2026): SATU penulis untuk /void DAN /void/preview (yang di-rollback). Pemanggil memegang tx."""
+    """Inti void (U3a 4 Okt 2026): penulis /void. AS-G7c: pemeriksaan + rencana = UMR.rencana_batal (SAMA dengan /void/preview,
+    yang kini baca saja), dipanggil SESUDAH kunci. Pemanggil memegang tx."""
 
     if not (body.reason or "").strip():
         raise HTTPException(status_code=422, detail="Alasan pembatalan wajib diisi.")
@@ -2723,29 +2369,10 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
         "SELECT pg_advisory_xact_lock(hashtext($1))",
         f"DEPOSIT:{deposit_id}",
     )
-    await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], deposit_id)  # rekon bank: 409 sebelum tulisan
+    p = await UMR.rencana_batal(conn, ctx, deposit_id, body)
+    dep = p["dep"]
 
-    # Get deposit
-    dep = await conn.fetchrow(
-        """
-        SELECT * FROM customer_deposits
-        WHERE id = $1 AND tenant_id = $2
-    """,
-        deposit_id,
-        ctx["tenant_id"],
-    )
-
-    if not dep:
-        raise HTTPException(
-            status_code=404, detail="Uang muka tidak ditemukan."
-        )
-
-    if dep["status"] == "void":
-        raise HTTPException(
-            status_code=400, detail="Uang muka sudah dibatalkan."
-        )
-
-    if dep["status"] == "draft":
+    if p["hapus"]:
         # Just delete draft (bersyarat status + tenant: dibaca di bawah kunci, tetap jangan percaya baca lama).
         # Aktor untuk trigger trg_log_deletion (DOCUMENT_DELETED) -- GUC hanya hidup di transaksi ini.
         await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"]))
@@ -2761,61 +2388,10 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
             "data": {"id": str(deposit_id)},
         }
 
-    # Check for applications or refunds
-    if (dep["amount_applied"] or 0) > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu.",
-        )
-
-    if (dep["amount_refunded"] or 0) > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan.",
-        )
-
-    # Option B: uang muka dari kelebihan bayar (created via RP) -> liabilitasnya di jurnal
-    # RP; void deposit tak boleh membalik jurnal RP. Larang; arahkan ke refund / batalkan RP.
-    _rp_ovp = await conn.fetchrow(
-        "SELECT payment_number FROM receive_payments "
-        "WHERE tenant_id = $1 AND created_deposit_id = $2",
-        ctx["tenant_id"],
-        deposit_id,
-    )
-    if _rp_ovp:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Uang muka ini berasal dari kelebihan bayar pembayaran "
-                f"{_rp_ovp['payment_number']}. Gunakan pengembalian dana, atau batalkan "
-                "pembayarannya."
-            ),
-        )
-
-        # Law 5: Period lock check
-    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-    period_row = await conn.fetchrow(
-        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-        ctx["tenant_id"],
-        hari_ini,
-    )
-    if period_row and period_row["status"] != "OPEN":
-        raise HTTPException(
-            status_code=400,
-            detail=tg.periode_tertutup(None, period_row["status"]),
-        )
-
     # Create reversal journal if original was posted
-    if dep["journal_id"]:
+    if p["jurnal"]:
+        j = p["jurnal"]
         reversal_journal_id = uuid_module.uuid4()
-
-        # Get original journal lines
-        original_lines = await conn.fetch(
-            """
-            SELECT * FROM journal_lines WHERE journal_id = $1
-        """,
-            dep["journal_id"],
-        )
 
         journal_number = (
             await conn.fetchval(
@@ -2831,37 +2407,24 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
                 id, tenant_id, journal_number, journal_date,
                 description, source_type, source_id, reversal_of_id,
                 status, total_debit, total_credit, created_by
-            ) VALUES ($1, $2, $3, $9, $4, 'CUSTOMER_DEPOSIT', $5, $6, 'DRAFT', $7, $7, $8)
+            ) VALUES ($1, $2, $3, $9, $4, $10, $5, $6, 'DRAFT', $7, $7, $8)
         """,
             reversal_journal_id,
             ctx["tenant_id"],
             journal_number,
-            f"Void {dep['deposit_number']} - {dep['customer_name']}",
+            j["description"],
             deposit_id,
             dep["journal_id"],
-            dep["amount"],
+            j["total"],
             ctx["user_id"],
-            hari_ini,  # t10-tanggal-bisnis
+            j["journal_date"],  # t10-tanggal-bisnis
+            j["source_type"],
         )
 
-        # Create reversed lines (swap debit/credit)
-        for idx, line in enumerate(original_lines, 1):
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (
-                    id, journal_id, line_number, account_id, debit, credit, memo
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-                uuid_module.uuid4(),
-                reversal_journal_id,
-                idx,
-                line["account_id"],
-                line["credit"],  # Swap
-                line["debit"],  # Swap
-                f"Reversal - {line['memo'] or ''}",
-            )
+        # Reversed lines (swap debit/credit) dari rencana
+        await UMR.tulis_baris(conn, reversal_journal_id, j["lines"])
 
-            # Law 20: Promote DRAFT -> POSTED after all lines inserted
+        # Law 20: Promote DRAFT -> POSTED after all lines inserted
         await conn.execute(
             "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
             reversal_journal_id,
@@ -2882,32 +2445,16 @@ async def void_deposit_core(conn, ctx: dict, deposit_id, body):
         )
 
     # ── Bank mirror reversal (BankSync Rule 3, canonical helper) ──
-    # FIX: locate the ORIGINAL bank_transaction by journal_id (reliable),
-    # NOT by reference_type='customer_deposit' (the create path writes
-    # 'CUSTOMER_DEPOSIT' -- casing mismatch left the mirror un-reversed ->
-    # inflated bank balance). The canonical helper inserts a NEGATING
-    # mirror linked to the reversal journal; we do NOT void the original
-    # row (negation nets to zero, matching the POSTED ledger).
-    if dep["journal_id"]:
-        orig_bank_txn = await conn.fetchrow(
-            """
-            SELECT id FROM bank_transactions
-            WHERE journal_id = $1 AND tenant_id = $2
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            dep["journal_id"],
-            ctx["tenant_id"],
+    # Asal dicari lewat journal_id (rencana_batal); helper menyisipkan cermin NEGASI bertaut jurnal pembalik.
+    if p["jurnal"] and p["bank"]:
+        await create_reversal_bank_transaction(
+            conn,
+            tenant_id=ctx["tenant_id"],
+            original_bank_transaction_id=p["bank"]["original_bank_transaction_id"],
+            reversal_journal_id=reversal_journal_id,
+            created_by=ctx["user_id"],
+            description_prefix="[VOID]",
         )
-        if orig_bank_txn:
-            await create_reversal_bank_transaction(
-                conn,
-                tenant_id=ctx["tenant_id"],
-                original_bank_transaction_id=orig_bank_txn["id"],
-                reversal_journal_id=reversal_journal_id,
-                created_by=ctx["user_id"],
-                description_prefix="[VOID]",
-            )
 
     # Update deposit status
     await conn.execute(
@@ -3105,56 +2652,47 @@ async def _jurnal_tx_ini(conn, tid: str) -> tuple:
     return jurnal, bank
 
 
-class _BatalkanPratinjauDp(Exception):
-    def __init__(self, data):
-        self.data = data
+async def _reverse_rencana_dp(conn, ctx, deposit_id, body):
+    """Bentuk (conn, ctx, deposit_id, body) untuk pratinjau; penentunya SAMA dengan /reverse."""
+    return await UMR.rencana_lepas(conn, ctx, deposit_id, body.application_id)
 
 
-async def _reverse_inti_dp(conn, ctx, deposit_id, body):
-    """Bentuk (conn, ctx, deposit_id, body) untuk pratinjau; penulisnya SAMA dengan /reverse."""
-    return await reverse_deposit_application_core(conn, ctx, deposit_id, body.application_id)
-
-
-_INTI_DP = {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core",
-            "reverse": "_reverse_inti_dp"}
+# AS-G7c: pratinjau = penentu bersama (services/uang_muka_rencana) di transaksi READ ONLY; dulu inti PENULIS di savepoint lalu
+# ROLLBACK -> memegang kunci DEPOSIT:, baris penghitung nomor jurnal, dan kunci rantai hash jurnal tenant (Law 20).
+_RENCANA_DP = {"void": UMR.rencana_batal, "refund": UMR.rencana_kembalikan, "apply": UMR.rencana_terapkan,
+               "reverse": _reverse_rencana_dp}
 
 
 async def _pratinjau_dp(ctx: dict, deposit_id, aksi: str, body) -> dict:
     tid = ctx["tenant_id"]
-    inti = globals()[_INTI_DP[aksi]]
     pool = await get_pool()
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
-                blok = await _rencana_dp(conn, ctx, deposit_id, aksi, body)
-                sebelum = await _keadaan_dp(conn, tid, deposit_id)
-                fakt = [a.invoice_id for a in body.applications] if aksi == "apply" else []
-                if aksi == "reverse":
-                    iv = await conn.fetchval(
-                        "SELECT invoice_id FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
-                        body.application_id, deposit_id, tid)
-                    fakt = [iv] if iv else []
-                f0 = {str(i): float(await get_invoice_remaining_from_journal(conn, tid, UUID(str(i)))) for i in fakt}
-                jadi = False
-                if not blok:
-                    try:
-                        async with conn.transaction():  # savepoint: galat inti tak merusak transaksi pratinjau
-                            await inti(conn, ctx, deposit_id, body)
-                            jadi = True
-                    except HTTPException as e:
-                        blok.append(_blok_dp(f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
-                jurnal, bank = await _jurnal_tx_ini(conn, tid) if jadi else ([], [])
-                sesudah = await _keadaan_dp(conn, tid, deposit_id) if jadi else sebelum
-                f1 = ({k: float(await get_invoice_remaining_from_journal(conn, tid, UUID(k))) for k in f0} if jadi else f0)
-                raise _BatalkanPratinjauDp({
-                    "deposit_id": str(deposit_id), "action": aksi, "can_proceed": not blok,
-                    "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
-                    "before": sebelum, "after": sesudah, "journals": jurnal, "bank_transactions": bank,
-                    "invoices": [{"invoice_id": k, "remaining_before": f0[k], "remaining_after": f1[k]} for k in f0],
-                    "payload": body.model_dump(mode="json"), "preview": True})
-    except _BatalkanPratinjauDp as b:
-        return b.data
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+        blok = await _rencana_dp(conn, ctx, deposit_id, aksi, body)
+        sebelum = await _keadaan_dp(conn, tid, deposit_id)
+        fakt = [a.invoice_id for a in body.applications] if aksi == "apply" else []
+        if aksi == "reverse":
+            iv = await conn.fetchval(
+                "SELECT invoice_id FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
+                body.application_id, deposit_id, tid)
+            fakt = [iv] if iv else []
+        f0 = {str(i): await get_invoice_remaining_from_journal(conn, tid, UUID(str(i))) for i in fakt}
+        p = None
+        if not blok:
+            try:
+                p = await _RENCANA_DP[aksi](conn, ctx, deposit_id, body)
+            except HTTPException as e:
+                blok.append(_blok_dp(f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
+        jadi = p is not None
+        jurnal, bank = await UMR.jurnal_dan_bank(conn, tid, aksi, p) if jadi else ([], [])
+        sesudah = await UMR.keadaan_sesudah(conn, tid, deposit_id, aksi, p) if jadi else sebelum
+        f1 = UMR.sisa_faktur_sesudah(aksi, p, f0) if jadi else f0
+        return {
+            "deposit_id": str(deposit_id), "action": aksi, "can_proceed": not blok,
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
+            "before": sebelum, "after": sesudah, "journals": jurnal, "bank_transactions": bank,
+            "invoices": [{"invoice_id": k, "remaining_before": float(f0[k]), "remaining_after": float(f1[k])} for k in f0],
+            "payload": body.model_dump(mode="json"), "preview": True}
 
 
 class PratinjauVoidDp(BaseModel):
@@ -3249,13 +2787,14 @@ def _blok_pindah(code: str, status: int, message: str) -> dict:
     return {"code": code, "status": status, "message": message}
 
 
-async def _keadaan_proforma_so(conn, tenant_id: str, so_id, pids: list) -> dict:
-    """{pid: {proforma_number, amount, paid_amount, outstanding_amount, excess_amount}} -- turunan SAMA dengan detail."""
+async def _keadaan_proforma_so(conn, tenant_id: str, so_id, pids: list, ganti_proforma: Optional[dict] = None) -> dict:
+    """{pid: {proforma_number, amount, paid_amount, outstanding_amount, excess_amount}} -- turunan SAMA dengan detail.
+    ganti_proforma {deposit_id: proforma_id}: tautan uang muka dialihkan DI MEMORI (pratinjau pindah baca saja, AS-G7c)."""
     from ..services.proforma_terbayar import bayar_proforma, terbayar_proforma
     pids = [p for p in pids if p is not None]
     if not pids or not so_id:
         return {}
-    tb = await terbayar_proforma(conn, tenant_id, [so_id])
+    tb = await terbayar_proforma(conn, tenant_id, [so_id], ganti_proforma=ganti_proforma)
     rows = await conn.fetch("SELECT id, proforma_number, amount FROM proformas WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
                             tenant_id, pids)
     out = {}
@@ -3266,19 +2805,21 @@ async def _keadaan_proforma_so(conn, tenant_id: str, so_id, pids: list) -> dict:
     return out
 
 
-async def _rencana_pindah(conn, tenant_id: str, deposit_id: UUID, body: PindahProformaRequest) -> dict:
-    """Penentu pindah (SAMA untuk aksi dan pratinjau). Mengambil kunci PROFORMA_SO + FOR UPDATE baris uang muka."""
+async def _rencana_pindah(conn, tenant_id: str, deposit_id: UUID, body: PindahProformaRequest, kunci: bool = True) -> dict:
+    """Penentu pindah (SAMA untuk aksi dan pratinjau). kunci=True (aksi): kunci PROFORMA_SO + FOR UPDATE baris uang muka;
+    kunci=False (pratinjau AS-G7c, transaksi READ ONLY): baca saja."""
     dep = await conn.fetchrow(
         """SELECT id, deposit_number, amount, status, customer_id, sales_order_id, proforma_id
            FROM customer_deposits WHERE id = $1 AND tenant_id = $2""", deposit_id, tenant_id)
     if not dep:
         raise HTTPException(status_code=404, detail="Uang muka tidak ditemukan.")
     so_id = await resolve_order_id_for_deposit(conn, tenant_id, dep["sales_order_id"], dep["proforma_id"])
-    if so_id:
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PROFORMA_SO:{tenant_id}:{so_id}")
-    dep = await conn.fetchrow(
-        """SELECT id, deposit_number, amount, status, customer_id, sales_order_id, proforma_id
-           FROM customer_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE""", deposit_id, tenant_id)
+    if kunci:
+        if so_id:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PROFORMA_SO:{tenant_id}:{so_id}")
+        dep = await conn.fetchrow(
+            """SELECT id, deposit_number, amount, status, customer_id, sales_order_id, proforma_id
+               FROM customer_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE""", deposit_id, tenant_id)
     blocks = []
     if dep["status"] not in DP_BISA_PINDAH:
         blocks.append(_blok_pindah("DP_TIDAK_BISA_DIPINDAH", 400, (
@@ -3345,33 +2886,32 @@ def _bentuk_pindah(r: dict, sebelum: dict, sesudah: dict, pratinjau: bool) -> di
             "journals": [], "bank": None, "preview": pratinjau}
 
 
-class _BatalPindah(Exception):
-    def __init__(self, data):
-        self.data = data
-
-
 async def _jalankan_pindah(ctx: dict, deposit_id: UUID, body: PindahProformaRequest, pratinjau: bool) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        try:
-            async with conn.transaction():
-                r = await _rencana_pindah(conn, ctx["tenant_id"], deposit_id, body)
+        if pratinjau:
+            # AS-G7c: pratinjau BACA SAJA -- penentu tanpa kunci (kunci=False), sesudah = atribusi dengan tautan uang muka
+            # dialihkan di memori (muat_atribusi ganti_proforma), nol tulis; dulu penulis + ROLLBACK (kunci PROFORMA_SO + FOR UPDATE).
+            async with conn.transaction(readonly=True):
+                r = await _rencana_pindah(conn, ctx["tenant_id"], deposit_id, body, kunci=False)
                 pids = [r["dep"]["proforma_id"], r["tujuan"]["id"] if r["tujuan"] else None]
                 sebelum = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
                 if r["blocks"]:
-                    if pratinjau:
-                        raise _BatalPindah(_bentuk_pindah(r, _kunci_teks(sebelum), {}, True))
-                    b = r["blocks"][0]
-                    raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
-                if not r["noop"]:
-                    await _tulis_pindah(conn, ctx, r, body)
-                sesudah = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
-                data = _bentuk_pindah(r, _kunci_teks(sebelum), _kunci_teks(sesudah), pratinjau)
-                if pratinjau:
-                    raise _BatalPindah(data)
-                return data
-        except _BatalPindah as b:
-            return b.data
+                    return _bentuk_pindah(r, _kunci_teks(sebelum), {}, True)
+                sesudah = sebelum if r["noop"] else await _keadaan_proforma_so(
+                    conn, ctx["tenant_id"], r["so_id"], pids, ganti_proforma={r["dep"]["id"]: r["tujuan"]["id"]})
+                return _bentuk_pindah(r, _kunci_teks(sebelum), _kunci_teks(sesudah), True)
+        async with conn.transaction():
+            r = await _rencana_pindah(conn, ctx["tenant_id"], deposit_id, body, kunci=True)
+            pids = [r["dep"]["proforma_id"], r["tujuan"]["id"] if r["tujuan"] else None]
+            sebelum = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
+            if r["blocks"]:
+                b = r["blocks"][0]
+                raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
+            if not r["noop"]:
+                await _tulis_pindah(conn, ctx, r, body)
+            sesudah = await _keadaan_proforma_so(conn, ctx["tenant_id"], r["so_id"], pids)
+            return _bentuk_pindah(r, _kunci_teks(sebelum), _kunci_teks(sesudah), False)
 
 
 def _kunci_teks(d: dict) -> dict:

@@ -108,6 +108,25 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef)
                   and n.name == "_rencana_void_pembayaran")
         kunci = "_TANPA_KUNCI_DI_PENENTU_"  # kunci dipegang pemanggil; lewati cek lock-di-dalam di bawah
+    if berkas == "customer_deposits":
+        # AS-G7c (24 Okt 2026): void_deposit_core memegang kunci DEPOSIT: lalu memanggil penentu bersama
+        # services/uang_muka_rencana.rencana_batal (dipakai /void DAN /void/preview baca saja); cek rekon di penentu = sebelum
+        # baca uang muka, dan penentu tak menulis apa pun.
+        kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rencana_batal"]
+        assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
+        ssrc = open(os.path.join(APP, "services", "uang_muka_rencana.py")).read()
+        pen = next(n for n in ast.walk(ast.parse(ssrc)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "rencana_batal")
+        rek = [n for n in ast.walk(pen) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "tolak_void_bila_terekonsiliasi"]
+        assert len(rek) == 1 and [ast.get_source_segment(ssrc, a) for a in rek[0].args] == ["conn", "tid", "deposit_id"]
+        langkah = [n for n in pen.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+        i_rek = next(i for i, n in enumerate(langkah) if "tolak_void_bila_terekonsiliasi(" in ast.get_source_segment(ssrc, n))
+        i_baca = next(i for i, n in enumerate(langkah) if "_uang_muka(" in ast.get_source_segment(ssrc, n))
+        assert i_rek < i_baca, "rekon SEBELUM baca uang muka (urutan lama)"
+        tulis_pen = re.compile(r"\b(UPDATE\s+\w+\s+SET|INSERT\s+INTO|DELETE\s+FROM)\b", re.I)
+        assert not any(isinstance(n, ast.Constant) and isinstance(n.value, str) and tulis_pen.search(n.value)
+                       for n in ast.walk(pen)), "penentu tak boleh menulis"
+        return
     if berkas == "bill_payments":
         # AS-GP3 (24 Okt 2026): sama dengan U3b -- pemeriksaan di penentu bersama services/bayar_keluar_rencana.rencana_batal_bayar
         # (lewat _blok_rekon, dipakai /void DAN /void/preview). Syarat Law 13: rute void mengambil lock SEBELUM memanggil penentu;

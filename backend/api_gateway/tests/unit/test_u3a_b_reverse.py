@@ -7,6 +7,7 @@ import inspect
 from pathlib import Path
 
 from app.routers import customer_deposits as CD
+from app.services import uang_muka_rencana as UMR
 
 MW = Path(CD.__file__).parents[1] / "middleware" / "permission_middleware.py"
 
@@ -29,9 +30,11 @@ def test_izin_pratinjau_reverse_sama_dengan_tulis():
         assert f'(r"^/api/customer-deposits/[^/]+/applications/[^/]+/{akhir}$", ["POST"], "customer_deposit", "V")' in t
 
 
-def test_pratinjau_memakai_penulis_yang_sama():
-    assert CD._INTI_DP["reverse"] == "_reverse_inti_dp"
-    assert "await reverse_deposit_application_core(conn, ctx, deposit_id, body.application_id)" in _rata(CD._reverse_inti_dp)
+def test_pratinjau_memakai_penentu_yang_sama():
+    """AS-G7c: pratinjau = penentu UMR.rencana_lepas (baca saja) yang SAMA dipanggil penulis sesudah kuncinya."""
+    assert CD._RENCANA_DP["reverse"] is CD._reverse_rencana_dp
+    assert "await UMR.rencana_lepas(conn, ctx, deposit_id, body.application_id)" in _rata(CD._reverse_rencana_dp)
+    assert "await UMR.rencana_lepas(conn, ctx, deposit_id, application_id)" in _rata(CD.reverse_deposit_application_core)
     p = _rata(CD.preview_reverse_customer_deposit_application)
     assert '_pratinjau_dp(ctx, deposit_id, "reverse", PratinjauReverseDp(application_id=application_id))' in p
     assert "_ctx_pratinjau(request)" in p
@@ -45,7 +48,8 @@ def test_idempotensi_reverse_sebelum_inti():
 
 
 def test_pesan_penentu_sama_dengan_inti():
-    r, inti = inspect.getsource(CD._rencana_dp), inspect.getsource(CD.reverse_deposit_application_core)
+    # AS-G7c: pemeriksaan penulis = penentu bersama UMR.rencana_lepas (+ _periode untuk teks periode tertutup)
+    r, inti = inspect.getsource(CD._rencana_dp), inspect.getsource(UMR.rencana_lepas) + inspect.getsource(UMR._periode)
     for pesan in ("Penerapan uang muka tidak ditemukan.", "Penerapan uang muka ini tidak punya jurnal untuk dibalik.",
                   "Jurnal penerapan uang muka ini sudah dibalik.", "tg.periode_tertutup(None,"):
         assert pesan in r and pesan in inti, pesan

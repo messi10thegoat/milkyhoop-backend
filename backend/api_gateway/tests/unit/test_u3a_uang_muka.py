@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from app.routers import customer_deposits as CD
+from app.services import uang_muka_rencana as UMR
 
 MW = Path(CD.__file__).parents[1] / "middleware" / "permission_middleware.py"
 
@@ -28,16 +29,20 @@ def test_izin_pratinjau_sama_dengan_tulis_dan_riwayat_baca():
     assert '(r"^/api/customer-deposits/[^/]+/history$", ["GET"], "customer_deposit", "R")' in t
 
 
-def test_tulis_dan_pratinjau_memakai_inti_yang_sama():
-    assert CD._INTI_DP == {"void": "void_deposit_core", "refund": "refund_deposit_core", "apply": "apply_deposit_core",
-                          "reverse": "_reverse_inti_dp"}  # U3a-b
+def test_tulis_dan_pratinjau_memakai_penentu_yang_sama():
+    """AS-G7c: penulis dan pratinjau memakai PENENTU yang sama (services/uang_muka_rencana); pratinjau READ ONLY tanpa inti."""
+    assert CD._RENCANA_DP == {"void": UMR.rencana_batal, "refund": UMR.rencana_kembalikan, "apply": UMR.rencana_terapkan,
+                              "reverse": CD._reverse_rencana_dp}
     for h, inti in ((CD.void_customer_deposit, "void_deposit_core"), (CD.refund_customer_deposit, "refund_deposit_core"),
                     (CD.apply_customer_deposit, "apply_deposit_core")):
         s = inspect.getsource(h)
         assert f"await {inti}(conn, ctx, deposit_id, body)" in s and "_ib.mulai_aksi(" in s
         assert s.index("_ib.mulai_aksi(") < s.index(f"await {inti}(")
+    for inti, rencana in ((CD.void_deposit_core, "UMR.rencana_batal("), (CD.refund_deposit_core, "UMR.rencana_kembalikan("),
+                          (CD.apply_deposit_core, "UMR.rencana_terapkan(")):
+        assert rencana in inspect.getsource(inti), inti.__name__
     p = inspect.getsource(CD._pratinjau_dp)
-    assert "_BatalkanPratinjauDp(" in p and "async with conn.transaction():  # savepoint" in p
+    assert "conn.transaction(readonly=True)" in p and "_core(" not in p and "_RENCANA_DP[aksi](" in p
 
 
 def test_kunci_void_dan_delete_urutan_sama_dengan_post():
@@ -52,13 +57,15 @@ def test_kunci_void_dan_delete_urutan_sama_dengan_post():
 def test_pesan_penentu_sama_dengan_inti_dan_berbahasa_indonesia():
     """Permintaan WORKSPACE: FE menampilkan pesan server APA ADANYA -> bahasa Indonesia + Rupiah; penentu == inti."""
     r = inspect.getsource(CD._rencana_dp)
-    for f, pesan in ((CD.void_deposit_core, "Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu."),
-                     (CD.void_deposit_core, "Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan."),
-                     (CD.void_deposit_core, "Uang muka sudah dibatalkan."),
-                     (CD.refund_deposit_core, "Rekening pengembalian tidak ditemukan."),
-                     (CD.refund_deposit_core, "Rekening pengembalian harus akun kas/bank.")):
+    # AS-G7c: pemeriksaan penulis kini di penentu bersama (UMR.rencana_*), yang dipanggil inti sesudah kuncinya
+    for f, pesan in ((UMR.rencana_batal, "Uang muka sudah diterapkan ke faktur. Lepas penerapannya dulu."),
+                     (UMR.rencana_batal, "Uang muka sudah dikembalikan (sebagian) ke pelanggan, jadi tidak bisa dibatalkan."),
+                     (UMR.rencana_batal, "Uang muka sudah dibatalkan."),
+                     (UMR.rencana_kembalikan, "Rekening pengembalian tidak ditemukan."),
+                     (UMR.rencana_kembalikan, "Rekening pengembalian harus akun kas/bank.")):
         assert pesan in inspect.getsource(f) and pesan in r, pesan
-    for f in (CD.void_deposit_core, CD.refund_deposit_core, CD.apply_deposit_core, CD._rencana_dp):
+    for f in (CD.void_deposit_core, CD.refund_deposit_core, CD.apply_deposit_core, CD._rencana_dp, UMR.rencana_batal,
+              UMR.rencana_kembalikan, UMR.rencana_terapkan, UMR.rencana_lepas):
         src = inspect.getsource(f)
         for inggris in ("Cannot ", "exceeds", "not found", "already applied", "must be an asset"):
             assert inggris not in src, (f.__name__, inggris)

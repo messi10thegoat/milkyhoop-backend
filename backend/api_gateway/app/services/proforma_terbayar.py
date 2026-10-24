@@ -216,8 +216,9 @@ def bayar_proforma(amount, terbayar) -> dict:
             "is_fully_paid": t + Decimal("0.005") >= a}
 
 
-async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
-    """{proforma_id: {"paid": Decimal, "paid_breakdown": {...}}} untuk SEMUA proforma SO-SO itu."""
+async def terbayar_proforma(conn, tenant_id: str, so_ids: list, ganti_proforma=None) -> dict:
+    """{proforma_id: {"paid": Decimal, "paid_breakdown": {...}}} untuk SEMUA proforma SO-SO itu. ganti_proforma
+    {deposit_id: proforma_id} = tautan dialihkan di memori (pratinjau pindah uang muka baca saja, AS-G7c)."""
     so_ids = list({s for s in so_ids if s is not None})
     if not so_ids:
         return {}
@@ -230,7 +231,7 @@ async def terbayar_proforma(conn, tenant_id: str, so_ids: list) -> dict:
     # tercocok-nominal = eksplisit proforma itu; uang muka DI LUAR TAGIHAN dikeluarkan dari kolam, supaya proforma
     # yang ditagih NETO darinya (PELUNASAN sesudah DP) tak tampil "Sudah Dibayar" oleh uang yang sama.
     from .proforma_atribusi import muat_atribusi
-    atr = await muat_atribusi(conn, tenant_id, so_ids)
+    atr = await muat_atribusi(conn, tenant_id, so_ids, ganti_proforma=ganti_proforma)
     eks = {pid: v["tertaut"] + v["dicocokkan"] for a in atr.values() for pid, v in a["per_proforma"].items()}
     tertutup = await tertutup_pesanan(conn, tenant_id, so_ids)
     per_so = {}

@@ -180,6 +180,22 @@ async def create_bank_transaction_for_journal(
     return bank_tx_id
 
 
+# Jenis cermin pembalik per jenis asal -- SATU peta, dipakai create_reversal_bank_transaction DAN pratinjau baca saja (AS-G7c).
+JENIS_PEMBALIK = {
+    "withdrawal": "deposit",
+    "deposit": "withdrawal",
+    "payment_made": "payment_received",
+    "payment_received": "payment_made",
+    "transfer_out": "transfer_in",
+    "transfer_in": "transfer_out",
+    "fee": "deposit",
+    "charge": "deposit",
+    "interest": "withdrawal",
+    "adjustment": "adjustment",
+    "opening": "adjustment",
+}
+
+
 async def create_reversal_bank_transaction(
     conn,
     *,
@@ -229,20 +245,7 @@ async def create_reversal_bank_transaction(
         return None
 
     # Determine reversal transaction_type
-    type_reversal_map = {
-        "withdrawal": "deposit",
-        "deposit": "withdrawal",
-        "payment_made": "payment_received",
-        "payment_received": "payment_made",
-        "transfer_out": "transfer_in",
-        "transfer_in": "transfer_out",
-        "fee": "deposit",
-        "charge": "deposit",
-        "interest": "withdrawal",
-        "adjustment": "adjustment",
-        "opening": "adjustment",
-    }
-    reversal_type = type_reversal_map.get(original["transaction_type"], "adjustment")
+    reversal_type = JENIS_PEMBALIK.get(original["transaction_type"], "adjustment")
 
     reversal_tx_id = await create_bank_transaction_for_journal(
         conn,
