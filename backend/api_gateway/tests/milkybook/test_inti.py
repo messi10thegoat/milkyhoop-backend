@@ -575,3 +575,66 @@ async def test_hibrida_teks_model_baca_saat_alih_tidak_ditampilkan():
     ev = await p.giliran(sesi(), "buat 2", be_standar(), izin_semua)
     semua = " ".join(e.get("teks", "") for e in ev if e["jenis"] == "teks")
     assert "teruskan" not in semua and "Kartu Tinjau sudah tampil." in semua
+
+
+# ---------------------------------------------------------------- syarat MASTER hibrida bawaan (24 Okt)
+async def test_saklar_baca_mati_semua_giliran_ke_model_tulis_tanpa_deploy():
+    mb, mt = ModelPalsu([teks("baca")]), ModelPalsu([teks("tulis"), teks("tulis2")])
+    nyala = {"v": False}
+    p = Putaran(registri(), mt, AuditMemori(), gap_mendarat=("G1",), pemanggil_baca=mb, saklar_baca=lambda: nyala["v"])
+    s = sesi()
+    await p.giliran(s, "daftar?", be_standar(), izin_semua)
+    assert mb.permintaan == [] and len(mt.permintaan) == 1
+    nyala["v"] = True                                    # dibaca SETIAP giliran: nyala lagi tanpa membuat Putaran baru
+    await p.giliran(s, "daftar lagi?", be_standar(), izin_semua)
+    assert len(mb.permintaan) == 1
+
+
+def test_konfigurasi_env_kosong_berarti_sonnet_saja():
+    from app.milkybook.inti import konfigurasi as K
+    assert K.model_baca_dari_env({}) == "claude-haiku-5-5"
+    assert K.model_baca_dari_env({"MILKYBOOK_MODEL_BACA": ""}) is None
+    assert K.model_baca_dari_env({"MILKYBOOK_MODEL_BACA": "  "}) is None
+    env = {"MILKYBOOK_MODEL_BACA": "claude-haiku-5-5"}
+    sk = K.saklar_baca_dari_env(env)
+    assert sk() is True
+    env["MILKYBOOK_MODEL_BACA"] = ""
+    assert sk() is False                                 # mundur cepat terbaca tanpa membuat ulang objek
+
+
+async def test_audit_satu_baris_per_giliran_model_eskalasi_biaya():
+    def hasil(model, *a, **k):
+        h = panggil(*a, **k) if a else teks("ok")
+        h.model = model
+        return h
+    mb = ModelPalsu([hasil("claude-haiku-5-5", ("perlu_penulis", {"alasan": "x"}))])
+    mt = ModelPalsu([hasil("claude-sonnet-5-5", ("buat_x", {"jumlah": 1})), hasil("claude-sonnet-5-5")])
+    p = Putaran(registri(), mt, AuditMemori(), gap_mendarat=("G1",), pemanggil_baca=mb)
+    await p.giliran(sesi(), "buat", be_standar(), izin_semua)
+    g = [b for b in p.audit.sebagai_dict() if b["peristiwa"] == "giliran"]
+    assert len(g) == 1 and g[0]["eskalasi"] is True and g[0]["kelas"] == "BACA"
+    assert g[0]["model"] == "claude-haiku-5-5,claude-sonnet-5-5" and g[0]["biaya_usd"] > 0
+
+
+def test_sql_audit_jumlah_kolom_sama_dengan_placeholder_dan_migrasi():
+    import os as _o
+    from app.milkybook.inti import audit as A
+    kolom = A._SQL.split("(", 1)[1].split(")", 1)[0].split(",")
+    assert len(kolom) == A._SQL.count("$")
+    mig = open(_o.path.join(_o.path.dirname(A.__file__), "..", "migrasi", "asisten_aksi.sql")).read()
+    for k in kolom:
+        assert k.strip() in mig, k
+
+
+def test_buat_putaran_dari_env_hibrida_bawaan_dan_mundur(monkeypatch):
+    from app.milkybook.inti import konfigurasi as K, model as M
+
+    class P:
+        def __init__(self, model, api_key=None, **k):
+            self.model, self.api_key = model, api_key
+
+    monkeypatch.setattr(M, "PemanggilAnthropic", P)
+    p = K.buat_putaran_dari_env(registri(), AuditMemori(), env={"MILKYBOOK_ANTHROPIC_API_KEY": "x"})
+    assert p.pemanggil.model == "claude-sonnet-5-5" and p.pemanggil_baca.model == "claude-haiku-5-5" and p.effort == "medium"
+    p2 = K.buat_putaran_dari_env(registri(), AuditMemori(), env={"MILKYBOOK_MODEL_BACA": ""})
+    assert p2.pemanggil_baca is None

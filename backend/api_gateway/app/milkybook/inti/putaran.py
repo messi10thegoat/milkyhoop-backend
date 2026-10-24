@@ -237,6 +237,7 @@ class Putaran:
         maks_langkah: int = 10,
         effort: str = "medium",
         pemanggil_baca: Optional[PemanggilModel] = None,
+        saklar_baca=None,
     ):
         self.registri = registri
         self.pemanggil = pemanggil
@@ -251,6 +252,8 @@ class Putaran:
         self.prompt_hash = hashlib.sha256(teks.encode()).hexdigest()
         # Hibrida (24 Okt, syarat MASTER): model murah hanya untuk giliran BACA; tool WRITE tak pernah dikirim ke sana.
         self.pemanggil_baca = pemanggil_baca
+        # Saklar mundur cepat (syarat MASTER): dibaca SETIAP giliran; False = Sonnet saja tanpa deploy kode.
+        self.saklar_baca = saklar_baca or (lambda: True)
 
     # ------------------------------------------------------------------ giliran pengguna
     async def giliran(self, sesi: Sesi, teks: str, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
@@ -330,7 +333,9 @@ class Putaran:
             api += [TOOL_PERLU_PENULIS] if baca else [TOOL_TUTUP_KARTU]
             return {t.nama: t for t in tl}, api
 
-        baca = self.pemanggil_baca is not None and not sesi.mode_tulis
+        baca = self.pemanggil_baca is not None and not sesi.mode_tulis and bool(self.saklar_baca())
+        mulai_baca, biaya_awal, model_dipakai = baca, sesi.biaya_usd, []
+        eskalasi = False
         peta, api_tools = susun(baca)
 
         for _ in range(self.maks_langkah):
@@ -338,6 +343,8 @@ class Putaran:
             hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
                                     tools=api_tools, effort=self.effort)
             self._catat_usage(sesi, hasil)
+            if hasil.model and hasil.model not in model_dipakai:
+                model_dipakai.append(hasil.model)
             await self.audit.tulis(BarisAudit(
                 sesi.tenant_id, sesi.user_id, sesi.sesi_id, "model", model=hasil.model or self.model_nama,
                 prompt_hash=self.prompt_hash, hasil=hasil.stop_reason,
@@ -411,12 +418,19 @@ class Putaran:
                 hasil_tool.append(blok)
             sesi.messages.append({"role": "user", "content": hasil_tool})
             if alihkan:
+                eskalasi = True
                 baca = False
                 sesi.mode_tulis = True
                 peta, api_tools = susun(False)
                 peristiwa.append({"jenis": "tool", "nama": "perlu_penulis", "kelas": "INTI"})
         else:
             peristiwa.append({"jenis": "galat", "pesan": "Langkah terlalu banyak; berhenti."})
+        # (2) satu baris audit per giliran: model, eskalasi, biaya dari usage -> porsi baca DIUKUR di pilot.
+        await self.audit.tulis(BarisAudit(
+            sesi.tenant_id, sesi.user_id, sesi.sesi_id, "giliran", model=",".join(model_dipakai) or None,
+            kelas="BACA" if mulai_baca else "TULIS", eskalasi=eskalasi if mulai_baca else None,
+            biaya_usd=round(sesi.biaya_usd - biaya_awal, 6),
+        ))
         # Keluar dari alur tulis bila giliran penulis selesai tanpa usulan tulis dan tanpa kartu menunggu.
         if sesi.mode_tulis and not menulis_di_giliran and sesi.kartu_menunggu() is None:
             sesi.mode_tulis = False
