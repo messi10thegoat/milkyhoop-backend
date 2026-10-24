@@ -34,6 +34,7 @@ from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from ..services import so_agregat
 from ..services import so_kirim
 from ..services import so_aksi  # 14 Okt 2026 AKSI-SO: pill aksi daftar (satu sumber)
+from ..services import idem_buat  # AS-G2: idempotensi aksi konfirmasi/batal/tutup/hapus (kunci klien saja)
 from ..services.so_riwayat import catat_riwayat, riwayat_so
 from ..services.default_dokumen import default_pesanan, hitung_dp
 from ..services.termin_bayar import tentukan_jatuh_tempo, termin_hari
@@ -1474,7 +1475,7 @@ async def hapus_so_draf_core(conn, ctx: dict, order_id) -> dict:
 
 
 @router.delete("/{order_id}", response_model=SalesOrderResponse)
-async def delete_sales_order(request: Request, order_id: str):
+async def delete_sales_order(request: Request, order_id: str, response: Response = None):
     """Delete a sales order (draft only). Isi + aturan: hapus_so_draf_core (juga dipakai hapus massal)."""
     try:
         ctx = get_user_context(request)
@@ -1483,12 +1484,17 @@ async def delete_sales_order(request: Request, order_id: str):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # AS-G2 (24 Okt 2026): Law 14 kunci klien saja (SO_DELETE); hapus ulang = respons asli, bukan 404. Respons kini disusun +
+                # dicatat DI DALAM transaksi (dulu sesudah blok tx: hanya penyusunan respons, nol efek samping lain).
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SO_DELETE", order_id, {}, response)
+                if lama is not None:
+                    return lama
                 data = await hapus_so_draf_core(conn, ctx, order_id)
-            return SalesOrderResponse(
-                success=True,
-                message="Pesanan dihapus",
-                data=data,
-            )
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_DELETE", SalesOrderResponse(
+                    success=True,
+                    message="Pesanan dihapus",
+                    data=data,
+                ), _so_uuid(order_id))
 
     except HTTPException:
         raise
@@ -1554,7 +1560,7 @@ class _BatalkanKonfirmasi(Exception):
 
 
 @router.post("/{order_id}/confirm", response_model=SalesOrderResponse)
-async def confirm_sales_order(request: Request, order_id: str):
+async def confirm_sales_order(request: Request, order_id: str, response: Response = None):
     """Confirm a sales order."""
     try:
         ctx = get_user_context(request)
@@ -1563,8 +1569,13 @@ async def confirm_sales_order(request: Request, order_id: str):
 
         # 2 Okt 2026: transaksi -- kode order pemicu 'so_confirmed' terbit ATOMIK bersama konfirmasinya.
         async with pool.acquire() as conn, conn.transaction():
+            # AS-G2: Law 14 kunci klien saja (SO_CONFIRM) SEBELUM baca/UPDATE bersyarat; ulang = respons asli (kode order TAK terbit ulang)
+            kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SO_CONFIRM", order_id, {}, response)
+            if lama is not None:
+                return lama
             h = await _konfirmasi_so(conn, ctx, order_id)
-            return SalesOrderResponse(success=True, message="Pesanan dikonfirmasi", data=h)
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CONFIRM",
+                                          SalesOrderResponse(success=True, message="Pesanan dikonfirmasi", data=h), _so_uuid(order_id))
 
     except HTTPException:
         raise
@@ -1678,7 +1689,7 @@ async def _rencana_batal_so(conn, ctx, order_id: str, reason) -> dict:
 
 @router.post("/{order_id}/cancel", response_model=SalesOrderResponse)
 async def cancel_sales_order(
-    request: Request, order_id: str, body: CancelSalesOrderRequest = None
+    request: Request, order_id: str, body: CancelSalesOrderRequest = None, response: Response = None
 ):
     """Cancel a sales order. Aturan = _rencana_batal_so (dipakai juga /cancel/preview); penghalang pertama
     -> 400 dengan detail lama. Uang muka posted tetap saldo pelanggan (nol jurnal); proforma TERBIT SO ikut
@@ -1691,6 +1702,11 @@ async def cancel_sales_order(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # AS-G2: Law 14 kunci klien saja (SO_CANCEL; alasan beda = 409) SEBELUM kunci baris SO
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SO_CANCEL", order_id,
+                                                             {"reason": alasan_batal}, response)
+                if lama is not None:
+                    return lama
                 # mutex baris SO (sama dengan DELETE & pembuatan uang muka): uang muka/faktur/kirim yang
                 # dibuat bersamaan menunggu, lalu rencana dibaca di bawah kunci yang sama.
                 ada = await conn.fetchval(
@@ -1744,12 +1760,13 @@ async def cancel_sales_order(
                     source="api:sales_orders.cancel",
                 )
 
-            return SalesOrderResponse(
-                success=True,
-                message="Pesanan dibatalkan",
-                data={"order_number": order["order_number"], "status": "cancelled", "reason": alasan_batal,
-                      "proformas_cancelled": proformas_cancelled, "deposits_remaining": deposits_remaining},
-            )
+                # AS-G2: respons disusun + dicatat DI DALAM transaksi (dulu sesudah blok tx: hanya penyusunan respons, nol efek samping lain)
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CANCEL", SalesOrderResponse(
+                    success=True,
+                    message="Pesanan dibatalkan",
+                    data={"order_number": order["order_number"], "status": "cancelled", "reason": alasan_batal,
+                          "proformas_cancelled": proformas_cancelled, "deposits_remaining": deposits_remaining},
+                ), order["id"])
 
     except HTTPException:
         raise
@@ -1925,7 +1942,7 @@ async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
 
 @router.post("/{order_id}/close", response_model=SalesOrderResponse)
 async def close_sales_order(
-    request: Request, order_id: str, body: CloseSalesOrderRequest = None
+    request: Request, order_id: str, body: CloseSalesOrderRequest = None, response: Response = None
 ):
     """Close (complete) a sales order.
 
@@ -1949,6 +1966,11 @@ async def close_sales_order(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # AS-G2: Law 14 kunci klien saja (SO_CLOSE; alasan beda = 409) SEBELUM advisory SO_CLOSE di _rencana_tutup_so
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SO_CLOSE", order_id,
+                                                             {"reason": reason}, response)
+                if lama is not None:
+                    return lama
                 rencana = await _rencana_tutup_so(conn, ctx, order_id, reason)
                 if rencana["blocks"]:
                     raise HTTPException(status_code=400, detail=rencana["blocks"][0]["detail"])
@@ -1982,13 +2004,13 @@ async def close_sales_order(
                     source="api:sales_orders.close",
                 )
 
-                return SalesOrderResponse(
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CLOSE", SalesOrderResponse(
                     success=True,
                     message="Pesanan ditutup",
                     data={"order_number": order["order_number"], "status": "completed",
                           "forced": bool(kurang), "reason": reason,
                           "cancelled_lines": kurang, "deposits_remaining": dp_tetap},
-                )
+                ), order["id"])
 
     except HTTPException:
         raise
