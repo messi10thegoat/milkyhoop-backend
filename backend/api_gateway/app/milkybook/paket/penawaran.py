@@ -60,6 +60,8 @@ _PENAWARAN_BARU = {
     "notes": S("Catatan untuk pelanggan, mis. jadwal kirim"),
     "discount_type": {"type": "string", "enum": ["fixed", "percentage"]},
     "discount_value": N("Diskon dokumen"),
+    "dp_amount": I("Uang muka dalam rupiah (angka di dokumen, tanpa jurnal). Isi SALAH SATU: dp_amount atau dp_percent"),
+    "dp_percent": N("Uang muka dalam persen 0-100; server menghitung rupiahnya"),
     "items": {"type": "array", "items": _BARIS},
 }
 SKEMA_PENAWARAN_BARU = _obj(_PENAWARAN_BARU, ["quote_date", "customer_id", "customer_name", "items"])
@@ -70,7 +72,9 @@ _BARIS_UBAH = _obj({**_BARIS["properties"], "id": S("Id baris lama (dari detail)
 SKEMA_UBAH = _obj({"id": ID, **{k: v for k, v in _PENAWARAN_BARU.items() if k != "items"},
                    "items": {"type": "array", "items": _BARIS_UBAH}}, ["id"])
 SKEMA_BATAL = _obj({"id": ID, "reason": S("Alasan batal")}, ["id"])
-SKEMA_JADI_PESANAN = _obj({"id": ID, "order_date": TGL, "expected_ship_date": TGL}, ["id"])
+SKEMA_JADI_PESANAN = _obj({"id": ID, "order_date": TGL, "expected_ship_date": TGL,
+                           "item_ids": {"type": "array", "items": S("Id baris penawaran (dari detail)"),
+                                        "description": "Baris yang dipesan; kosongkan = semua baris"}}, ["id"])
 SKEMA_ID = _obj({"id": ID}, ["id"])
 
 # ---- pelanggan baru (CreateCustomerRequest, tanpa saldo awal)
