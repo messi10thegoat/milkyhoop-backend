@@ -391,12 +391,12 @@ async def update_vendor_deposit(
     """Update vendor deposit (draft only).
     AS-GP4 (24 Okt 2026): dulu SELECT biasa tanpa kunci + UPDATE tanpa syarat status -> PATCH bersamaan dengan /post bisa mengubah nominal UM
     yang BARU diposting (dokumen != jurnal). Kini: idem UMV_UPDATE -> kunci VENDOR_DEPOSIT:{id} + FOR UPDATE (urutan SAMA dengan posting /
-    hapus) -> penentu bersama R.rencana_ubah (== POST /{id}/edit/preview) -> UPDATE ... AND status = 'draft'."""
+    hapus) -> penentu bersama R.rencana_ubah (== POST /{id}/edit/preview) -> UPDATE ... AND status = 'draft'.
+    AS-GP4b (24 Okt 2026): If-Match diperiksa SESUDAH replay idem dan SESUDAH kunci (dulu sebelum keduanya: ulang ber-kunci dengan If-Match
+    lama = 412 alih-alih jawaban pertama, karena updated_at sudah maju oleh tulisan pertama; dan If-Match berpacu tanpa kunci)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-    # Optimistic concurrency (opt-in If-Match): reject a stale write.
     from ..services.optimistic_concurrency import assert_if_match_row
-    await assert_if_match_row(request, "vendor_deposits", deposit_id)
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -408,6 +408,8 @@ async def update_vendor_deposit(
             if lama is not None:
                 return lama
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
+            # Optimistic concurrency (opt-in If-Match): reject a stale write -- sesudah replay & kunci (AS-GP4b)
+            await assert_if_match_row(request, "vendor_deposits", deposit_id)
             existing = await conn.fetchrow(
                 "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                 deposit_id,
