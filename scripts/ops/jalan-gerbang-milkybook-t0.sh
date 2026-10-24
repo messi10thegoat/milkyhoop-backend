@@ -8,6 +8,15 @@ echo "=== tes terfokus ($(echo $F | wc -w) berkas)"
 timeout 900 scripts/jalankan_unit.sh $W -q -p no:cacheprovider $F tests/unit/test_milkybook_t0.py tests/unit/test_pagar_rute_izin.py tests/unit/test_izin_rute_pratinjau.py \
   tests/unit/test_rute_endpoint_bukan_helper.py tests/unit/test_nomor_jurnal_satu_ruang.py tests/unit/test_idem_sumber_basi.py > $L/unit.log 2>&1
 grep -E "^(FAILED|ERROR) |^=+ .* in " $L/unit.log | tail -15
+echo "=== kontrol merah penjaga teks-sumber (salinan pohon; tiap aturan dicabut dari penentu -> penjaga WAJIB merah)"
+for S in S1 S2 S3 S4; do
+  T=$(mktemp -d /root/.sab-XXXX); mkdir -p $T/backend
+  rsync -a --exclude .pytest_cache --exclude __pycache__ backend/api_gateway $T/backend/ && ln -s $W/backend/migrations $T/backend/migrations
+  TES=$(python3 scripts/ops/sabotase-penjaga-t0.py $T/backend/api_gateway $S) || { echo "FAIL $S sabotase tak terpasang: $TES"; rm -rf $T; continue; }
+  timeout 300 scripts/jalankan_unit.sh $T -q -p no:cacheprovider "$TES" > $L/sab-$S.log 2>&1; rc=$?
+  if [ $rc -ne 0 ] && grep -q "^FAILED $TES" $L/sab-$S.log; then echo "PASS MERAH $S: $TES gagal saat aturan dicabut"; else echo "FAIL $S: penjaga TIDAK merah (rc=$rc) $TES"; fi
+  rm -rf $T
+done
 G=milkyhoop-dev-api_gateway; IMG=$(docker inspect $G --format "{{.Config.Image}}"); E=$(mktemp /root/.t0-XXXX); chmod 600 $E
 printf "URL=%s\n" "$(docker exec $G printenv DATABASE_URL)" > $E
 for m in "" merah_idem merah_penentu; do

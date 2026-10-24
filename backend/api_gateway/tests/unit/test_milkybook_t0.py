@@ -76,3 +76,29 @@ def test_rute_pratinjau_terdaftar_sebelum_rute_ber_id():
 def test_izin_rute_nyata(jalur, harap):
     from app.middleware.permission_middleware import izin_untuk_jalur
     assert izin_untuk_jalur(jalur, "POST") == harap
+
+
+def _req(headers):
+    from starlette.requests import Request
+
+    async def rcv(): return {"type": "http.request", "body": b"", "more_body": False}
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+                    "query_string": b""}, rcv)
+
+
+def test_kunci_dari_request_nyata_tak_berubah():
+    """Syarat MASTER (b): penolong BERSAMA AS-G12 -- Request NYATA: header dulu, cadangan badan, beda = 422; tanpa .headers = None."""
+    assert idem_buat.kunci_dari(_req({"X-Idempotency-Key": "h1"})) == "h1"
+    assert idem_buat.kunci_dari(_req({"Idempotency-Key": "h2"})) == "h2"
+    assert idem_buat.kunci_dari(_req({}), "b1") == "b1"
+    assert idem_buat.kunci_dari(_req({"X-Idempotency-Key": "s"}), "s") == "s"
+    with pytest.raises(HTTPException) as e:
+        idem_buat.kunci_dari(_req({"X-Idempotency-Key": "h"}), "b")
+    assert e.value.status_code == 422 and e.value.detail["code"] == "IDEMPOTENCY_KEY_MISMATCH"
+    assert idem_buat.kunci_dari(_req({})) is None
+    with pytest.raises(HTTPException) as e:
+        idem_buat.kunci_dari(_req({"X-Idempotency-Key": "x" * 10000}))
+    assert e.value.status_code == 400
+    from types import SimpleNamespace
+    assert idem_buat.kunci_dari(SimpleNamespace(state=None)) is None  # pemanggilan langsung (tes) = tanpa kunci header
+    assert idem_buat.kunci_dari(SimpleNamespace(state=None), "b") == "b"
