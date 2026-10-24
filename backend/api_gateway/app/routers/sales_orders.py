@@ -1094,19 +1094,7 @@ async def update_sales_order(
                             success=True, message="Pesanan diperbarui", data={"id": order_id}
                         ), order["id"])
 
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
-                if _new_num is None:
-                    body.__pydantic_fields_set__.discard("order_number")
-                else:
-                    # Nomor di SO TERKONFIRMASI = medan terkunci: sama -> no-op, beda -> 409 SO_FIELD_LOCKED terstruktur
-                    # (so_ubah_terkonfirmasi, SAMA dengan pratinjau). Pra-cek unik hanya untuk jalur draf (13 Okt 2026:
-                    # FE mengirim balik seluruh form -> dulu 400 polos walau nomor tak berubah, sedangkan pratinjau hijau).
-                    if order["status"] == "draft" and await conn.fetchval(
-                        "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
-                        ctx["tenant_id"], _new_num, _so_uuid(order_id)):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                    body.order_number = _new_num
+                await _terapkan_nomor_so(conn, ctx, order, body)  # AS-G2e: SATU penerap nomor (PATCH + pratinjau draf)
 
                 if order["status"] != "draft":
                     # 4 Okt 2026: ubah SO TERKONFIRMASI (pola NetSuite, putusan pemilik) -- jalur sendiri, diff baris per id,
@@ -1120,206 +1108,9 @@ async def update_sales_order(
                         status_code=400, detail="Hanya pesanan berstatus Draf yang bisa diubah."
                     )
 
-                updates = []
-                params = []
-                param_idx = 1
-
-                # SEMANTIK PATCH: kunci ABSEN = jangan ubah; kunci TERKIRIM
-                # (termasuk null / "") = terapkan, sehingga field BISA
-                # DIKOSONGKAN.
-                #
-                # Bentuk lama membangun dict SELURUH field lalu melewati yang
-                # bernilai None. Akibatnya "tidak dikirim" dan "dikirim sebagai
-                # null" tak bisa dibedakan, dan MENGOSONGKAN `reference`
-                # (juga dp_percent/dp_amount/payment_terms/payment_bank_*)
-                # menjadi MUSTAHIL lewat API — satu-satunya jalan adalah SQL
-                # langsung. Pengguna yang menghapus isi kolom lalu menyimpan
-                # mendapat 200 dan nilai lamanya tetap berdiri.
-                #
-                # `exclude_unset=True` adalah pembedanya: Pydantic mencatat
-                # field mana yang BENAR-BENAR dikirim (`model_fields_set`),
-                # jadi null eksplisit ikut terbawa sementara yang absen tidak.
-                # Ini pola yang sama dengan PATCH faktur penjualan.
-                # `items` dikecualikan karena ditangani blok tersendiri di bawah
-                # (hapus + sisip ulang baris), bukan kolom `sales_orders`.
-                update_data = body.model_dump(exclude_unset=True, exclude={"items"})
-
-                for field, value in update_data.items():
-                    if field in ("dp_percent", "dp_amount"):
-                        continue  # ditulis blok uang muka di bawah (sesudah total baru diketahui)
-                    if field == "customer_id":
-                        # customer_id tetap butuh cast uuid; null tetap boleh
-                        # lewat (mengosongkan relasi) tanpa memanggil UUID(None).
-                        if value is not None:
-                            _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
-                            value = uuid_module.UUID(_c) if _c else None
-                        updates.append(f"{field} = ${param_idx}")
-                    else:
-                        updates.append(f"{field} = ${param_idx}")
-                    params.append(value)
-                    param_idx += 1
-
-                # Hitung ulang bila BARIS, DISKON, atau ONGKIR berubah. Diskon dokumen kini
-                # memengaruhi PPN tiap baris, jadi suntingan diskon/ongkir-saja WAJIB
-                # menghitung ulang dari baris tersimpan -- dulu total_amount dibiarkan basi.
-                _fs = body.model_fields_set
-                _recalc = body.items is not None or bool(
-                    {"discount_amount", "shipping_amount", "shipping_tax_code_id"} & _fs
-                )
-                if _recalc:
-                    current = await conn.fetchrow(
-                        "SELECT discount_amount, shipping_amount, shipping_tax_code_id FROM sales_orders WHERE id = $1",
-                        _so_uuid(order_id),
-                    )
-                    discount_amt = (
-                        body.discount_amount
-                        if body.discount_amount is not None
-                        else current["discount_amount"]
-                    )
-                    shipping_amt = (
-                        body.shipping_amount
-                        if body.shipping_amount is not None
-                        else current["shipping_amount"]
-                    )
-                    if body.items is not None:
-                        _src = [item.model_dump() for item in body.items]
-                        await turunkan_tarif_baris(conn, ctx["tenant_id"], _src, "tax_id")  # #34
-                        # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
-                        _warisi_jb(_src, [dict(r) for r in await conn.fetch(
-                            "SELECT id, quantity, unit_price, jumlah_baris FROM sales_order_items WHERE sales_order_id = $1",
-                            _so_uuid(order_id))])
-                    else:
-                        _src = [
-                            dict(r)
-                            for r in await conn.fetch(
-                                """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id, jumlah_baris
-                                   FROM sales_order_items WHERE sales_order_id = $1
-                                   ORDER BY sort_order, id""",
-                                _so_uuid(order_id),
-                            )
-                        ]
-                    await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_id")
-                    _ship_code = (
-                        (body.shipping_tax_code_id or None)
-                        if "shipping_tax_code_id" in _fs
-                        else (str(current["shipping_tax_code_id"]) if current["shipping_tax_code_id"] else None)
-                    )
-                    _ship = await resolve_shipping_tax(
-                        conn, ctx["tenant_id"], _ship_code, _src, shipping_amt, "tax_id"
-                    )
-                    _doc = _so_doc(_src, discount_amt, shipping_amt, _ship)
-                    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
-                    calculated_items = _doc["items"]
-
-                    for fld, val in [
-                        ("subtotal", _doc["net_subtotal"]),
-                        ("tax_amount", _doc["tax_amount"]),
-                        ("total_amount", _doc["total_amount"]),
-                        ("shipping_tax_rate", _doc["shipping_tax_rate"]),
-                        ("shipping_tax_amount", _doc["shipping_tax_amount"]),
-                        ("shipping_dpp", _doc["shipping_dpp"]),
-                    ]:
-                        updates.append(f"{fld} = ${param_idx}")
-                        params.append(val)
-                        param_idx += 1
-
-                    if body.items is None:
-                        # SO draft: compute_so_status mengembalikan 'draft' apa adanya,
-                        # jadi UPDATE baris tak mengubah status (trg_update_so_status).
-                        for _ln in calculated_items:
-                            await conn.execute(
-                                """UPDATE sales_order_items
-                                   SET tax_amount = $2, line_total = $3, dpp = $4
-                                   WHERE id = $1""",
-                                _ln["id"], _ln["tax_amount"], _ln["line_total"], _ln["dpp"],
-                            )
-
-                # Uang muka (default bisa-ditimpa, 30 Sep): nominal diketik = 'manual' (terkunci); persen saja /
-                # nominal dikosongkan dengan persen ada = 'percent' (dihitung server dari total); sumber 'percent'
-                # dihitung ulang bila total berubah. Sumber NULL (SO lama) tak disentuh kecuali medan DP dikirim.
-                _dp_kirim = {"dp_percent", "dp_amount"} & _fs
-                _dp = None
-                _kini = await conn.fetchrow(
-                    "SELECT dp_percent, dp_amount, dp_amount_source, total_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
-                    _so_uuid(order_id), ctx["tenant_id"],
-                ) if (_dp_kirim or _recalc) else None
-                _total_baru = (_doc["total_amount"] if _recalc else _kini["total_amount"]) if _kini else None
-                if _dp_kirim:
-                    _pct = body.dp_percent if "dp_percent" in _fs else _kini["dp_percent"]
-                    if "dp_amount" in _fs:
-                        _amt = body.dp_amount
-                    elif _kini["dp_amount_source"] == "manual":
-                        _amt = _kini["dp_amount"]  # persen berubah, nominal diketik tetap terkunci
-                    else:
-                        _amt = None
-                    _dp = hitung_dp(_total_baru, _pct, _amt)
-                elif _recalc and _kini["dp_amount_source"] == "percent" and _kini["dp_percent"] is not None:
-                    _dp = hitung_dp(_total_baru, _kini["dp_percent"], None)
-                if _dp is not None:
-                    for fld in ("dp_percent", "dp_amount", "dp_amount_source"):
-                        updates.append(f"{fld} = ${param_idx}")
-                        params.append(_dp[fld])
-                        param_idx += 1
-
-                if body.items is not None:
-                    await conn.execute(
-                        "DELETE FROM sales_order_items WHERE sales_order_id = $1",
-                        _so_uuid(order_id),
-                    )
-
-                    for idx, item in enumerate(calculated_items):
-                        await conn.execute(
-                            """
-                            INSERT INTO sales_order_items (
-                                id, sales_order_id, item_id, description,
-                                quantity, unit, unit_price, discount_percent,
-                                tax_id, tax_rate, tax_amount, line_total,
-                                warehouse_id, sort_order, dpp, jumlah_baris
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-                        """,
-                            uuid_module.uuid4(),
-                            _so_uuid(order_id),
-                            uuid_module.UUID(item["item_id"])
-                            if item.get("item_id")
-                            else None,
-                            item["description"],
-                            item["quantity"],
-                            item.get("unit"),
-                            item["unit_price"],
-                            item.get("discount_percent") or 0,
-                            uuid_module.UUID(item["tax_id"])
-                            if item.get("tax_id")
-                            else None,
-                            item.get("tax_rate") or 0,
-                            item["tax_amount"],
-                            item["line_total"],
-                            uuid_module.UUID(item["warehouse_id"])
-                            if item.get("warehouse_id")
-                            else None,
-                            item.get("sort_order") if item.get("sort_order") is not None else idx,
-                            item["dpp"],
-                            item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
-                        )
-
-                if updates:
-                    params.append(_so_uuid(order_id))
-                    params.append(ctx["tenant_id"])
-                    await conn.execute(
-                        f"""
-                        UPDATE sales_orders SET {', '.join(updates)}
-                        WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                    """,
-                        *params,
-                    )
-
-                _ubah = sorted(set(update_data) | ({"items"} if body.items is not None else set()))
-                if _ubah:
-                    # Riwayat SO: 'diubah' tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
-                    await catat_riwayat(
-                        conn, ctx["tenant_id"], "sales_orders", order["id"], None, "SALES_ORDER_UPDATED",
-                        ctx["user_id"], "Pesanan diubah (" + ", ".join(_ubah) + ")", {"fields": _ubah},
-                        source="api:sales_orders.update",
-                    )
+                # AS-G2e (25 Okt 2026): jalur draf = penentu BACA (_rencana_ubah_draf, SAMA dgn POST /{id}/edit/preview draf) + penulis
+                _r = await _rencana_ubah_draf(conn, ctx, order, body)
+                await _tulis_ubah_draf(conn, ctx, order, body, _r)
                 return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
                     success=True, message="Pesanan diperbarui", data={"id": order_id}
                 ), order["id"])
@@ -1351,6 +1142,255 @@ async def _hitung_so(conn, tenant_id: str, src: list, discount, shipping, shippi
     return doc
 
 
+async def _terapkan_nomor_so(conn, ctx: dict, order, body) -> None:
+    """Nomor SO di badan PATCH (dan pratinjau draf AS-G2e): kosong -> dibuang; isi -> dibersihkan; draf -> pra-cek unik 409. Isi DIPINDAH
+    apa adanya dari update_sales_order (25 Okt 2026)."""
+    from ..services.document_number import bersihkan_nomor_dokumen_opsional
+    _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
+    if _new_num is None:
+        body.__pydantic_fields_set__.discard("order_number")
+    else:
+        # Nomor di SO TERKONFIRMASI = medan terkunci: sama -> no-op, beda -> 409 SO_FIELD_LOCKED terstruktur
+        # (so_ubah_terkonfirmasi, SAMA dengan pratinjau). Pra-cek unik hanya untuk jalur draf (13 Okt 2026:
+        # FE mengirim balik seluruh form -> dulu 400 polos walau nomor tak berubah, sedangkan pratinjau hijau).
+        if order["status"] == "draft" and await conn.fetchval(
+            "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
+            ctx["tenant_id"], _new_num, order["id"]):
+            raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+        body.order_number = _new_num
+
+
+async def _rencana_ubah_draf(conn, ctx: dict, order, body) -> dict:
+    """AS-G2e: penentu ubah SO DRAF -- HANYA BACA + hitung (isi DIPINDAH apa adanya dari update_sales_order). Dipakai PATCH (sesudah FOR
+    UPDATE) dan POST /{id}/edit/preview draf (transaksi readonly, tanpa kunci). Galat = galat lama PATCH. -> {kolom: [(medan, nilai)] urut
+    SET lama, items (baris BARU dihitung | None), baris_ulang (hitung ulang baris tersimpan), doc, dp, update_data, ubah}."""
+    so_id = order["id"]
+    kolom = []
+    # SEMANTIK PATCH: kunci ABSEN = jangan ubah; kunci TERKIRIM (termasuk null / "") = terapkan -- lihat catatan lama di
+    # update_sales_order (dipindah 25 Okt): exclude_unset membedakan "tidak dikirim" dan "dikirim sebagai null". `items` dikecualikan
+    # karena ditangani blok tersendiri (hapus + sisip ulang baris), bukan kolom `sales_orders`.
+    update_data = body.model_dump(exclude_unset=True, exclude={"items"})
+
+    for field, value in update_data.items():
+        if field in ("dp_percent", "dp_amount"):
+            continue  # ditulis blok uang muka di bawah (sesudah total baru diketahui)
+        if field == "customer_id":
+            # customer_id tetap butuh cast uuid; null tetap boleh
+            # lewat (mengosongkan relasi) tanpa memanggil UUID(None).
+            if value is not None:
+                _c = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], value)  # satu tenant
+                value = uuid_module.UUID(_c) if _c else None
+        kolom.append((field, value))
+
+    # Hitung ulang bila BARIS, DISKON, atau ONGKIR berubah. Diskon dokumen kini
+    # memengaruhi PPN tiap baris, jadi suntingan diskon/ongkir-saja WAJIB
+    # menghitung ulang dari baris tersimpan -- dulu total_amount dibiarkan basi.
+    _fs = body.model_fields_set
+    _recalc = body.items is not None or bool(
+        {"discount_amount", "shipping_amount", "shipping_tax_code_id"} & _fs
+    )
+    _doc, calculated_items, baris_ulang = None, None, []
+    if _recalc:
+        current = await conn.fetchrow(
+            "SELECT discount_amount, shipping_amount, shipping_tax_code_id FROM sales_orders WHERE id = $1",
+            so_id,
+        )
+        discount_amt = (
+            body.discount_amount
+            if body.discount_amount is not None
+            else current["discount_amount"]
+        )
+        shipping_amt = (
+            body.shipping_amount
+            if body.shipping_amount is not None
+            else current["shipping_amount"]
+        )
+        if body.items is not None:
+            _src = [item.model_dump() for item in body.items]
+            await turunkan_tarif_baris(conn, ctx["tenant_id"], _src, "tax_id")  # #34
+            # JUMLAH BARIS: kirim-ulang baris tanpa line_amount mewarisi jumlah tersimpan (qty/harga tak berubah)
+            _warisi_jb(_src, [dict(r) for r in await conn.fetch(
+                "SELECT id, quantity, unit_price, jumlah_baris FROM sales_order_items WHERE sales_order_id = $1",
+                so_id)])
+        else:
+            _src = [
+                dict(r)
+                for r in await conn.fetch(
+                    """SELECT id, quantity, unit_price, discount_percent, tax_rate, tax_id, jumlah_baris
+                       FROM sales_order_items WHERE sales_order_id = $1
+                       ORDER BY sort_order, id""",
+                    so_id,
+                )
+            ]
+        await attach_dpp_factors(conn, ctx["tenant_id"], _src, "tax_id")
+        _ship_code = (
+            (body.shipping_tax_code_id or None)
+            if "shipping_tax_code_id" in _fs
+            else (str(current["shipping_tax_code_id"]) if current["shipping_tax_code_id"] else None)
+        )
+        _ship = await resolve_shipping_tax(
+            conn, ctx["tenant_id"], _ship_code, _src, shipping_amt, "tax_id"
+        )
+        _doc = _so_doc(_src, discount_amt, shipping_amt, _ship)
+        await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
+        calculated_items = _doc["items"]
+
+        for fld, val in [
+            ("subtotal", _doc["net_subtotal"]),
+            ("tax_amount", _doc["tax_amount"]),
+            ("total_amount", _doc["total_amount"]),
+            ("shipping_tax_rate", _doc["shipping_tax_rate"]),
+            ("shipping_tax_amount", _doc["shipping_tax_amount"]),
+            ("shipping_dpp", _doc["shipping_dpp"]),
+        ]:
+            kolom.append((fld, val))
+
+        if body.items is None:
+            baris_ulang = [(_ln["id"], _ln["tax_amount"], _ln["line_total"], _ln["dpp"]) for _ln in calculated_items]
+
+    # Uang muka (default bisa-ditimpa, 30 Sep): nominal diketik = 'manual' (terkunci); persen saja /
+    # nominal dikosongkan dengan persen ada = 'percent' (dihitung server dari total); sumber 'percent'
+    # dihitung ulang bila total berubah. Sumber NULL (SO lama) tak disentuh kecuali medan DP dikirim.
+    _dp_kirim = {"dp_percent", "dp_amount"} & _fs
+    _dp = None
+    _kini = await conn.fetchrow(
+        "SELECT dp_percent, dp_amount, dp_amount_source, total_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+        so_id, ctx["tenant_id"],
+    ) if (_dp_kirim or _recalc) else None
+    _total_baru = (_doc["total_amount"] if _recalc else _kini["total_amount"]) if _kini else None
+    if _dp_kirim:
+        _pct = body.dp_percent if "dp_percent" in _fs else _kini["dp_percent"]
+        if "dp_amount" in _fs:
+            _amt = body.dp_amount
+        elif _kini["dp_amount_source"] == "manual":
+            _amt = _kini["dp_amount"]  # persen berubah, nominal diketik tetap terkunci
+        else:
+            _amt = None
+        _dp = hitung_dp(_total_baru, _pct, _amt)
+    elif _recalc and _kini["dp_amount_source"] == "percent" and _kini["dp_percent"] is not None:
+        _dp = hitung_dp(_total_baru, _kini["dp_percent"], None)
+    if _dp is not None:
+        for fld in ("dp_percent", "dp_amount", "dp_amount_source"):
+            kolom.append((fld, _dp[fld]))
+
+    return {"kolom": kolom, "items": calculated_items if body.items is not None else None, "baris_ulang": baris_ulang, "doc": _doc,
+            "dp": _dp, "update_data": update_data,
+            "ubah": sorted(set(update_data) | ({"items"} if body.items is not None else set()))}
+
+
+async def _tulis_ubah_draf(conn, ctx: dict, order, body, r: dict) -> None:
+    """AS-G2e: penulis ubah SO DRAF (isi tulis DIPINDAH apa adanya; urutan sama: baris hitung-ulang, hapus+sisip baris, UPDATE kepala, riwayat)."""
+    so_id = order["id"]
+    for _lid, _tax, _lt, _dpp in r["baris_ulang"]:
+        # SO draft: compute_so_status mengembalikan 'draft' apa adanya,
+        # jadi UPDATE baris tak mengubah status (trg_update_so_status).
+        await conn.execute(
+            """UPDATE sales_order_items
+               SET tax_amount = $2, line_total = $3, dpp = $4
+               WHERE id = $1""",
+            _lid, _tax, _lt, _dpp,
+        )
+    if r["items"] is not None:
+        await conn.execute(
+            "DELETE FROM sales_order_items WHERE sales_order_id = $1",
+            so_id,
+        )
+
+        for idx, item in enumerate(r["items"]):
+            await conn.execute(
+                """
+                INSERT INTO sales_order_items (
+                    id, sales_order_id, item_id, description,
+                    quantity, unit, unit_price, discount_percent,
+                    tax_id, tax_rate, tax_amount, line_total,
+                    warehouse_id, sort_order, dpp, jumlah_baris
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            """,
+                uuid_module.uuid4(),
+                so_id,
+                uuid_module.UUID(item["item_id"])
+                if item.get("item_id")
+                else None,
+                item["description"],
+                item["quantity"],
+                item.get("unit"),
+                item["unit_price"],
+                item.get("discount_percent") or 0,
+                uuid_module.UUID(item["tax_id"])
+                if item.get("tax_id")
+                else None,
+                item.get("tax_rate") or 0,
+                item["tax_amount"],
+                item["line_total"],
+                uuid_module.UUID(item["warehouse_id"])
+                if item.get("warehouse_id")
+                else None,
+                item.get("sort_order") if item.get("sort_order") is not None else idx,
+                item["dpp"],
+                item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
+            )
+
+    if r["kolom"]:
+        updates = [f"{f} = ${i}" for i, (f, _) in enumerate(r["kolom"], 1)]
+        params = [v for _, v in r["kolom"]] + [so_id, ctx["tenant_id"]]
+        param_idx = len(r["kolom"]) + 1
+        await conn.execute(
+            f"""
+            UPDATE sales_orders SET {', '.join(updates)}
+            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+        """,
+            *params,
+        )
+
+    if r["ubah"]:
+        # Riwayat SO: 'diubah' tak punya kolom aktor -> audit_logs, tx yang sama (Law 12)
+        await catat_riwayat(
+            conn, ctx["tenant_id"], "sales_orders", order["id"], None, "SALES_ORDER_UPDATED",
+            ctx["user_id"], "Pesanan diubah (" + ", ".join(r["ubah"]) + ")", {"fields": r["ubah"]},
+            source="api:sales_orders.update",
+        )
+
+
+KUNCI_ANGKA_DRAF = ("subtotal", "tax_amount", "total_amount", "discount_amount", "shipping_amount", "dp_percent", "dp_amount")
+
+
+async def _pratinjau_ubah_draf(conn, ctx: dict, order, body) -> dict:
+    """AS-G2e: pratinjau ubah SO DRAF -- penentu YANG SAMA dgn PATCH (_terapkan_nomor_so + _rencana_ubah_draf) di transaksi READ ONLY
+    pemanggil, tanpa kunci. Galat penentu -> blocks (pesan sama dgn galat PATCH). Bentuk selaras pratinjau terkonfirmasi: lines = set AKHIR."""
+    from fastapi.encoders import jsonable_encoder
+    judul = "order_title" in body.model_fields_set  # judul = jalur sendiri (label, PATCH); ikut dilaporkan, tak dihitung
+    payload = body.model_dump(mode="json", exclude_unset=True)
+    body.__pydantic_fields_set__.discard("order_title")
+    blocks, r = [], None
+    try:
+        await _terapkan_nomor_so(conn, ctx, order, body)
+        r = await _rencana_ubah_draf(conn, ctx, order, body)
+    except HTTPException as e:
+        d = e.detail
+        blocks.append({"code": (d.get("code") if isinstance(d, dict) else None) or f"HTTP_{e.status_code}", "status": e.status_code,
+                       "message": d.get("message") if isinstance(d, dict) else str(d)})
+    angka = lambda v: None if v is None else float(v)  # noqa: E731
+    before = {k: angka(order[k]) for k in KUNCI_ANGKA_DRAF}
+    after = dict(before)
+    if r:
+        for f, v in r["kolom"]:
+            if f in after:
+                after[f] = angka(v)
+    if r and r["items"] is not None:
+        lines = r["items"]
+    elif r and r["doc"] is not None:
+        lines = r["doc"]["items"]
+    else:
+        lines = [dict(x) for x in await conn.fetch(
+            """SELECT id, item_id, description, quantity, unit, unit_price, discount_percent, tax_id, tax_rate, tax_amount, line_total, dpp,
+                      jumlah_baris, sort_order FROM sales_order_items WHERE sales_order_id = $1 ORDER BY sort_order, id""", order["id"])]
+    fields = sorted(set(r["ubah"] if r else []) | ({"order_title"} if judul else set()))
+    return jsonable_encoder({"id": str(order["id"]), "order_number": order["order_number"], "status": order["status"],
+                             "can_proceed": not blocks, "blocks": blocks, "before": before, "after": after,
+                             "changes": {"fields": fields, "lines_replaced": bool(r and r["items"] is not None)},
+                             "lines": lines, "warnings": [], "payload": payload, "preview": True})
+
+
 class _BatalkanUbah(Exception):
     def __init__(self, hasil):
         self.hasil = hasil
@@ -1359,18 +1399,28 @@ class _BatalkanUbah(Exception):
 @router.post("/{order_id}/edit/preview", response_model=SalesOrderResponse)
 async def preview_edit_sales_order(request: Request, order_id: str, body: UpdateSalesOrderRequest):
     """Pratinjau ubah SO terkonfirmasi: jalur ubah() YANG SAMA lalu ROLLBACK (nol tulis). Body kosong = keadaan kunci
-    tiap baris (min qty, faktur draf + tautan) untuk layar Tinjau. Galat = galat yang sama dengan PATCH."""
+    tiap baris (min qty, faktur draf + tautan) untuk layar Tinjau. Galat = galat yang sama dengan PATCH.
+    SO DRAF (AS-G2e, 25 Okt 2026): transaksi READ ONLY tanpa kunci, penentu _rencana_ubah_draf YANG SAMA dgn PATCH draf; galat -> blocks."""
     ctx = get_user_context(request)
     oid = _so_uuid(order_id)
     from ..services import so_ubah_terkonfirmasi as _sut
     pool = await get_pool()
+    # AS-G2e (25 Okt 2026): SO DRAF -> pratinjau READ ONLY tanpa kunci, penentu SAMA dgn PATCH draf (dulu 409 SO_IS_DRAFT).
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            draf = await conn.fetchrow(
+                f"SELECT id, status, order_number, {', '.join(KUNCI_ANGKA_DRAF)} FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                oid, ctx["tenant_id"])
+            if draf is not None and draf["status"] == "draft":
+                return SalesOrderResponse(success=True, message="Pratinjau ubah pesanan",
+                                          data=await _pratinjau_ubah_draf(conn, ctx, draf, body))
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 so = await _so_untuk_ubah(conn, ctx, oid)
                 if not so:
                     raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
-                if so["status"] == "draft":
+                if so["status"] == "draft":  # berubah jadi draf di antara dua bacaan -- tak mungkin (draf tak bisa kembali), jaga saja
                     _sut.galat(409, "SO_IS_DRAFT", "Pesanan masih draf: ubah langsung tanpa pratinjau.")
                 if not await _sut.flag_aktif(conn, ctx["tenant_id"]):
                     _sut.galat(409, "SO_EDIT_NOT_ENABLED", "Ubah pesanan terkonfirmasi belum aktif untuk usaha ini.")
