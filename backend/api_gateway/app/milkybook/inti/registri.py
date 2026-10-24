@@ -28,6 +28,7 @@ class Kelas(str, Enum):
 
 # Pengganti parameter jalur saat menanyakan izin (pola izin = regex atas jalur konkret).
 _ID_CONTOH = "00000000-0000-4000-8000-000000000000"
+MAKS_STRICT = 20  # API: "The maximum number of strict tools supported is 20" (400, 24 Okt)
 _PARAM_JALUR = re.compile(r"\{([a-z_]+)\}")
 
 
@@ -75,8 +76,11 @@ class Tool:
             "name": self.nama,
             "description": self.deskripsi,
             "input_schema": self.skema,
-            "strict": True,
         }
+        # API membatasi 20 tool strict per permintaan. Strict untuk WRITE/PREVIEW (payload menentukan uang);
+        # READ/NAV divalidasi inti (putaran._validasi) sebelum dijalankan.
+        if self.kelas in (Kelas.WRITE, Kelas.PREVIEW):
+            d["strict"] = True
         if self.tunda:
             d["defer_loading"] = True
         return d
@@ -179,7 +183,11 @@ class Registri:
             for j in daftar:
                 boleh[(metode, j)] = bool(hasil.get(j, False))
 
-        return [t for t in kandidat if all(boleh[r] for r in self._rute_wajib(t))]
+        hasil = [t for t in kandidat if all(boleh[r] for r in self._rute_wajib(t))]
+        n_strict = sum(1 for t in hasil if "strict" in t.untuk_api())
+        if n_strict > MAKS_STRICT:
+            raise ValueError(f"{n_strict} tool strict > {MAKS_STRICT} (batas API)")
+        return hasil
 
     def _rute_wajib(self, t: Tool) -> List[Tuple[str, str]]:
         if t.kelas == Kelas.NAV:
