@@ -1476,6 +1476,14 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
 # =============================================================================
 
 
+# SALDO-AWAL-VENDOR-C (24 Okt 2026, putusan pemilik "C now + A"): jalur di bawah memposting Dr Hutang / Cr Modal Saldo Awal -- TERBALIK
+# (skill vendor: Dr Modal / Cr Hutang); compute_ap V457 membacanya sebagai hutang NEGATIF. Ditahan 409 sampai saldo awal vendor = bill pembuka
+# (opsi A). FE (saldoAwalVendor.ts, OpeningBalanceSheet.tsx) menampilkan `message`. Kode lama di bawah TAK tercapai selama penahan aktif.
+SALDO_AWAL_VENDOR_DITAHAN = True
+KODE_SALDO_AWAL_VENDOR_DITAHAN = "SALDO_AWAL_VENDOR_DITAHAN"
+PESAN_SALDO_AWAL_VENDOR_DITAHAN = "Pencatatan saldo awal vendor sedang diperbaiki dan belum bisa dipakai. Coba lagi nanti."
+
+
 @router.post("/{vendor_id}/opening-balance")
 async def set_vendor_opening_balance(request: Request, vendor_id: str):
     """
@@ -1493,6 +1501,9 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str):
     """
     from datetime import date as date_type
     from decimal import Decimal as Dec
+
+    if SALDO_AWAL_VENDOR_DITAHAN:  # SALDO-AWAL-VENDOR-C: sebelum badan / pool / jurnal apa pun
+        raise HTTPException(status_code=409, detail={"code": KODE_SALDO_AWAL_VENDOR_DITAHAN, "message": PESAN_SALDO_AWAL_VENDOR_DITAHAN})
 
     try:
         ctx = get_user_context(request)
