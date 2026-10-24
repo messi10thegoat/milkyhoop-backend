@@ -1171,7 +1171,7 @@ async def _rencana_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -
                 blocks.append({"code": "CN_MELEBIHI_SISA", "message": _pesan_galat(e)})
     if faktur is not None:
         try:
-            await periksa_bisa_dinotakan(conn, tid, faktur["id"], [i.model_dump() for i in body.items])
+            await periksa_bisa_dinotakan(conn, tid, faktur["id"], [i.model_dump() for i in body.items], kunci=False)
         except HTTPException as e:
             blocks.append({"code": "CN_QTY_EXCEEDS_CREDITABLE", "message": _pesan_galat(e),
                            "lines": e.detail.get("lines") if isinstance(e.detail, dict) else None})
@@ -1219,8 +1219,13 @@ async def _pratinjau_dua_bentuk(conn, ctx: dict, body) -> dict:
 
 
 async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> dict:
-    """Di transaksi PEMANGGIL (wajib ROLLBACK): rencana; bila bersih -> buat_nota_kredit + posting_nota_kredit
-    (inti yang SAMA dengan POST /credit-notes dan /{id}/post) di savepoint, lalu jurnal yang lahir dibaca."""
+    """Di transaksi READ ONLY pemanggil (AS-G7b): rencana buat (_rencana_nota_kredit, SEMUA blok) + pemeriksaan buat yang tak ada di
+    rencana (periksa_tautan_baris_faktur) + PENENTU POSTING yang sama dengan penulis (nota_kredit_rencana.rencana_posting_nk) atas NK
+    MAYA (belum ditulis). Galat pertama buat/posting = CN_REJECTED (seperti dulu). Jurnal/stok/KRD dari rencana; nomor NK = perkiraan
+    (credit_note_number_estimated), nomor jurnal & KRD null. Dulu: buat + posting NYATA di savepoint lalu rollback (memegang kunci
+    nomor NK, CREDIT_NOTE:, CN_RETUR_FAKTUR, FOR UPDATE baris faktur, nomor jurnal + kunci rantai jurnal tenant)."""
+    import uuid as _uuid
+    from ..services import nota_kredit_rencana as NKR
     tid = ctx["tenant_id"]
     r = await _rencana_nota_kredit(conn, ctx, body)
     blocks, notes = list(r["blocks"]), []
@@ -1229,47 +1234,51 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
     _SQL_SISA = "SELECT COALESCE(SUM(outstanding), 0) FROM compute_ar_outstanding($1) WHERE invoice_id = $2"
     sisa_sesudah = None
     if faktur is not None:
-        # 30 Sep (diukur di uji nyata WORKSPACE, CN-2609-0030): NK bertaut faktur LANGSUNG memotong sisa tagihan saat
-        # diposting (compute_ar_outstanding). Catatan lama "belum memotong" SALAH -> diganti angka sebelum/sesudah.
+        # 30 Sep (diukur di uji nyata WORKSPACE, CN-2609-0030): NK bertaut faktur LANGSUNG memotong sisa tagihan saat diposting.
         sisa = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
     nomor, jurnal, stok, kredit = None, [], [], None
     if not blocks:
         try:
-            async with conn.transaction():  # savepoint
-                h = await buat_nota_kredit(conn, ctx, body)
-                cn_id = UUID(h["data"]["id"])
-                nomor = h["data"]["credit_note_number"]
-                await posting_nota_kredit(conn, ctx, cn_id)
-                _k = await conn.fetchrow(
-                    """SELECT cd.deposit_number, cd.amount FROM credit_notes cn
-                       JOIN customer_deposits cd ON cd.id = cn.created_deposit_id
-                       WHERE cn.id = $1 AND cn.tenant_id = $2""", cn_id, tid)
-                if _k:
-                    kredit = {"deposit_number": _k["deposit_number"], "amount": float(_k["amount"])}
-                for j in await conn.fetch(
-                    """SELECT id, journal_number, source_type, total_debit FROM journal_entries
-                       WHERE tenant_id = $1 AND created_at = NOW() ORDER BY journal_number""", tid):
-                    jurnal.append({"journal_number": j["journal_number"], "source_type": j["source_type"],
-                                   "amount": float(j["total_debit"] or 0),
-                                   "lines": [{"account_code": x["account_code"], "account_name": x["name"],
-                                              "debit": float(x["debit"] or 0), "credit": float(x["credit"] or 0)}
-                                             for x in await conn.fetch(
-                                                 """SELECT coa.account_code, coa.name, jl.debit, jl.credit FROM journal_lines jl
-                                                    JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                                                    WHERE jl.journal_id = $1 ORDER BY jl.line_number""", j["id"])]})
-                stok = [{"product_name": s["product_name"], "quantity": float(s["q"])} for s in await conn.fetch(
-                    """SELECT product_name, SUM(quantity_in) AS q FROM inventory_ledger
-                       WHERE tenant_id = $1 AND created_at = NOW() AND quantity_in > 0 GROUP BY 1 ORDER BY 1""", tid)]
-                if faktur is not None:
-                    sisa_sesudah = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
+            await periksa_tautan_baris_faktur(conn, tid, faktur["id"] if faktur else None, [i.model_dump() for i in body.items])
+            pelanggan = await pelanggan_kanonik_tenant(conn, tid, body.customer_id)
+            nomor = await NKR.perkiraan_nomor_nk(conn, tid)
+            # NK MAYA: id acak yang tak ada di mana pun -> penyaring "kecuali NK ini" tak mengecualikan apa pun (= NK belum ditulis)
+            cn = {"id": _uuid.uuid4(), "status": "draft", "credit_note_number": nomor, "customer_id": pelanggan,
+                  "customer_name": body.customer_name, "original_invoice_id": faktur["id"] if faktur else None,
+                  "original_invoice_number": faktur["invoice_number"] if faktur else None, "subtotal": doc["gross_subtotal"],
+                  "total_amount": doc["total_amount"], "tax_amount": doc["tax_amount"], "credit_note_date": body.credit_note_date,
+                  "reason": body.reason, "amount_applied": Decimal("0"), "amount_refunded": Decimal("0"), "journal_id": None}
+            items = [{"item_id": UUID(it["item_id"]) if it.get("item_id") else None, "quantity": it["quantity"],
+                      "subtotal": it["subtotal"], "original_invoice_item_id": it.get("original_invoice_item_id"), "line_number": n}
+                     for n, it in enumerate(doc["items"], 1)]
+            rp = await NKR.rencana_posting_nk(conn, ctx, None, pratinjau=True, maya={"cn": cn, "items": items})
+            if rp["blocks"].daftar:
+                b = rp["blocks"].daftar[0]  # urutan blok penentu posting == urutan raise penulis lama -> galat pertama yang sama
+                raise HTTPException(status_code=b["status"], detail=b["message"])
+            akun = rp["akun"]
+            utama = NKR.baris_posting_nk(cn, akun, rp["u"], rp["subtotal"], rp["pajak"], rp["porsi_ar"], rp["kelebihan"])
+            hpp = [x for x in rp["restock"] if x["line_cost"] > 0]
+            for st, baris in (("CREDIT_NOTE", utama), ("CREDIT_NOTE_COGS", NKR.baris_hpp_nk(cn, hpp) if hpp else [])):
+                if not baris:
+                    continue
+                jurnal.append({"journal_number": None, "source_type": st,
+                               "amount": float(sum((Decimal(str(d or 0)) for _, d, _, _ in baris), Decimal("0"))),
+                               "lines": [{k: v for k, v in x.items() if k in ("account_code", "account_name", "debit", "credit")}
+                                         for x in await NKR._tampil(conn, tid, baris)]})
+            per = {}
+            for x in rp["restock"]:
+                per[x["nama"]] = per.get(x["nama"], Decimal("0")) + Decimal(str(x["qty"]))
+            stok = [{"product_name": n, "quantity": float(q)} for n, q in sorted(per.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))]
+            if rp["kelebihan"] > 0:
+                kredit = {"deposit_number": None, "amount": float(rp["kelebihan"])}
+            if faktur is not None:
+                sisa_sesudah = Decimal(str(sisa)) - rp["porsi_ar"]
         except HTTPException as e:
             blocks.append({"code": "CN_REJECTED", "message": _pesan_galat(e)})
-            nomor, jurnal, stok = None, [], []
+            nomor, jurnal, stok, kredit, sisa_sesudah = None, [], [], None, None
     ok = not blocks
     if ok and kredit:
-        notes.append({"code": "CN_EXCESS_TO_CUSTOMER_CREDIT",
-                      "message": f"{tg.rp(kredit['amount'])} melebihi sisa tagihan -> jadi saldo kredit pelanggan "
-                                 f"{kredit['deposit_number']} (bisa dipakai untuk faktur lain atau dikembalikan)."})
+        notes.append(NKR.catatan_kelebihan_nk(kredit["amount"]))
     if ok and faktur is not None and sisa_sesudah is not None and Decimal(str(sisa_sesudah)) != Decimal(str(sisa)):
         notes.append({"code": "CN_REDUCES_INVOICE",
                       "message": f"Sesudah diposting, sisa tagihan {faktur['invoice_number']} menjadi "
@@ -1280,6 +1289,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         "blocks": blocks,
         "notes": notes,
         "credit_note_number_preview": nomor,
+        "credit_note_number_estimated": nomor is not None,
         "items": ([{k: (float(v) if isinstance(v, Decimal) else v) for k, v in it.items()
                     if k in ("description", "item_id", "quantity", "unit", "unit_price", "discount_percent",
                              "discount_amount", "tax_rate", "tax_amount", "subtotal", "total", "dpp")}
@@ -1430,9 +1440,8 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
 
 @router.post("/preview")
 async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
-    """PRATINJAU nota kredit (halaman CW): rencana (SEMUA blok) + draf NYATA (buat_nota_kredit) + posting NYATA
-    (posting_nota_kredit) di savepoint -> jurnal/stok yang AKAN lahir saat diposting; transaksi SELALU di-ROLLBACK
-    (nomor CN/jurnal tak terbakar). 200 walau diblok. Tulis = POST /credit-notes dengan `payload` (lahir DRAF),
+    """PRATINJAU nota kredit (halaman CW): rencana (SEMUA blok) + penentu posting atas NK maya (AS-G7b, transaksi READ ONLY, tanpa
+    kunci/penomoran/tulis) -> jurnal/stok yang AKAN lahir saat diposting; nomor NK = perkiraan. 200 walau diblok. Tulis = POST /credit-notes dengan `payload` (lahir DRAF),
     lalu POST /credit-notes/{id}/post."""
     try:
         ctx = get_user_context(request)
@@ -1442,7 +1451,7 @@ async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
         async with pool.acquire() as conn:
-            tr = conn.transaction()
+            tr = conn.transaction(readonly=True)  # AS-G7b: DB menolak tulisan apa pun
             await tr.start()
             try:
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))

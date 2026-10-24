@@ -82,9 +82,10 @@ async def kunci_faktur(conn, tenant_id: str, invoice_id):
                        tenant_id, f"INVOICE_FULFILL:{str(invoice_id)}")
 
 
-async def hitung_untuk_nk(conn, tenant_id: str, cn, subtotal_nk, kunci: bool = True) -> tuple:
+async def hitung_untuk_nk(conn, tenant_id: str, cn, subtotal_nk, kunci: bool = True, item_nk=None) -> tuple:
     """-> (porsi {invoice_item_id: U}, baris_faktur {id: row}) untuk NK ber-faktur-asal; ({}, {}) bila tidak.
-    kunci=False (NK-RENCANA-B, pratinjau READ ONLY): tanpa kunci_faktur dan tanpa FOR UPDATE -- angka SAMA."""
+    kunci=False (NK-RENCANA-B, pratinjau READ ONLY): tanpa kunci_faktur dan tanpa FOR UPDATE -- angka SAMA.
+    item_nk = [{item_id, subtotal}] baris NK MAYA (AS-G7b, pratinjau buat NK): dipakai apa adanya, credit_note_items tak dibaca."""
     if not cn["original_invoice_id"] or cn["reason"] in ALASAN_BARANG_KEMBALI:
         return {}, {}
     if kunci:
@@ -95,8 +96,9 @@ async def hitung_untuk_nk(conn, tenant_id: str, cn, subtotal_nk, kunci: bool = T
            WHERE sii.invoice_id = $1 AND si.tenant_id = $2
            ORDER BY sii.line_number, sii.id""" + (" FOR UPDATE OF sii" if kunci else ""),
         cn["original_invoice_id"], tenant_id)
-    item_nk = await conn.fetch(
-        "SELECT item_id, subtotal FROM credit_note_items WHERE credit_note_id = $1 ORDER BY line_number, id", cn["id"])
+    if item_nk is None:
+        item_nk = await conn.fetch(
+            "SELECT item_id, subtotal FROM credit_note_items WHERE credit_note_id = $1 ORDER BY line_number, id", cn["id"])
     porsi = porsi_tertunda(subtotal_nk, [dict(i) for i in item_nk], [dict(b) for b in baris], cn["reason"])
     return porsi, {b["id"]: b for b in baris}
 

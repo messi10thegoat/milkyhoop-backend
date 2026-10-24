@@ -246,16 +246,21 @@ async def _peran(conn, tid: str, role, bl: Blok, pratinjau: bool):
         return None
 
 
-async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False) -> dict:
+async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False, maya: dict = None) -> dict:
     """URUTAN == posting_nota_kredit lama (sesudah kunci CREDIT_NOTE): ada (404) · draf · faktur asal (tenant+pelanggan, muat, potongan,
     bisa dinotakan) · periode tanggal NK · akun piutang + retur/diskon (500) · porsi Dimuka V312 (+ akun REVENUE_DEFERRED) · PPN non-PKP (422) ·
     pecahan piutang/KRD (+ akun Uang Muka Pelanggan) · restock retur (barang belum pernah keluar / melebihi sisa terkirim).
-    -> rencana yang DIPAKAI penulis (akun, porsi, porsi_ar, kelebihan) dan pratinjau (+ restock untuk jurnal HPP)."""
+    -> rencana yang DIPAKAI penulis (akun, porsi, porsi_ar, kelebihan) dan pratinjau (+ restock untuk jurnal HPP).
+    maya = {"cn": baris NK, "items": baris credit_note_items} (AS-G7b, HANYA pratinjau buat NK): NK yang BELUM ditulis -- id = UUID acak
+    yang tak ada di mana pun (penyaring `id <> NK ini` = tak mengecualikan apa pun, sama dengan NK yang belum ada); baris dibaca dari
+    maya, bukan dari credit_note_items. Penulis memanggil TANPA maya (perilaku tak berubah)."""
     from .role_resolver import AccountRole
     R = _nk()  # pembantu lewat modul router (satu rujukan dgn penulis; tes menambal R.*)
     tid = ctx["tenant_id"]
     bl = Blok(pratinjau)
-    cn = await _baca_nk(conn, tid, cn_id, bl)
+    cn = maya["cn"] if maya else await _baca_nk(conn, tid, cn_id, bl)
+    cn_id = cn["id"]
+    baris_nk = maya["items"] if maya else None
     hasil = {"blocks": bl, "cn": cn, "faktur_asal": None}
     if cn["status"] != "draft":
         bl.galat("CN_NOT_DRAFT", 400, tg.tak_bisa_status(
@@ -269,7 +274,8 @@ async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False) ->
             await bl.coba("CN_FAKTUR_ASAL", R.pastikan_potongan_muat_sisa(conn, tid, faktur_asal, cn["total_amount"], cn["reason"]))
             await bl.coba("CN_FAKTUR_ASAL", R.periksa_bisa_dinotakan(
                 conn, tid, faktur_asal["id"],
-                [dict(r) for r in await conn.fetch(
+                [{"quantity": r["quantity"], "original_invoice_item_id": r["original_invoice_item_id"]} for r in baris_nk]
+                if baris_nk is not None else [dict(r) for r in await conn.fetch(
                     "SELECT quantity, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", cn_id)],
                 kecuali_cn=cn_id, kunci=not pratinjau))
     hasil["faktur_asal"] = faktur_asal
@@ -284,7 +290,9 @@ async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False) ->
     total = cn["total_amount"]
     pajak = cn["tax_amount"] or 0
     subtotal = total - pajak
-    porsi, baris_faktur = await R.cn_tertunda.hitung_untuk_nk(conn, tid, cn, subtotal, kunci=not pratinjau)
+    porsi, baris_faktur = await R.cn_tertunda.hitung_untuk_nk(
+        conn, tid, cn, subtotal, kunci=not pratinjau,
+        item_nk=[{"item_id": r["item_id"], "subtotal": r["subtotal"]} for r in baris_nk] if baris_nk is not None else None)
     u = sum(porsi.values(), Decimal("0"))
     dimuka = None
     if u > 0:
@@ -307,21 +315,23 @@ async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False) ->
                   "baris_faktur": baris_faktur, "u": u, "subtotal": subtotal, "pajak": pajak, "porsi_ar": porsi_ar, "kelebihan": kelebihan})
     # restock (retur): TULIS memeriksa + menulis di loop-nya sendiri (urutan record_inventory_inbound / WAC per baris tak berubah, satu
     # kueri keluar-faktur per baris); PRATINJAU merencanakan dengan aturan yang SAMA -- harness membuktikan blok/jurnal HPP == tertulis.
-    hasil["restock"] = await _rencana_restock_nk(conn, ctx, cn, bl) if pratinjau else []
+    hasil["restock"] = await _rencana_restock_nk(conn, ctx, cn, bl, items=baris_nk, semua=maya is not None) if pratinjau else []
     return hasil
 
 
-async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok) -> list:
+async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None, semua: bool = False) -> list:
     """== loop restock posting_nota_kredit (#37 HANYA retur; ber-faktur: HPP+gudang dari keluarnya barang; tanpa faktur: WAC + gudang
     pertama). -> [{product_id, nama, qty, unit_cost, line_cost, inv, cogs}] (line_cost > 0 saja ikut jurnal HPP). HANYA pratinjau (tanpa
-    kunci CN_RETUR_FAKTUR); penulis memakai loop-nya sendiri dengan aturan + pesan yang sama."""
+    kunci CN_RETUR_FAKTUR); penulis memakai loop-nya sendiri dengan aturan + pesan yang sama.
+    items = baris NK maya (AS-G7b); semua=True: baris biaya 0 IKUT (penulis tetap mencatat stok masuknya, hanya jurnal HPP yang
+    melewatinya) -> pemanggil menyaring line_cost > 0 untuk baris_hpp_nk."""
     from .role_resolver import AccountRole
     R = _nk()
     tid = ctx["tenant_id"]
     if not R._cn_memulihkan_stok(cn["reason"]):
         return []
     out = []
-    for item in await conn.fetch("SELECT * FROM credit_note_items WHERE credit_note_id = $1", cn["id"]):
+    for item in (items if items is not None else await conn.fetch("SELECT * FROM credit_note_items WHERE credit_note_id = $1", cn["id"])):
         if not item["item_id"]:
             continue
         product = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", item["item_id"])
@@ -348,6 +358,9 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok) -> list:
                 continue
         line_cost = qty * unit_cost
         if line_cost <= 0:
+            if semua:
+                out.append({"product_id": product["id"], "nama": product["nama_produk"], "qty": qty, "unit_cost": unit_cost,
+                            "line_cost": line_cost, "inv": None, "cogs": None})
             continue
         akun = await conn.fetchrow("SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1", product["id"])
         cogs = (akun["cogs_account_id"] if akun else None) or await _peran(conn, tid, AccountRole.COGS_SALES, bl, True)
@@ -355,6 +368,26 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok) -> list:
         out.append({"product_id": product["id"], "nama": product["nama_produk"], "qty": qty, "unit_cost": unit_cost, "line_cost": line_cost,
                     "inv": inv, "cogs": cogs})
     return out
+
+
+def catatan_kelebihan_nk(jumlah) -> dict:
+    """Catatan pratinjau NK: kelebihan atas sisa tagihan -> saldo kredit pelanggan (KRD). SATU pembentuk teks ini (pratinjau buat NK;
+    pratinjau posting tak membawa daftar catatan, KRD-nya tampil sebagai customer_credit tanpa nomor). Nomor KRD tak disebut (belum
+    terbit; penghitungnya dipakai bersama DEP sehingga perkiraan sering meleset), teks ringkas tanpa kurung."""
+    return {"code": "CN_EXCESS_TO_CUSTOMER_CREDIT",
+            "message": f"{tg.rp(jumlah)} melebihi sisa tagihan, menjadi saldo kredit pelanggan yang bisa dipakai untuk faktur lain "
+                       "atau dikembalikan."}
+
+
+SQL_PERKIRAAN_NOMOR_NK = """SELECT 'CN-' || TO_CHAR(tanggal_bisnis($1), 'YYMM') || '-' || LPAD((COALESCE((
+    SELECT last_number FROM credit_note_sequences WHERE tenant_id = $1 AND year_month = TO_CHAR(tanggal_bisnis($1), 'YYYY-MM')), 0) + 1)::text,
+    4, '0')"""
+
+
+async def perkiraan_nomor_nk(conn, tid: str) -> str:
+    """Nomor NK yang AKAN diberikan generate_credit_note_number(tid, 'CN') (V302) -- format & penghitung SAMA, tanpa menulis/mengunci.
+    PERKIRAAN: penulis paralel bisa mengambilnya dulu (pola NetSuite: nomor final saat simpan)."""
+    return await conn.fetchval(SQL_PERKIRAAN_NOMOR_NK, tid)
 
 
 def baris_posting_nk(cn, akun: dict, u, subtotal, pajak, porsi_ar, kelebihan) -> list:
