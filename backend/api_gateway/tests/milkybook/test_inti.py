@@ -425,3 +425,44 @@ def test_aturan_jangan_menghilangkan_permintaan_ada_di_system():
     """Temuan eval 24 Okt (Sonnet PNW-059): saldo awal 2 jt dibuang tanpa disebut."""
     from app.milkybook.inti.putaran import ATURAN_SISTEM
     assert "JANGAN MENGHILANGKAN PERMINTAAN DIAM-DIAM" in ATURAN_SISTEM
+
+
+# ---------------------------------------------------------------- PATCH hanya medan yang berubah (PNW-015)
+from app.milkybook.inti.putaran import buang_medan_tak_berubah  # noqa: E402
+
+LAMA = {"id": "a1", "discount_type": "fixed", "discount_value": 0, "notes": "x",
+        "items": [{"id": "L1", "description": "Kaos", "quantity": 10, "unit_price": "85000.00", "tax_rate": 0}]}
+
+
+@pytest.mark.parametrize("usul,harap", [
+    ({"discount_type": "percentage", "discount_value": 5,
+      "items": [{"id": "L1", "description": "Kaos", "quantity": 10, "unit_price": 85000, "tax_rate": 0}]},
+     {"discount_type": "percentage", "discount_value": 5}),                                  # PNW-015
+    ({"items": [{"id": "L1", "description": "Kaos", "quantity": 15, "unit_price": 85000}]},
+     {"items": [{"id": "L1", "description": "Kaos", "quantity": 15, "unit_price": 85000}]}),  # baris berubah: utuh
+    ({"items": [{"id": "L1", "description": "Kaos", "quantity": 10, "unit_price": 85000},
+                {"description": "Topi", "quantity": 5, "unit_price": 30000}]}, None),          # baris baru: utuh
+    ({"notes": "x", "discount_value": 0}, {}),
+])
+def test_buang_medan_tak_berubah(usul, harap):
+    assert buang_medan_tak_berubah(usul, LAMA) == (usul if harap is None else harap)
+
+
+async def test_patch_tanpa_perubahan_tidak_melahirkan_kartu_dan_pratinjau_menerima_payload_ringkas():
+    from dataclasses import replace as _r
+    ubah = _r(T_UBAH, pembanding="detail_x")
+    detail = Tool("detail_x", Kelas.READ, "d", OBJ({"id": {"type": "string"}}, ["id"]), "GET", "/api/x/{id}")
+    reg = Registri([Paket("contoh", [T_CARI, T_HITUNG, T_BUAT, T_UBAH_PR, ubah, detail])])
+    be = be_standar()
+    be.rute[("GET", "/api/x/a1")] = JawabanBE(200, {"success": True, "data": {"id": "a1", "jumlah": 2}})
+    m = ModelPalsu([panggil(("ubah_x", {"id": "a1", "jumlah": 2})), teks("Tidak ada yang berubah."),
+                    panggil(("ubah_x", {"id": "a1", "jumlah": 3})), teks("Tinjau.")])
+    p = Putaran(reg, m, AuditMemori(), gap_mendarat=("G1",))
+    s = sesi()
+    ev = await p.giliran(s, "ubah jadi 2", be, izin_semua)
+    assert not [e for e in ev if e["jenis"] == "kartu"]
+    ev2 = await p.giliran(s, "jadi 3", be, izin_semua)
+    k = [e for e in ev2 if e["jenis"] == "kartu"][0]
+    assert k["payload"] == {"jumlah": 3}
+    pr = [c for c in be.panggilan if c["jalur"] == "/api/x/a1/edit/preview"][-1]
+    assert pr["badan"] == badan_kanonik({"jumlah": 3})

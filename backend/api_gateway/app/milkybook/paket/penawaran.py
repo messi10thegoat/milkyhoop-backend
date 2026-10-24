@@ -150,7 +150,7 @@ TOOLS = [
          halaman=f"{_PEN}/baru", judul_kartu="Buat penawaran"),
     Tool("ubah_penawaran", Kelas.WRITE, "Usulkan perubahan penawaran. Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_UBAH, "PATCH", f"{_Q}/{{id}}", pratinjau="pratinjau_ubah_penawaran", butuh=(AS_G1,),
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Ubah penawaran"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Ubah penawaran", pembanding="detail_penawaran"),
     Tool("batalkan_penawaran", Kelas.WRITE, "Usulkan pembatalan penawaran. Kartu Tinjau; batal sesudah Setuju.",
          SKEMA_BATAL, "POST", f"{_Q}/{{id}}/void", pratinjau="pratinjau_batal_penawaran", butuh=(AS_G1,),
          halaman=f"{_PEN}/{{id}}", judul_kartu="Batalkan penawaran"),
