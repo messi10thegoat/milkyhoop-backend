@@ -965,8 +965,8 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
                     conn, ctx, _kunci, "QUOTE_UPDATE", quote_id, lambda: body.model_dump(mode="json", exclude_unset=True), response)
                 if _lama is not None:
                     return _lama
-                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_UPDATE", await _ubah_penawaran(conn, ctx, quote_id, body),
-                                              quote_id)
+                _hasil = await _ubah_penawaran(conn, ctx, quote_id, body)
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_UPDATE", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
@@ -1812,7 +1812,7 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                 f"Penawaran {quote['quote_number']} dibatalkan" + (f": {alasan}" if alasan else ""), source="api:quotes",
             )
 
-            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_VOID", QuoteResponse(
+            _hasil = QuoteResponse(
                 success=True,
                 message="Penawaran dibatalkan",
                 data={
@@ -1821,7 +1821,8 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                     "status": "void",
                     "previous_status": quote["status"],
                 },
-            ), quote_id)
+            )
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_VOID", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise

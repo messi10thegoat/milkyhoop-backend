@@ -114,8 +114,10 @@ def test_insert_create_memuat_id_pajak_dan_bisa_dikirim_dengan_placeholder_cocok
     nilai = re.findall(r"\$(\d+)", q)
     assert {"sales_tax_id", "purchase_tax_id", "bisa_dikirim"} <= set(kolom)
     assert len(kolom) - 2 == len(nilai) == max(map(int, nilai)) == 39  # created_at/updated_at = NOW()
-    assert 'nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")' in src
-    assert 'nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")' in src
+    pen = inspect.getsource(I._siapkan_buat_barang)  # AS-G14 (24 Okt): penentu bersama buat + pratinjau
+    assert "_siapkan_buat_barang(" in src
+    assert 'nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")' in pen
+    assert 'nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")' in pen
     assert 'periksa_badan_item(body, "POST /items")' in src
 
 

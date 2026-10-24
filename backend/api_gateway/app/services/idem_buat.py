@@ -19,7 +19,8 @@ def kunci_dari(request, kunci_body=None):
     LEBIH DULU; `kunci_body` (medan idempotency_key badan, bentuk lama) = cadangan. Keduanya ada & beda -> 422
     IDEMPOTENCY_KEY_MISMATCH (kontrak lama uang muka; jangan menebak). Kosong/spasi = None; > KUNCI_KLIEN_MAKS = 400."""
     try:
-        h = kunci_idempotensi_klien(request)
+        # pemanggilan langsung tanpa objek Request (tes/pemanggil internal) = tanpa header, bukan AttributeError -> 500
+        h = kunci_idempotensi_klien(request) if getattr(request, "headers", None) is not None else None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     b = kunci_body.strip() if isinstance(kunci_body, str) and kunci_body.strip() else None

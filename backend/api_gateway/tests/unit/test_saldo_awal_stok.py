@@ -214,7 +214,9 @@ def test_tak_ada_insert_kartu_saldo_awal_di_luar_service():
 def test_rute_items_memakai_service_dalam_transaksi():
     src = inspect.getsource(IT.create_item)
     assert "INSERT INTO inventory_ledger" not in src and "gen_random_uuid()" not in src
-    assert src.index("periksa_saldo_awal(") < src.index("async with conn.transaction()") < src.index("catat_saldo_awal_stok(")
+    # AS-G14 (24 Okt): periksa_saldo_awal di penentu bersama, dipanggil SEBELUM transaksi tulis
+    assert "periksa_saldo_awal(" in inspect.getsource(IT._siapkan_buat_barang)
+    assert src.index("_siapkan_buat_barang(") < src.index("async with conn.transaction()") < src.index("catat_saldo_awal_stok(")
     assert "inventory_account_id=body.inventory_account_id" in src
 
 

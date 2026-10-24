@@ -748,12 +748,14 @@ async def create_item(request: Request, body: CreateItemRequest, response: Respo
     try:
         conn = await get_db_connection()
 
-        _tx = conn.transaction()  # AS-G14: transaksi LUAR -- idem lock + replay SEBELUM validasi (ketuk ganda = replay, bukan 409
-        await _tx.start()         # nama dipakai); galat -> conn.close() di finally = rollback; tulis lama = savepoint di dalamnya
-        _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "ITEM_CREATE", body, "products", "item", response)
-        if _lama is not None:
-            await _tx.rollback()
-            return _lama
+        _tx, _kp, _sd = None, None, None
+        if _kunci:  # AS-G14: transaksi LUAR hanya bila ber-kunci -- idem lock + replay SEBELUM penentu (ketuk ganda = replay, bukan 409
+            _tx = conn.transaction()  # nama dipakai); galat -> conn.close() di finally = rollback; tulis lama = savepoint di dalamnya.
+            await _tx.start()         # Tanpa kunci = perilaku lama (penentu menolak sebelum transaksi apa pun dibuka).
+            _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "ITEM_CREATE", body, "products", "item", response)
+            if _lama is not None:
+                await _tx.rollback()
+                return _lama
         item_code_to_use, sku_to_use = await _siapkan_buat_barang(conn, tenant_id, ctx, body)
 
         # Start transaction
@@ -958,7 +960,7 @@ async def create_item(request: Request, body: CreateItemRequest, response: Respo
 
         logger.info(f"Created item {body.name} (id={item_id}) for tenant {tenant_id}")
 
-        _hasil = await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_CREATE", CreateItemResponse(
+        _hasil = CreateItemResponse(
             success=True,
             message=f"Item '{body.name}' berhasil ditambahkan",
             data={
@@ -968,8 +970,10 @@ async def create_item(request: Request, body: CreateItemRequest, response: Respo
                 "track_inventory": body.track_inventory,
                 "bisa_dikirim": body.bisa_dikirim,
             },
-        ), item_id)
-        await _tx.commit()
+        )
+        if _tx is not None:
+            _hasil = await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_CREATE", _hasil, item_id)
+            await _tx.commit()
         return _hasil
 
     except HTTPException:
