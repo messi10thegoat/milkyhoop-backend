@@ -1510,13 +1510,12 @@ async def delete_sales_order(request: Request, order_id: str, response: Response
 # ============================================================================
 
 
-async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
-    """SATU-SATUNYA jalur konfirmasi SO: dipakai POST /confirm DAN /confirm/preview (yang di-rollback). Pemanggil
-    membuka transaksi. -> {order_number, status, order_code, order_code_issued, order_code_label}."""
+async def rencana_konfirmasi_so(conn, ctx: dict, order_id: str, kunci: bool):
+    """AS-G7a: SATU-SATUNYA penentu konfirmasi SO, dipakai PENULIS (_konfirmasi_so, kunci=True = FOR UPDATE baris SO) DAN
+    PRATINJAU (pratinjau_konfirmasi_so, kunci=False, transaksi READ ONLY). Galat 404/400 = teks lama. -> baris SO."""
     order = await conn.fetchrow(
-        """
-        SELECT id, status, order_number, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2
-    """,
+        "SELECT id, status, order_number, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2"
+        + (" FOR UPDATE" if kunci else ""),
         _so_uuid(order_id),
         ctx["tenant_id"],
     )
@@ -1529,6 +1528,29 @@ async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
             status_code=400,
             detail=tg.tak_bisa_status("so", order["status"], "dikonfirmasi"),
         )
+    return order
+
+
+def _hasil_konfirmasi(order, kode, st_kode: dict) -> dict:
+    return {"order_number": order["order_number"], "status": "confirmed",
+            "order_code": kode or order["order_code"], "order_code_issued": kode is not None,
+            "order_code_label": st_kode["label"], "order_title_label": st_kode["title_label"]}
+
+
+async def pratinjau_konfirmasi_so(conn, ctx: dict, order_id: str, dipesan: Optional[dict] = None) -> dict:
+    """AS-G7a: pratinjau konfirmasi BACA SAJA (tanpa kunci baris/advisory, tanpa penghitung, tanpa tulis): penentu yang SAMA
+    + kode_order.perkiraan. order_code_estimated = kode yang akan terbit adalah perkiraan (final saat konfirmasi)."""
+    from ..services.kode_order import perkiraan as _perkiraan_kode, muat_setelan as _setelan_kode
+    order = await rencana_konfirmasi_so(conn, ctx, order_id, kunci=False)
+    kode = await _perkiraan_kode(conn, ctx["tenant_id"], order, await tanggal_dokumen(conn, ctx["tenant_id"]),
+                                 "so_confirmed", dipesan)
+    return {**_hasil_konfirmasi(order, kode, await _setelan_kode(conn, ctx["tenant_id"])), "order_code_estimated": kode is not None}
+
+
+async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
+    """SATU-SATUNYA jalur TULIS konfirmasi SO (POST /confirm + massal). Pemanggil membuka transaksi.
+    -> {order_number, status, order_code, order_code_issued, order_code_label}. Pratinjau = pratinjau_konfirmasi_so (AS-G7a)."""
+    order = await rencana_konfirmasi_so(conn, ctx, order_id, kunci=True)
 
     # UPDATE BERSYARAT status='draft': status dibaca di atas tanpa kunci -> tanpa syarat
     # ini dua permintaan bersamaan sama-sama 'berhasil' (konfirmasi menimpa aktor/waktu).
@@ -1550,15 +1572,7 @@ async def _konfirmasi_so(conn, ctx: dict, order_id: str) -> dict:
     from ..services.kode_order import terbitkan as _terbitkan_kode, muat_setelan as _setelan_kode
     kode = await _terbitkan_kode(conn, ctx["tenant_id"], ok, await tanggal_dokumen(conn, ctx["tenant_id"]),
                                  "so_confirmed", ctx["user_id"], order["order_number"])
-    _st_kode = await _setelan_kode(conn, ctx["tenant_id"])
-    return {"order_number": order["order_number"], "status": "confirmed",
-            "order_code": kode or order["order_code"], "order_code_issued": kode is not None,
-            "order_code_label": _st_kode["label"], "order_title_label": _st_kode["title_label"]}
-
-
-class _BatalkanKonfirmasi(Exception):
-    def __init__(self, hasil):
-        self.hasil = hasil
+    return _hasil_konfirmasi(order, kode, await _setelan_kode(conn, ctx["tenant_id"]))
 
 
 @router.post("/{order_id}/confirm", response_model=SalesOrderResponse)
@@ -1589,18 +1603,15 @@ async def confirm_sales_order(request: Request, order_id: str, response: Respons
 
 @router.post("/{order_id}/confirm/preview", response_model=SalesOrderResponse)
 async def preview_confirm_sales_order(request: Request, order_id: str):
-    """Pratinjau konfirmasi (3 Okt, MASTER): jalur _konfirmasi_so yang SAMA lalu ROLLBACK -> nol tulis (status,
-    penghitung kode order, peristiwa). Galat sama dengan /confirm (404/400/409). order_code = kode yang AKAN
-    dimiliki SO (terbit sekarang bila order_code_issued, atau yang sudah ada); null bila manual_only/mati."""
+    """Pratinjau konfirmasi: AS-G7a penentu bersama BACA SAJA di transaksi READ ONLY (dulu: penulis + ROLLBACK -> memegang
+    kunci baris SO + kunci kode order periode + baris penghitung). Galat sama dengan /confirm (404/400). order_code = kode
+    yang AKAN dimiliki SO (perkiraan bila order_code_estimated, atau yang sudah ada); null bila manual_only/mati."""
     try:
         ctx = get_user_context(request)
         _so_uuid(order_id)
         pool = await get_pool()
-        try:
-            async with pool.acquire() as conn, conn.transaction():
-                raise _BatalkanKonfirmasi(await _konfirmasi_so(conn, ctx, order_id))
-        except _BatalkanKonfirmasi as b:
-            h = b.hasil
+        async with pool.acquire() as conn, conn.transaction(readonly=True):
+            h = await pratinjau_konfirmasi_so(conn, ctx, order_id)
         return SalesOrderResponse(success=True, message="Preview", data={**h, "preview": True})
     except HTTPException:
         raise

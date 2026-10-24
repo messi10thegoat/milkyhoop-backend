@@ -55,10 +55,11 @@ async def _nomor(pool, tenant_id: str, ids) -> dict:
 _KODE_KONFIRMASI = {404: "SO_TAK_ADA", 400: "SO_BUKAN_DRAF", 409: "SO_BERUBAH"}
 
 
-async def _konfirmasi(conn, ctx, i):
-    """Jalur tunggal _konfirmasi_so apa adanya; hanya memberi KODE stabil pada galat teksnya (FE/pratinjau/tulis seragam)."""
+async def _konfirmasi(conn, ctx, i, fn=None, *arg):
+    """Jalur tunggal _konfirmasi_so (tulis) / pratinjau_konfirmasi_so (pratinjau, penentu yang sama); hanya memberi KODE stabil
+    pada galat teksnya (FE/pratinjau/tulis seragam)."""
     try:
-        return await SO._konfirmasi_so(conn, ctx, str(i))
+        return await (fn or SO._konfirmasi_so)(conn, ctx, str(i), *arg)
     except HTTPException as e:
         if isinstance(e.detail, dict):
             raise
@@ -79,7 +80,9 @@ async def _tulis_hapus(conn, ctx, i):
 
 
 async def _pratinjau_konfirmasi(conn, ctx, i):
-    return [], await _konfirmasi(conn, ctx, i)  # HTTPException = satu blok (404 / bukan draf / berubah)
+    """AS-G7a: penentu + perkiraan BACA SAJA (tanpa kunci/penghitung); ctx = satu per permintaan -> 'dipesan' membuat kode
+    item berikutnya berurutan persis tulis berurutan. HTTPException = satu blok (404 / bukan draf), kode stabil sama."""
+    return [], await _konfirmasi(conn, ctx, i, SO.pratinjau_konfirmasi_so, ctx.setdefault("_kode_dipesan", {}))
 
 
 async def _pratinjau_hapus(conn, ctx, i):

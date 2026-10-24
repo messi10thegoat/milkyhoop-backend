@@ -1,6 +1,6 @@
 """SO confirm/preview + kode order manual_only/'berikutnya' (3 Okt 2026, MASTER GO; pemilik "sempurnakan").
-Pratinjau = jalur _konfirmasi_so yang SAMA lalu ROLLBACK (penghitung kode tak maju: dibuktikan nyata di salinan DB +
-kaos). Di sini: perilaku dengan koneksi tiruan, tanpa DB."""
+AS-G7a (24 Okt): pratinjau = penentu bersama BACA SAJA (pratinjau_konfirmasi_so) di transaksi READ ONLY -- dulu penulis +
+ROLLBACK (memegang kunci tulis). Di sini: perilaku dengan koneksi tiruan, tanpa DB; penentu/perkiraan -> test_as_g7a_*."""
 import uuid
 from types import SimpleNamespace
 
@@ -38,7 +38,8 @@ class _Conn:
     def __init__(self, log):
         self.log = log
 
-    def transaction(self):
+    def transaction(self, **kw):
+        self.log.append(("tx", kw))
         return _Tx(self.log)
 
 
@@ -68,33 +69,43 @@ def pool(monkeypatch):
     async def konfirmasi(conn, ctx, oid):
         return {"order_number": "SO-1", "status": "confirmed", "order_code": "005-10-26", "order_code_issued": True,
                 "order_code_label": "Kode order"}
+
+    async def pratinjau(conn, ctx, oid):
+        return {"order_number": "SO-1", "status": "confirmed", "order_code": "005-10-26", "order_code_issued": True,
+                "order_code_label": "Kode order", "order_code_estimated": True}
+
+    async def jangan(*a, **k):
+        raise AssertionError("pratinjau tak boleh memanggil penulis _konfirmasi_so")
     monkeypatch.setattr(SO, "get_pool", gp)
     monkeypatch.setattr(SO, "_konfirmasi_so", konfirmasi)
+    monkeypatch.setattr(SO, "pratinjau_konfirmasi_so", pratinjau)
+    p.jangan = jangan
     return p
 
 
 @pytest.mark.asyncio
-async def test_pratinjau_konfirmasi_rollback_dan_membawa_kode(pool):
+async def test_pratinjau_konfirmasi_read_only_tanpa_penulis_dan_membawa_kode(monkeypatch, pool):
+    monkeypatch.setattr(SO, "_konfirmasi_so", pool.jangan)
     r = await SO.preview_confirm_sales_order(_req(), SOID)
-    assert pool.log == ["rollback"], pool.log  # nol tulis: transaksi TIDAK pernah commit
-    assert r.data == {"order_number": "SO-1", "status": "confirmed", "order_code": "005-10-26",
-                      "order_code_issued": True, "order_code_label": "Kode order", "preview": True}
+    assert pool.log == [("tx", {"readonly": True}), "commit"], pool.log  # transaksi READ ONLY: DB menolak tulisan apa pun
+    assert r.data == {"order_number": "SO-1", "status": "confirmed", "order_code": "005-10-26", "order_code_issued": True,
+                      "order_code_label": "Kode order", "order_code_estimated": True, "preview": True}
 
 
 @pytest.mark.asyncio
-async def test_konfirmasi_asli_commit_jalur_sama(pool):
+async def test_konfirmasi_asli_commit_jalur_tulis(pool):
     r = await SO.confirm_sales_order(_req(), SOID)
-    assert pool.log == ["commit"] and r.data["order_code"] == "005-10-26" and "preview" not in r.data
+    assert pool.log == [("tx", {}), "commit"] and r.data["order_code"] == "005-10-26" and "preview" not in r.data
 
 
 @pytest.mark.asyncio
-async def test_pratinjau_galat_sama_dengan_konfirmasi(monkeypatch, pool):
+async def test_pratinjau_galat_diteruskan(monkeypatch, pool):
     async def bukan_draf(conn, ctx, oid):
         raise HTTPException(status_code=400, detail="Cannot confirm order with status 'confirmed'")
-    monkeypatch.setattr(SO, "_konfirmasi_so", bukan_draf)
+    monkeypatch.setattr(SO, "pratinjau_konfirmasi_so", bukan_draf)
     with pytest.raises(HTTPException) as e:
         await SO.preview_confirm_sales_order(_req(), SOID)
-    assert e.value.status_code == 400 and pool.log == ["rollback"]
+    assert e.value.status_code == 400 and pool.log == [("tx", {"readonly": True}), "rollback"]
 
 
 def test_rute_terpasang_ke_handler_yang_benar():

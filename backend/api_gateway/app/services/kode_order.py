@@ -202,6 +202,40 @@ async def terbitkan(conn, tenant_id: str, so_id, tanggal: date, pemicu: str, akt
                                  {"trigger": pemicu, "doc_number": dok_nomor})
 
 
+async def _kode_terpakai(conn, tenant_id: str, kode: str) -> bool:
+    """SATU-SATUNYA aturan lompat kode: dipakai penerbit (_terbitkan_inti) DAN perkiraan pratinjau."""
+    return bool(await conn.fetchval("SELECT 1 FROM sales_orders WHERE tenant_id = $1 AND order_code = $2", tenant_id, kode))
+
+
+async def perkiraan(conn, tenant_id: str, so, tanggal: date, pemicu: str, dipesan: Optional[dict] = None) -> Optional[str]:
+    """AS-G7a: kode yang AKAN diterbitkan terbitkan() untuk SO ini -- BACA SAJA (tanpa kunci advisory, tanpa menaikkan
+    penghitung, aman di transaksi READ ONLY). Syarat None SAMA dengan terbitkan/_terbitkan_inti (setelan mati, pemicu lain,
+    SO sudah berkode). PERKIRAAN: penulis paralel bisa mengambil nomor ini dulu (pola NetSuite: nomor final saat simpan).
+    dipesan = {kunci_periode: seq terakhir, "kode": set()} milik SATU pratinjau massal -> item berikutnya mendapat nomor
+    sesudahnya, persis urutan tulis berurutan."""
+    if so is None or so["order_code"]:
+        return None
+    s = await muat_setelan(conn, tenant_id)
+    if not s["enabled"] or pemicu != "so_confirmed" or s["trigger"] != "so_confirmed":
+        return None
+    pk = kunci_periode(s["reset"], tanggal)
+    seq = await conn.fetchval("SELECT last_seq FROM order_code_counters WHERE tenant_id = $1 AND period_key = $2",
+                              tenant_id, pk) or 0
+    if dipesan is not None:
+        seq = max(seq, dipesan.get(pk, 0))
+    for _ in range(1000):
+        seq += 1
+        kode = render(s["template"], seq, s["min_digits"], tanggal)
+        if not await _kode_terpakai(conn, tenant_id, kode) and kode not in (dipesan or {}).get("kode", ()):
+            break
+    else:
+        raise RuntimeError("kode order: 1000 nomor berturut-turut sudah terpakai")
+    if dipesan is not None:
+        dipesan[pk] = seq
+        dipesan.setdefault("kode", set()).add(kode)
+    return kode
+
+
 async def _terbitkan_inti(conn, tenant_id: str, so_id, tanggal: date, s: dict, sumber: str, aktor,
                           meta: dict) -> Optional[str]:
     """Penerbitan dari penghitung -- dipakai otomatis (konfirmasi) DAN manual 'berikutnya'. None = SO tak ada /
@@ -225,8 +259,7 @@ async def _terbitkan_inti(conn, tenant_id: str, so_id, tanggal: date, s: dict, s
                RETURNING last_seq""", tenant_id, pk)
         kode = render(s["template"], seq, s["min_digits"], tanggal)
         # Kode yang sudah dipakai (manual/impor di luar penghitung) dilompati -- nomor itu sudah ada, jadi tak bolong.
-        if not await conn.fetchval("SELECT 1 FROM sales_orders WHERE tenant_id = $1 AND order_code = $2",
-                                   tenant_id, kode):
+        if not await _kode_terpakai(conn, tenant_id, kode):
             break
     else:
         raise RuntimeError("kode order: 1000 nomor berturut-turut sudah terpakai")
