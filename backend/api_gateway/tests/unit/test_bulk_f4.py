@@ -76,7 +76,7 @@ def pf(monkeypatch):
         return c
 
     monkeypatch.setattr(PF, "_kunci_proforma", kunci)
-    monkeypatch.setattr(BP, "_baca_proforma", baca)
+    monkeypatch.setattr(BP, "_baca_proforma", baca, raising=False)  # pohon lama tak punya (bukti merah tak tercemar)
     monkeypatch.setattr(PF, "_rencana_batal", rencana)
     monkeypatch.setattr(PF, "_angkat_blok_pertama", angkat)
     monkeypatch.setattr(PF, "_tulis_batal", tulis)
