@@ -28,7 +28,6 @@ class Kelas(str, Enum):
 
 # Pengganti parameter jalur saat menanyakan izin (pola izin = regex atas jalur konkret).
 _ID_CONTOH = "00000000-0000-4000-8000-000000000000"
-MAKS_STRICT = 20  # API: "The maximum number of strict tools supported is 20" (400, 24 Okt)
 _PARAM_JALUR = re.compile(r"\{([a-z_]+)\}")
 
 
@@ -71,17 +70,16 @@ class Tool:
         return _PARAM_JALUR.sub(_isi, self.jalur), sisa
 
     def untuk_api(self) -> dict:
-        """Definisi tool untuk Messages API: strict, additionalProperties false."""
+        """Definisi tool untuk Messages API (additionalProperties false; tanpa strict, lihat di bawah)."""
         d = {
             "name": self.nama,
             "description": self.deskripsi,
             "input_schema": self.skema,
         }
-        # API membatasi 20 tool strict per permintaan. Strict untuk WRITE/PREVIEW (payload menentukan uang);
-        # READ/NAV divalidasi inti (putaran._validasi) sebelum dijalankan.
-        if self.kelas in (Kelas.WRITE, Kelas.PREVIEW):
-            d["strict"] = True
-            d["input_schema"] = skema_wajib_nullable(self.skema)
+        # TANPA `strict` (24 Okt): batas API untuk strict = 20 tool, 24 parameter opsional, 16 parameter union
+        # per permintaan (400 req_011CgLP3Q8..., req_011CgLP5zz..., req_011CgLP91m...). Skema transaksi tidak muat.
+        # Pengganti: putaran._validasi (wajib, tipe, enum, kunci asing ditolak) sebelum tool dijalankan; galat
+        # dikembalikan ke model sebagai tool_result is_error. Payload tulis tetap lewat pratinjau BE + Setuju.
         if self.tunda:
             d["defer_loading"] = True
         return d
@@ -127,33 +125,8 @@ def periksa_skema_strict(skema: dict, nama: str) -> None:
             periksa_skema_strict(v, nama)
 
 
-def skema_wajib_nullable(skema: dict) -> dict:
-    """Skema strict: setiap medan opsional jadi WAJIB tapi boleh null.
-
-    API: "Schemas contains too many optional parameters (96) ... (limit: 24)" (400, 24 Okt). Medan wajib-nullable
-    tidak dihitung opsional. Inti membuang null (buang_null) sebelum validasi dan sebelum payload dibentuk,
-    jadi BE menerima bentuk yang sama dengan medan yang tidak diisi.
-    """
-    if not isinstance(skema, dict):
-        return skema
-    s = dict(skema)
-    if s.get("type") == "object":
-        wajib = set(s.get("required", []))
-        props = {}
-        for k, v in s.get("properties", {}).items():
-            v = skema_wajib_nullable(v)
-            if k not in wajib:
-                v = {"anyOf": [v, {"type": "null"}]}
-            props[k] = v
-        s["properties"] = props
-        s["required"] = list(props)
-    if "items" in s:
-        s["items"] = skema_wajib_nullable(s["items"])
-    return s
-
-
 def buang_null(nilai):
-    """Hapus kunci bernilai None secara rekursif (pasangan skema_wajib_nullable)."""
+    """Hapus kunci bernilai None secara rekursif: null dari model = medan tidak diisi."""
     if isinstance(nilai, dict):
         return {k: buang_null(v) for k, v in nilai.items() if v is not None}
     if isinstance(nilai, list):
@@ -218,11 +191,7 @@ class Registri:
             for j in daftar:
                 boleh[(metode, j)] = bool(hasil.get(j, False))
 
-        hasil = [t for t in kandidat if all(boleh[r] for r in self._rute_wajib(t))]
-        n_strict = sum(1 for t in hasil if "strict" in t.untuk_api())
-        if n_strict > MAKS_STRICT:
-            raise ValueError(f"{n_strict} tool strict > {MAKS_STRICT} (batas API)")
-        return hasil
+        return [t for t in kandidat if all(boleh[r] for r in self._rute_wajib(t))]
 
     def _rute_wajib(self, t: Tool) -> List[Tuple[str, str]]:
         if t.kelas == Kelas.NAV:

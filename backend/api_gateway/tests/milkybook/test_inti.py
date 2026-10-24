@@ -86,11 +86,10 @@ def test_paket_menolak_write_tanpa_pratinjau_dan_skema_tak_strict():
         Paket("p", [Tool("r", Kelas.READ, "r", OBJ({"n": {"type": "number", "minimum": 0}}), "GET", "/api/r")])
 
 
-def test_definisi_api_strict_hanya_write_preview():
-    d = T_BUAT.untuk_api()
-    assert d["strict"] is True and d["input_schema"]["additionalProperties"] is False
-    assert T_HITUNG.untuk_api()["strict"] is True
-    assert "strict" not in T_CARI.untuk_api()
+def test_definisi_api_tanpa_strict_skema_tertutup():
+    for t in (T_BUAT, T_HITUNG, T_CARI):
+        d = t.untuk_api()
+        assert "strict" not in d and d["input_schema"]["additionalProperties"] is False
 
 
 # ---------------------------------------------------------------- tulis hanya lewat Setuju
@@ -323,10 +322,8 @@ async def test_audit_tanpa_payload_mentah():
     assert any(b["peristiwa"] == "kartu_lahir" and b["kunci_idempotensi"] for b in a.sebagai_dict())
 
 
-async def test_null_dari_skema_strict_dibuang_sebelum_payload():
-    from app.milkybook.inti.registri import buang_null, skema_wajib_nullable
-    s = skema_wajib_nullable(OBJ({"a": {"type": "string"}, "b": OBJ({"c": {"type": "number"}})}, ["a"]))
-    assert s["required"] == ["a", "b"] and s["properties"]["b"]["anyOf"][1] == {"type": "null"}
+async def test_null_dari_model_dibuang_sebelum_payload():
+    from app.milkybook.inti.registri import buang_null
     assert buang_null({"a": "x", "b": None, "d": [{"e": None, "f": 1}]}) == {"a": "x", "d": [{"f": 1}]}
     p2, m = putaran([panggil(("buat_x", {"jumlah": 3, "catatan": None})), teks("Tinjau.")])
     be, s2 = be_standar(), sesi()
