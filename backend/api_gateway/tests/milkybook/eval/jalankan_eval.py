@@ -89,8 +89,28 @@ def _semua_teks(ev):
     return " ".join(e.get("teks", "") for e in ev if e["jenis"] == "teks")
 
 
+def cocok(harap, nyata) -> bool:
+    """Nilai harapan laporan11: "*" = ada; "*teks*" = mengandung (tanpa huruf besar); dict/list = subset rekursif."""
+    if isinstance(harap, str) and harap == "*":
+        return nyata is not None
+    if isinstance(harap, str) and harap.startswith("*") and harap.endswith("*"):
+        return isinstance(nyata, str) and harap.strip("*").lower() in nyata.lower()
+    if isinstance(harap, dict):
+        return isinstance(nyata, dict) and all(cocok(v, nyata.get(k)) for k, v in harap.items())
+    if isinstance(harap, list):
+        return isinstance(nyata, list) and len(nyata) >= len(harap) and all(cocok(a, b) for a, b in zip(harap, nyata))
+    if isinstance(harap, (int, float)) and not isinstance(harap, bool):
+        try:
+            return float(nyata) == float(harap)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(harap, str) and isinstance(nyata, str):
+        return harap.strip().lower() == nyata.strip().lower()
+    return harap == nyata
+
+
 async def jalankan_kasus(kasus, pemanggil, effort):
-    be = StubBE()
+    be = StubBE.dari_konteks(kasus["konteks_stub"]) if "konteks_stub" in kasus else StubBE()
     awal = {"pelanggan": {c["id"] for c in be.pelanggan}, "barang": {b["id"] for b in be.barang},
             "penawaran": {q["id"] for q in be.penawaran}}
     gap = tuple(kasus.get("gap", [pw.AS_G1, pw.AS_G14]))
@@ -99,7 +119,7 @@ async def jalankan_kasus(kasus, pemanggil, effort):
                       gap_mendarat=gap, effort=effort)
     from datetime import date
     sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24 (Sabtu). Usaha: Kaos Biru Konveksi (konveksi kaos).",
-                hari_ini=date.fromisoformat(StubBE.HARI_INI))
+                hari_ini=date.fromisoformat(kasus.get("hari_ini", StubBE.HARI_INI)))
     semua_ev, transkrip, galat = [], [], None
     try:
         for lk in kasus["langkah"]:
@@ -110,6 +130,8 @@ async def jalankan_kasus(kasus, pemanggil, effort):
             elif "autopilot" in lk:
                 for _ in range(lk["autopilot"]):
                     k = sesi.kartu_menunggu()
+                    if k is not None and k.tool == lk.get("setujui_kecuali"):
+                        break  # kartu sasaran lahir: dinilai isinya, tidak disetujui
                     if k is not None:
                         be.kunci_disetujui.add(k.kunci)
                         ev = await putaran.setujui(sesi, k.kartu_id, be, izin_owner_k)
@@ -204,6 +226,28 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     for kata in h.get("teks_wajib_salah_satu", []) and [h["teks_wajib_salah_satu"]]:
         if not any(k.lower() in teks for k in kata):
             gagal.append(f"teks wajib (salah satu) tak ada: {kata}")
+    if "kartu_tool" in h:
+        kt = h["kartu_tool"]
+        calon = [e for e in kartu if e["tool"] == kt["tool"]]
+        if not calon:
+            gagal.append(f"kartu {kt['tool']} tak lahir (kartu: {[e['tool'] for e in kartu]})")
+        else:
+            pl = calon[-1]["payload"]
+            if not cocok(kt["wajib"], pl):
+                gagal.append(f"payload {kt['tool']} tak cocok: harap {json.dumps(kt['wajib'], ensure_ascii=False)[:200]} "
+                             f"nyata {json.dumps(pl, ensure_ascii=False)[:300]}")
+            for m in kt.get("terlarang", []):
+                if m in json.dumps(pl):
+                    gagal.append(f"medan terlarang di payload {kt['tool']}: {m}")
+    for e in kartu:
+        for m in ("ar_opening_balance", "opening_stock"):
+            if m in json.dumps(e.get("payload", {})):
+                gagal.append(f"MUTLAK medan pembuat jurnal di kartu {e['tool']}: {m}")
+    if "query_wajib" in h:
+        qw = h["query_wajib"]
+        calon = [l for l in be.log if l["metode"] == "GET" and l["jalur"] == qw["jalur"]]
+        if not any(cocok(qw["isi"], l.get("query") or {}) for l in calon):
+            gagal.append(f"query {qw['jalur']} tak memuat {qw['isi']} (nyata {[l.get('query') for l in calon]})")
     for nomor, st in h.get("status_akhir", {}).items():
         q = next((q for q in be.penawaran if q["quote_number"] == nomor), None)
         if not q or q["status"] != st:
