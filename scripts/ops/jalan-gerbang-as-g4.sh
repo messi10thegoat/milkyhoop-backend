@@ -8,6 +8,18 @@ echo "=== tes terfokus ($(echo $F | wc -w) berkas)"
 timeout 900 scripts/jalankan_unit.sh $W -q -p no:cacheprovider $F tests/unit/test_as_g4_pengiriman.py tests/unit/test_pagar_rute_izin.py tests/unit/test_izin_rute_pratinjau.py \
   tests/unit/test_rute_endpoint_bukan_helper.py tests/unit/test_nomor_jurnal_satu_ruang.py tests/unit/test_idem_sumber_basi.py > $L/unit.log 2>&1
 grep -E "^(FAILED|ERROR) |^=+ .* in " $L/unit.log | tail -15
+echo "=== kontrol merah pemindai izin pratinjau (salinan pohon: izin pratinjau serah U -> C, penjaga WAJIB merah)"
+T=$(mktemp -d /root/.sabg4-XXXX); mkdir -p $T/backend
+rsync -a --exclude .pytest_cache --exclude __pycache__ backend/api_gateway $T/backend/ && ln -s $W/backend/migrations $T/backend/migrations
+POLA='(r"^/api/deliveries/[^/]+/serah/preview$", ["POST"], "sales_invoice", "U")'
+if [ "$(grep -cF "$POLA" $T/backend/api_gateway/app/middleware/permission_middleware.py)" = 1 ]; then
+  sed -i 's#serah/preview\$", \["POST"\], "sales_invoice", "U")#serah/preview$", ["POST"], "sales_invoice", "C")#' $T/backend/api_gateway/app/middleware/permission_middleware.py
+  grep -c 'serah/preview$", \["POST"\], "sales_invoice", "C")' $T/backend/api_gateway/app/middleware/permission_middleware.py | sed 's/^/  sabotase terpasang: /'
+  TES=tests/unit/test_izin_rute_pratinjau.py::test_tiap_pratinjau_izinnya_sama_dengan_tulisnya
+  timeout 300 scripts/jalankan_unit.sh $T -q -p no:cacheprovider "$TES" > $L/sab-izin.log 2>&1; rc=$?
+  if [ $rc -ne 0 ] && grep -q "^FAILED $TES" $L/sab-izin.log && grep -q "serah/preview" $L/sab-izin.log; then echo "PASS MERAH izin: pratinjau serah ber-izin C (tulis U) -> penjaga gagal"; else echo "FAIL izin: penjaga TIDAK merah (rc=$rc)"; fi
+else echo "FAIL izin: pola izin pratinjau tak ditemukan untuk disabotase"; fi
+rm -rf $T
 G=milkyhoop-dev-api_gateway; IMG=$(docker inspect $G --format "{{.Config.Image}}"); E=$(mktemp /root/.g4-XXXX); chmod 600 $E
 printf "URL=%s\n" "$(docker exec $G printenv DATABASE_URL)" > $E
 for m in "" merah_idem merah_penentu; do
