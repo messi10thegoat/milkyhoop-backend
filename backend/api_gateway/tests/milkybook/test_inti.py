@@ -508,3 +508,61 @@ def test_biaya_tulis_cache_1h_dua_kali_harga_masuk():
     u = {"cache_creation_input_tokens": 1_000_000, "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000, "ephemeral_5m_input_tokens": 0}}
     assert abs(biaya_usd("claude-sonnet-5-5", u) - 4.0) < 1e-9
     assert abs(biaya_usd("claude-sonnet-5-5", {"cache_creation_input_tokens": 1_000_000}) - 2.5) < 1e-9
+
+
+# ---------------------------------------------------------------- hibrida baca (model murah) / tulis
+def _hibrida(naskah_baca, naskah_tulis):
+    mb, mt = ModelPalsu(naskah_baca), ModelPalsu(naskah_tulis)
+    p = Putaran(registri(), mt, AuditMemori(), gap_mendarat=("G1",), pemanggil_baca=mb)
+    return p, mb, mt
+
+
+async def test_hibrida_model_baca_tak_pernah_menerima_tool_write():
+    p, mb, mt = _hibrida([panggil(("cari_x", {"q": "a"})), teks("Ini daftarnya.")], [])
+    await p.giliran(sesi(), "ada apa saja?", be_standar(), izin_semua)
+    nama = {t["name"] for t in mb.permintaan[0]["tools"]}
+    assert "buat_x" not in nama and "ubah_x" not in nama and "tutup_kartu_tinjau" not in nama
+    assert "perlu_penulis" in nama and "cari_x" in nama and "hitung_x" in nama
+    assert mt.permintaan == [] and "Mode baca" in mb.permintaan[0]["system"][0]["text"]
+
+
+async def test_hibrida_model_baca_memanggil_write_paksa_ditolak_nol_tulis():
+    p, mb, mt = _hibrida([panggil(("buat_x", {"jumlah": 1})), teks("Tidak bisa.")], [])
+    be = be_standar()
+    await p.giliran(sesi(), "buat", be, izin_semua)
+    assert be.panggilan == [] and mt.permintaan == []
+    assert mb.permintaan[1]["messages"][-1]["content"][0]["is_error"] is True
+
+
+async def test_hibrida_perlu_penulis_dialihkan_ke_model_tulis_riwayat_utuh():
+    p, mb, mt = _hibrida([panggil(("perlu_penulis", {"alasan": "buat penawaran"}))],
+                         [panggil(("buat_x", {"jumlah": 2})), teks("Tinjau kartunya.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat 2", be, izin_semua)
+    assert len([e for e in ev if e["jenis"] == "kartu"]) == 1
+    assert "buat_x" in {t["name"] for t in mt.permintaan[0]["tools"]}
+    # model tulis melihat riwayat model baca (append-only): pesan pertama sama, lalu tool_use perlu_penulis
+    assert mt.permintaan[0]["messages"][0] == mb.permintaan[0]["messages"][0]
+    assert any(b.get("name") == "perlu_penulis" for b in mt.permintaan[0]["messages"][1]["content"])
+    assert mt.permintaan[0]["messages"][-1]["content"][0]["content"].startswith("Dialihkan")
+    assert s.mode_tulis is True
+
+
+async def test_hibrida_kartu_menunggu_dan_lanjutan_setuju_pakai_model_tulis():
+    p, mb, mt = _hibrida([panggil(("perlu_penulis", {"alasan": "x"}))],
+                         [panggil(("buat_x", {"jumlah": 2})), teks("Tinjau."), teks("Ganti apa?"), teks("Tersimpan.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat", be, izin_semua)
+    n_baca = len(mb.permintaan)
+    await p.giliran(s, "eh tunggu", be, izin_semua)          # kartu masih menunggu -> model tulis
+    assert len(mb.permintaan) == n_baca
+    kid = [e for e in ev if e["jenis"] == "kartu"][0]["kartu_id"]
+    be.rute[("POST", "/api/x")] = JawabanBE(201, {"id": "b"})
+    await p.setujui(s, kid, be, izin_semua)                  # lanjutan sesudah Setuju -> model tulis
+    assert len(mb.permintaan) == n_baca and s.mode_tulis is False  # selesai tanpa usulan baru -> kembali ke baca
+
+
+async def test_tanpa_pemanggil_baca_perilaku_lama():
+    p, m = putaran([teks("ok")])
+    await p.giliran(sesi(), "x", be_standar(), izin_semua)
+    assert "perlu_penulis" not in {t["name"] for t in m.permintaan[0]["tools"]}
