@@ -71,7 +71,7 @@ async def kasus(c):
     for d in aktif[:BATAS]:
         s = Decimal(str(sisa.get(str(d["id"]), 0)))
         k["refund"].append({"dep": str(d["id"]), "body": {"amount": str(min(s, Decimal("1000")) if s > 0 else Decimal("1000")),
-                            "refund_date": str(hari), "account_id": str(kas), "payment_method": "bank_transfer"}})
+                            "refund_date": str(hari), "account_id": str(kas), "payment_method": "transfer"}})
     for d in aktif:
         s = Decimal(str(sisa.get(str(d["id"]), 0)))
         if s <= 0 or len(k["apply"]) >= BATAS:

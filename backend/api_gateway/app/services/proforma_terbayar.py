@@ -231,7 +231,9 @@ async def terbayar_proforma(conn, tenant_id: str, so_ids: list, ganti_proforma=N
     # tercocok-nominal = eksplisit proforma itu; uang muka DI LUAR TAGIHAN dikeluarkan dari kolam, supaya proforma
     # yang ditagih NETO darinya (PELUNASAN sesudah DP) tak tampil "Sudah Dibayar" oleh uang yang sama.
     from .proforma_atribusi import muat_atribusi
-    atr = await muat_atribusi(conn, tenant_id, so_ids, ganti_proforma=ganti_proforma)
+    # ganti_proforma diteruskan HANYA bila diisi: pemanggil/tiruan lama muat_atribusi(conn, tid, so_ids) tetap sah
+    atr = await (muat_atribusi(conn, tenant_id, so_ids, ganti_proforma=ganti_proforma) if ganti_proforma
+                 else muat_atribusi(conn, tenant_id, so_ids))
     eks = {pid: v["tertaut"] + v["dicocokkan"] for a in atr.values() for pid, v in a["per_proforma"].items()}
     tertutup = await tertutup_pesanan(conn, tenant_id, so_ids)
     per_so = {}

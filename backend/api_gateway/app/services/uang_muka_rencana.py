@@ -41,7 +41,7 @@ async def _periode(conn, tid: str, tanggal) -> None:
         raise HTTPException(status_code=400, detail=tg.periode_tertutup(None, r["status"]))
 
 
-def _jurnal(source_type: str, description: str, journal_date, total, lines: list) -> dict:
+def _rencana_jurnal(source_type: str, description: str, journal_date, total, lines: list) -> dict:
     """lines = [(account_id, debit, credit, memo)] berurutan = line_number 1..n."""
     return {"source_type": source_type, "description": description, "journal_date": journal_date, "total": total,
             "lines": lines}
@@ -97,7 +97,7 @@ async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
         dipakai[inv_id] = dipakai.get(inv_id, NOL) + Decimal(str(app.amount))  # auto-apply SI: SimpleNamespace, bukan skema
         items.append({
             "invoice": invoice, "invoice_id": inv_id, "invoice_key": app.invoice_id, "amount": app.amount,
-            "jurnal": _jurnal("DEPOSIT_APPLICATION", f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
+            "jurnal": _rencana_jurnal("DEPOSIT_APPLICATION", f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
                               application_date, app.amount,
                               [(akun_dp, app.amount, 0, f"Aplikasi {label_k} - {invoice['invoice_number']}"),
                                (akun_ar, 0, app.amount, f"Pelunasan dari Deposit - {dep['deposit_number']}")]),
@@ -133,7 +133,7 @@ async def rencana_lepas(conn, ctx: dict, deposit_id, application_id) -> dict:
     await CD._assert_ar_side_is_ar_trade(conn, tid, sisi_ar["account_id"])
     jumlah = app_row["amount_applied"]
     return {"sudah": False, "app_row": app_row, "original_journal_id": asal, "amount": jumlah, "hari_ini": hari_ini,
-            "jurnal": _jurnal("DEPOSIT_APPLICATION", f"Un-apply Deposit application {app_row['invoice_number'] or application_id}",
+            "jurnal": _rencana_jurnal("DEPOSIT_APPLICATION", f"Un-apply Deposit application {app_row['invoice_number'] or application_id}",
                               hari_ini, jumlah,
                               [(ln["account_id"], ln["credit"], ln["debit"], f"Reversal - {ln['memo'] or ''}") for ln in baris])}
 
@@ -167,7 +167,7 @@ async def rencana_kembalikan(conn, ctx: dict, deposit_id, body) -> dict:
     ba = await conn.fetchrow(
         "SELECT id, account_name FROM bank_accounts WHERE tenant_id = $1 AND coa_id = $2 AND is_active = true", tid, akun_kas)
     return {"dep": dep, "akun_kas": akun_kas,
-            "jurnal": _jurnal("DEPOSIT_REFUND", f"Refund Deposit {dep['deposit_number']} - {dep['customer_name']}",
+            "jurnal": _rencana_jurnal("DEPOSIT_REFUND", f"Refund Deposit {dep['deposit_number']} - {dep['customer_name']}",
                               body.refund_date, body.amount,
                               [(akun_dp, body.amount, 0, f"Refund {label_k} - {dep['deposit_number']}"),
                                (akun_kas, 0, body.amount, f"Bayar Refund - {dep['customer_name']}")]),
@@ -202,7 +202,7 @@ async def rencana_batal(conn, ctx: dict, deposit_id, body) -> dict:
     jurnal, bank = None, None
     if dep["journal_id"]:
         baris = await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", dep["journal_id"])
-        jurnal = _jurnal("CUSTOMER_DEPOSIT", f"Void {dep['deposit_number']} - {dep['customer_name']}", hari_ini, dep["amount"],
+        jurnal = _rencana_jurnal("CUSTOMER_DEPOSIT", f"Void {dep['deposit_number']} - {dep['customer_name']}", hari_ini, dep["amount"],
                          [(ln["account_id"], ln["credit"], ln["debit"], f"Reversal - {ln['memo'] or ''}") for ln in baris])
         asal = await conn.fetchrow(
             """SELECT bt.id, bt.amount, bt.transaction_type, ba.account_name FROM bank_transactions bt

@@ -72,8 +72,12 @@ def test_tak_ada_label_dipaku_per_penerimaan(berkas):
 
 def test_memo_jurnal_baru_kapital_dan_riwayat_berlabel():
     src = (APP / "routers" / "customer_deposits.py").read_text()
-    for awal in ("Terima ", "Aplikasi ", "Refund "):
-        assert f'f"{awal}{{await label_deposit(conn, ctx[\'tenant_id\'], deposit_id, kapital=True)}}' in src, awal
+    assert f'f"Terima {{await label_deposit(conn, ctx[\'tenant_id\'], deposit_id, kapital=True)}}' in src
+    # AS-G7c: memo jurnal terapkan/refund dibentuk penentu bersama (services/uang_muka_rencana), label kapital yang sama
+    um = (APP / "services" / "uang_muka_rencana.py").read_text()
+    assert um.count("label_k = await label_deposit(conn, tid, deposit_id, kapital=True)") == 2
+    for awal in ("Aplikasi ", "Refund "):
+        assert f'f"{awal}{{label_k}} - ' in um, awal
     rw = (APP / "services" / "so_riwayat.py").read_text()
     assert rw.count('k.label_dp[str(') >= 2 and rw.count("lb = label_jenis(") >= 2
     rk = (APP / "services" / "rekap_pesanan.py").read_text()
