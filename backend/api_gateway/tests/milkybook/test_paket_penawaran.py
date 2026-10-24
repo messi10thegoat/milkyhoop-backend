@@ -96,6 +96,7 @@ PREFIKS = {  # prefiks main.py -> berkas router + prefiks dekorator
     "/api/sales-orders": ("routers/sales_orders.py", ""),
     "/api/sales-invoices": ("routers/sales_invoices.py", ""),
     "/api/dashboard": ("routers/dashboard_v2.py", ""),
+    "/api/tax-codes": ("routers/tax_codes.py", ""),
 }
 
 
@@ -133,7 +134,8 @@ def test_rute_pratinjau_t0_belum_ada_ingatkan_saat_mendarat(t):
 
 def test_query_tool_baca_adalah_parameter_router():
     peta = {"cari_pelanggan": "routers/customers.py", "cari_barang": "routers/items.py", "daftar_penawaran": "routers/quotes.py",
-            "daftar_pesanan": "routers/sales_orders.py", "daftar_faktur": "routers/sales_invoices.py"}
+            "daftar_pesanan": "routers/sales_orders.py", "daftar_faktur": "routers/sales_invoices.py",
+            "opsi_pajak": "routers/tax_codes.py"}
     for nama, berkas in peta.items():
         s = _src(berkas)
         for k in TOOL[nama].skema["properties"]:

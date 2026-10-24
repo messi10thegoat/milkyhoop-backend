@@ -45,8 +45,8 @@ _BARIS = _obj({
     "unit": S("Satuan, mis. pcs"),
     "unit_price": N("Harga satuan rupiah (dari master barang atau ucapan pengguna)"),
     "discount_percent": N("Diskon baris persen 0-100"),
-    "tax_id": S("Id kode pajak dari opsi pajak; kosongkan bila tanpa pajak"),
-    "tax_rate": N("Tarif pajak persen dari opsi pajak; 0 = tanpa pajak"),
+    "tax_id": S("Id kode pajak dari opsi_pajak; kosongkan bila tanpa pajak"),
+    "tax_rate": N("Tarif pajak persen dari opsi_pajak; 0 = tanpa pajak"),
 }, ["description", "quantity", "unit_price"])
 
 _PENAWARAN_BARU = {
@@ -100,7 +100,7 @@ SKEMA_BARANG = _obj({
     "item_code": S("Kode/SKU"),
     "sales_price": N("Harga jual"),
     "purchase_price": N("Harga beli"),
-    "sales_tax_id": S("Id kode pajak penjualan dari opsi pajak"),
+    "sales_tax_id": S("Id kode pajak penjualan dari opsi_pajak"),
 }, ["name", "item_type", "base_unit"])
 
 _Q = "/api/quotes"
@@ -112,8 +112,8 @@ TOOLS = [
          _obj({"q": S("Kata kunci"), "limit": I()}, ["q"]), "GET", "/api/customers/autocomplete"),
     Tool("cari_barang", Kelas.READ, "Cari barang/jasa menurut nama atau barcode; hasil memuat harga jual dan pajak bawaan.",
          _obj({"search": S("Kata kunci"), "limit": I()}, ["search"]), "GET", "/api/items"),
-    Tool("opsi_akun_pajak_barang", Kelas.READ, "Daftar akun dan kode pajak yang sah untuk barang dan baris dokumen.",
-         _obj({}), "GET", "/api/items/accounts"),
+    Tool("opsi_pajak", Kelas.READ, "Daftar kode pajak yang sah (id, kode, nama, tarif, bawaan). direction=output untuk penjualan, input untuk pembelian.",
+         _obj({"direction": {"type": "string", "enum": ["output", "input"]}}), "GET", "/api/tax-codes/dropdown"),
     Tool("bawaan_penawaran", Kelas.READ, "Bawaan penawaran usaha ini: masa berlaku, syarat, teks pembuka/penutup.",
          _obj({}), "GET", f"{_Q}/defaults"),
     Tool("daftar_penawaran", Kelas.READ, "Daftar penawaran. aksi: perlu_dikirim | tunggu_jawaban | segera_habis | lewat_masa | perlu_dipesan.",
