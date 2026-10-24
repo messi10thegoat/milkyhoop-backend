@@ -827,47 +827,50 @@ async def bagikan_dokumen(request: Request, kind: str, doc_id: str):
     return hasil
 
 
-async def _bagikan(conn, request: Request, ctx: dict, kind: str, uid: UUID, channel: str) -> tuple:
-    """SATU jalur share (dipakai /share dan /share/preview yang di-rollback). Pemanggil membuka transaksi.
-    Penawaran (Q5, 3 Okt): kunci QUOTE + FOR UPDATE; penentu penawaran_bagikan; draf -> tandai terkirim (status, sent_at,
-    audit QUOTE_SENT) di transaksi YANG SAMA dengan tautannya -- satu gagal, keduanya batal."""
-    from ..services import dokumen_bagikan as DB
+async def rencana_bagikan(conn, request: Request, ctx: dict, kind: str, uid: UUID, kunci: bool) -> tuple:
+    """AS-G7-M2: SATU penentu share -- PENULIS (_bagikan, kunci=True: kunci QUOTE + FOR UPDATE untuk penawaran) DAN PRATINJAU
+    (/share/preview tunggal + bulk share, kunci=False, transaksi READ ONLY). Urutan & galat = kode lama (izin kuitansi, 404, 409 penentu
+    penawaran / tolak_batal). -> (info, baris penawaran | None)."""
     if kind == "receipt" and await conn.fetchval(
             "SELECT 1 FROM customer_deposits WHERE id = $1 AND tenant_id = $2", uid, ctx["tenant_id"]):
         await _wajib_izin(request, "E", "customer_deposit")
     if kind == "quotation":
         from ..services import penawaran_bagikan as PB
         from ..utils import tanggal_tenant as TT
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{uid}")
+        if kunci:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{uid}")
         q = await conn.fetchrow("""SELECT id, quote_number, status, expiry_date FROM quotes
-                                   WHERE id = $1 AND tenant_id = $2 FOR UPDATE""", uid, ctx["tenant_id"])
+                                   WHERE id = $1 AND tenant_id = $2""" + (" FOR UPDATE" if kunci else ""), uid, ctx["tenant_id"])
         if not q:
             raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
         p = PB.penentu(q["status"], q["quote_number"], q["expiry_date"], await TT.tanggal_dokumen(conn, ctx["tenant_id"]))
         info = {"status_now": q["status"], "number": q["quote_number"], **p}
         if not p["boleh"]:
             raise HTTPException(status_code=409, detail={"code": p["code"], "message": p["message"]})
-        if p["akan_ditandai_terkirim"]:
-            await PB.tandai_terkirim(conn, ctx["tenant_id"], q["id"], q["quote_number"], ctx["user_id"],
-                                     "api:dokumen.share")
-    else:
-        dok = await _dokumen_ada(conn, ctx["tenant_id"], kind, uid)
-        tolak_batal(kind, dok)  # BAGIKAN-BATAL: sama dengan jalur massal
-        info = {"status_now": dok["status"], "number": dok["nomor"], "boleh": True, "akan_ditandai_terkirim": False,
-                "code": None, "message": None}
+        return info, q
+    dok = await _dokumen_ada(conn, ctx["tenant_id"], kind, uid)
+    tolak_batal(kind, dok)  # BAGIKAN-BATAL: sama dengan jalur massal
+    return {"status_now": dok["status"], "number": dok["nomor"], "boleh": True, "akan_ditandai_terkirim": False,
+            "code": None, "message": None}, None
+
+
+async def _bagikan(conn, request: Request, ctx: dict, kind: str, uid: UUID, channel: str) -> tuple:
+    """SATU jalur share TULIS (/share + bulk share). Pemanggil membuka transaksi. Pemeriksaan = rencana_bagikan(kunci=True).
+    Penawaran (Q5, 3 Okt): draf -> tandai terkirim (status, sent_at, audit QUOTE_SENT) di transaksi YANG SAMA dengan tautannya."""
+    from ..services import dokumen_bagikan as DB
+    from ..services import penawaran_bagikan as PB
+    info, q = await rencana_bagikan(conn, request, ctx, kind, uid, kunci=True)
+    if q is not None and info["akan_ditandai_terkirim"]:
+        await PB.tandai_terkirim(conn, ctx["tenant_id"], q["id"], q["quote_number"], ctx["user_id"], "api:dokumen.share")
     hasil = await DB.buat_tautan(conn, ctx["tenant_id"], kind, uid, channel, ctx["user_id"])
     return hasil, info
 
 
-class _BatalkanBagikan(Exception):
-    def __init__(self, info):
-        self.info = info
-
-
 @router.post("/documents/{kind}/{doc_id}/share/preview")
 async def pratinjau_bagikan_dokumen(request: Request, kind: str, doc_id: str):
-    """Kartu Tinjau Kirim (Q5): jalur _bagikan YANG SAMA lalu ROLLBACK -> nol tulis (tautan, status, audit). 200 selalu
-    untuk dokumen yang ada: boleh=false + code/message bila share akan ditolak 409. Izin = rute share."""
+    """Kartu Tinjau Kirim (Q5): penentu rencana_bagikan YANG SAMA dengan share, BACA SAJA (AS-G7-M2: transaksi READ ONLY, tanpa kunci
+    QUOTE/FOR UPDATE, tanpa tautan; dulu jalur _bagikan lalu ROLLBACK). 200 selalu untuk dokumen yang ada: boleh=false + code/message
+    bila share akan ditolak 409. Izin = rute share."""
     from ..services import dokumen_bagikan as DB
     if kind not in JENIS:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
@@ -884,11 +887,8 @@ async def pratinjau_bagikan_dokumen(request: Request, kind: str, doc_id: str):
     info = None
     async with pool.acquire() as conn:
         try:
-            async with conn.transaction():
-                _, info = await _bagikan(conn, request, ctx, kind, uid, channel)
-                raise _BatalkanBagikan(info)
-        except _BatalkanBagikan as b:
-            info = b.info
+            async with conn.transaction(readonly=True):
+                info, _ = await rencana_bagikan(conn, request, ctx, kind, uid, kunci=False)
         except HTTPException as e:
             if e.status_code != 409 or not isinstance(e.detail, dict):
                 raise

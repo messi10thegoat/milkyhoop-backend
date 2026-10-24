@@ -103,7 +103,7 @@ def _fungsi_bagikan(request: Request, kind: str, channel: str):
     async def pratinjau(conn, ctx, i):
         uid = _uuid(i)
         await _periksa_bagikan(conn, ctx, kind, uid)  # HTTPException = satu blok
-        _, info = await D._bagikan(conn, request, ctx, kind, uid, channel)  # jalur yang SAMA; tautan hilang bersama rollback
+        info, _ = await D.rencana_bagikan(conn, request, ctx, kind, uid, kunci=False)  # AS-G7-M2: penentu yang SAMA dengan _bagikan
         ring = {"number": info["number"], "status_now": info["status_now"], "channel": channel}
         if kind == "quotation":
             ring["akan_ditandai_terkirim"] = info.get("akan_ditandai_terkirim")
@@ -173,7 +173,8 @@ def buat_router(modul: str) -> APIRouter:
         ids = bulk.validasi_ids(body.ids, "tulis")
         pool = await get_pool()
         _, pratinjau = _fungsi_bagikan(request, kind, body.channel)
-        return {"success": True, "data": await bulk.pratinjau_per_item(pool, ctx, "share", ids, pratinjau, await _nomor(pool, modul, ctx["tenant_id"], ids))}
+        return {"success": True, "data": await bulk.pratinjau_per_item(pool, ctx, "share", ids, pratinjau, await _nomor(pool, modul, ctx["tenant_id"], ids),
+                                                                       baca_saja=True)}  # AS-G7-M2
 
     @router.post("/bulk/share")
     async def bulk_share(request: Request, body: BulkShareRequest):

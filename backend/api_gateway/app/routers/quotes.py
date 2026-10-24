@@ -1443,19 +1443,17 @@ async def delete_quote(request: Request, quote_id: str):
 # ============================================================================
 
 
-async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = False) -> dict:
-    """Inti POST /quotes/{id}/send ("tandai terkirim"), di transaksi PEMANGGIL: rute tunggal DAN kirim massal (U1b F3). Isi = isi rute
-    lama tanpa perubahan (hanya dipindah dari handler; `body.send_email` -> `send_email`). -> {quote_number, status}."""
+async def rencana_kirim_penawaran(conn, ctx: dict, quote_id, kunci: bool, send_email: bool = False):
+    """AS-G7-M2: SATU penentu kirim penawaran -- PENULIS (kirim_penawaran_core, kunci=True: kunci QUOTE + FOR UPDATE) DAN PRATINJAU kirim
+    massal (kunci=False, transaksi READ ONLY). Urutan & teks galat = kode lama: 404 / status (400) / penentu V421 (409) / surel (422).
+    -> baris penawaran."""
     quote_id = str(quote_id)
-    # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
+    if kunci:
+        # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
     # Check quote
     quote = await conn.fetchrow(
-        """
-        SELECT id, status, quote_number, expiry_date FROM quotes
-        WHERE id = $1 AND tenant_id = $2
-        FOR UPDATE
-    """,
+        "SELECT id, status, quote_number, expiry_date FROM quotes WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""),
         uuid_module.UUID(quote_id),
         ctx["tenant_id"],
     )
@@ -1499,6 +1497,14 @@ async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = Fal
                 "bagikan PDF-nya lewat saluran lain."
             ),
         )
+    return quote
+
+
+async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = False) -> dict:
+    """Inti POST /quotes/{id}/send ("tandai terkirim"), di transaksi PEMANGGIL: rute tunggal DAN kirim massal (U1b F3).
+    AS-G7-M2: pemeriksaan = rencana_kirim_penawaran(kunci=True) (kunci QUOTE + FOR UPDATE di tempat yang sama), lalu tandai.
+    -> {quote_number, status}."""
+    quote = await rencana_kirim_penawaran(conn, ctx, quote_id, kunci=True, send_email=send_email)
 
     # 3 Okt (Q5): penanda bersama dengan POST /documents/quotation/{id}/share
     from ..services.penawaran_bagikan import tandai_terkirim

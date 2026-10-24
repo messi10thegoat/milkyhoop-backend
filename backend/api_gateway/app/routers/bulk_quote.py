@@ -53,9 +53,13 @@ async def _nomor(pool, tenant_id: str, ids) -> dict:
 _KODE_KIRIM = {404: "QUOTE_TAK_ADA", 400: "QUOTE_TAK_BISA_DIKIRIM", 422: "QUOTE_SUREL_BELUM_ADA"}
 
 
-async def _kirim(conn, ctx, i):
-    """Jalur tunggal kirim_penawaran_core apa adanya; hanya memberi KODE stabil pada galat teksnya."""
+async def _kirim(conn, ctx, i, rencana: bool = False):
+    """Jalur tunggal kirim_penawaran_core apa adanya (tulis) / penentu rencana_kirim_penawaran baca saja (pratinjau, AS-G7-M2); hanya
+    memberi KODE stabil pada galat teksnya."""
     try:
+        if rencana:
+            q = await Q.rencana_kirim_penawaran(conn, ctx, str(i), kunci=False)
+            return {"quote_number": q["quote_number"], "status": "sent"}  # bentuk SAMA dengan kirim_penawaran_core
         return await Q.kirim_penawaran_core(conn, ctx, str(i))
     except HTTPException as e:
         if isinstance(e.detail, dict):
@@ -70,7 +74,7 @@ async def _tulis_kirim(conn, ctx, i):
 
 async def _pratinjau_kirim(conn, ctx, i):
     sebelum = await conn.fetchval("SELECT status FROM quotes WHERE id = $1 AND tenant_id = $2", _uuid(i), ctx["tenant_id"])
-    h = await _kirim(conn, ctx, i)
+    h = await _kirim(conn, ctx, i, rencana=True)  # AS-G7-M2: penentu baca saja, bukan inti + rollback
     return [], {**h, "sudah_terkirim_sebelumnya": sebelum == "sent"}  # kirim ulang diizinkan (tunggal pun), tapi FE boleh memberi tahu
 
 
@@ -103,8 +107,8 @@ AKSI = {
 assert set(AKSI) <= bulk.AKSI_DIIZINKAN  # setiap aksi di berkas ini harus ada di daftar putih
 
 
-# AS-G7-M1: aksi yang pratinjaunya penentu baca saja (transaksi luar READ ONLY). "send" masih inti + rollback sampai AS-G7-M2.
-AKSI_BACA_SAJA = ("delete",)
+# AS-G7-M1/M2: aksi yang pratinjaunya penentu baca saja (transaksi luar READ ONLY).
+AKSI_BACA_SAJA = ("delete", "send")
 
 
 def _pasang(aksi: str):
