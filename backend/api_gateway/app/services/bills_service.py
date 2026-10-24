@@ -33,6 +33,13 @@ TOK_HARI_INI = "__HARI_INI__"
 
 import asyncpg  # noqa: E402
 import uuid as uuid_module  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+
+@asynccontextmanager
+async def _pinjam(conn):
+    """Koneksi pemanggil yang SUDAH bertransaksi dipakai apa adanya (post_bill di dalam transaksi luar; SALDO-AWAL-VENDOR-A)."""
+    yield conn
 
 from .resolve_account import resolve_account_id  # noqa: E402,F401
 from .role_resolver import (  # noqa: E402
@@ -3287,7 +3294,7 @@ class BillsService:
         return ln
 
     async def post_bill(
-        self, tenant_id: str, bill_id: UUID, user_id: UUID, idem: Optional[Dict[str, Any]] = None
+        self, tenant_id: str, bill_id: UUID, user_id: UUID, idem: Optional[Dict[str, Any]] = None, conn_luar=None
     ) -> Dict[str, Any]:
         """
         Transition bill from draft to posted.
@@ -3298,8 +3305,11 @@ class BillsService:
         - AP record in accounts_payable
         - Bill status update
         - Inventory ledger entries (for tracked goods)
+
+        conn_luar (SALDO-AWAL-VENDOR-A, 25 Okt 2026): koneksi pemanggil yang SUDAH bertransaksi -> badan posting YANG SAMA berjalan di
+        dalamnya (transaction() = savepoint), mis. POST /vendors/{id}/opening-balance: draf tagihan pembuka + posting SATU transaksi.
         """
-        async with self.pool.acquire() as conn:
+        async with (_pinjam(conn_luar) if conn_luar is not None else self.pool.acquire()) as conn:
             await _ensure_bills_service_role_preconditions(self.pool, tenant_id)
             async with conn.transaction():
                 # 0. RLS context

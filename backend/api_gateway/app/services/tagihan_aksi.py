@@ -136,6 +136,15 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
 
 
 # ---------------------------------------------------------------- POSTING
+# SALDO-AWAL-VENDOR-A (V458): tagihan pembuka saldo awal hutang -> SATU debit Modal Saldo Awal (peran EQUITY_OPENING_BALANCE), tanpa PPN/stok/GRN.
+SALDO_AWAL = "SALDO_AWAL"  # penanda baris debit tagihan pembuka (posisi is_inv di hasil hitung_debit) -> memo khusus
+
+
+async def tagihan_pembuka(conn, tid: str, bill_id) -> bool:
+    """bills.is_opening_balance (V458) -- SATU pembaca untuk blok_posting & hitung_debit (posting == pratinjau)."""
+    return bool(await conn.fetchval("SELECT is_opening_balance FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tid))
+
+
 async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None) -> list:
     """Baris debit tagihan PER-BARIS (diangkat APA ADANYA dari BillsService._emit_bill_debit_lines; SATU fungsi untuk posting & pratinjau):
     goods+track -> Persediaan; service -> COGS_SERVICE; lainnya -> products.purchase_account_id bila ada, else COGS_SALES. Peran tak
@@ -143,6 +152,8 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
     from fastapi import HTTPException
     from .inventory_helpers import resolve_inventory_accounts
     from .role_resolver import AccountRole
+    if await tagihan_pembuka(conn, tid, bill_id):  # SALDO-AWAL-VENDOR-A: default_inv_acct_id = Modal Saldo Awal (blok_posting)
+        return [(default_inv_acct_id, subtotal_dec, SALDO_AWAL)] if subtotal_dec != NOL else []
     rows = await conn.fetch(
         "SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
         "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id WHERE bi.bill_id = $1 ORDER BY bi.line_number", bill_id)
@@ -189,6 +200,8 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
 
 def memo_debit(aid, inv, vendor_name: str, grn: Optional[dict]) -> str:
     """Memo baris debit (SATU sumber posting & pratinjau). GRN: akun GRNI / selisih harga bermemo sendiri."""
+    if inv == SALDO_AWAL:
+        return f"Saldo awal hutang - {vendor_name}"
     akun = (grn or {}).get("akun") or {}
     if grn and grn.get("rencana") and aid == akun.get("grni"):
         return f"Barang diterima belum ditagih - {vendor_name}"
@@ -207,7 +220,10 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
     if st:
         bloks.append(blok("PERIODE_TERTUTUP", f"Periode akuntansi untuk tanggal faktur sudah {st}."))
     sc = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM production_subcontracts WHERE bill_id = $1)", bill["id"])
-    debit_role = AccountRole.WIP_SUBCONTRACT if sc else AccountRole.INVENTORY_MERCHANDISE
+    awal = await tagihan_pembuka(conn, tid, bill["id"])  # SALDO-AWAL-VENDOR-A: debit = Modal Saldo Awal, tanpa PPN
+    debit_role = AccountRole.EQUITY_OPENING_BALANCE if awal else (AccountRole.WIP_SUBCONTRACT if sc else AccountRole.INVENTORY_MERCHANDISE)
+    if awal and Decimal(str(bill["tax_amount"] or 0)) > 0:
+        bloks.append(blok("SALDO_AWAL_BERPAJAK", "Tagihan pembuka saldo awal tidak boleh berpajak."))
     ap = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
     debit = await resolve_account_id_by_role(conn, tid, debit_role)
     vat = None

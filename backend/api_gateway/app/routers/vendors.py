@@ -5,7 +5,10 @@ CRUD endpoints for managing vendors with search and pagination.
 Integrates with bills module for purchase invoice management.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
+from pydantic import BaseModel
+from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -1476,256 +1479,110 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
 # =============================================================================
 
 
-# SALDO-AWAL-VENDOR-C (24 Okt 2026, putusan pemilik "C now + A"): jalur di bawah memposting Dr Hutang / Cr Modal Saldo Awal -- TERBALIK
-# (skill vendor: Dr Modal / Cr Hutang); compute_ap V457 membacanya sebagai hutang NEGATIF. Ditahan 409 sampai saldo awal vendor = bill pembuka
-# (opsi A). FE (saldoAwalVendor.ts, OpeningBalanceSheet.tsx) menampilkan `message`. Kode lama di bawah TAK tercapai selama penahan aktif.
-SALDO_AWAL_VENDOR_DITAHAN = True
-KODE_SALDO_AWAL_VENDOR_DITAHAN = "SALDO_AWAL_VENDOR_DITAHAN"
-PESAN_SALDO_AWAL_VENDOR_DITAHAN = "Pencatatan saldo awal vendor sedang diperbaiki dan belum bisa dipakai. Coba lagi nanti."
+class SaldoAwalVendorIn(BaseModel):
+    """Badan POST /vendors/{id}/opening-balance -- kontrak FE TETAP (amount, as_of_date, description | notes)."""
+    amount: Decimal
+    as_of_date: Optional[date] = None
+    description: Optional[str] = None
+
+
+KODE_SALDO_AWAL_VENDOR_SUDAH_ADA = "SALDO_AWAL_VENDOR_SUDAH_ADA"
+KODE_AKUN_SALDO_AWAL_BELUM_DIPETAKAN = "AKUN_SALDO_AWAL_BELUM_DIPETAKAN"
 
 
 @router.post("/{vendor_id}/opening-balance")
-async def set_vendor_opening_balance(request: Request, vendor_id: str):
+async def set_vendor_opening_balance(request: Request, vendor_id: str, response: Response = None):
     """
-    Set vendor opening AP balance via journal entry.
-
-    Iron Laws Compliance:
-    - Law 3 (Append-Only): Creates journal entry, no direct UPDATE
-    - Law 4 (Double-Entry): Debit AP, Credit Opening Balance Equity
-    - Law 6 (Source Traceability): source_type = VENDOR_OPENING_BALANCE
-    - Law 7 (No Balance Override): Balance computed from journals
-
-    Journal Entry:
-        Debit:  2-10100 Hutang Usaha (AP) - increases payable
-        Credit: 3-50000 Modal Saldo Awal (Opening Balance Equity)
+    SALDO-AWAL-VENDOR-A (25 Okt 2026; aturan "Saldo awal hutang vendor = tagihan pembuka" + V458 DISETUJUI LANGSUNG pemilik).
+    SATU transaksi: draf tagihan pembuka (bills.is_opening_balance, 1 baris "Saldo awal hutang", tanpa PPN, jatuh tempo = tanggal saldo awal)
+    lalu posting lewat BillsService.post_bill YANG SAMA (conn_luar) -> jurnal Dr 3-50000 Modal Saldo Awal / Cr 2-10100 Hutang Usaha, source
+    BILL, penentu tagihan_aksi.blok_posting/hitung_debit (== pratinjau). Masuk compute_ap sebagai tagihan biasa (umur, Pembayaran Keluar,
+    batal = void tagihan). Menggantikan jurnal VENDOR_OPENING_BALANCE lama yang TERBALIK (Dr Hutang -> hutang negatif, V457) dan penahan 409
+    SALDO-AWAL-VENDOR-C. Idem X-Idempotency-Key (VENDOR_OB). Satu tagihan pembuka AKTIF per vendor (409 di sini + indeks unik V458).
     """
-    from datetime import date as date_type
-    from decimal import Decimal as Dec
+    from ..services import idem_buat as _ib
+    from ..services.role_resolver import AccountRoleUnmappedError
+    from .bills import get_bills_service
 
-    if SALDO_AWAL_VENDOR_DITAHAN:  # SALDO-AWAL-VENDOR-C: sebelum badan / pool / jurnal apa pun
-        raise HTTPException(status_code=409, detail={"code": KODE_SALDO_AWAL_VENDOR_DITAHAN, "message": PESAN_SALDO_AWAL_VENDOR_DITAHAN})
-
+    ctx = get_user_context(request)
+    raw = await request.json()
     try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        await _ensure_role_preconditions(pool, ctx["tenant_id"])
-
-        raw_body = await request.json()
-        amount = Dec(str(raw_body.get("amount", 0)))
-        as_of_date = raw_body.get("as_of_date")
-        if as_of_date:
-            as_of_date = (
-                date_type.fromisoformat(as_of_date)
-                if isinstance(as_of_date, str)
-                else as_of_date
-            )
-        else:
-            # t10b-3b: default diisi tanggal bisnis tenant di dalam conn di bawah
-            as_of_date = None
-        description = raw_body.get("description")
-
-        if amount <= 0:
-            raise HTTPException(
-                status_code=400, detail="Amount must be greater than zero"
-            )
-
-        async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
-            if as_of_date is None:
-                # t10b-3b: tanggal bisnis tenant, bukan UTC
-                as_of_date = await tanggal_dokumen(conn, ctx["tenant_id"])
-
-            async with conn.transaction():
-                # Law 13: Advisory lock for opening balance
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"VENDOR_OPENING:{vendor_id}",
-                )
-
-                # 1. Verify vendor exists
-                vendor = await conn.fetchrow(
-                    "SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2",
-                    vendor_id,
-                    ctx["tenant_id"],
-                )
-                if not vendor:
-                    raise HTTPException(status_code=404, detail="Vendor not found")
-
-                vendor_name = vendor["name"]
-
-                # 2. Check for existing opening balance journal (idempotency)
-                existing_journal = await conn.fetchrow(
-                    """
-                    SELECT id, journal_number, total_debit, status
-                    FROM journal_entries
-                    WHERE tenant_id = $1
-                      AND source_type = 'VENDOR_OPENING_BALANCE'
-                      AND source_id = $2
-                      AND status = 'POSTED'
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    ctx["tenant_id"],
-                    UUID(vendor_id),
-                )
-
-                if existing_journal:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Vendor already has opening balance journal {existing_journal['journal_number']}. "
-                        f"Current balance: {existing_journal['total_debit']}. "
-                        f"To update, first reverse the existing journal.",
-                    )
-
-                # 3. Resolve AP account via role mapping (Law 27 + Fase C1.6).
-                ap_account = await _resolve_role_account(
-                    conn, ctx["tenant_id"], AccountRole.AP_TRADE
-                )
-
-                # 4. Resolve Opening Balance Equity via role mapping.
-                equity_account = await _resolve_role_account(
-                    conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE
-                )
-
-                # 5. Generate journal number (OB-V-YYMMDD-XXX)
-                year_month_str = as_of_date.strftime("%y%m%d")
-                existing_count = await conn.fetchval(
-                    """
-                    SELECT COUNT(*) FROM journal_entries
-                    WHERE tenant_id = $1 AND journal_number LIKE $2
-                    """,
-                    ctx["tenant_id"],
-                    f"OB-V-{year_month_str}%",
-                )
-                journal_number = (
-                    f"OB-V-{year_month_str}-{str(existing_count + 1).zfill(3)}"
-                )
-
-                # 6. Create journal entry
-                journal_description = (
-                    description or f"Opening Balance - Vendor: {vendor_name}"
-                )
-
-                journal_id = await conn.fetchval(
-                    """
-                    INSERT INTO journal_entries (
-                        tenant_id, journal_number, journal_date, description,
-                        source_type, source_id, total_debit, total_credit,
-                        status, is_opening_balance, created_by
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        'VENDOR_OPENING_BALANCE', $5, $6, $6,
-                        'DRAFT', true, $7
-                    ) RETURNING id
-                    """,
-                    ctx["tenant_id"],
-                    journal_number,
-                    as_of_date,
-                    journal_description,
-                    UUID(vendor_id),
-                    amount,
-                    ctx["user_id"],
-                )
-
-                # 7. Create journal lines (double-entry)
-                # Line 1: Debit AP (increases payable - what we owe)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, 1, $2, $3, 0, $4)
-                    """,
-                    journal_id,
-                    ap_account["id"],
-                    amount,
-                    f"Opening Balance AP - {vendor_name}",
-                )
-
-                # Line 2: Credit Opening Balance Equity (balancing entry)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (
-                        journal_id, line_number, account_id, debit, credit, memo
-                    ) VALUES ($1, 2, $2, 0, $3, $4)
-                    """,
-                    journal_id,
-                    equity_account["id"],
-                    amount,
-                    f"Opening Balance Equity - {vendor_name}",
-                )
-
-                # Law 20: DRAFT→POSTED pattern for hash chain
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # 8. Create AP subledger entry for tracking
-                await conn.execute(
-                    """
-                    INSERT INTO accounts_payable (
-                        tenant_id, supplier_id, supplier_name, bill_number,
-                        bill_date, due_date, amount, amount_paid, status,
-                        description, source_type, source_id
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        $5, $5, $6, 0, 'OPEN',
-                        $7, 'VENDOR_OPENING_BALANCE', $8
-                    )
-                    """,
-                    ctx["tenant_id"],
-                    UUID(vendor_id),
-                    vendor_name,
-                    f"OB-{vendor_name[:10]}-{as_of_date.strftime('%Y%m%d')}",
-                    as_of_date,
-                    amount,
-                    f"Opening Balance - {vendor_name}",
-                    journal_id,
-                )
-
-                return {
-                    "success": True,
-                    "message": "Vendor opening balance created via journal entry",
-                    "data": {
-                        "vendor_id": vendor_id,
-                        "vendor_name": vendor_name,
-                        "amount": int(amount),
-                        "as_of_date": as_of_date.isoformat(),
-                        "journal_id": str(journal_id),
-                        "journal_number": journal_number,
-                        "journal_entry": {
-                            "debit": {
-                                "account_code": ap_account["account_code"],
-                                "account_name": ap_account["name"],
-                                "amount": int(amount),
-                            },
-                            "credit": {
-                                "account_code": equity_account["account_code"],
-                                "account_name": equity_account["name"],
-                                "amount": int(amount),
-                            },
-                        },
-                        "iron_laws_compliance": {
-                            "law_3_append_only": True,
-                            "law_4_double_entry": True,
-                            "law_6_source_traceable": True,
-                            "law_7_no_balance_override": True,
-                        },
+        tgl = raw.get("as_of_date")
+        masuk = SaldoAwalVendorIn(amount=Decimal(str(raw.get("amount", 0))),
+                                  as_of_date=date.fromisoformat(tgl) if isinstance(tgl, str) and tgl else None,
+                                  description=raw.get("description") or raw.get("notes"))
+        vid = UUID(str(vendor_id))
+    except (InvalidOperation, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Nominal, tanggal, atau vendor saldo awal tidak sah.")
+    if masuk.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+    pool = await get_pool()
+    await _ensure_role_preconditions(pool, ctx["tenant_id"])
+    svc = await get_bills_service()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sidik, lama = await _ib.mulai(conn, ctx, _ib.kunci_dari(request), "VENDOR_OB", masuk, "bills", "bill", response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_OPENING:{vid}")
+            vendor = await conn.fetchrow("SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2", vid, ctx["tenant_id"])
+            if not vendor:
+                raise HTTPException(status_code=404, detail="Vendor not found")
+            try:
+                ap_account = await _resolve_role_account(conn, ctx["tenant_id"], AccountRole.AP_TRADE)
+                equity_account = await _resolve_role_account(conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE)
+            except (AccountRoleUnmappedError, HTTPException):
+                raise HTTPException(status_code=422, detail={
+                    "code": KODE_AKUN_SALDO_AWAL_BELUM_DIPETAKAN,
+                    "message": "Akun Hutang Usaha atau Modal Saldo Awal belum dipetakan. Atur di Pengaturan, Akun Default."})
+            ada = await conn.fetchval(
+                "SELECT invoice_number FROM bills WHERE tenant_id = $1 AND vendor_id = $2 AND is_opening_balance AND status_v2 <> 'void'",
+                ctx["tenant_id"], vendor["id"])
+            ada = ada or await conn.fetchval(  # jurnal VENDOR_OPENING_BALANCE lama (terbalik) yang belum dibalik
+                """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'VENDOR_OPENING_BALANCE' AND source_id = $2
+                   AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", ctx["tenant_id"], vendor["id"])
+            if ada:
+                raise HTTPException(status_code=409, detail={
+                    "code": KODE_SALDO_AWAL_VENDOR_SUDAH_ADA,
+                    "message": f"Vendor ini sudah punya saldo awal {ada}. Batalkan dulu untuk menggantinya."})
+            tanggal = masuk.as_of_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+            nomor = await conn.fetchval("SELECT generate_purchase_bill_number($1)", ctx["tenant_id"])
+            bill_id = await conn.fetchval(
+                """INSERT INTO bills (tenant_id, invoice_number, ref_no, vendor_id, vendor_name, amount, issue_date, due_date, notes, created_by,
+                                      status_v2, tax_rate, tax_inclusive, subtotal, dpp, tax_amount, grand_total, is_opening_balance)
+                   VALUES ($1, $2, 'SALDO AWAL', $3, $4, $5, $6, $6, $7, $8, 'draft', 0, false, $5, $5, 0, $5, true) RETURNING id""",
+                ctx["tenant_id"], nomor, vendor["id"], vendor["name"], masuk.amount, tanggal,
+                masuk.description or f"Saldo awal hutang - {vendor['name']}", UUID(str(ctx["user_id"])))
+            await conn.execute(
+                """INSERT INTO bill_items (bill_id, description, quantity, unit_price, subtotal, total, line_number, tax_rate, tax_amount, dpp)
+                   VALUES ($1, 'Saldo awal hutang', 1, $2, $2, $2, 1, 0, 0, $2)""", bill_id, masuk.amount)
+            hasil = await svc.post_bill(ctx["tenant_id"], bill_id, UUID(str(ctx["user_id"])), conn_luar=conn)
+            if not hasil.get("success"):
+                raise HTTPException(status_code=400, detail=hasil.get("message") or "Saldo awal vendor gagal diposting.")
+            jr = await conn.fetchrow(
+                "SELECT je.id, je.journal_number FROM bills b JOIN journal_entries je ON je.id::text = b.journal_id::text WHERE b.id = $1", bill_id)
+            resp = {
+                "success": True,
+                "message": "Saldo awal vendor dicatat sebagai tagihan pembuka",
+                "data": {
+                    "vendor_id": str(vendor["id"]),
+                    "vendor_name": vendor["name"],
+                    "amount": float(masuk.amount),
+                    "as_of_date": tanggal.isoformat(),
+                    "bill_id": str(bill_id),
+                    "bill_number": nomor,
+                    "journal_id": str(jr["id"]),
+                    "journal_number": jr["journal_number"],
+                    "journal_entry": {
+                        "debit": {"account_code": equity_account["account_code"], "account_name": equity_account["name"],
+                                  "amount": float(masuk.amount)},
+                        "credit": {"account_code": ap_account["account_code"], "account_name": ap_account["name"],
+                                   "amount": float(masuk.amount)},
                     },
-                }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error setting vendor opening balance: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Failed to set vendor opening balance: {str(e)}"
-        )
-
-
-# =============================================================================
-# VENDOR JOURNAL ENTRIES (Ledger Supremacy - Law 1)
-# =============================================================================
+                },
+            }
+            return await _ib.simpan(conn, ctx, kp, sidik, "VENDOR_OB", resp, bill_id) if kp else resp
 
 
 @router.get("/{vendor_id}/journal-entries")
