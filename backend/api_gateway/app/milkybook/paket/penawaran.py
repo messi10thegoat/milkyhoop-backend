@@ -10,12 +10,12 @@ Skema tool = SUBSET medan Pydantic BE (dikunci tests/milkybook/test_paket_penawa
   CreateCustomerRequest                                      schemas/customers.py   (TANPA ar_opening_balance: jurnal)
   CreateItemRequest                                          schemas/items.py       (TANPA opening_stock*: jurnal)
 
-Gerbang T0 (putusan MASTER 24 Okt): WRITE tanpa idempotency `butuh` AS-G1 (ubah/batal/jadikan pesanan
-Penawaran) atau AS-G14 (pratinjau + idempotency buat pelanggan/barang). Sebelum mendarat -> NAV otomatis.
+Gerbang T0 (putusan MASTER 24 Okt) SUDAH DICABUT: T0 BACKEND2 live di master 02307237 (AS-G1 PATCH/void penawaran
+idem QUOTE_UPDATE/QUOTE_VOID; AS-G14 /api/customers/preview + /api/items/preview + idem CUSTOMER_CREATE/ITEM_CREATE).
 Buat penawaran TIDAK butuh: sudah idempoten (idem_buat QUOTE_CREATE, quotes.py:691, diukur c8c24092).
 Jadikan pesanan TIDAK butuh: idempoten alami (satu penawaran = paling banyak satu SO; ulang = SO yang sama).
-Rute pratinjau pelanggan/barang (`/api/customers/preview`, `/api/items/preview`) BELUM ADA di BE
-c8c24092: kontrak yang DIASUMSIKAN untuk T0, lihat tests/milkybook/eval/stub_be.py.
+Rute pratinjau pelanggan/barang: customers.py:727, items.py:694 (master 02307237). Mekanisme `butuh` tetap ada di
+registri untuk modul berikutnya.
 """
 from __future__ import annotations
 
@@ -140,30 +140,30 @@ TOOLS = [
     Tool("pratinjau_jadi_pesanan", Kelas.PREVIEW, "Pratinjau penawaran dijadikan pesanan penjualan.",
          SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order/preview", tampil_ke_model=False),
     Tool("pratinjau_pelanggan_baru", Kelas.PREVIEW, "Pratinjau pelanggan baru (validasi, kembar nama).",
-         SKEMA_PELANGGAN, "POST", "/api/customers/preview", butuh=(AS_G14,), tampil_ke_model=False),
+         SKEMA_PELANGGAN, "POST", "/api/customers/preview", tampil_ke_model=False),
     Tool("pratinjau_barang_baru", Kelas.PREVIEW, "Pratinjau barang baru (validasi, kembar nama).",
-         SKEMA_BARANG, "POST", "/api/items/preview", butuh=(AS_G14,), tampil_ke_model=False),
+         SKEMA_BARANG, "POST", "/api/items/preview", tampil_ke_model=False),
 
     # ---------------- TULIS (hanya lewat kartu Tinjau)
     Tool("buat_penawaran", Kelas.WRITE, "Usulkan penawaran baru (draf). Aplikasi menampilkan kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PENAWARAN_BARU, "POST", _Q, pratinjau="hitung_penawaran",  # idempoten sejak 4 Okt: idem_buat QUOTE_CREATE quotes.py:691
          halaman=f"{_PEN}/baru", judul_kartu="Buat penawaran"),
     Tool("ubah_penawaran", Kelas.WRITE, "Usulkan perubahan penawaran. Kartu Tinjau; tersimpan sesudah Setuju.",
-         SKEMA_UBAH, "PATCH", f"{_Q}/{{id}}", pratinjau="pratinjau_ubah_penawaran", butuh=(AS_G1,),
+         SKEMA_UBAH, "PATCH", f"{_Q}/{{id}}", pratinjau="pratinjau_ubah_penawaran",
          halaman=f"{_PEN}/{{id}}", judul_kartu="Ubah penawaran", pembanding="detail_penawaran"),
     Tool("batalkan_penawaran", Kelas.WRITE, "Usulkan pembatalan penawaran. Kartu Tinjau; batal sesudah Setuju.",
-         SKEMA_BATAL, "POST", f"{_Q}/{{id}}/void", pratinjau="pratinjau_batal_penawaran", butuh=(AS_G1,),
+         SKEMA_BATAL, "POST", f"{_Q}/{{id}}/void", pratinjau="pratinjau_batal_penawaran",
          halaman=f"{_PEN}/{{id}}", judul_kartu="Batalkan penawaran"),
     Tool("jadikan_pesanan", Kelas.WRITE, "Usulkan penawaran dijadikan pesanan penjualan. Kartu Tinjau; terjadi sesudah Setuju.",
          SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order", pratinjau="pratinjau_jadi_pesanan",
          # idempoten alami: kunci QUOTE + FOR UPDATE, ulang = SO yang sama (quotes.py _konversi_penawaran :2160)
          halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan"),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
-         SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru", butuh=(AS_G14,),
+         SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru",
          halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan",
          tak_didukung=((r"saldo\s+(piutang\s+)?awal|opening\s+balance", "Saldo awal piutang TIDAK ikut dicatat. Isi di halaman Pelanggan setelah pelanggan tersimpan."),)),
     Tool("buat_barang", Kelas.WRITE, "Usulkan barang/jasa baru (tanpa stok awal). Kartu Tinjau; tersimpan sesudah Setuju.",
-         SKEMA_BARANG, "POST", "/api/items", pratinjau="pratinjau_barang_baru", butuh=(AS_G14,),
+         SKEMA_BARANG, "POST", "/api/items", pratinjau="pratinjau_barang_baru",
          halaman="/persediaan/barang", judul_kartu="Buat barang",
          tak_didukung=((r"stok\s+awal|opening\s+stock", "Stok awal TIDAK ikut dicatat. Isi di halaman Barang & Jasa setelah barang tersimpan."),)),
 
