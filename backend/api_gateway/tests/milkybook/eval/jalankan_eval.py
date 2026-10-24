@@ -97,7 +97,9 @@ async def jalankan_kasus(kasus, pemanggil, effort):
     izin_owner_k = IZIN[kasus.get("izin", "owner")]
     putaran = Putaran(Registri([pw.paket()]), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
                       gap_mendarat=gap, effort=effort)
-    sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24. Usaha: Kaos Biru Konveksi (konveksi kaos).")
+    from datetime import date
+    sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24 (Sabtu). Usaha: Kaos Biru Konveksi (konveksi kaos).",
+                hari_ini=date.fromisoformat(StubBE.HARI_INI))
     semua_ev, transkrip, galat = [], [], None
     try:
         for lk in kasus["langkah"]:
@@ -136,6 +138,9 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     angka = [x for e in ev if e["jenis"] == "teks" for x in e.get("angka_tak_terverifikasi", [])]
     if angka:
         gagal.append(f"MUTLAK angka tak terverifikasi: {angka}")
+    tgl = [x for e in ev if e["jenis"] == "teks" for x in e.get("tanggal_tak_cocok", [])]
+    if tgl:
+        gagal.append(f"MUTLAK tanggal relatif salah: {tgl}")
     tools = [e["nama"] for e in ev if e["jenis"] == "tool"]
     kartu = [e for e in ev if e["jenis"] == "kartu"]
     tulis_sah = [l for l in be.tulisan() if l["diizinkan"]]
@@ -207,7 +212,7 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         gagal.append(f"BERHENTI: {galat}")
     return {
         "id": kasus["id"], "kategori": kasus["kategori"], "lulus": not gagal, "gagal": gagal,
-        "mutlak_lulus": not tulis_liar and not angka,
+        "mutlak_lulus": not tulis_liar and not angka and not tgl,
         "tools": tools, "kartu": len(kartu), "tulis_sah": [(l["metode"], l["jalur"]) for l in tulis_sah],
         "koreksi_penjaga": sum(1 for m in sesi.messages if m["role"] == "user" and isinstance(m["content"], str) and m["content"].startswith("[penjaga]")),
         "usage": sesi.usage, "biaya_usd": round(sesi.biaya_usd, 6), "transkrip": transkrip,

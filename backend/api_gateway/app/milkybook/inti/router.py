@@ -54,8 +54,9 @@ class PenyimpananSesiMemori:
 
 
 def buat_router(putaran: Putaran, penyimpanan: PenyimpananSesiMemori, *, app_fn: Callable, izin_fn_untuk: Callable,
-                flag_fn: Callable) -> APIRouter:
-    """app_fn() -> app FastAPI; izin_fn_untuk(user) -> IzinFn; flag_fn(tenant_id) -> awaitable bool."""
+                flag_fn: Callable, hari_ini_fn: Callable) -> APIRouter:
+    """app_fn() -> app FastAPI; izin_fn_untuk(user) -> IzinFn; flag_fn(tenant_id) -> awaitable bool;
+    hari_ini_fn(tenant_id) -> awaitable date (tanggal bisnis tenant, mis. utils/tanggal_tenant.tanggal_dokumen)."""
     r = APIRouter()
 
     async def _pengguna(request: Request) -> dict:
@@ -72,7 +73,9 @@ def buat_router(putaran: Putaran, penyimpanan: PenyimpananSesiMemori, *, app_fn:
     @r.post("/sesi")
     async def sesi_baru(request: Request):
         user = await _pengguna(request)
-        s = penyimpanan.buat(user["tenant_id"], user["user_id"], konteks=f"Hari ini {time.strftime('%Y-%m-%d')}.")
+        hari_ini = await hari_ini_fn(user["tenant_id"])
+        s = penyimpanan.buat(user["tenant_id"], user["user_id"], konteks=f"Hari ini {hari_ini.isoformat()}.")
+        s.hari_ini = hari_ini
         return {"sesi_id": s.sesi_id}
 
     @r.post("/sesi/{sesi_id}/pesan")

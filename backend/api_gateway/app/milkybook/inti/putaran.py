@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import penjaga_angka
+from . import penjaga_angka, penjaga_tanggal
 from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
 from .model import HasilModel, PemanggilModel, biaya_usd
@@ -31,6 +32,15 @@ TOOL_TUTUP_KARTU = {
     "name": "tutup_kartu_tinjau",
     "description": "Tutup kartu Tinjau yang sedang menunggu karena pengguna tidak jadi / membatalkan usulan. Tidak menulis apa pun ke buku.",
     "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+}
+TOOL_HITUNG_TANGGAL = {
+    "name": "hitung_tanggal",
+    "description": "Hitung selisih hari kalender dan nama hari antara dua tanggal (bawaan `dari` = hari ini). "
+                   "WAJIB dipakai sebelum menulis 'besok', 'N hari lagi', 'lewat N hari', dan sejenisnya.",
+    "input_schema": {"type": "object", "properties": {
+        "dari": {"type": "string", "format": "date", "description": "YYYY-MM-DD; kosong = hari ini"},
+        "sampai": {"type": "string", "format": "date", "description": "YYYY-MM-DD"}},
+        "required": ["sampai"], "additionalProperties": False},
 }
 MAKS_COBA_ULANG = 2
 
@@ -62,6 +72,7 @@ class Sesi:
     usage: Dict[str, int] = field(default_factory=dict)
     biaya_usd: float = 0.0
     konteks: str = ""  # volatil (tanggal, nama usaha): dikirim sebagai pesan [konteks] pertama
+    hari_ini: Optional[date] = None  # tanggal bisnis tenant; dasar penjaga tanggal + hitung_tanggal
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -207,7 +218,7 @@ class Putaran:
     async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
         tools = await self.registri.tools_untuk(izin_fn, self.gap_mendarat)
         peta = {t.nama: t for t in tools}
-        api_tools = [t.untuk_api() for t in tools] + [TOOL_TUTUP_KARTU]
+        api_tools = [t.untuk_api() for t in tools] + [TOOL_TUTUP_KARTU, TOOL_HITUNG_TANGGAL]
         peristiwa: List[dict] = []
         sudah_dikoreksi = False
 
@@ -231,21 +242,30 @@ class Putaran:
             calls = hasil.tool_calls
             teks = hasil.teks.strip()
             pelanggaran = penjaga_angka.periksa(teks, sesi.sumber_angka) if teks else []
+            salah_tanggal = penjaga_tanggal.periksa(teks, sesi.hari_ini)
 
-            if not calls and pelanggaran and not sudah_dikoreksi and hasil.stop_reason == "end_turn":
+            if not calls and (pelanggaran or salah_tanggal) and not sudah_dikoreksi and hasil.stop_reason == "end_turn":
                 sudah_dikoreksi = True
                 sesi.messages.append({"role": "assistant", "content": hasil.konten})
                 await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "penjaga_angka",
-                                                  hasil=json.dumps(pelanggaran, ensure_ascii=False)[:500]))
+                                                  hasil=json.dumps(pelanggaran + salah_tanggal, ensure_ascii=False)[:500]))
+                alasan = []
+                if pelanggaran:
+                    alasan.append("angka yang tidak berasal dari hasil tool atau ucapan pengguna: " + ", ".join(pelanggaran)
+                                  + ". Jangan menghitung sendiri; ambil angka dari tool atau hilangkan angka itu")
+                if salah_tanggal:
+                    alasan.append("tanggal relatif yang tidak cocok dengan kalender: " + "; ".join(salah_tanggal)
+                                  + ". Pakai tool hitung_tanggal, atau tulis tanggalnya saja tanpa ungkapan relatif")
                 sesi.messages.append({"role": "user", "content": (
-                    "[penjaga] Jawabanmu belum ditampilkan karena memuat angka yang tidak berasal dari hasil tool "
-                    f"atau ucapan pengguna: {', '.join(pelanggaran)}. Jangan menghitung sendiri. Ambil angka dari tool "
-                    "atau hilangkan angka itu, lalu tulis ulang jawabanmu untuk pengguna.")})
+                    "[penjaga] Jawabanmu belum ditampilkan karena memuat " + ". Juga ".join(alasan)
+                    + ". Tulis ulang jawabanmu untuk pengguna.")})
                 continue
 
             sesi.messages.append({"role": "assistant", "content": hasil.konten})
             if teks:
                 ev = {"jenis": "teks", "teks": teks}
+                if salah_tanggal:
+                    ev["tanggal_tak_cocok"] = salah_tanggal
                 if pelanggaran:
                     ev["angka_tak_terverifikasi"] = pelanggaran
                     await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "penjaga_angka",
@@ -273,6 +293,17 @@ class Putaran:
         return peristiwa
 
     async def _jalankan(self, sesi, c, peta, pelaksana, peristiwa, write_dipakai):
+        if c.nama == TOOL_HITUNG_TANGGAL["name"]:
+            try:
+                dari = date.fromisoformat(c.masukan["dari"]) if c.masukan.get("dari") else sesi.hari_ini
+                sampai = date.fromisoformat(c.masukan["sampai"])
+            except (KeyError, ValueError, TypeError):
+                return "Masukan tidak sah: tanggal harus YYYY-MM-DD.", True, write_dipakai
+            if dari is None:
+                return "Tanggal hari ini tidak diketahui; isi `dari`.", True, write_dipakai
+            hasil = penjaga_tanggal.hitung(dari, sampai)
+            sesi.sumber_angka.append(hasil)
+            return json.dumps(hasil), False, write_dipakai
         if c.nama == TOOL_TUTUP_KARTU["name"]:
             k = sesi.kartu_menunggu()
             if k is None:

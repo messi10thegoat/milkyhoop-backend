@@ -343,3 +343,40 @@ async def test_tutup_kartu_tinjau_dari_model_nol_tulis_dan_setuju_ditolak():
     await p.setujui(s, kid, be, izin_semua)
     assert not [c for c in be.tulis() if c["jalur"] == "/api/x"]
     assert any(t["name"] == "tutup_kartu_tinjau" for t in m.permintaan[0]["tools"])
+
+
+# ---------------------------------------------------------------- penjaga tanggal
+from datetime import date as _date  # noqa: E402
+
+from app.milkybook.inti import penjaga_tanggal  # noqa: E402
+
+HARI = _date(2026, 10, 24)
+
+
+@pytest.mark.parametrize("teks,lolos", [
+    ("Berlaku sampai 26 Oktober 2026, besok.", False),          # temuan K9 Haiku
+    ("Berlaku sampai 26 Oktober 2026, tinggal 2 hari lagi.", True),
+    ("Berlaku sampai 26 Okt 2026, 2 hari lagi.", True),
+    ("Berlaku sampai 2026-10-25, besok.", True),
+    ("Tanggal berlaku 19 Okt 2026 sudah lewat 5 hari.", True),
+    ("Tanggal berlaku 19 Okt 2026 sudah lewat 3 hari.", False),
+    ("Kirim lusa, 26 Okt.", True),
+    ("Besok saya ingatkan lagi.", True),                         # tanpa tanggal di kalimat: tak bisa diperiksa
+    ("Jatuh tempo 24-10-2026, hari ini juga.", True),
+])
+def test_penjaga_tanggal_kasus(teks, lolos):
+    assert (penjaga_tanggal.periksa(teks, HARI) == []) is lolos
+
+
+async def test_penjaga_tanggal_memaksa_koreksi_dan_hitung_tanggal_server():
+    p, m = putaran([teks("Penawaran berlaku sampai 26 Oktober 2026, besok."),
+                    panggil(("hitung_tanggal", {"sampai": "2026-10-26"})),
+                    teks("Penawaran berlaku sampai 26 Oktober 2026, 2 hari lagi.")])
+    be, s = be_standar(), sesi()
+    s.hari_ini = HARI
+    ev = await p.giliran(s, "kapan habis?", be, izin_semua)
+    assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Penawaran berlaku sampai 26 Oktober 2026, 2 hari lagi."]
+    assert "tanggal relatif" in m.permintaan[1]["messages"][-1]["content"]
+    hasil = m.permintaan[2]["messages"][-1]["content"][0]["content"]
+    assert '"selisih_hari": 2' in hasil and '"hari_sampai": "Senin"' in hasil
+    assert any(t["name"] == "hitung_tanggal" for t in m.permintaan[0]["tools"])
