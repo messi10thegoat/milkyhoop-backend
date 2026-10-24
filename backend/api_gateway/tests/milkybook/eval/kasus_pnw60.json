@@ -636,10 +636,9 @@
    ],
    "harapan": {
     "sumber": "laporan11 PNW-014",
-    "kartu_maks": 0,
     "tulis_maks": 0,
-    "teks_min_panjang": 60,
-    "teks_bertanya": true
+    "nav_atau_tanya": "buka_tolak_penawaran",
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -1093,13 +1092,20 @@
     "tool_wajib": [
      "daftar_faktur"
     ],
-    "query_wajib": {
+    "query_salah_satu": {
      "jalur": "/api/sales-invoices",
-     "isi": {
-      "customer_id": "C-MEL",
-      "status": "unpaid"
-     }
-    }
+     "pilihan": [
+      {
+       "customer_id": "C-MEL",
+       "status": "unpaid"
+      },
+      {
+       "customer_id": "C-MEL",
+       "aksi": "belum_lunas"
+      }
+     ]
+    },
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -1142,13 +1148,20 @@
     "tool_wajib": [
      "daftar_penerimaan"
     ],
-    "query_wajib": {
+    "query_salah_satu": {
      "jalur": "/api/receive-payments",
-     "isi": {
-      "date_from": "2026-10-01",
-      "date_to": "2026-10-31"
-     }
-    }
+     "pilihan": [
+      {
+       "date_from": "2026-10-01",
+       "date_to": "2026-10-31"
+      },
+      {
+       "date_from": "2026-10-01",
+       "date_to": "2026-10-24"
+      }
+     ]
+    },
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -1223,13 +1236,20 @@
     "tool_wajib": [
      "daftar_pengiriman"
     ],
-    "query_wajib": {
+    "query_salah_satu": {
      "jalur": "/api/deliveries",
-     "isi": {
-      "date_from": "2026-10-01",
-      "date_to": "2026-10-31"
-     }
-    }
+     "pilihan": [
+      {
+       "date_from": "2026-10-01",
+       "date_to": "2026-10-31"
+      },
+      {
+       "date_from": "2026-10-01",
+       "date_to": "2026-10-24"
+      }
+     ]
+    },
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -1952,10 +1972,20 @@
    ],
    "harapan": {
     "sumber": "laporan11 PNW-059",
-    "kartu_maks": 0,
+    "kartu_tool": {
+     "tool": "buat_pelanggan",
+     "wajib": {
+      "name": "*baru makmur*"
+     },
+     "terlarang": [
+      "ar_opening_balance"
+     ]
+    },
+    "teks_wajib_salah_satu": [
+     "saldo"
+    ],
     "tulis_maks": 0,
-    "teks_min_panjang": 60,
-    "teks_bertanya": true
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -1975,6 +2005,11 @@
    "langkah": [
     {
      "user": "tambahin barang baru tumbler 500ml stok awal 100, trus quote ke toko melati 20 pcs @45rb"
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Barang tanpa stok, tidak dikirim. Lanjutkan sesuai yang saya sebut.",
+     "setujui_kecuali": "buat_penawaran"
     }
    ],
    "harapan": {
@@ -2001,7 +2036,10 @@
       "opening_stock_rate"
      ]
     },
-    "tulis_maks": 0
+    "teks_wajib_salah_satu": [
+     "stok awal"
+    ],
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   }
  ]

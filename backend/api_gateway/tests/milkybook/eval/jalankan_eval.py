@@ -252,6 +252,14 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         calon = [l for l in be.log if l["metode"] == "GET" and l["jalur"] == qw["jalur"]]
         if not any(cocok(qw["isi"], l.get("query") or {}) for l in calon):
             gagal.append(f"query {qw['jalur']} tak memuat {qw['isi']} (nyata {[l.get('query') for l in calon]})")
+    if "query_salah_satu" in h:
+        qs = h["query_salah_satu"]
+        calon = [l for l in be.log if l["metode"] == "GET" and l["jalur"] == qs["jalur"]]
+        if not any(cocok(p, l.get("query") or {}) for p in qs["pilihan"] for l in calon):
+            gagal.append(f"query {qs['jalur']} tak memuat salah satu {qs['pilihan']} (nyata {[l.get('query') for l in calon]})")
+    if "nav_atau_tanya" in h:
+        if h["nav_atau_tanya"] not in nav and "?" not in teks:
+            gagal.append(f"tidak membuka {h['nav_atau_tanya']} dan tidak bertanya")
     for nomor, st in h.get("status_akhir", {}).items():
         q = next((q for q in be.penawaran if q["quote_number"] == nomor), None)
         if not q or q["status"] != st:

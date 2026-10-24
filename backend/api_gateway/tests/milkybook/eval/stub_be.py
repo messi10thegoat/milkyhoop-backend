@@ -92,8 +92,11 @@ class StubBE:
         for q in k.get("penawaran", []):
             nama = q.get("pelanggan") or "Pelanggan"
             cid = next((c["id"] for c in pel if c["name"] == nama), f"C-{q['id']}")
-            baris = [{"id": b.get("id"), "description": b.get("description", "Barang"), "quantity": b.get("quantity", 1),
-                      "unit_price": b.get("unit_price", 0), "tax_rate": b.get("tax_rate", 0)} for b in q.get("baris", [])]
+            # Konteks laporan11 sering tanpa baris -> total Rp0 -> model (benar) menolak memproses dokumen kosong.
+            # Artefak stub, bukan perilaku yang diuji: baris bawaan 10 x 85.000 bila konteks tak menyebut.
+            sumber_baris = q.get("baris") or [{"id": "L1", "description": "Kaos Hitam 24s", "quantity": 10, "unit_price": 85000}]
+            baris = [{"id": b.get("id"), "description": b.get("description", "Barang"), "quantity": b.get("quantity", 10),
+                      "unit_price": b.get("unit_price", 85000), "tax_rate": b.get("tax_rate", 0)} for b in sumber_baris]
             h = cls._hitung({"items": baris})
             qs.append({"id": q["id"], "quote_number": q["nomor"], "status": q["status"], "quote_date": q.get("quote_date", "2026-10-15"),
                        "expiry_date": q.get("expiry_date"), "customer_id": cid, "customer_name": nama, "notes": q.get("notes"),
