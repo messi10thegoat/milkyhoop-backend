@@ -86,9 +86,11 @@ def test_paket_menolak_write_tanpa_pratinjau_dan_skema_tak_strict():
         Paket("p", [Tool("r", Kelas.READ, "r", OBJ({"n": {"type": "number", "minimum": 0}}), "GET", "/api/r")])
 
 
-def test_definisi_api_strict():
+def test_definisi_api_strict_hanya_write_preview():
     d = T_BUAT.untuk_api()
     assert d["strict"] is True and d["input_schema"]["additionalProperties"] is False
+    assert T_HITUNG.untuk_api()["strict"] is True
+    assert "strict" not in T_CARI.untuk_api()
 
 
 # ---------------------------------------------------------------- tulis hanya lewat Setuju

@@ -211,3 +211,9 @@ def test_kartu_pengetahuan_dimuat_dan_menyebut_kekhasan():
     p = pw.paket()
     for kata in ("bisa_dikirim", "kode_order", "STATUS_BOLEH_UBAH", "Jangan hitung sendiri"):
         assert kata in p.pengetahuan
+
+
+async def test_jumlah_tool_strict_dalam_batas_api():
+    r = Registri([pw.paket()])
+    efektif = await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1, pw.AS_G14))
+    assert sum(1 for t in efektif if t.untuk_api().get("strict")) <= 20
