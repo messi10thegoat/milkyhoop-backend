@@ -621,7 +621,8 @@ def test_sql_audit_jumlah_kolom_sama_dengan_placeholder_dan_migrasi():
     from app.milkybook.inti import audit as A
     kolom = A._SQL.split("(", 1)[1].split(")", 1)[0].split(",")
     assert len(kolom) == A._SQL.count("$")
-    mig = open(_o.path.join(_o.path.dirname(A.__file__), "..", "migrasi", "asisten_aksi.sql")).read()
+    mig = open(_o.path.join(_o.path.dirname(A.__file__), "..", "..", "..", "..", "migrations", "V465__asisten_aksi.sql")).read()
+    assert "CREATE TABLE IF NOT EXISTS asisten_aksi" in mig
     for k in kolom:
         assert k.strip() in mig, k
 

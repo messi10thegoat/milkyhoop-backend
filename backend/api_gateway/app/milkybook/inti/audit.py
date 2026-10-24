@@ -1,7 +1,7 @@
 """Audit `asisten_aksi`: satu baris per tool call dan per keputusan kartu. Append-only.
 
 Tanpa prompt mentah dan tanpa payload mentah: hanya hash + id. PII hanya sebagai id.
-Skema tabel: app/milkybook/migrasi/asisten_aksi.sql (DRAF tanpa nomor V; nomor dari MASTER; BELUM diterapkan).
+Skema tabel: backend/migrations/V465__asisten_aksi.sql (+ _ROLLBACK). BELUM diterapkan (paket aktivasi: izin pemilik + slot).
 """
 from __future__ import annotations
 
