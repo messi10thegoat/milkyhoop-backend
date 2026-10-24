@@ -88,7 +88,7 @@ async def main():
         return qid
 
     async def faktur_dari(qid):
-        return [str(x) for x in await c.fetch("SELECT id FROM sales_invoices WHERE tenant_id = $1 AND quote_id = $2", T, UUID(qid))]
+        return [str(x["id"]) for x in await c.fetch("SELECT id FROM sales_invoices WHERE tenant_id = $1 AND quote_id = $2", T, UUID(qid))]
 
     try:
         # (1) to-invoice x to-invoice BERSAMAAN
@@ -106,7 +106,7 @@ async def main():
         h2 = await asyncio.gather(galat(RQ.convert_to_sales_order(req(), q2, None)), galat(RQ.convert_to_invoice(req(), q2, ConvertToInvoiceRequest())))
         fk2 = await faktur_dari(q2)
         dibuat["faktur"].update(fk2)
-        so2 = [str(x) for x in await c.fetch("SELECT id FROM sales_orders WHERE tenant_id = $1 AND quote_id = $2", T, UUID(q2))]
+        so2 = [str(x["id"]) for x in await c.fetch("SELECT id FROM sales_orders WHERE tenant_id = $1 AND quote_id = $2", T, UUID(q2))]
         dibuat["so"].update(so2)
         cek(f"(2) to-order x to-invoice BERSAMAAN = TEPAT 1 konversi (faktur {len(fk2)} + SO {len(so2)}); yang lain 400",
             len(fk2) + len(so2) == 1 and sum(e is not None and e.status_code == 400 for e, r in h2) == 1, ([(e and e.detail) for e, r in h2], fk2, so2))
@@ -120,6 +120,9 @@ async def main():
         cek("(3) kunci sama 2x = X-Idempotent-Replay + 1 faktur", r1 is not None and r2 is not None and hh.headers.get("X-Idempotent-Replay") == "true"
             and len(fk3) == 1, (e1 and e1.detail, e2 and e2.detail, fk3))
     finally:
+        qs = [r["id"] for r in await c.fetch("SELECT id FROM quotes WHERE tenant_id = $1 AND notes = 'TES E2E AS-G15'", T)]
+        dibuat["faktur"].update(str(r["id"]) for r in await c.fetch("SELECT id FROM sales_invoices WHERE tenant_id = $1 AND quote_id = ANY($2::uuid[])", T, qs))
+        dibuat["so"].update(str(r["id"]) for r in await c.fetch("SELECT id FROM sales_orders WHERE tenant_id = $1 AND quote_id = ANY($2::uuid[])", T, qs))
         sisa = []
         for fid in sorted(dibuat["faktur"]):
             e, _ = await galat(RSI.delete_invoice(req(), UUID(fid)))
