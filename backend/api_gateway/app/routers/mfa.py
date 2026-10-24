@@ -76,7 +76,8 @@ class MFAVerifyResponse(BaseModel):
 class MFAValidateRequest(BaseModel):
     """Request to validate TOTP during login"""
 
-    user_id: str
+    # SEKURITI 24 Okt 2026: identitas dari TOKEN. Medan lama dipertahankan agar klien lama tak 422; bila dikirim WAJIB sama.
+    user_id: Optional[str] = None
     code: str = Field(..., min_length=6, max_length=6)
 
 
@@ -323,8 +324,16 @@ async def validate_mfa_code(body: MFAValidateRequest, request: Request):
 
     Called after successful password authentication when MFA is enabled.
     """
+    # SEKURITI 24 Okt 2026: dulu user_id dari BADAN -> siapa pun yang login bisa menebak kode/membakar kode cadangan/menulis log
+    # MFA atas nama pengguna lain. Penjaga di LUAR try (except Exception di bawah akan menelan 403 jadi 500).
+    user = getattr(request.state, "user", None)
+    if not user or not user.get("user_id"):
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
+    user_id = user["user_id"]
+    if body.user_id and body.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Tidak boleh memvalidasi MFA pengguna lain.")
     try:
-        security = await prisma.usersecurity.find_unique(where={"userId": body.user_id})
+        security = await prisma.usersecurity.find_unique(where={"userId": user_id})
 
         if not security or not security.twoFactorEnabled:
             return MFAVerifyResponse(
@@ -335,10 +344,10 @@ async def validate_mfa_code(body: MFAValidateRequest, request: Request):
         if verify_totp_code(security.totpSecret, body.code):
             # Update last verification
             await prisma.usersecurity.update(
-                where={"userId": body.user_id},
+                where={"userId": user_id},
                 data={"lastMfaVerification": datetime.utcnow()},
             )
-            await log_mfa_action(body.user_id, "validate", True, request)
+            await log_mfa_action(user_id, "validate", True, request)
             return MFAVerifyResponse(success=True, message="MFA validated")
 
         # Try backup code
@@ -351,19 +360,19 @@ async def validate_mfa_code(body: MFAValidateRequest, request: Request):
                 # Mark backup code as used
                 backup_codes[idx] = None
                 await prisma.usersecurity.update(
-                    where={"userId": body.user_id},
+                    where={"userId": user_id},
                     data={
                         "mfaBackupCodes": backup_codes,
                         "lastMfaVerification": datetime.utcnow(),
                     },
                 )
-                await log_mfa_action(body.user_id, "backup_used", True, request)
-                logger.warning(f"Backup code used for user: {body.user_id[:8]}...")
+                await log_mfa_action(user_id, "backup_used", True, request)
+                logger.warning(f"Backup code used for user: {user_id[:8]}...")
                 return MFAVerifyResponse(
                     success=True, message="MFA validated (backup code used)"
                 )
 
-        await log_mfa_action(body.user_id, "validate", False, request)
+        await log_mfa_action(user_id, "validate", False, request)
         return MFAVerifyResponse(success=False, message="Invalid MFA code")
 
     except Exception as e:

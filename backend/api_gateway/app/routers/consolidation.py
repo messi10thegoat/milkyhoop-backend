@@ -14,6 +14,7 @@ import logging
 import asyncpg
 import json
 
+from ..services.role_resolution import has_active_membership
 from ..schemas.consolidation import (
     CreateConsolidationGroupRequest,
     UpdateConsolidationGroupRequest,
@@ -61,6 +62,17 @@ def get_user_context(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
+
+
+async def _pastikan_anggota(conn, ctx: dict, entity_tenant_id: str) -> None:
+    """SEKURITI 24 Okt 2026: entitas konsolidasi = usaha pemanggil sendiri ATAU usaha tempat pemanggil anggota AKTIF.
+    Dulu entity_tenant_id dari badan menunjuk tenant mana pun -> auto-map / process_run membaca CoA + jurnal tenant itu
+    (Law 24; kolom hantu code/entry_date kini menahannya -- laten, hilang begitu kolom dibetulkan). Dicek ulang saat baca
+    karena keanggotaan bisa dicabut sesudah entitas ditambahkan."""
+    if entity_tenant_id == ctx["tenant_id"]:
+        return
+    if ctx["user_id"] is None or not await has_active_membership(conn, str(ctx["user_id"]), entity_tenant_id):
+        raise HTTPException(status_code=403, detail="Anda tidak punya akses ke data usaha ini.")
 
 
 # =============================================================================
@@ -418,6 +430,8 @@ async def add_entity(
                     status_code=404, detail="Consolidation group not found"
                 )
 
+            await _pastikan_anggota(conn, ctx, body.entity_tenant_id)
+
             # Check duplicate entity
             exists = await conn.fetchval(
                 "SELECT 1 FROM consolidation_entities WHERE group_id = $1 AND entity_tenant_id = $2",
@@ -686,6 +700,7 @@ async def auto_map_accounts(request: Request, group_id: UUID, body: AutoMapReque
                 "SELECT entity_tenant_id FROM consolidation_entities WHERE id = $1",
                 body.source_entity_id,
             )
+            await _pastikan_anggota(conn, ctx, entity["entity_tenant_id"])
 
             # Get accounts from entity's tenant
             accounts = await conn.fetch(
@@ -1066,6 +1081,13 @@ async def process_run(
 
             if run["status"] == "completed":
                 raise HTTPException(status_code=400, detail="Run already completed")
+
+            # Semua entitas dicek SEBELUM status berubah / data dibaca (tolak = run tak tersentuh)
+            for _e in await conn.fetch(
+                "SELECT entity_tenant_id FROM consolidation_entities WHERE group_id = $1 AND is_active = true",
+                run["group_id"],
+            ):
+                await _pastikan_anggota(conn, ctx, _e["entity_tenant_id"])
 
             # Update status to processing
             await conn.execute(

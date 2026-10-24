@@ -1028,7 +1028,6 @@ class RecentSalesResponse(BaseModel):
 async def get_recent_sales_products(
     request: Request,
     limit: int = Query(5, ge=1, le=20),
-    tenant_id: str = Query(None, description="Optional tenant_id override"),
 ):
     """
     Get recently sold products for quick-add in POS.
@@ -1039,7 +1038,9 @@ async def get_recent_sales_products(
         if not hasattr(request.state, "user") or not request.state.user:
             raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
 
-        effective_tenant = tenant_id or request.state.user.get("tenant_id")
+        # SEKURITI 24 Okt 2026: tenant HANYA dari token. Dulu ?tenant_id= menimpa token -> produk & harga tenant lain terbaca
+        # dengan izin item R saja (Law 24: isolasi = WHERE tenant_id). Parameter kueri tak dikenal diabaikan FastAPI (tanpa 422).
+        effective_tenant = request.state.user.get("tenant_id")
         if not effective_tenant:
             raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 

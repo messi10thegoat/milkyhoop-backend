@@ -197,6 +197,11 @@ async def create_transaction(
     """Create intercompany transaction and generate journal entries."""
     try:
         ctx = get_user_context(request)
+        # SEKURITI 24 Okt 2026 (Law 24): pengirim = usaha pemanggil sendiri (jurnal sisi "from" diposting di buku ctx.tenant).
+        # Dulu from_entity_tenant_id bebas -> transaksi "atas nama" usaha lain muncul di daftar/saldo IC usaha itu. Pihak
+        # tujuan tetap bebas (model IC: lawan confirm/reject sendiri), tapi WAJIB usaha yang ada & tak disuspend.
+        if body.from_entity_tenant_id != ctx["tenant_id"]:
+            raise HTTPException(status_code=403, detail="Pengirim transaksi antar-perusahaan harus usaha Anda sendiri.")
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -207,6 +212,11 @@ async def create_transaction(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"IC_CREATE:{ctx['tenant_id']}",
                 )
+
+                if not await conn.fetchval(
+                    'SELECT 1 FROM "Tenant" WHERE id = $1 AND suspended_at IS NULL', body.to_entity_tenant_id
+                ):
+                    raise HTTPException(status_code=404, detail="Usaha tujuan tidak ditemukan.")
 
                 # Law 5: Period check before journal creation
                 await _check_period_is_open(
