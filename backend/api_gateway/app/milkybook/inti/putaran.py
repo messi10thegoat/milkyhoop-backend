@@ -34,6 +34,21 @@ TOOL_TUTUP_KARTU = {
     "description": "Tutup kartu Tinjau yang sedang menunggu karena pengguna tidak jadi / membatalkan usulan. Tidak menulis apa pun ke buku.",
     "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
 }
+# Tool inti untuk giliran BACA (model murah): satu-satunya jalan ke tulis = minta dialihkan ke model penulis.
+TOOL_PERLU_PENULIS = {
+    "name": "perlu_penulis",
+    "description": "Panggil bila permintaan pengguna perlu MENULIS/MENGUBAH data (buat, ubah, batal, jadikan pesanan, "
+                   "buat pelanggan/barang) atau ragu. Giliran dilanjutkan oleh asisten penulis. Jangan menjawab sendiri.",
+    "input_schema": {"type": "object", "properties": {"alasan": {"type": "string"}}, "required": ["alasan"],
+                     "additionalProperties": False},
+}
+ATURAN_MODE_BACA = """
+
+# Mode baca
+Di giliran ini kamu hanya bisa MEMBACA dan menjelaskan. Kamu tidak punya tool tulis. Bila pengguna meminta membuat,
+mengubah, membatalkan, atau mencatat apa pun, atau kamu ragu, panggil tool perlu_penulis. Jangan menjanjikan tulis.
+"""
+
 TOOL_HITUNG_TANGGAL = {
     "name": "hitung_tanggal",
     "description": "Kalender dari server. Isi `sampai` untuk selisih hari antara dua tanggal, ATAU `tambah_hari` untuk "
@@ -78,6 +93,7 @@ class Sesi:
     biaya_usd: float = 0.0
     konteks: str = ""  # volatil (tanggal, nama usaha): dikirim sebagai pesan [konteks] pertama
     hari_ini: Optional[date] = None  # tanggal bisnis tenant; dasar penjaga tanggal + hitung_tanggal
+    mode_tulis: bool = False  # hibrida: True = giliran dikerjakan model penulis (ada alur tulis / kartu menunggu)
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -216,6 +232,7 @@ class Putaran:
         gap_mendarat: Sequence[str] = (),
         maks_langkah: int = 10,
         effort: str = "medium",
+        pemanggil_baca: Optional[PemanggilModel] = None,
     ):
         self.registri = registri
         self.pemanggil = pemanggil
@@ -226,7 +243,10 @@ class Putaran:
         self.effort = effort
         teks = ATURAN_SISTEM + "\n\n# Pengetahuan modul\n\n" + registri.pengetahuan()
         self.system = [{"type": "text", "text": teks}]
+        self.system_baca = [{"type": "text", "text": teks + ATURAN_MODE_BACA}]
         self.prompt_hash = hashlib.sha256(teks.encode()).hexdigest()
+        # Hibrida (24 Okt, syarat MASTER): model murah hanya untuk giliran BACA; tool WRITE tak pernah dikirim ke sana.
+        self.pemanggil_baca = pemanggil_baca
 
     # ------------------------------------------------------------------ giliran pengguna
     async def giliran(self, sesi: Sesi, teks: str, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
@@ -234,6 +254,8 @@ class Putaran:
             teks = f"[konteks] {sesi.konteks}\n\n{teks}"
         sesi.messages.append({"role": "user", "content": teks})
         sesi.sumber_angka.append(teks)
+        if sesi.kartu_menunggu() is not None:
+            sesi.mode_tulis = True
         return await self._putar(sesi, pelaksana, izin_fn)
 
     async def setujui(self, sesi: Sesi, kartu_id: str, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
@@ -277,6 +299,7 @@ class Putaran:
         ))
         peristiwa = [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value, "hasil": k.hasil}]
         sesi.messages.append({"role": "user", "content": pesan})
+        sesi.mode_tulis = True  # lanjutan sesudah Setuju = alur tulis
         return peristiwa + await self._putar(sesi, pelaksana, izin_fn)
 
     async def tolak(self, sesi: Sesi, kartu_id: str, catat_pesan: bool = True) -> List[dict]:
@@ -292,14 +315,24 @@ class Putaran:
 
     # ------------------------------------------------------------------ inti putaran
     async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
-        tools = [t for t in await self.registri.tools_untuk(izin_fn, self.gap_mendarat) if t.tampil_ke_model]
-        peta = {t.nama: t for t in tools}
-        api_tools = [t.untuk_api() for t in tools] + [TOOL_TUTUP_KARTU, TOOL_HITUNG_TANGGAL]
+        tools_semua = [t for t in await self.registri.tools_untuk(izin_fn, self.gap_mendarat) if t.tampil_ke_model]
         peristiwa: List[dict] = []
         sudah_dikoreksi = False
+        menulis_di_giliran = False
+
+        def susun(baca: bool):
+            tl = [t for t in tools_semua if not baca or t.kelas in (Kelas.READ, Kelas.PREVIEW, Kelas.NAV)]
+            api = [t.untuk_api() for t in tl] + [TOOL_HITUNG_TANGGAL]
+            api += [TOOL_PERLU_PENULIS] if baca else [TOOL_TUTUP_KARTU]
+            return {t.nama: t for t in tl}, api
+
+        baca = self.pemanggil_baca is not None and not sesi.mode_tulis
+        peta, api_tools = susun(baca)
 
         for _ in range(self.maks_langkah):
-            hasil = await self.pemanggil(system=self.system, messages=sesi.messages, tools=api_tools, effort=self.effort)
+            pemanggil = self.pemanggil_baca if baca else self.pemanggil
+            hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
+                                    tools=api_tools, effort=self.effort)
             self._catat_usage(sesi, hasil)
             await self.audit.tulis(BarisAudit(
                 sesi.tenant_id, sesi.user_id, sesi.sesi_id, "model", model=hasil.model or self.model_nama,
@@ -355,15 +388,34 @@ class Putaran:
 
             hasil_tool = []
             write_dipakai = False
+            alihkan = False
             for c in calls:
+                if baca and c.nama == TOOL_PERLU_PENULIS["name"]:
+                    alihkan = True
+                    hasil_tool.append({"type": "tool_result", "tool_use_id": c.id,
+                                       "content": "Dialihkan ke asisten penulis untuk giliran ini."})
+                    continue
+                if baca and c.nama == TOOL_TUTUP_KARTU["name"]:
+                    hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "is_error": True,
+                                       "content": "Tool tidak tersedia di mode baca."})
+                    continue
                 isi, salah, write_dipakai = await self._jalankan(sesi, c, peta, pelaksana, peristiwa, write_dipakai)
+                menulis_di_giliran = menulis_di_giliran or write_dipakai
                 blok = {"type": "tool_result", "tool_use_id": c.id, "content": isi}
                 if salah:
                     blok["is_error"] = True
                 hasil_tool.append(blok)
             sesi.messages.append({"role": "user", "content": hasil_tool})
+            if alihkan:
+                baca = False
+                sesi.mode_tulis = True
+                peta, api_tools = susun(False)
+                peristiwa.append({"jenis": "tool", "nama": "perlu_penulis", "kelas": "INTI"})
         else:
             peristiwa.append({"jenis": "galat", "pesan": "Langkah terlalu banyak; berhenti."})
+        # Keluar dari alur tulis bila giliran penulis selesai tanpa usulan tulis dan tanpa kartu menunggu.
+        if sesi.mode_tulis and not menulis_di_giliran and sesi.kartu_menunggu() is None:
+            sesi.mode_tulis = False
 
         peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)})
         return peristiwa

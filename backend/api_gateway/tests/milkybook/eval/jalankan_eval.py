@@ -111,14 +111,14 @@ def cocok(harap, nyata) -> bool:
     return harap == nyata
 
 
-async def jalankan_kasus(kasus, pemanggil, effort):
+async def jalankan_kasus(kasus, pemanggil, effort, pemanggil_baca=None):
     be = StubBE.dari_konteks(kasus["konteks_stub"]) if "konteks_stub" in kasus else StubBE()
     awal = {"pelanggan": {c["id"] for c in be.pelanggan}, "barang": {b["id"] for b in be.barang},
             "penawaran": {q["id"] for q in be.penawaran}}
     gap = tuple(kasus.get("gap", [pw.AS_G1, pw.AS_G14]))
     izin_owner_k = IZIN[kasus.get("izin", "owner")]
     putaran = Putaran(Registri(semua_paket()), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
-                      gap_mendarat=gap, effort=effort)
+                      gap_mendarat=gap, effort=effort, pemanggil_baca=pemanggil_baca)
     from datetime import date
     sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24 (Sabtu). Usaha: Kaos Biru Konveksi (konveksi kaos).",
                 hari_ini=date.fromisoformat(kasus.get("hari_ini", StubBE.HARI_INI)))
@@ -281,6 +281,7 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         "tools": tools, "kartu": len(kartu), "tulis_sah": [(l["metode"], l["jalur"]) for l in tulis_sah],
         "koreksi_penjaga": sum(1 for m in sesi.messages if m["role"] == "user" and isinstance(m["content"], str) and m["content"].startswith("[penjaga]")),
         "usage": sesi.usage, "biaya_usd": round(sesi.biaya_usd, 6), "transkrip": transkrip,
+        "eskalasi": sum(1 for e in ev if e["jenis"] == "tool" and e["nama"] == "perlu_penulis"),
     }
 
 
@@ -295,21 +296,29 @@ async def utama(a):
     if buku.total >= buku.batas:
         sys.exit(f"batas SERI US${buku.batas} sudah tercapai (Σ {buku.total})")
     pemanggil = PemanggilTerbatas(PemanggilAnthropic(model=a.model, api_key=kunci), a.batas_usd, buku)
+    pemanggil_baca = (PemanggilTerbatas(PemanggilAnthropic(model=a.model_baca, api_key=kunci), a.batas_usd, buku)
+                      if a.model_baca else None)
     del kunci
     hasil = []
     for k in kasus:
-        r = await jalankan_kasus(k, pemanggil, a.effort)
+        r = await jalankan_kasus(k, pemanggil, a.effort, pemanggil_baca)
         hasil.append(r)
         print(f"{r['id']:<26} {'LULUS' if r['lulus'] else 'GAGAL'}  mutlak={'ok' if r['mutlak_lulus'] else 'MERAH'}  "
-              f"kartu={r['kartu']} tulis={len(r['tulis_sah'])} biaya=${r['biaya_usd']:.4f}  Σ=${pemanggil.total:.4f}")
+              f"kartu={r['kartu']} tulis={len(r['tulis_sah'])} esk={r['eskalasi']} biaya=${r['biaya_usd']:.4f}  Σseri=${buku.total:.4f}")
         for g in r["gagal"]:
             print("    -", g)
-        if pemanggil.total >= a.batas_usd or buku.total >= buku.batas:
+        if pemanggil.total + (pemanggil_baca.total if pemanggil_baca else 0) >= a.batas_usd or buku.total >= buku.batas:
             print("BATAS BIAYA tercapai; kasus sisanya dilewati.")
             break
+    total_semua = pemanggil.total + (pemanggil_baca.total if pemanggil_baca else 0.0)
     ringkas = {"model": a.model, "effort": a.effort, "kasus": len(hasil), "lulus": sum(r["lulus"] for r in hasil),
-               "mutlak_lulus": sum(r["mutlak_lulus"] for r in hasil), "biaya_total_usd": round(pemanggil.total, 6),
+               "mutlak_lulus": sum(r["mutlak_lulus"] for r in hasil), "biaya_total_usd": round(total_semua, 6),
                "panggilan_model": len(pemanggil.panggilan), "seri_total_usd": buku.total,
+               "model_baca": a.model_baca or None,
+               "biaya_tulis_usd": round(pemanggil.total, 6),
+               "biaya_baca_usd": round(pemanggil_baca.total, 6) if pemanggil_baca else 0.0,
+               "panggilan_baca": len(pemanggil_baca.panggilan) if pemanggil_baca else 0,
+               "eskalasi": sum(r["eskalasi"] for r in hasil),
                "token": {k: sum(p["usage"].get(k, 0) or 0 for p in pemanggil.panggilan if isinstance(p["usage"].get(k, 0), int))
                          for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")}}
     print(json.dumps(ringkas, ensure_ascii=False))
@@ -322,6 +331,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--effort", default="medium")
+    ap.add_argument("--model-baca", default="", help="hibrida: model murah untuk giliran baca (tanpa tool tulis)")
     ap.add_argument("--batas-usd", type=float, default=0.9)
     ap.add_argument("--kasus", default="")
     ap.add_argument("--buku-biaya", default="", help="berkas JSON Σ biaya seri (di luar repo)")
