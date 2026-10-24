@@ -273,7 +273,7 @@ async def test_daftar_filter_aksi_dan_kolom_aksi_dari_fakta_yang_sama(monkeypatc
              a2: {"aksi": ["perlu_dikirim"], "total": D(1)}, a3: {"aksi": ["perlu_ditagih"], "total": D(1)}}
     panggil = []
 
-    async def fakta(c, t, hari, so_ids=None):
+    async def fakta(c, t, hari, so_ids=None, laporan=False):  # BELUM-DIFAKTUR 24 Okt: palsu menerima kwarg laporan
         panggil.append((t, hari, so_ids))
         return semua if so_ids is None else {k: v for k, v in semua.items() if k in so_ids}
 
@@ -367,6 +367,11 @@ async def test_summary_pill_dari_ringkasan_fakta(monkeypatch):
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", nol)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_menunggu_kirim", nol)
     monkeypatch.setattr(SO.so_kirim, "jumlah_surat_jalan", nol_int)
+
+    async def ring0(conn, t, ids):  # BELUM-DIFAKTUR 24 Okt: summary kini fakta(laporan=True) -> ringkasan_pesanan; palsu nol (bukan objek tes ini)
+        return {i: {"invoiced": D(0), "dp_unapplied": D(0)} for i in ids}
+    from app.services import proforma_terbayar as _PT
+    monkeypatch.setattr(_PT, "ringkasan_pesanan", ring0)
     d = (await SO.get_sales_order_summary(None)).data
     d = d if isinstance(d, dict) else d.model_dump()
     assert d["telat_kirim_count"] == 1 and d["telat_kirim_value"] == 1000.0

@@ -114,7 +114,7 @@ async def test_ringkasan_memakai_baris_bukan_status(monkeypatch):
     monkeypatch.setattr(SO.so_kirim, "ringkasan_belum_dikirim", kirim)
     monkeypatch.setattr(SO.so_kirim, "ringkasan_menunggu_kirim", menunggu)
     monkeypatch.setattr(SO.so_kirim, "jumlah_surat_jalan", sj)
-    async def _pill(conn, t, hari, so_ids=None):  # 14 Okt 2026 AKSI-SO: pill aksi (services/so_aksi) -- bukan objek tes ini
+    async def _pill(conn, t, hari, so_ids=None, laporan=False):  # 14 Okt 2026 AKSI-SO (+ kwarg laporan BELUM-DIFAKTUR 24 Okt): pill aksi (services/so_aksi) -- bukan objek tes ini
         return {}
     monkeypatch.setattr(SO.so_aksi, "fakta", _pill)
     d = (await SO.get_sales_order_summary(None)).data
