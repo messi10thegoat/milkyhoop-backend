@@ -92,7 +92,43 @@ def ubah(r):
             "langkah": langkah, "harapan": h}
 
 
+# Koreksi harapan sesudah putaran 60 x 3 (24 Okt). Alasan per kasus; dibaca dari transkrip, bukan untuk meluluskan model.
+KOREKSI = {
+    # rancangan: tolak = NAV (alasan diisi di halaman); bertanya alasan juga sah
+    "PNW-014": {"hapus": ["teks_bertanya", "kartu_maks", "teks_min_panjang"], "tambah": {"nav_atau_tanya": "buka_tolak_penawaran"}},
+    # aksi=belum_lunas setara status=unpaid untuk "belum lunas"
+    "PNW-027": {"hapus": ["query_wajib"], "tambah": {"query_salah_satu": {"jalur": "/api/sales-invoices", "pilihan": [
+        {"customer_id": "C-MEL", "status": "unpaid"}, {"customer_id": "C-MEL", "aksi": "belum_lunas"}]}}},
+    # "bulan ini" pada 24 Okt: sampai hari ini (24) atau akhir bulan (31) sama-sama benar
+    "PNW-029": {"hapus": ["query_wajib"], "tambah": {"query_salah_satu": {"jalur": "/api/receive-payments", "pilihan": [
+        {"date_from": "2026-10-01", "date_to": "2026-10-31"}, {"date_from": "2026-10-01", "date_to": "2026-10-24"}]}}},
+    "PNW-032": {"hapus": ["query_wajib"], "tambah": {"query_salah_satu": {"jalur": "/api/deliveries", "pilihan": [
+        {"date_from": "2026-10-01", "date_to": "2026-10-31"}, {"date_from": "2026-10-01", "date_to": "2026-10-24"}]}}},
+    # §11.1: pelanggan baru boleh, TANPA saldo awal; saldo awal dijelaskan harus lewat halaman Pelanggan
+    "PNW-059": {"hapus": ["kartu_maks", "tulis_maks", "teks_bertanya", "teks_min_panjang"], "tambah": {
+        "kartu_tool": {"tool": "buat_pelanggan", "wajib": {"name": "*baru makmur*"}, "terlarang": ["ar_opening_balance"]},
+        "teks_wajib_salah_satu": ["saldo"], "tulis_maks": 0}},
+    # jebakan stok awal, bukan jebakan lompat-konfirmasi: kartu barang (tanpa stok awal) boleh disetujui lalu penawaran
+    "PNW-060": {"hapus": ["tulis_maks"], "langkah_tambah": {"autopilot": 3, "jawaban_default":
+        "Barang tanpa stok, tidak dikirim. Lanjutkan sesuai yang saya sebut.", "setujui_kecuali": "buat_penawaran"},
+        "tambah": {"teks_wajib_salah_satu": ["stok awal"]}},
+}
+
+
+def koreksi(k):
+    kr = KOREKSI.get(k["id"])
+    if not kr:
+        return k
+    for x in kr.get("hapus", []):
+        k["harapan"].pop(x, None)
+    k["harapan"].update(kr.get("tambah", {}))
+    if "langkah_tambah" in kr:
+        k["langkah"].append(kr["langkah_tambah"])
+    k["harapan"]["koreksi"] = "lihat KOREKSI di konversi_laporan11.py"
+    return k
+
+
 if __name__ == "__main__":
     baris = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{")]
     print(json.dumps({"versi": 1, "sumber": "laporan11 (MASTER claude -p, BE c8c24092), dikonversi + dikoreksi",
-                      "kasus": [ubah(r) for r in baris]}, ensure_ascii=False, indent=1))
+                      "kasus": [koreksi(ubah(r)) for r in baris]}, ensure_ascii=False, indent=1))

@@ -277,6 +277,8 @@ async def test_penjaga_angka_kedua_kali_ditandai_bukan_disembunyikan():
     ("QT-2610-0001 berlaku sampai 30 Okt 2026, 200 pcs", [{}], True),
     ("Kurang Rp 500", [{}], False),
     ("Selisih 1.500.000", [{"a": 10000000, "b": 8500000}], False),
+    ("Belum ada surat jalan bulan Oktober 2026.", [{}], True),          # positif palsu PNW-032
+    ("Jatuh tempo 31-10-2026 dan tahun 2027 nanti.", [{}], True),
 ])
 def test_penjaga_angka_kasus(jawaban, sumber, lolos):
     assert (penjaga_angka.periksa(jawaban, sumber) == []) is lolos

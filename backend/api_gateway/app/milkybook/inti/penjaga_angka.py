@@ -33,7 +33,13 @@ _POLA = re.compile(
 )
 # Bagian yang dibuang sebelum dipindai: kode dokumen dan tanggal.
 _KODE_DOK = re.compile(r"\b[A-Z]{1,5}-[\w-]*\d[\w-]*\b")
-_TANGGAL = re.compile(r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|Mei|Jun|Jul|Agu|Agt|Sep|Okt|Nov|Des)\w*\.?\s+\d{4}\b|\b\d{4}-\d{2}-\d{2}\b", re.IGNORECASE)
+_TANGGAL = re.compile(
+    r"\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|Mei|Jun|Jul|Agu|Agt|Sep|Okt|Nov|Des)\w*\.?\s+\d{4}\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[-/]\d{1,2}[-/]\d{4}\b"
+    # bulan + tahun tanpa hari ("Oktober 2026"): positif palsu eval 24 Okt (Sonnet PNW-032)
+    r"|\b(?:Jan|Feb|Mar|Apr|Mei|Jun|Jul|Agu|Agt|Sep|Okt|Nov|Des)\w*\.?\s+\d{4}\b"
+    r"|\b(?:tahun|th\.?)\s+\d{4}\b",
+    re.IGNORECASE)
 
 
 def _ke_decimal(teks: str) -> Decimal:
