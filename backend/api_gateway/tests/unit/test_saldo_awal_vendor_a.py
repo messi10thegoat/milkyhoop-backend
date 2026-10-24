@@ -100,7 +100,7 @@ def test_endpoint_satu_transaksi_lewat_post_bill_tanpa_jurnal_tulisan_tangan():
     assert pos == sorted(pos), list(zip(urut, pos))
     assert "INSERT INTO journal_entries" not in t and "INSERT INTO journal_lines" not in t  # jurnal HANYA lewat post_bill
     ins = t[t.index("INSERT INTO bills"):t.index("INSERT INTO bill_items")]
-    assert "'draft'" in ins and "is_opening_balance" in ins and "$6, $6" in ins and ", 0, false, $5, $5, 0, $5, true)" in ins  # jatuh tempo = tanggal, tanpa PPN
+    assert "'draft'" in ins and "is_opening_balance" in ins and "$6, $6" in ins and ", 0, false, $5::numeric, $5::numeric, 0, $5::numeric, true)" in ins  # jatuh tempo = tanggal, tanpa PPN
     assert "KODE_SALDO_AWAL_VENDOR_SUDAH_ADA" in t and "KODE_AKUN_SALDO_AWAL_BELUM_DIPETAKAN" in t
 
 

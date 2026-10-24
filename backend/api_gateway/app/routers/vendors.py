@@ -1551,12 +1551,13 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str, response:
             bill_id = await conn.fetchval(
                 """INSERT INTO bills (tenant_id, invoice_number, ref_no, vendor_id, vendor_name, amount, issue_date, due_date, notes, created_by,
                                       status_v2, tax_rate, tax_inclusive, subtotal, dpp, tax_amount, grand_total, is_opening_balance)
-                   VALUES ($1, $2, 'SALDO AWAL', $3, $4, $5, $6, $6, $7, $8, 'draft', 0, false, $5, $5, 0, $5, true) RETURNING id""",
+                   VALUES ($1, $2, 'SALDO AWAL', $3, $4, $5::numeric, $6, $6, $7, $8, 'draft', 0, false, $5::numeric, $5::numeric, 0, $5::numeric, true)
+                   RETURNING id""",  # bills.dpp BIGINT, kolom uang lain NUMERIC -> tipe $5 eksplisit
                 ctx["tenant_id"], nomor, vendor["id"], vendor["name"], masuk.amount, tanggal,
                 masuk.description or f"Saldo awal hutang - {vendor['name']}", UUID(str(ctx["user_id"])))
             await conn.execute(
                 """INSERT INTO bill_items (bill_id, description, quantity, unit_price, subtotal, total, line_number, tax_rate, tax_amount, dpp)
-                   VALUES ($1, 'Saldo awal hutang', 1, $2, $2, $2, 1, 0, 0, $2)""", bill_id, masuk.amount)
+                   VALUES ($1, 'Saldo awal hutang', 1, $2::numeric, $2::numeric, $2::numeric, 1, 0, 0, $2::numeric)""", bill_id, masuk.amount)
             hasil = await svc.post_bill(ctx["tenant_id"], bill_id, UUID(str(ctx["user_id"])), conn_luar=conn)
             if not hasil.get("success"):
                 raise HTTPException(status_code=400, detail=hasil.get("message") or "Saldo awal vendor gagal diposting.")
