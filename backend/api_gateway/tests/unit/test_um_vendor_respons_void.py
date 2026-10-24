@@ -30,7 +30,7 @@ def test_tak_ada_tetap_tanpa_teks():
 
 def test_void_mengisi_reversal_journal_id():
     src = inspect.getsource(RV)
-    blok = src.split("return VoidDepositResponse(")[1:]
+    blok = src.split("VoidDepositResponse(")[1:]  # 24 Okt AS-GP4: jalur void pertama kini `resp = ...` (disimpan lapisan idem UMV_VOID)
     assert len(blok) == 2  # jalur idempoten (sudah batal) + jalur void pertama
     assert "reversed_by_id FROM journal_entries" in blok[0][:600]  # idempoten: pembalik yang sudah ada
     assert "reversal_journal_id=reversal_id" in blok[1][:300]
