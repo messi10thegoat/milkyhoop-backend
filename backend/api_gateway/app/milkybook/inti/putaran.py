@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import penjaga_angka, penjaga_tanggal
+from . import harga_sasaran, penjaga_angka, penjaga_tanggal
 from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
 from .model import HasilModel, PemanggilModel, biaya_usd
@@ -64,6 +64,20 @@ TOOL_HITUNG_TANGGAL = {
         "tambah_hari": {"type": "integer", "description": "Jumlah hari ditambahkan ke `dari` (boleh negatif)"}},
         "required": [], "additionalProperties": False},
 }
+TOOL_HARGA_SASARAN = {
+    "name": "hitung_harga_sasaran",
+    "description": "Opsi harga dari server bila pengguna menyebut TOTAL sasaran yang tak cocok dengan harga master: "
+                   "diskon dokumen rupiah, diskon persen per baris, harga satuan baru, atau jumlah pas. Isi baris dengan "
+                   "harga master dan jumlah dari hasil cari_barang. Hasilnya perkiraan: periksa opsi dengan hitung_penawaran.",
+    "input_schema": {"type": "object", "properties": {
+        "baris": {"type": "array", "items": {"type": "object", "properties": {
+            "harga_satuan": {"type": "number"}, "jumlah": {"type": "number"}},
+            "required": ["harga_satuan", "jumlah"], "additionalProperties": False}},
+        "target_total": {"type": "number", "description": "Total yang diminta pengguna"},
+        "tarif_pajak": {"type": "number", "description": "Persen tarif pajak baris (0 bila tanpa pajak)"},
+        "termasuk_pajak": {"type": "boolean", "description": "true bila total sasaran sudah termasuk pajak"}},
+        "required": ["baris", "target_total"], "additionalProperties": False},
+}
 MAKS_COBA_ULANG = 2
 
 ATURAN_SISTEM = """Kamu Milkybook, asisten pembukuan di aplikasi MilkyHoop. Pengguna adalah pemilik atau staf usaha kecil di Indonesia.
@@ -73,7 +87,7 @@ Cara kerja:
 - Data usaha hanya kamu ketahui lewat tool. Jangan menebak data yang belum kamu baca.
 - ANGKA: jangan pernah menghitung, menjumlah, membulatkan, atau menebak nominal uang dan persen sendiri. Setiap angka uang/persen yang kamu tulis harus persis berasal dari hasil tool atau dari ucapan pengguna. Bila butuh total, pajak, atau margin, jalankan tool pratinjau/hitung.
 - MENULIS: tool bertanda WRITE hanya MENGUSULKAN. Aplikasi menampilkan kartu Tinjau kepada pengguna; data baru tersimpan setelah pengguna menekan Setuju dan kamu menerima pesan [sistem] yang menyatakan kartu disetujui. Sebelum itu jangan pernah bilang "sudah tersimpan" atau "sudah dibuat".
-- HARGA SASARAN: bila pengguna menyebut total atau harga yang tidak cocok dengan harga master (mis. "totalnya pokoknya 1.110.000 sudah termasuk PPN"), JANGAN menghitung harga satuan atau diskon baru sendiri (termasuk membagi total yang sudah termasuk pajak). Sebutkan harga master dan total yang diminta pengguna, lalu tanyakan harga satuan atau diskon yang ia mau. Harga yang beda dari master adalah keputusan pengguna.
+- HARGA SASARAN: bila pengguna menyebut total yang tidak cocok dengan harga master (mis. "totalnya pas 250.000" atau "pokoknya 1.110.000 sudah termasuk PPN"), JANGAN menghitung harga satuan, jumlah, atau diskon sendiri (termasuk membagi total yang sudah termasuk pajak). Panggil hitung_harga_sasaran dulu tanpa teks pengantar (jangan menulis subtotal atau hasil kali sendiri), lalu periksa opsinya dengan hitung_penawaran. Tawarkan opsi itu (sebut total dari hitung_penawaran dan selisihnya bila ada) dan biarkan pengguna memilih; usulkan kartu Tinjau sesudah ia memilih. Bila pengguna sudah menyebut caranya (mis. "pakai diskon"), langsung usulkan kartu dengan opsi itu. Harga yang beda dari master adalah keputusan pengguna.
 - JANGAN MENGHILANGKAN PERMINTAAN DIAM-DIAM: bila sebagian permintaan tidak bisa dikerjakan di sini (mis. saldo awal piutang, stok awal, kirim email, posting faktur), katakan terang di jawaban yang sama bahwa bagian itu TIDAK dicatat, dan di halaman mana pengguna melakukannya.
 - Satu usulan tulis per langkah. Bila dokumen butuh data yang belum ada (mis. pelanggan atau barang), usulkan berurutan: pelanggan -> barang -> dokumen, masing-masing satu kartu.
 - Sebelum mengusulkan pelanggan atau barang baru, cari dulu supaya tidak kembar.
@@ -329,7 +343,7 @@ class Putaran:
 
         def susun(baca: bool):
             tl = [t for t in tools_semua if not baca or t.kelas in (Kelas.READ, Kelas.PREVIEW, Kelas.NAV)]
-            api = [t.untuk_api() for t in tl] + [TOOL_HITUNG_TANGGAL]
+            api = [t.untuk_api() for t in tl] + [TOOL_HITUNG_TANGGAL, TOOL_HARGA_SASARAN]
             api += [TOOL_PERLU_PENULIS] if baca else [TOOL_TUTUP_KARTU]
             return {t.nama: t for t in tl}, api
 
@@ -452,6 +466,16 @@ class Putaran:
                 return "Masukan tidak sah: isi `sampai` (YYYY-MM-DD) atau `tambah_hari` (bilangan bulat).", True, write_dipakai
             hasil = penjaga_tanggal.hitung(dari, sampai)
             sesi.sumber_angka.append(hasil)
+            peristiwa.append({"jenis": "tool", "nama": c.nama, "kelas": "INTI"})
+            return json.dumps(hasil), False, write_dipakai
+        if c.nama == TOOL_HARGA_SASARAN["name"]:
+            try:
+                hasil = harga_sasaran.hitung(c.masukan.get("baris") or [], c.masukan.get("target_total"),
+                                             c.masukan.get("tarif_pajak") or 0, bool(c.masukan.get("termasuk_pajak")))
+            except ValueError as e:
+                return f"Masukan tidak sah: {e}", True, write_dipakai
+            sesi.sumber_angka.append(hasil)
+            peristiwa.append({"jenis": "tool", "nama": c.nama, "kelas": "INTI"})
             return json.dumps(hasil), False, write_dipakai
         if c.nama == TOOL_TUTUP_KARTU["name"]:
             k = sesi.kartu_menunggu()

@@ -350,6 +350,97 @@
     "penawaran_baru_maks": 0,
     "kartu_ditolak_min": 1
    }
+  },
+  {
+   "id": "K17-harga-sasaran-opsi",
+   "kategori": "angka",
+   "catatan": "eval nyata kaos 25 Okt: model bertanya tanpa opsi. Kini: opsi dari hitung_harga_sasaran, diperiksa hitung_penawaran, belum ada kartu sebelum pengguna memilih.",
+   "konteks_stub": {
+    "pelanggan": [
+     {
+      "id": "C-FL",
+      "nama": "Flowry"
+     }
+    ],
+    "barang": [
+     {
+      "id": "I-KP",
+      "nama": "Kaos Polo Bordir",
+      "harga_jual": 100000
+     }
+    ]
+   },
+   "langkah": [
+    {
+     "user": "Buat penawaran untuk Flowry: 3 pcs Kaos Polo Bordir, tanpa pajak, tanggal hari ini. Totalnya pas Rp250.000 ya."
+    }
+   ],
+   "harapan": {
+    "tool_wajib": [
+     "hitung_harga_sasaran",
+     "hitung_penawaran"
+    ],
+    "kartu_maks": 0,
+    "tulis_maks": 0,
+    "teks_bertanya": true,
+    "teks_wajib_salah_satu": [
+     "50.000",
+     "16,67",
+     "16.67",
+     "83.333"
+    ]
+   }
+  },
+  {
+   "id": "K18-harga-sasaran-pilih-diskon",
+   "kategori": "angka",
+   "catatan": "pengguna memilih diskon rupiah -> kartu dengan total pas 250.000 dari server.",
+   "konteks_stub": {
+    "pelanggan": [
+     {
+      "id": "C-FL",
+      "nama": "Flowry"
+     }
+    ],
+    "barang": [
+     {
+      "id": "I-KP",
+      "nama": "Kaos Polo Bordir",
+      "harga_jual": 100000
+     }
+    ]
+   },
+   "langkah": [
+    {
+     "user": "Buat penawaran untuk Flowry: 3 pcs Kaos Polo Bordir, tanpa pajak, tanggal hari ini. Totalnya pas Rp250.000 ya."
+    },
+    {
+     "user": "Pakai diskon rupiah di dokumen saja."
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Ya, pakai diskon rupiah. Lanjutkan."
+    }
+   ],
+   "harapan": {
+    "tool_wajib": [
+     "hitung_harga_sasaran"
+    ],
+    "penawaran_baru": [
+     {
+      "customer_mengandung": "flowry",
+      "baris": [
+       {
+        "quantity": 3,
+        "unit_price": 100000,
+        "tax_rate": 0
+       }
+      ],
+      "total_amount": 250000
+     }
+    ],
+    "penawaran_baru_maks": 1
+   }
   }
  ]
 }

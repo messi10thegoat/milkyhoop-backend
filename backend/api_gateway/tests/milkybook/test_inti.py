@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from app.milkybook.inti import penjaga_angka
+from app.milkybook.inti import harga_sasaran, penjaga_angka
 from app.milkybook.inti.audit import AuditMemori
 from app.milkybook.inti.kartu import StatusKartu, badan_kanonik, hash_payload
 from app.milkybook.inti.pelaksana import JawabanBE
@@ -390,6 +390,50 @@ async def test_hitung_tanggal_tambah_hari():
     s.hari_ini = HARI
     await p.giliran(s, "berlaku 2 minggu", be, izin_semua)
     assert '"sampai": "2026-11-07"' in m.permintaan[1]["messages"][-1]["content"][0]["content"]
+
+
+def test_harga_sasaran_opsi_satu_baris():
+    # eval nyata kaos 25 Okt: "totalnya pas Rp250.000" dari 1 barang Rp100.000 -> model bertanya tanpa opsi
+    h = harga_sasaran.hitung([{"harga_satuan": 100000, "jumlah": 3}], 250000)
+    o = {x["jenis"]: x for x in h["opsi"]}
+    assert h["subtotal_master"] == "300000" and h["dpp_sasaran"] == "250000"
+    assert o["diskon_dokumen_rupiah"]["discount_value"] == "50000"
+    assert o["diskon_persen_baris"]["discount_percent"] == "16.67"
+    assert o["harga_satuan_baru"]["unit_price"] == "83333"
+    assert "jumlah_pas" not in o                                    # 2,5 pcs bukan bilangan bulat
+
+
+def test_harga_sasaran_jumlah_pas_dan_termasuk_pajak():
+    o = {x["jenis"]: x for x in harga_sasaran.hitung([{"harga_satuan": 100000, "jumlah": 1}], 300000)["opsi"]}
+    assert o["jumlah_pas"]["quantity"] == "3" and "diskon_dokumen_rupiah" not in o   # target > master: tanpa diskon
+    h = harga_sasaran.hitung([{"harga_satuan": 1000000, "jumlah": 1}], 1110000, 11, True)
+    assert h["dpp_sasaran"] == "1000000" and h["opsi"] == []         # sudah pas: tak ada opsi
+
+
+@pytest.mark.parametrize("masukan", [([], 1000), ([{"harga_satuan": 1}], 1000), ([{"harga_satuan": 1, "jumlah": 0}], 1000),
+                                     ([{"harga_satuan": 1, "jumlah": 1}], 0), ([{"harga_satuan": True, "jumlah": 1}], 1)])
+def test_harga_sasaran_tolak_masukan_tak_sah(masukan):
+    with pytest.raises(ValueError):
+        harga_sasaran.hitung(*masukan)
+
+
+async def test_hitung_harga_sasaran_tool_inti_dan_angka_sah():
+    p, m = putaran([panggil(("hitung_harga_sasaran", {"baris": [{"harga_satuan": 100000, "jumlah": 3}], "target_total": 250000})),
+                    teks("Pilihan: diskon Rp50.000, diskon 16,67%, atau harga satuan Rp83.333.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "3 pcs totalnya pas 250 ribu", be, izin_semua)
+    assert any(t["name"] == "hitung_harga_sasaran" for t in m.permintaan[0]["tools"])
+    assert {"jenis": "tool", "nama": "hitung_harga_sasaran", "kelas": "INTI"} in ev   # terlihat penilai eval + UI
+    assert '"discount_value": "50000"' in m.permintaan[1]["messages"][-1]["content"][0]["content"]
+    assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Pilihan: diskon Rp50.000, diskon 16,67%, atau harga satuan Rp83.333."]
+    assert be.panggilan == []                                        # inti: tanpa panggilan BE
+
+
+async def test_hitung_harga_sasaran_masukan_salah_jadi_galat_tool():
+    p, m = putaran([panggil(("hitung_harga_sasaran", {"baris": [], "target_total": 250000})), teks("Maaf.")])
+    await p.giliran(sesi(), "x", be_standar(), izin_semua)
+    blok = m.permintaan[1]["messages"][-1]["content"][0]
+    assert blok.get("is_error") is True and "tidak sah" in blok["content"]
 
 
 @pytest.mark.parametrize("isi", [
