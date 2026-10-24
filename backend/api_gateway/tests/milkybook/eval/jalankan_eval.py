@@ -141,7 +141,7 @@ async def jalankan_kasus(kasus, pemanggil, effort, pemanggil_baca=None):
                         semua_ev += ev
                         continue
                     terakhir = transkrip[-1]["milkybook"] if transkrip else ""
-                    if "?" in terakhir[-300:]:
+                    if "?" in terakhir or re.search(r"pilih salah satu|silakan pilih|mohon (pilih|kirim|sebutkan|konfirmasi|pastikan|isi)", terakhir):
                         ev = await putaran.giliran(sesi, lk["jawaban_default"], be, izin_owner_k)
                         transkrip.append({"user": lk["jawaban_default"], "milkybook": _semua_teks(ev)})
                         semua_ev += ev
