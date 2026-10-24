@@ -47,7 +47,7 @@ class Tool:
     halaman: Optional[str] = None
     # Tool search: True = dimuat lewat pencarian, bukan dikirim tiap giliran.
     tunda: bool = False
-    # Medan input yang menjadi badan/query (sisanya = parameter jalur).
+    # Judul kartu Tinjau di FE.
     judul_kartu: Optional[str] = None
 
     def param_jalur(self) -> List[str]:
@@ -162,8 +162,11 @@ class Registri:
         for p in self.paket:
             for t in p.tools:
                 belum = [g for g in t.butuh if g not in mendarat]
-                if t.kelas == Kelas.WRITE and belum:
+                if belum and t.kelas == Kelas.WRITE:
                     t = turunkan_ke_nav(t, f"menunggu {', '.join(belum)}")
+                elif belum:
+                    # READ/PREVIEW yang rute BE-nya belum ada (kontrak T0) tidak ditawarkan sama sekali.
+                    continue
                 kandidat.append(t)
 
         per_metode: Dict[str, List[str]] = {}
@@ -180,15 +183,15 @@ class Registri:
 
     def _rute_wajib(self, t: Tool) -> List[Tuple[str, str]]:
         if t.kelas == Kelas.NAV:
-            # NAV hasil turun-kelas tetap butuh izin aksinya: halaman yang tak boleh dibuka tak ditawarkan.
-            asli = self._indeks.get(t.nama)
-            if asli is not None and asli.kelas == Kelas.WRITE:
-                return [(asli.metode, asli.jalur_contoh())]
-            return []
+            # NAV (asli atau turunan WRITE) butuh izin rute aksinya bila ada: aksi yang tak boleh
+            # dilakukan tidak ditawarkan. Rute itu TIDAK pernah dipanggil oleh NAV.
+            return [(t.metode, t.jalur_contoh())] if t.jalur else []
         rute = [(t.metode, t.jalur_contoh())]
         if t.kelas == Kelas.WRITE and t.pratinjau:
             pr = self._indeks.get(t.pratinjau)
             if pr is None:
                 raise ValueError(f"{t.nama}: pratinjau '{t.pratinjau}' tak terdaftar")
+            if pr.butuh and not set(pr.butuh) <= set(t.butuh):
+                raise ValueError(f"{t.nama}: pratinjau butuh {pr.butuh} di luar butuh WRITE")
             rute.append((pr.metode, pr.jalur_contoh()))
         return rute
