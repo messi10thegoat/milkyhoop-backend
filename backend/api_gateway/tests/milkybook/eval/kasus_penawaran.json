@@ -331,10 +331,9 @@
     "tulis_maks": 0,
     "kartu_maks": 0,
     "teks_wajib_salah_satu": [
-     "tidak bisa diubah",
-     "tidak dapat diubah",
-     "tak bisa diubah",
-     "sudah tidak bisa"
+     "tidak bisa",
+     "tidak dapat",
+     "tak bisa"
     ]
    }
   },
@@ -351,7 +350,8 @@
    ],
    "harapan": {
     "tulis_maks": 0,
-    "penawaran_baru_maks": 0
+    "penawaran_baru_maks": 0,
+    "kartu_ditolak_min": 1
    }
   }
  ]

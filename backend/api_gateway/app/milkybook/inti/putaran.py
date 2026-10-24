@@ -25,6 +25,13 @@ from .pelaksana import JawabanBE, Pelaksana
 from .registri import IzinFn, Kelas, Registri, Tool, buang_null
 
 BATAS_HASIL_TOOL = 20_000  # karakter JSON per tool_result
+
+# Tool milik inti (bukan paket): hanya bisa MENGURANGI tulis, jadi selalu tersedia tanpa izin rute.
+TOOL_TUTUP_KARTU = {
+    "name": "tutup_kartu_tinjau",
+    "description": "Tutup kartu Tinjau yang sedang menunggu karena pengguna tidak jadi / membatalkan usulan. Tidak menulis apa pun ke buku.",
+    "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+}
 MAKS_COBA_ULANG = 2
 
 ATURAN_SISTEM = """Kamu Milkybook, asisten pembukuan di aplikasi MilkyHoop. Pengguna adalah pemilik atau staf usaha kecil di Indonesia.
@@ -185,21 +192,22 @@ class Putaran:
         sesi.messages.append({"role": "user", "content": pesan})
         return peristiwa + await self._putar(sesi, pelaksana, izin_fn)
 
-    async def tolak(self, sesi: Sesi, kartu_id: str) -> List[dict]:
+    async def tolak(self, sesi: Sesi, kartu_id: str, catat_pesan: bool = True) -> List[dict]:
         k = sesi.kartu.get(kartu_id)
         if k is None or k.status != StatusKartu.MENUNGGU:
             return [{"jenis": "galat", "pesan": "Kartu tidak menunggu."}]
         k.status = StatusKartu.DITOLAK
         await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_tolak",
                                           tool=k.tool, kartu_id=k.kartu_id, payload_hash=k.payload_hash))
-        sesi.messages.append({"role": "user", "content": f"[sistem] Pengguna menolak kartu {k.kartu_id} ({k.tool}). Tidak ada yang tersimpan."})
+        if catat_pesan:  # dari tombol Tolak di FE; dari tool tutup_kartu_tinjau hasilnya sudah jadi tool_result
+            sesi.messages.append({"role": "user", "content": f"[sistem] Pengguna menolak kartu {k.kartu_id} ({k.tool}). Tidak ada yang tersimpan."})
         return [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value}]
 
     # ------------------------------------------------------------------ inti putaran
     async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
         tools = await self.registri.tools_untuk(izin_fn, self.gap_mendarat)
         peta = {t.nama: t for t in tools}
-        api_tools = [t.untuk_api() for t in tools]
+        api_tools = [t.untuk_api() for t in tools] + [TOOL_TUTUP_KARTU]
         peristiwa: List[dict] = []
         sudah_dikoreksi = False
 
@@ -265,6 +273,12 @@ class Putaran:
         return peristiwa
 
     async def _jalankan(self, sesi, c, peta, pelaksana, peristiwa, write_dipakai):
+        if c.nama == TOOL_TUTUP_KARTU["name"]:
+            k = sesi.kartu_menunggu()
+            if k is None:
+                return "Tidak ada kartu yang menunggu.", False, write_dipakai
+            peristiwa += await self.tolak(sesi, k.kartu_id, catat_pesan=False)
+            return json.dumps({"ditutup": k.kartu_id, "tool": k.tool, "catatan": "Tidak ada yang tersimpan."}), False, write_dipakai
         t: Optional[Tool] = peta.get(c.nama)
         if t is None:
             return "Tool tidak tersedia untuk pengguna ini (izin atau fitur belum aktif).", True, write_dipakai
