@@ -466,3 +466,45 @@ async def test_patch_tanpa_perubahan_tidak_melahirkan_kartu_dan_pratinjau_meneri
     assert k["payload"] == {"jumlah": 3}
     pr = [c for c in be.panggilan if c["jalur"] == "/api/x/a1/edit/preview"][-1]
     assert pr["badan"] == badan_kanonik({"jumlah": 3})
+
+
+# ---------------------------------------------------------------- cache prefiks bersama
+def test_breakpoint_eksplisit_di_akhir_system_ttl_1h_dan_system_tanpa_isi_volatil():
+    from app.milkybook.inti.model import sistem_berbreakpoint
+    sys_ = [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+    out = sistem_berbreakpoint(sys_, "1h")
+    assert out[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"} and "cache_control" not in out[0]
+    assert "cache_control" not in sys_[-1]  # tidak memutasi asli
+    assert sistem_berbreakpoint(sys_, "5m")[-1]["cache_control"] == {"type": "ephemeral"}
+    # prefiks harus byte-identik lintas sesi/tenant: system tak memuat tanggal/tenant/pengguna
+    p = Putaran(registri(), None, AuditMemori())
+    t = p.system[0]["text"]
+    import re as _re
+    assert not _re.search(r"\b20\d\d-\d\d-\d\d\b", t) and "kaos-biru" not in t and "Hari ini" not in t
+
+
+async def test_pemanggil_anthropic_mengirim_breakpoint_dan_cache_otomatis():
+    from types import SimpleNamespace
+    from app.milkybook.inti import model as M
+    tangkap = {}
+
+    class Klien:
+        class beta:
+            class messages:
+                @staticmethod
+                async def create(**kw):
+                    tangkap.update(kw)
+                    return SimpleNamespace(content=[], usage=None, stop_reason="end_turn", model=kw["model"])
+        messages = beta.messages
+
+    pm = M.PemanggilAnthropic.__new__(M.PemanggilAnthropic)
+    pm.model, pm.max_tokens, pm.ttl_prefiks, pm._client = "claude-sonnet-5-5", 100, "1h", Klien
+    await pm(system=[{"type": "text", "text": "x"}], messages=[], tools=[], effort="medium")
+    assert tangkap["system"][-1]["cache_control"]["ttl"] == "1h" and tangkap["cache_control"] == {"type": "ephemeral"}
+
+
+def test_biaya_tulis_cache_1h_dua_kali_harga_masuk():
+    from app.milkybook.inti.model import biaya_usd
+    u = {"cache_creation_input_tokens": 1_000_000, "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000, "ephemeral_5m_input_tokens": 0}}
+    assert abs(biaya_usd("claude-sonnet-5-5", u) - 4.0) < 1e-9
+    assert abs(biaya_usd("claude-sonnet-5-5", {"cache_creation_input_tokens": 1_000_000}) - 2.5) < 1e-9
