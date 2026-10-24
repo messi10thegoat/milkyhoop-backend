@@ -10,8 +10,9 @@ Skema tool = SUBSET medan Pydantic BE (dikunci tests/milkybook/test_paket_penawa
   CreateCustomerRequest                                      schemas/customers.py   (TANPA ar_opening_balance: jurnal)
   CreateItemRequest                                          schemas/items.py       (TANPA opening_stock*: jurnal)
 
-Gerbang T0 (putusan MASTER 24 Okt): semua WRITE `butuh` AS-G1 (idempotency Penawaran) atau
-AS-G14 (pratinjau + idempotency buat pelanggan/barang). Sebelum mendarat -> NAV otomatis.
+Gerbang T0 (putusan MASTER 24 Okt): WRITE tanpa idempotency `butuh` AS-G1 (ubah/batal/jadikan pesanan
+Penawaran) atau AS-G14 (pratinjau + idempotency buat pelanggan/barang). Sebelum mendarat -> NAV otomatis.
+Buat penawaran TIDAK butuh: sudah idempoten (idem_buat QUOTE_CREATE, quotes.py:691, diukur c8c24092).
 Rute pratinjau pelanggan/barang (`/api/customers/preview`, `/api/items/preview`) BELUM ADA di BE
 c8c24092: kontrak yang DIASUMSIKAN untuk T0, lihat tests/milkybook/eval/stub_be.py.
 """
@@ -142,7 +143,7 @@ TOOLS = [
 
     # ---------------- TULIS (hanya lewat kartu Tinjau)
     Tool("buat_penawaran", Kelas.WRITE, "Usulkan penawaran baru (draf). Aplikasi menampilkan kartu Tinjau; tersimpan sesudah Setuju.",
-         SKEMA_PENAWARAN_BARU, "POST", _Q, pratinjau="hitung_penawaran", butuh=(AS_G1,),
+         SKEMA_PENAWARAN_BARU, "POST", _Q, pratinjau="hitung_penawaran",  # idempoten sejak 4 Okt: idem_buat QUOTE_CREATE quotes.py:691
          halaman=f"{_PEN}/baru", judul_kartu="Buat penawaran"),
     Tool("ubah_penawaran", Kelas.WRITE, "Usulkan perubahan penawaran. Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_UBAH, "PATCH", f"{_Q}/{{id}}", pratinjau="pratinjau_ubah_penawaran", butuh=(AS_G1,),
