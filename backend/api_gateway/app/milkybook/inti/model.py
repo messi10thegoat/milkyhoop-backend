@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional, Protocol
 # (setara Opus di syarat mutlak, separuh biaya). Opus = cadangan analisis berat. Haiku belum untuk tulis.
 MODEL_BAWAAN = "claude-sonnet-5-5"
 EFFORT_BAWAAN = "medium"
+# Hibrida (eval 24 Okt, §11.11): model murah untuk giliran BACA saja (tanpa tool tulis; eskalasi ke MODEL_BAWAAN).
+# Aktif bila Putaran diberi pemanggil_baca. Belum disambung di router: menunggu putusan MASTER/pemilik.
+MODEL_BACA = "claude-haiku-5-5"
 
 # Harga per 1 juta token (USD), skill claude-api tabel 2026-10-06. Untuk laporan biaya eval saja.
 HARGA = {

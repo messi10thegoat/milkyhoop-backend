@@ -282,20 +282,17 @@
    }
   },
   {
-   "id": "K13-sebelum-t0-ubah-jadi-nav",
+   "id": "K13-ubah-sesudah-t0",
    "kategori": "nav",
-   "gap": [],
    "langkah": [
     {
      "user": "Ubah penawaran QT-2610-0002: jumlah sablonnya jadi 60."
     }
    ],
    "harapan": {
+    "kartu_min": 1,
     "tulis_maks": 0,
-    "kartu_maks": 0,
-    "nav_wajib": [
-     "ubah_penawaran"
-    ]
+    "catatan": "T0 live 02307237: ubah penawaran = kartu Tinjau (dulu NAV sebelum T0)"
    }
   },
   {
