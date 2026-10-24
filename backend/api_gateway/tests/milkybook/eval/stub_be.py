@@ -17,7 +17,7 @@ Sumber bentuk respons:
   POST /api/quotes/{id}/to-order(/preview) routers/quotes.py:2378/:2407 + _konversi_penawaran :2160 (idempoten alami)
   POST /api/quotes/{id}/edit/preview (bentuk ringkas, BELUM disalin dari kode)
 
-KONTRAK T0 (rancangan BACKEND2 24 Okt; belum live -> perbarui ke contoh JSON harness nyata saat mendarat):
+KONTRAK T0 — LIVE master 02307237 (BACKEND2 24 Okt, JSON nyata kaos cocok dengan bentuk di bawah):
   Pratinjau AS-G14: 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{..., efek[]}, payload}};
   kode blok = kosakata BE yang ada: NAMA_PELANGGAN_DIPAKAI, KODE_PELANGGAN_DIPAKAI, SALDO_AWAL_SAAT_BUAT,
   NAMA_BARANG_DIPAKAI, KODE_BARANG_DIPAKAI, BARCODE_BARANG_DIPAKAI; galat skema -> DATA_TIDAK_SAH (+field) di 200.

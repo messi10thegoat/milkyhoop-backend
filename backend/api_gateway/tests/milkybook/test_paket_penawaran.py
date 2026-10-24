@@ -124,18 +124,11 @@ def test_main_py_memakai_prefiks_yang_diasumsikan():
         assert re.search(rf'include_router\(\s*{mod}\.router,\s*prefix="{re.escape(p)}"', main), (mod, p)
 
 
-@pytest.mark.parametrize("t", [t for t in SEMUA_TOOLS if t.jalur and not (t.kelas == Kelas.PREVIEW and t.butuh)], ids=lambda t: t.nama)
+@pytest.mark.parametrize("t", [t for t in SEMUA_TOOLS if t.jalur], ids=lambda t: t.nama)
 def test_rute_tool_ada_di_router_be(t):
-    """Termasuk WRITE ber-butuh dan rute aksi NAV: rutenya SUDAH ada, hanya idempotency/pratinjau yang menunggu T0."""
+    """Semua rute tool (termasuk pratinjau T0 dan rute aksi NAV) ada di router BE."""
     ada, berkas = _cari_rute(t.metode, t.jalur)
     assert ada, f"{t.nama}: {t.metode} {t.jalur} tak ditemukan di {berkas}"
-
-
-@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.PREVIEW and t.butuh], ids=lambda t: t.nama)
-def test_rute_pratinjau_t0_belum_ada_ingatkan_saat_mendarat(t):
-    """Merah = T0 sudah mendarat: hapus `butuh`, perbarui stub eval dengan bentuk nyata."""
-    ada, _ = _cari_rute(t.metode, t.jalur)
-    assert not ada, f"{t.nama}: rute T0 sudah ada; cabut butuh={t.butuh} dan perbarui stub"
 
 
 def test_query_tool_baca_adalah_parameter_router():
@@ -169,58 +162,54 @@ def test_rute_tool_terpetakan_di_tabel_izin(t):
     """Rute tak terpetakan = OWNER saja (izin_rute_pengguna) -> tool hilang untuk staf. Harus terpetakan."""
     j = t.jalur_contoh()
     cocok = [(mod, a) for pola, metode, mod, a in _rute_izin() if t.metode in metode and pola.match(j)]
-    if t.butuh and t.kelas == Kelas.PREVIEW:
-        return  # rute T0 belum ada; pola izinnya bagian dari tiket T0
     if t.nama in IZIN_SENDIRI:
         assert not cocok  # merah = sudah terpetakan: cabut dari IZIN_SENDIRI
         return
     assert cocok, f"{t.nama}: {t.metode} {j} tak terpetakan"
 
 
-# ---------------------------------------------------------------- gerbang T0
+# ---------------------------------------------------------------- sesudah T0 (BACKEND2 master 02307237)
 
-async def test_sebelum_t0_semua_write_jadi_nav_dan_pratinjau_t0_hilang():
+async def test_semua_write_aktif_tanpa_gap_sesudah_t0():
     r = Registri([pw.paket()])
     efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=())}
-    for nama in ("ubah_penawaran", "batalkan_penawaran", "buat_pelanggan", "buat_barang"):
-        assert efektif[nama].kelas == Kelas.NAV, nama
-    assert "pratinjau_pelanggan_baru" not in efektif and "pratinjau_barang_baru" not in efektif
-    assert [t.nama for t in efektif.values() if t.kelas == Kelas.WRITE] == ["buat_penawaran", "jadikan_pesanan"]
+    assert {n for n, t in efektif.items() if t.kelas == Kelas.WRITE} == {
+        "buat_penawaran", "ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"}
+    assert not [t.nama for t in pw.TOOLS if t.butuh]
+
+
+def test_rute_pratinjau_t0_ada_di_master():
+    for nama in ("pratinjau_pelanggan_baru", "pratinjau_barang_baru"):
+        t = TOOL[nama]
+        ada, berkas = _cari_rute(t.metode, t.jalur)
+        assert ada, f"{nama}: {t.jalur} di {berkas}"
+
+
+_HANDLER_IDEM = {  # WRITE -> (berkas router, pola dekorator handler); handler WAJIB membaca kunci idempotency klien
+    "buat_penawaran": ("routers/quotes.py", r'@router\.post\(\s*""'),
+    "ubah_penawaran": ("routers/quotes.py", r'@router\.patch\(\s*"/\{quote_id\}"'),
+    "batalkan_penawaran": ("routers/quotes.py", r'@router\.post\(\s*"/\{quote_id\}/void"'),
+    "buat_pelanggan": ("routers/customers.py", r'@router\.post\(\s*""'),
+    "buat_barang": ("routers/items.py", r'@router\.post\(\s*"/items"'),
+}
 
 
 @pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.WRITE], ids=lambda t: t.nama)
-def test_write_tanpa_butuh_harus_idempoten_di_be(t):
-    """WRITE aktif tanpa gerbang T0 hanya bila handler BE-nya membaca kunci idempotency."""
-    if t.butuh:
-        return
-    s = _src("routers/quotes.py")
-    if t.nama == "buat_penawaran":
-        m = re.search(r'@router\.post\(\s*""', s)
-        badan = s[m.end(): m.end() + 6000]
-        assert re.search(r"idem_buat\.kunci_dari\(request\)", badan) and "idem_buat.mulai(" in badan
-    elif t.nama == "jadikan_pesanan":
-        # idempoten alami: kunci advisory per penawaran + SO lama dikembalikan bila sudah dikonversi
+def test_write_harus_idempoten_di_be(t):
+    """Setiap WRITE aktif hanya bila handler BE-nya idempoten (kunci klien, atau alami untuk to-order)."""
+    if t.nama == "jadikan_pesanan":
+        s = _src("routers/quotes.py")
         i = s.index("async def _konversi_penawaran(")
         badan = s[i: i + 4000]
         assert "pg_advisory_xact_lock" in badan and 'f"QUOTE:{ctx[\'tenant_id\']}:{quote_id}"' in badan
         assert '"already_converted": True' in badan
-        assert re.search(r"await _konversi_penawaran\(conn, ctx, quote_id, body\)", s)
-    else:
-        raise AssertionError(f"{t.nama}: WRITE tanpa butuh tanpa bukti idempotency")
-
-
-async def test_sesudah_t0_write_aktif():
-    r = Registri([pw.paket()])
-    efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1, pw.AS_G14))}
-    assert {n for n, t in efektif.items() if t.kelas == Kelas.WRITE} == {
-        "buat_penawaran", "ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"}
-
-
-async def test_hanya_as_g1_pelanggan_barang_tetap_nav():
-    r = Registri([pw.paket()])
-    efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1,))}
-    assert efektif["ubah_penawaran"].kelas == Kelas.WRITE
-    assert efektif["buat_pelanggan"].kelas == Kelas.NAV and efektif["buat_barang"].kelas == Kelas.NAV
+        return
+    berkas, pola = _HANDLER_IDEM[t.nama]
+    s = _src(berkas)
+    m = re.search(pola, s)
+    assert m, f"{t.nama}: dekorator tak ditemukan"
+    badan = s[m.end(): m.end() + 6000]
+    assert "kunci_dari(request" in badan, f"{t.nama}: handler tak membaca X-Idempotency-Key"
 
 
 def test_kartu_pengetahuan_dimuat_dan_menyebut_kekhasan():
