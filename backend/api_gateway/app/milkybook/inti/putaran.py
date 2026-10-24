@@ -22,7 +22,7 @@ from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
 from .model import HasilModel, PemanggilModel, biaya_usd
 from .pelaksana import JawabanBE, Pelaksana
-from .registri import IzinFn, Kelas, Registri, Tool
+from .registri import IzinFn, Kelas, Registri, Tool, buang_null
 
 BATAS_HASIL_TOOL = 20_000  # karakter JSON per tool_result
 MAKS_COBA_ULANG = 2
@@ -268,6 +268,7 @@ class Putaran:
         t: Optional[Tool] = peta.get(c.nama)
         if t is None:
             return "Tool tidak tersedia untuk pengguna ini (izin atau fitur belum aktif).", True, write_dipakai
+        c.masukan = buang_null(c.masukan)
         e = _validasi(t.skema, c.masukan, "masukan")
         if e:
             return f"Masukan tidak sah: {e}", True, write_dipakai

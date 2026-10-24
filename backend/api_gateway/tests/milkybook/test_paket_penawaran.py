@@ -217,3 +217,21 @@ async def test_jumlah_tool_strict_dalam_batas_api():
     r = Registri([pw.paket()])
     efektif = await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1, pw.AS_G14))
     assert sum(1 for t in efektif if t.untuk_api().get("strict")) <= 20
+
+
+def _hitung_opsional(skema):
+    n = 0
+    if isinstance(skema, dict):
+        if skema.get("type") == "object":
+            n += len(set(skema.get("properties", {})) - set(skema.get("required", [])))
+        for v in list(skema.get("properties", {}).values()) + ([skema["items"]] if "items" in skema else []) + skema.get("anyOf", []):
+            n += _hitung_opsional(v)
+    return n
+
+
+async def test_parameter_opsional_strict_dalam_batas_api():
+    """API: maks 24 parameter opsional di seluruh skema strict satu permintaan."""
+    r = Registri([pw.paket()])
+    efektif = await r.tools_untuk(izin_semua, gap_mendarat=(pw.AS_G1, pw.AS_G14))
+    total = sum(_hitung_opsional(t.untuk_api()["input_schema"]) for t in efektif if t.untuk_api().get("strict"))
+    assert total <= 24, total
