@@ -5,7 +5,8 @@ ditulisi uji ber-penanda 'TES E2E'; pola AS-GP2). Mode: baru [merah_kunci]
 (3) kunci idem sama 2x berurutan (penawaran ke-3) -> X-Idempotent-Replay.
 Bersih-bersih lewat APLIKASI di finally: faktur draf dihapus (delete_invoice), SO draf dihapus (delete_sales_order); penawaran TES E2E tetap
 'converted' (tautan menggantung = AS-G15a, diterima MASTER) -> dilaporkan sebagai sisa_manual. GL/AR per akun kaos sebelum == sesudah (draf = nol jurnal).
-Kontrol merah (WAJIB FAIL): merah_kunci = kunci QUOTE + FOR UPDATE dibuang dari SQL di koneksi harness + jeda sesudah baca -> DUA faktur."""
+Kontrol merah (WAJIB FAIL): merah_kunci = kode NYATA convert_to_invoice dari SALINAN pohon yang disabotase (scripts/ops/sabotase-as-g15.py:
+kunci QUOTE + FOR UPDATE dicabut, jeda 0,8 dtk) -> DUA faktur. Harness TIDAK meniru handler; runner memasang salinan itu."""
 import asyncio, json, os, re, sys
 from decimal import Decimal as D
 from uuid import UUID, uuid4
@@ -16,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 T = "kaos-biru-konveksi"
-MERAH = sys.argv[2] if len(sys.argv) > 2 else ""
+MERAH = sys.argv[2] if len(sys.argv) > 2 else ""  # hanya label; sabotase ada di salinan pohon yang dipasang runner
 gagal = []
 SQL_GL = """SELECT jl.account_id::text, SUM(jl.debit - jl.credit) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
             WHERE je.tenant_id = $1 AND je.status = 'POSTED' GROUP BY 1"""
@@ -38,20 +39,8 @@ async def main():
         sys.exit(f"TENANT TAK ADA: {T}")
 
     class Kon:
-        """Koneksi pool ber-sabotase (merah_kunci): buang kunci QUOTE & FOR UPDATE, jeda sesudah baca penawaran -> balapan pasti terjadi."""
         def __init__(s, k): s.k = k
         def __getattr__(s, n): return getattr(s.k, n)
-        async def execute(s, q, *a):
-            if MERAH == "merah_kunci" and "pg_advisory_xact_lock" in q and a and str(a[0]).startswith("QUOTE:"):
-                return "SELECT 1"
-            return await s.k.execute(q, *a)
-        async def fetchrow(s, q, *a):
-            if MERAH == "merah_kunci" and "FROM quotes" in q and "FOR UPDATE" in q:
-                q = q.replace("FOR UPDATE", "")
-                r = await s.k.fetchrow(q, *a)
-                await asyncio.sleep(0.8)
-                return r
-            return await s.k.fetchrow(q, *a)
 
     class CM:
         async def __aenter__(s):

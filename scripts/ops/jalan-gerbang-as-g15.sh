@@ -12,9 +12,16 @@ G=milkyhoop-dev-api_gateway; IMG=$(docker inspect $G --format "{{.Config.Image}}
 printf "URL=%s\n" "$(docker exec $G printenv DATABASE_URL)" > $E
 for m in "" merah_kunci; do
   echo "=== harness ${m:-baru}"
-  timeout 600 docker run --rm --network milkyhoop_dev_network --env-file $E -v $W/backend:/app/backend:ro -v $W/scripts/ops/uji-nyata-as-g15.py:/h.py:ro \
+  POHON=$W
+  if [ "$m" = merah_kunci ]; then  # kode NYATA dari SALINAN pohon yang disabotase (bukan tiruan di harness)
+    POHON=$(mktemp -d /root/.sabg15-XXXX); mkdir -p $POHON/backend
+    rsync -a --exclude .pytest_cache --exclude __pycache__ backend/api_gateway $POHON/backend/ && ln -s $W/backend/migrations $POHON/backend/migrations
+    python3 scripts/ops/sabotase-as-g15.py $POHON/backend/api_gateway || { echo "FAIL sabotase tak terpasang"; rm -rf $POHON; continue; }
+  fi
+  timeout 600 docker run --rm --network milkyhoop_dev_network --env-file $E -v $POHON/backend:/app/backend:ro -v $W/scripts/ops/uji-nyata-as-g15.py:/h.py:ro \
     -w /app/backend/api_gateway --entrypoint python $IMG -I /h.py baru $m > $L/h-${m:-baru}.log 2>&1 < /dev/null; echo "rc=$?"
   grep -vE "^PASS |^CONTOH |pydantic|PydanticSerial|return self.__pydantic" $L/h-${m:-baru}.log | tail -25; echo "PASS: $(grep -c "^PASS " $L/h-${m:-baru}.log)"
+  [ "$POHON" != "$W" ] && rm -rf $POHON
 done
 rm -f $E
 echo "sisa faktur dari penawaran TES E2E AS-G15: $(docker exec -i milkyhoop-dev-postgres-1 psql -U postgres -d milkydb -At -c "SELECT count(*) FROM sales_invoices WHERE tenant_id = 'kaos-biru-konveksi' AND quote_id IN (SELECT id FROM quotes WHERE notes = 'TES E2E AS-G15')" < /dev/null)"
