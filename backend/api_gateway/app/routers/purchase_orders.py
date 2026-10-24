@@ -796,7 +796,7 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
 @router.patch("/{po_id}", response_model=PurchaseOrderResponse)
 async def update_purchase_order(
-    request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest
+    request: Request, po_id: UUID, body: UpdatePurchaseOrderRequest, response: Response = None
 ):
     """
     Ubah pesanan pembelian (hanya Draf atau Terkirim). Kunci PO + baca ulang di dalam lock; total dihitung ulang dari baris + diskon/pajak
@@ -809,6 +809,9 @@ async def update_purchase_order(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_UPDATE", po_id, lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
+                    return _lama
 
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id)
                 if not po:
@@ -818,7 +821,8 @@ async def update_purchase_order(
 
                 update_data = body.model_dump(exclude_unset=True)
                 if not update_data:
-                    return {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(po_id)}}
+                    _resp = {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(po_id)}}
+                    return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_UPDATE", _resp, po_id) if _kp else _resp
 
                 ubah_uang = False
 
@@ -856,11 +860,12 @@ async def update_purchase_order(
 
                 logger.info(f"Purchase order updated: {po_id}")
 
-                return {
+                _resp = {
                     "success": True,
                     "message": "Pesanan pembelian diperbarui.",
                     "data": {"id": str(po_id)},
                 }
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_UPDATE", _resp, po_id) if _kp else _resp
 
     except HTTPException:
         raise
@@ -875,7 +880,7 @@ async def update_purchase_order(
 
 
 @router.delete("/{po_id}", response_model=PurchaseOrderResponse)
-async def delete_purchase_order(request: Request, po_id: UUID):
+async def delete_purchase_order(request: Request, po_id: UUID, response: Response = None):
     """Hapus pesanan pembelian berstatus Draf. Yang sudah terkirim dibatalkan (cancel), bukan dihapus."""
     try:
         ctx = get_user_context(request)
@@ -886,19 +891,22 @@ async def delete_purchase_order(request: Request, po_id: UUID):
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
                 await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"] or ""))
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_DELETE", po_id, {}, response)
+                if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
+                    return _lama
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
                 _tolak(PR.rencana_hapus(po)["blocks"])  # = /delete/preview
                 await conn.execute("DELETE FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
 
-            logger.info(f"Purchase order deleted: {po_id}")
-
-            return {
-                "success": True,
-                "message": "Pesanan pembelian dihapus.",
-                "data": {"id": str(po_id), "po_number": po["po_number"]},
-            }
+                logger.info(f"Purchase order deleted: {po_id}")
+                _resp = {
+                    "success": True,
+                    "message": "Pesanan pembelian dihapus.",
+                    "data": {"id": str(po_id), "po_number": po["po_number"]},
+                }
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_DELETE", _resp, po_id) if _kp else _resp
 
     except HTTPException:
         raise
@@ -913,7 +921,7 @@ async def delete_purchase_order(request: Request, po_id: UUID):
 
 
 @router.post("/{po_id}/send", response_model=PurchaseOrderResponse)
-async def send_purchase_order(request: Request, po_id: UUID):
+async def send_purchase_order(request: Request, po_id: UUID, response: Response = None):
     """Tandai pesanan pembelian terkirim ke vendor (Draf -> Terkirim). Kunci PO; status dibaca di dalam lock."""
     try:
         ctx = get_user_context(request)
@@ -925,6 +933,9 @@ async def send_purchase_order(request: Request, po_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_SEND", po_id, {}, response)
+                if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
+                    return _lama
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
@@ -939,13 +950,13 @@ async def send_purchase_order(request: Request, po_id: UUID):
                     ctx["user_id"],
                 )
 
-            logger.info(f"Purchase order sent: {po_id}")
-
-            return {
-                "success": True,
-                "message": "Pesanan pembelian ditandai terkirim.",
-                "data": {"id": str(po_id), "po_number": po["po_number"], "status": "sent"},
-            }
+                logger.info(f"Purchase order sent: {po_id}")
+                _resp = {
+                    "success": True,
+                    "message": "Pesanan pembelian ditandai terkirim.",
+                    "data": {"id": str(po_id), "po_number": po["po_number"], "status": "sent"},
+                }
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_SEND", _resp, po_id) if _kp else _resp
 
     except HTTPException:
         raise
@@ -1274,7 +1285,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 
 @router.post("/{po_id}/cancel", response_model=PurchaseOrderResponse)
 async def cancel_purchase_order(
-    request: Request, po_id: UUID, body: CancelPurchaseOrderRequest
+    request: Request, po_id: UUID, body: CancelPurchaseOrderRequest, response: Response = None
 ):
     """Batalkan pesanan pembelian. Hanya bila belum ada barang diterima dan belum ada tagihan (diukur dari BARIS, bukan kolom cache)."""
     try:
@@ -1287,6 +1298,9 @@ async def cancel_purchase_order(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_CANCEL", po_id, lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
+                    return _lama
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
@@ -1304,13 +1318,13 @@ async def cancel_purchase_order(
                     body.reason,
                 )
 
-            logger.info(f"Purchase order cancelled: {po_id}")
-
-            return {
-                "success": True,
-                "message": "Pesanan pembelian dibatalkan.",
-                "data": {"id": str(po_id), "status": "cancelled"},
-            }
+                logger.info(f"Purchase order cancelled: {po_id}")
+                _resp = {
+                    "success": True,
+                    "message": "Pesanan pembelian dibatalkan.",
+                    "data": {"id": str(po_id), "status": "cancelled"},
+                }
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_CANCEL", _resp, po_id) if _kp else _resp
 
     except HTTPException:
         raise
@@ -1325,7 +1339,7 @@ async def cancel_purchase_order(
 
 
 @router.post("/{po_id}/close", response_model=PurchaseOrderResponse)
-async def close_purchase_order(request: Request, po_id: UUID):
+async def close_purchase_order(request: Request, po_id: UUID, response: Response = None):
     """Tutup pesanan pembelian (selesai manual, mis. sisa barang tak akan datang). Kunci PO; status dibaca di dalam lock."""
     try:
         ctx = get_user_context(request)
@@ -1337,6 +1351,9 @@ async def close_purchase_order(request: Request, po_id: UUID):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_CLOSE", po_id, {}, response)
+                if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
+                    return _lama
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
@@ -1352,13 +1369,13 @@ async def close_purchase_order(request: Request, po_id: UUID):
                     ctx["user_id"],
                 )
 
-            logger.info(f"Purchase order closed: {po_id}")
-
-            return {
-                "success": True,
-                "message": "Pesanan pembelian ditutup.",
-                "data": {"id": str(po_id), "status": "closed"},
-            }
+                logger.info(f"Purchase order closed: {po_id}")
+                _resp = {
+                    "success": True,
+                    "message": "Pesanan pembelian ditutup.",
+                    "data": {"id": str(po_id), "status": "closed"},
+                }
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_CLOSE", _resp, po_id) if _kp else _resp
 
     except HTTPException:
         raise
