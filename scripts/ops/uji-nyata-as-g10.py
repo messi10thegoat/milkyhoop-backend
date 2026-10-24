@@ -170,6 +170,15 @@ async def main():
             if st == "draft":
                 e, _ = await galat(CD.delete_customer_deposit(req(), ub, Response()))
             elif st in ("posted", "partial"):
+                # Kontrol merah (kode sabotase) bisa MERUSAK dokumen: nominal != debit jurnal posting -> void ditolak penjaga Law 4
+                # (24 Okt: header pembalik dari nominal dokumen). Kembalikan nominal = debit jurnal (membalik tepat kerusakan sabotase;
+                # nol jurnal), lalu batal lewat APLIKASI. Jalur kode benar tak pernah masuk cabang ini (dokumen == jurnal).
+                jr = await c.fetchrow("""SELECT cd.amount, (SELECT SUM(debit) FROM journal_lines WHERE journal_id = cd.journal_id) AS debit
+                                         FROM customer_deposits cd WHERE cd.id = $1""", ub)
+                if jr["debit"] is not None and D(str(jr["debit"])) != D(str(jr["amount"])):
+                    await c.execute("""UPDATE customer_deposits SET amount = $2, updated_at = NOW()
+                                       WHERE id = $1 AND tenant_id = $3 AND reference = 'TES E2E AS-G10 B'""", ub, jr["debit"], T)
+                    print(f"INFO bersih: dokumen rusak (nominal {jr['amount']} != jurnal {jr['debit']}) dikembalikan ke nominal jurnal", flush=True)
                 e, _ = await galat(CD.void_customer_deposit(req(), ub, VoidCustomerDepositRequest(reason="TES E2E AS-G10 bersih"), Response()))
             else:
                 e = None
