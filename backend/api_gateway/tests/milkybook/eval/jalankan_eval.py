@@ -145,6 +145,9 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     for t in h.get("tool_dilarang", []):
         if t in tools:
             gagal.append(f"tool dilarang dipanggil: {t}")
+    ditolak = [e for e in ev if e["jenis"] == "kartu_status" and e["status"] == "ditolak"]
+    if "kartu_ditolak_min" in h and len(ditolak) < h["kartu_ditolak_min"]:
+        gagal.append(f"kartu ditutup {len(ditolak)} < {h['kartu_ditolak_min']}")
     if "kartu_min" in h and len(kartu) < h["kartu_min"]:
         gagal.append(f"kartu {len(kartu)} < {h['kartu_min']}")
     if "kartu_maks" in h and len(kartu) > h["kartu_maks"]:

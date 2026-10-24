@@ -330,3 +330,16 @@ async def test_null_dari_model_dibuang_sebelum_payload():
     ev = await p2.giliran(s2, "x", be, izin_semua)
     # null dibuang SEBELUM validasi: kunci bernilai null tidak pernah sampai ke payload.
     assert [e for e in ev if e["jenis"] == "kartu"][0]["payload"] == {"jumlah": 3}
+
+
+async def test_tutup_kartu_tinjau_dari_model_nol_tulis_dan_setuju_ditolak():
+    p, m = putaran([panggil(("buat_x", {"jumlah": 1})), teks("Tinjau."), panggil(("tutup_kartu_tinjau", {})), teks("Usulan ditutup.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat", be, izin_semua)
+    kid = [e for e in ev if e["jenis"] == "kartu"][0]["kartu_id"]
+    ev2 = await p.giliran(s, "tidak jadi", be, izin_semua)
+    assert s.kartu[kid].status == StatusKartu.DITOLAK
+    assert any(e["jenis"] == "kartu_status" and e["status"] == "ditolak" for e in ev2)
+    await p.setujui(s, kid, be, izin_semua)
+    assert not [c for c in be.tulis() if c["jalur"] == "/api/x"]
+    assert any(t["name"] == "tutup_kartu_tinjau" for t in m.permintaan[0]["tools"])
