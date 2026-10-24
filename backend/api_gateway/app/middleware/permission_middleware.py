@@ -146,6 +146,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # Customers
     (r"^/api/customers/summary$", ["GET"], "customer", "R"),
     (r"^/api/customers$", ["GET"], "customer", "R"),
+    (r"^/api/customers/preview$", ["POST"], "customer", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
     (r"^/api/customers$", ["POST"], "customer", "C"),
     # V428 alamat per baris: ubah alamat = ubah master pelanggan (U), termasuk hapus alamat (bukan hapus pelanggan)
     (r"^/api/customers/[^/]+/addresses$", ["GET"], "customer", "R"),
@@ -170,6 +171,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/aliases$", ["PUT"], "sales_order", "C"),
     (r"^/api/items/summary$", ["GET"], "item", "R"),
     (r"^/api/items$", ["GET"], "item", "R"),
+    (r"^/api/items/preview$", ["POST"], "item", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
     (r"^/api/items$", ["POST"], "item", "C"),
     (r"^/api/items/[^/]+$", ["GET"], "item", "R"),
     (r"^/api/items/[^/]+$", ["PATCH", "PUT"], "item", "U"),

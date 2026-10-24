@@ -5,7 +5,7 @@ CRUD endpoints for managing customers with search and pagination.
 Integrates with AR module for balance tracking.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -681,8 +681,80 @@ async def get_customer_balance(request: Request, customer_id: str):
 # =============================================================================
 # CREATE CUSTOMER
 # =============================================================================
+# ---- AS-G14 (Milkybook T0, 24 Okt 2026): penentu BUAT pelanggan SATU untuk pratinjau dan tulis (pratinjau == tulis) ----
+PESAN_SALDO_AWAL_SAAT_BUAT = ("Saldo awal piutang tidak bisa diisi saat membuat pelanggan. "
+                              "Simpan pelanggan dulu, lalu isi lewat Saldo awal di halaman pelanggan.")
+KODE_SALDO_AWAL_SAAT_BUAT = "SALDO_AWAL_SAAT_BUAT"
+
+
+async def _siapkan_buat_pelanggan(conn, tenant_id: str, body: CreateCustomerRequest):
+    """Aturan buat pelanggan (baca saja; galat = HTTPException SAMA dengan sebelum refaktor). -> tanggal saldo awal (date|None).
+    Audit F1 (10 Okt 2026, Law 1/16): angka piutang awal HANYA lewat POST /customers/{id}/opening-balance (jurnal Dr Piutang /
+    Cr Modal Saldo Awal); 10 Okt (B2): nama aktif persis sama / kode belum-dihapus -> 409 {code, message}."""
+    if (body.ar_opening_balance or 0) > 0:
+        raise HTTPException(status_code=422, detail=PESAN_SALDO_AWAL_SAAT_BUAT)
+    await tolak_nama_dipakai(conn, tenant_id, body.name)
+    await tolak_nomor_dipakai(conn, tenant_id, body.code)
+    if body.opening_balance_date:
+        try:
+            from datetime import datetime
+            return datetime.strptime(body.opening_balance_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid opening_balance_date format. Use YYYY-MM-DD")
+    return None
+
+
+def blok_dari_galat(e: HTTPException) -> dict:
+    """HTTPException penentu -> blok pratinjau {code, message, field?, id?}: kode BE yang ada (satu kosakata dengan galat tulis)."""
+    d = e.detail
+    if isinstance(d, dict):
+        b = {"code": d.get("code") or f"HTTP_{e.status_code}", "message": d.get("message") or str(d)}
+        for k in ("field", "id"):
+            if d.get(k) is not None:
+                b[k] = str(d[k])
+        return b
+    if d == PESAN_SALDO_AWAL_SAAT_BUAT:
+        return {"code": KODE_SALDO_AWAL_SAAT_BUAT, "message": d, "field": "ar_opening_balance"}
+    return {"code": f"HTTP_{e.status_code}", "message": str(d)}
+
+
+def blok_validasi(err) -> list:
+    """pydantic ValidationError -> blok DATA_TIDAK_SAH per medan (pratinjau 200; tulis tetap 422)."""
+    return [{"code": "DATA_TIDAK_SAH", "message": x.get("msg", "Data tidak sah"),
+             "field": ".".join(str(p) for p in x.get("loc", ()) if p != "body")} for x in err.errors()]
+
+
+@router.post("/preview")
+async def preview_create_customer(request: Request, body: dict):
+    """Pratinjau BUAT pelanggan (AS-G14): penentu SAMA dengan POST /customers (_siapkan_buat_pelanggan), transaksi READ ONLY,
+    nol tulis. 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{...}, payload}}. Badan = badan POST byte-identik;
+    galat skema -> blok DATA_TIDAK_SAH (bukan 422) supaya agen tak buntu."""
+    from pydantic import ValidationError
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        cb = CreateCustomerRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "rencana": None, "payload": payload}}
+    bloks = []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            try:
+                await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], cb)
+            except HTTPException as e:
+                bloks.append(blok_dari_galat(e))
+        finally:
+            await tr.rollback()
+    rencana = {"name": cb.name, "code": cb.code, "customer_type": getattr(cb, "customer_type", None),
+               "payment_terms_days": getattr(cb, "payment_terms_days", None), "efek": []}  # nol jurnal: saldo awal lewat rute terpisah
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
+
+
 @router.post("", response_model=CustomerResponse, status_code=201)
-async def create_customer(request: Request, body: CreateCustomerRequest):
+async def create_customer(request: Request, body: CreateCustomerRequest, response: Response = None):
     """
     Create a new customer.
 
@@ -692,40 +764,22 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
     """
     try:
         ctx = get_user_context(request)
-        # Audit F1 (10 Okt 2026, Law 1/16): angka piutang awal HANYA lewat POST /customers/{id}/opening-balance
-        # (jurnal Dr Piutang / Cr Modal Saldo Awal). Menyimpan angkanya di kolom tanpa jurnal = angka tak berbuku.
-        if (body.ar_opening_balance or 0) > 0:
-            raise HTTPException(
-                status_code=422,
-                detail="Saldo awal piutang tidak bisa diisi saat membuat pelanggan. "
-                       "Simpan pelanggan dulu, lalu isi lewat Saldo awal di halaman pelanggan.",
-            )
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)  # AS-G14: X-Idempotency-Key opsional (pola QUOTE_CREATE)
+        if (body.ar_opening_balance or 0) > 0:  # tanpa koneksi bila badan sudah pasti ditolak (galat SAMA dgn penentu)
+            raise HTTPException(status_code=422, detail=PESAN_SALDO_AWAL_SAAT_BUAT)
         pool = await get_pool()
 
-        async with pool.acquire() as conn:
-            # 10 Okt (B2): nama aktif persis sama / kode belum-dihapus -> 409 {code, message}
-            await tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)
-            await tolak_nomor_dipakai(conn, ctx["tenant_id"], body.code)
+        async with pool.acquire() as conn, conn.transaction():
+            _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "CUSTOMER_CREATE", body, "customers", "customer", response)
+            if _lama is not None:
+                return _lama
+            opening_date = await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], body)
 
             # Generate UUID for customer ID
             import uuid as uuid_mod
 
             new_id = str(uuid_mod.uuid4())
-
-            # Parse opening_balance_date if provided
-            opening_date = None
-            if body.opening_balance_date:
-                try:
-                    from datetime import datetime
-
-                    opening_date = datetime.strptime(
-                        body.opening_balance_date, "%Y-%m-%d"
-                    ).date()
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid opening_balance_date format. Use YYYY-MM-DD",
-                    )
 
             async with conn.transaction():
                 # Insert customer with ALL fields
@@ -821,11 +875,11 @@ async def create_customer(request: Request, body: CreateCustomerRequest):
 
                 logger.info(f"Customer created: {new_id}, name={body.name}")
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "CUSTOMER_CREATE", {
                     "success": True,
                     "message": "Customer created successfully",
                     "data": {"id": str(new_id), "name": body.name, "code": body.code},
-                }
+                }, new_id)
 
     except HTTPException:
         raise

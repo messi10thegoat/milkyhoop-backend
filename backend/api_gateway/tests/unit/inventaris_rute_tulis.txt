@@ -305,6 +305,7 @@ POST /api/customer-deposits/{deposit_id}/refund
 POST /api/customer-deposits/{deposit_id}/refund/preview
 POST /api/customer-deposits/{deposit_id}/void
 POST /api/customer-deposits/{deposit_id}/void/preview
+POST /api/customers/preview
 POST /api/customers
 POST /api/customers/merge
 POST /api/customers/merge/preview
@@ -372,6 +373,7 @@ POST /api/item-serials
 POST /api/item-serials/bulk
 POST /api/item-serials/{serial_id}/adjust
 POST /api/item-serials/{serial_id}/transfer
+POST /api/items/preview
 POST /api/items
 POST /api/items/bulk-import
 POST /api/items/categories

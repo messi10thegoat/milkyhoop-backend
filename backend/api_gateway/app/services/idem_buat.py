@@ -11,7 +11,7 @@ from fastapi.encoders import jsonable_encoder
 
 from ..utils.idempotency import KUNCI_KLIEN_MAKS, ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 
-_TABEL = {"bills": "invoice_number", "vendor_credits": "credit_number", "vendor_deposits": "deposit_number", "purchase_orders": "po_number", "credit_notes": "credit_note_number", "quotes": "quote_number", "stock_transfers": "transfer_number", "invoice_fulfillments": "fulfillment_number"}
+_TABEL = {"bills": "invoice_number", "vendor_credits": "credit_number", "vendor_deposits": "deposit_number", "purchase_orders": "po_number", "credit_notes": "credit_note_number", "quotes": "quote_number", "stock_transfers": "transfer_number", "invoice_fulfillments": "fulfillment_number", "customers": "nomor_member", "products": "item_code"}
 
 
 def kunci_dari(request, kunci_body=None):

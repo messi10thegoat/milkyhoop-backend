@@ -16,7 +16,7 @@ Endpoints:
 - GET  /items/taxes        - Get tax options
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional
 import logging
 import asyncpg
@@ -574,8 +574,163 @@ def tanpa_stok_bila_bukan_barang(body) -> None:
         body.track_inventory = False
 
 
+async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItemRequest) -> tuple:
+    """AS-G14 (Milkybook T0, 24 Okt 2026): aturan BUAT barang SATU untuk pratinjau dan POST /items (pratinjau == tulis). Baca saja;
+    galat = HTTPException SAMA dengan sebelum refaktor (409 NAMA/KODE/BARCODE_BARANG_DIPAKAI, pajak, saldo awal stok). Mengisi
+    body.sales_tax/purchase_tax/akun persediaan-HPP seperti dulu. -> (item_code, sku)."""
+    # Check for duplicate name (barang aktif saja: V402 indeks unik nama parsial WHERE deleted_at IS NULL)
+    existing = await conn.fetchrow(
+        f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
+        tenant_id,
+        body.name,
+    )
+    if existing:
+        raise galat_nama_barang_dipakai(existing)
+
+    # Check for duplicate barcode
+    if body.barcode:
+        existing_barcode = await conn.fetchrow(
+            # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
+            f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND tenant_id = $2 "
+            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+            body.barcode, tenant_id,
+        )
+        if existing_barcode:
+            raise galat_barcode_barang_dipakai(existing_barcode)
+
+    # Auto-generate item_code if not provided
+    item_code_to_use = body.item_code
+    sku_to_use = body.sku
+
+    if not item_code_to_use:
+        # Determine prefix based on item_type (Indonesian standard)
+        prefix_map = {
+            "goods": "BRG",
+            "service": "JSA",
+            "non_inventory": "NIN",
+        }
+        prefix = prefix_map.get(body.item_type, "ITM")
+
+        # Get next number (include soft-deleted to avoid constraint violation)
+        # Use regex to match only standard format PREFIX-NNNN (not PREFIX-XXX-NNN variants)
+        row = await conn.fetchrow(
+            """
+            SELECT item_code FROM products
+            WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
+            ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
+            """,
+            ctx["tenant_id"],
+            prefix,
+        )
+
+        import re as re_module
+
+        if row and row["item_code"]:
+            match = re_module.search(r"([0-9]+)$", row["item_code"])
+            if match:
+                num = int(match.group(1)) + 1
+            else:
+                num = 1
+        else:
+            num = 1
+
+        item_code_to_use = f"{prefix}-{num:04d}"
+
+    # SKU defaults to item_code if not provided
+    if not sku_to_use:
+        sku_to_use = item_code_to_use
+
+    # Check for duplicate SKU (after SKU is finalized)
+    existing_sku = await conn.fetchrow(
+        f"SELECT {SQL_PEMEGANG} FROM products "
+        "WHERE tenant_id = $1 AND sku = $2 ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+        tenant_id,
+        sku_to_use,
+    )
+    if existing_sku:
+        raise galat_kode_barang_dipakai(sku_to_use, field="sku", pemegang=existing_sku)
+
+    # Check for duplicate item_code (after item_code is finalized)
+    existing_item_code = await conn.fetchrow(
+        f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND item_code = $2 "
+        "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+        tenant_id,
+        item_code_to_use,
+    )
+    if existing_item_code:
+        raise galat_kode_barang_dipakai(item_code_to_use, field="item_code", pemegang=existing_item_code)
+
+    # Pajak item: id = otoritas, nama teks diisi dari tax_codes (W-20261013-ITEMFIELD; dulu id dibuang diam).
+    if body.sales_tax_id is not None:
+        body.sales_tax = await nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")
+    if body.purchase_tax_id is not None:
+        body.purchase_tax = await nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")
+
+    # Auto-default inventory/COGS accounts for stockable goods so the
+    # COGS/restock path no longer relies on an implicit silent role fallback.
+    (
+        body.inventory_account_id,
+        body.cogs_account_id,
+    ) = await _auto_default_product_accounts(
+        conn,
+        tenant_id,
+        body.item_type,
+        body.track_inventory,
+        body.inventory_account_id,
+        body.cogs_account_id,
+    )
+
+    # Saldo awal stok: harga pokok diperiksa SEBELUM produk berdiri (audit F1 10 Okt 2026; services/saldo_awal_stok.py).
+    if body.track_inventory and body.item_type == "goods":
+        await periksa_saldo_awal(
+            conn,
+            tenant_id,
+            body.opening_stock,
+            body.opening_stock_rate if body.opening_stock_rate else (body.purchase_price or 0),
+        )
+    return item_code_to_use, sku_to_use
+
+
+@router.post("/items/preview")
+async def preview_create_item(request: Request, body: dict):
+    """Pratinjau BUAT barang (AS-G14): penentu SAMA dengan POST /items (tanpa_stok_bila_bukan_barang + periksa_badan_item +
+    _siapkan_buat_barang), transaksi READ ONLY, nol tulis. 200 {success, data:{ok, blocks, rencana{..., efek[]}, payload}}. Galat
+    skema (mis. jasa + bisa_dikirim, validator schemas/items.py) -> blok DATA_TIDAK_SAH per medan (bukan 422)."""
+    from pydantic import ValidationError
+    from .customers import blok_dari_galat, blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        b = CreateItemRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "rencana": None, "payload": payload}}
+    bloks, kode = [], (None, None)
+    conn = await get_db_connection()
+    try:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            tanpa_stok_bila_bukan_barang(b)
+            periksa_badan_item(b, "POST /items/preview")
+            kode = await _siapkan_buat_barang(conn, ctx["tenant_id"], ctx, b)
+        except HTTPException as e:
+            bloks.append(blok_dari_galat(e))
+        finally:
+            await tr.rollback()
+    finally:
+        await conn.close()
+    efek = []
+    if b.track_inventory and b.item_type == "goods" and (b.opening_stock or 0) > 0:
+        rate = b.opening_stock_rate if b.opening_stock_rate else (b.purchase_price or 0)
+        efek.append({"jenis": "saldo_awal_stok", "qty": str(b.opening_stock), "harga": str(rate),
+                     "nilai": f"{Decimal(str(b.opening_stock)) * Decimal(str(rate)):.2f}"})
+    rencana = {"name": b.name, "item_type": b.item_type, "track_inventory": b.track_inventory, "bisa_dikirim": b.bisa_dikirim,
+               "base_unit": b.base_unit, "sales_price": b.sales_price, "item_code": kode[0], "sku": kode[1], "efek": efek}
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
+
+
 @router.post("/items", response_model=CreateItemResponse)
-async def create_item(request: Request, body: CreateItemRequest):
+async def create_item(request: Request, body: CreateItemRequest, response: Response = None):
     """
     Create a new item (product or service).
 
@@ -587,120 +742,19 @@ async def create_item(request: Request, body: CreateItemRequest):
     conn = None
     tanpa_stok_bila_bukan_barang(body)  # 10 Okt: non_inventory/service tak pernah track_inventory
     periksa_badan_item(body, "POST /items")
+    from ..services import idem_buat
+    _kunci = idem_buat.kunci_dari(request)  # AS-G14: X-Idempotency-Key opsional (pola QUOTE_CREATE)
 
     try:
         conn = await get_db_connection()
 
-        # Check for duplicate name (barang aktif saja: V402 indeks unik nama parsial WHERE deleted_at IS NULL)
-        existing = await conn.fetchrow(
-            f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
-            tenant_id,
-            body.name,
-        )
-        if existing:
-            raise galat_nama_barang_dipakai(existing)
-
-        # Check for duplicate barcode
-        if body.barcode:
-            existing_barcode = await conn.fetchrow(
-                # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
-                f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND tenant_id = $2 "
-                "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-                body.barcode, tenant_id,
-            )
-            if existing_barcode:
-                raise galat_barcode_barang_dipakai(existing_barcode)
-
-        # Auto-generate item_code if not provided
-        item_code_to_use = body.item_code
-        sku_to_use = body.sku
-
-        if not item_code_to_use:
-            # Determine prefix based on item_type (Indonesian standard)
-            prefix_map = {
-                "goods": "BRG",
-                "service": "JSA",
-                "non_inventory": "NIN",
-            }
-            prefix = prefix_map.get(body.item_type, "ITM")
-
-            # Get next number (include soft-deleted to avoid constraint violation)
-            # Use regex to match only standard format PREFIX-NNNN (not PREFIX-XXX-NNN variants)
-            row = await conn.fetchrow(
-                """
-                SELECT item_code FROM products
-                WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
-                ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
-                """,
-                ctx["tenant_id"],
-                prefix,
-            )
-
-            import re as re_module
-
-            if row and row["item_code"]:
-                match = re_module.search(r"([0-9]+)$", row["item_code"])
-                if match:
-                    num = int(match.group(1)) + 1
-                else:
-                    num = 1
-            else:
-                num = 1
-
-            item_code_to_use = f"{prefix}-{num:04d}"
-
-        # SKU defaults to item_code if not provided
-        if not sku_to_use:
-            sku_to_use = item_code_to_use
-
-        # Check for duplicate SKU (after SKU is finalized)
-        existing_sku = await conn.fetchrow(
-            f"SELECT {SQL_PEMEGANG} FROM products "
-            "WHERE tenant_id = $1 AND sku = $2 ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-            tenant_id,
-            sku_to_use,
-        )
-        if existing_sku:
-            raise galat_kode_barang_dipakai(sku_to_use, field="sku", pemegang=existing_sku)
-
-        # Check for duplicate item_code (after item_code is finalized)
-        existing_item_code = await conn.fetchrow(
-            f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND item_code = $2 "
-            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-            tenant_id,
-            item_code_to_use,
-        )
-        if existing_item_code:
-            raise galat_kode_barang_dipakai(item_code_to_use, field="item_code", pemegang=existing_item_code)
-
-        # Pajak item: id = otoritas, nama teks diisi dari tax_codes (W-20261013-ITEMFIELD; dulu id dibuang diam).
-        if body.sales_tax_id is not None:
-            body.sales_tax = await nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")
-        if body.purchase_tax_id is not None:
-            body.purchase_tax = await nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")
-
-        # Auto-default inventory/COGS accounts for stockable goods so the
-        # COGS/restock path no longer relies on an implicit silent role fallback.
-        (
-            body.inventory_account_id,
-            body.cogs_account_id,
-        ) = await _auto_default_product_accounts(
-            conn,
-            tenant_id,
-            body.item_type,
-            body.track_inventory,
-            body.inventory_account_id,
-            body.cogs_account_id,
-        )
-
-        # Saldo awal stok: harga pokok diperiksa SEBELUM produk berdiri (audit F1 10 Okt 2026; services/saldo_awal_stok.py).
-        if body.track_inventory and body.item_type == "goods":
-            await periksa_saldo_awal(
-                conn,
-                tenant_id,
-                body.opening_stock,
-                body.opening_stock_rate if body.opening_stock_rate else (body.purchase_price or 0),
-            )
+        _tx = conn.transaction()  # AS-G14: transaksi LUAR -- idem lock + replay SEBELUM validasi (ketuk ganda = replay, bukan 409
+        await _tx.start()         # nama dipakai); galat -> conn.close() di finally = rollback; tulis lama = savepoint di dalamnya
+        _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "ITEM_CREATE", body, "products", "item", response)
+        if _lama is not None:
+            await _tx.rollback()
+            return _lama
+        item_code_to_use, sku_to_use = await _siapkan_buat_barang(conn, tenant_id, ctx, body)
 
         # Start transaction
         async with conn.transaction():
@@ -904,7 +958,7 @@ async def create_item(request: Request, body: CreateItemRequest):
 
         logger.info(f"Created item {body.name} (id={item_id}) for tenant {tenant_id}")
 
-        return CreateItemResponse(
+        _hasil = await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_CREATE", CreateItemResponse(
             success=True,
             message=f"Item '{body.name}' berhasil ditambahkan",
             data={
@@ -914,7 +968,9 @@ async def create_item(request: Request, body: CreateItemRequest):
                 "track_inventory": body.track_inventory,
                 "bisa_dikirim": body.bisa_dikirim,
             },
-        )
+        ), item_id)
+        await _tx.commit()
+        return _hasil
 
     except HTTPException:
         raise

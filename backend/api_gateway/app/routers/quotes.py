@@ -946,7 +946,7 @@ async def _perpanjang_penawaran(conn, ctx: dict, quote_id: str, body, quote) -> 
 
 
 @router.patch("/{quote_id}", response_model=QuoteResponse)
-async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest):
+async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest, response: _Response = None):
     """Ubah penawaran: draf, terkirim, dilihat, kedaluwarsa (STATUS_BOLEH_UBAH). Isi + aturan: _ubah_penawaran
     (juga dipakai pratinjau POST /{id}/edit/preview)."""
     try:
@@ -956,9 +956,17 @@ async def update_quote(request: Request, quote_id: str, body: UpdateQuoteRequest
         from ..services.optimistic_concurrency import assert_if_match_row
         await assert_if_match_row(request, "quotes", quote_id)
 
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)  # AS-G1 (Milkybook T0, 24 Okt 2026): X-Idempotency-Key opsional
         async with pool.acquire() as conn:
             async with conn.transaction():
-                return await _ubah_penawaran(conn, ctx, quote_id, body)
+                # sidik = badan exclude_unset (pola SO_UPDATE): medan yang TIDAK dikirim tak ikut sidik
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(
+                    conn, ctx, _kunci, "QUOTE_UPDATE", quote_id, lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:
+                    return _lama
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_UPDATE", await _ubah_penawaran(conn, ctx, quote_id, body),
+                                              quote_id)
 
     except HTTPException:
         raise
@@ -1759,7 +1767,7 @@ async def preview_void_quote(request: Request, quote_id: str, body: VoidQuoteReq
 
 
 @router.post("/{quote_id}/void", response_model=QuoteResponse)
-async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None):
+async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = None, response: _Response = None):
     """
     Batalkan penawaran. Boleh untuk Draf, Terkirim, dan Diterima (selama belum jadi pesanan/faktur; alasan WAJIB untuk Diterima).
     Penawaran tak berdampak akuntansi (nol jurnal). Alasan -> riwayat berakor.
@@ -1768,7 +1776,14 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
         ctx = get_user_context(request)
         pool = await get_pool()
 
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)  # AS-G1 (Milkybook T0, 24 Okt 2026): X-Idempotency-Key opsional
+
         async with pool.acquire() as conn, conn.transaction():
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(
+                conn, ctx, _kunci, "QUOTE_VOID", quote_id, lambda: (body.model_dump(mode="json") if body else {}), response)
+            if _lama is not None:
+                return _lama
             quote = await _ambil_penawaran_void(conn, ctx["tenant_id"], quote_id)
             alasan = (body.reason.strip() if body and body.reason else None)
             blok = await _rencana_void_penawaran(conn, ctx["tenant_id"], quote, alasan)
@@ -1797,7 +1812,7 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                 f"Penawaran {quote['quote_number']} dibatalkan" + (f": {alasan}" if alasan else ""), source="api:quotes",
             )
 
-            return QuoteResponse(
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_VOID", QuoteResponse(
                 success=True,
                 message="Penawaran dibatalkan",
                 data={
@@ -1806,7 +1821,7 @@ async def void_quote(request: Request, quote_id: str, body: VoidQuoteRequest = N
                     "status": "void",
                     "previous_status": quote["status"],
                 },
-            )
+            ), quote_id)
 
     except HTTPException:
         raise
