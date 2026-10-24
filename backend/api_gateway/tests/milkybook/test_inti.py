@@ -413,3 +413,9 @@ async def test_pratinjau_lolos_bentuk_data_bersarang_melahirkan_kartu():
     be.rute[("POST", "/api/x/a1/edit/preview")] = JawabanBE(200, {"success": True, "data": {"ok": True, "blocks": []}})
     ev = await p.giliran(s, "ubah", be, izin_semua)
     assert len([e for e in ev if e["jenis"] == "kartu"]) == 1
+
+
+def test_aturan_harga_sasaran_ada_di_system():
+    """Putusan MASTER 24 Okt (PNW-056): model tak boleh menurunkan harga satuan dari total sasaran."""
+    from app.milkybook.inti.putaran import ATURAN_SISTEM
+    assert "HARGA SASARAN" in ATURAN_SISTEM and "JANGAN menghitung harga satuan" in ATURAN_SISTEM

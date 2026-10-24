@@ -430,25 +430,21 @@
       "expiry_date": "2026-10-31",
       "items": [
        {
-        "description": "Kemeja PDH",
+        "description": "*Kemeja PDH*",
         "quantity": 25,
         "unit_price": 120000
        }
-      ],
-      "discount_type": "percentage",
-      "discount_value": 10
+      ]
      },
      "terlarang": [
       "ar_opening_balance",
-      "discount_amount",
-      "opening_stock",
-      "opening_stock_date",
-      "opening_stock_rate",
       "subtotal",
-      "tax_amount",
-      "total_amount"
+      "total_amount",
+      "tax_amount"
      ]
-    }
+    },
+    "diskon_10_persen": true,
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
@@ -582,10 +578,9 @@
    ],
    "harapan": {
     "sumber": "laporan11 PNW-012",
-    "nav_wajib": [
-     "buka_kirim_penawaran"
-    ],
-    "tulis_maks": 0
+    "tulis_maks": 0,
+    "nav_atau_tanya": "buka_kirim_penawaran",
+    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
    }
   },
   {
