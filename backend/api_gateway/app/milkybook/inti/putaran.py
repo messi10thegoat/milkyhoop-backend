@@ -79,6 +79,7 @@ TOOL_HARGA_SASARAN = {
         "required": ["baris", "target_total"], "additionalProperties": False},
 }
 MAKS_COBA_ULANG = 2
+CATATAN_ANGKA_DISAMARKAN = "Sebagian angka tidak ditampilkan karena tidak berasal dari data aplikasi."
 
 ATURAN_SISTEM = """Kamu Milkybook, asisten pembukuan di aplikasi MilkyHoop. Pengguna adalah pemilik atau staf usaha kecil di Indonesia.
 
@@ -359,9 +360,16 @@ class Putaran:
             self._catat_usage(sesi, hasil)
             if hasil.model and hasil.model not in model_dipakai:
                 model_dipakai.append(hasil.model)
+            calls = hasil.tool_calls
+            teks = hasil.teks.strip()
+            # Teks pengantar yang menyertai tool_use TIDAK ditampilkan (MASTER 25 Okt; model sempat menulis
+            # "100.000 × 3 = 300.000" sebelum tool). Audit: hash + panjang saja (V465: tanpa teks mentah).
+            pengantar = bool(calls and teks)
             await self.audit.tulis(BarisAudit(
                 sesi.tenant_id, sesi.user_id, sesi.sesi_id, "model", model=hasil.model or self.model_nama,
-                prompt_hash=self.prompt_hash, hasil=hasil.stop_reason,
+                prompt_hash=self.prompt_hash,
+                payload_hash=hashlib.sha256(teks.encode()).hexdigest() if pengantar else None,
+                hasil=f"{hasil.stop_reason};pengantar_disembunyikan:{len(teks)}" if pengantar else hasil.stop_reason,
                 token_masuk=hasil.usage.get("input_tokens", 0), token_keluar=hasil.usage.get("output_tokens", 0),
                 token_cache_baca=hasil.usage.get("cache_read_input_tokens", 0),
                 token_cache_tulis=hasil.usage.get("cache_creation_input_tokens", 0),
@@ -373,10 +381,8 @@ class Putaran:
                 sesi.messages.append({"role": "assistant", "content": [{"type": "text", "text": "(permintaan tidak diproses)"}]})
                 break
 
-            calls = hasil.tool_calls
-            teks = hasil.teks.strip()
-            pelanggaran = penjaga_angka.periksa(teks, sesi.sumber_angka) if teks else []
-            salah_tanggal = penjaga_tanggal.periksa(teks, sesi.hari_ini)
+            pelanggaran = penjaga_angka.periksa(teks, sesi.sumber_angka) if teks and not calls else []
+            salah_tanggal = penjaga_tanggal.periksa(teks, sesi.hari_ini) if not calls else []
 
             if not calls and (pelanggaran or salah_tanggal) and not sudah_dikoreksi and hasil.stop_reason == "end_turn":
                 sudah_dikoreksi = True
@@ -396,15 +402,16 @@ class Putaran:
                 continue
 
             sesi.messages.append({"role": "assistant", "content": hasil.konten})
-            akan_alih = baca and any(c.nama == TOOL_PERLU_PENULIS["name"] for c in calls)
-            if teks and not akan_alih:
+            if teks and not calls:
                 ev = {"jenis": "teks", "teks": teks}
                 if salah_tanggal:
                     ev["tanggal_tak_cocok"] = salah_tanggal
                 if pelanggaran:
+                    # Sesudah satu koreksi masih ada angka karangan -> angka itu DISAMARKAN, bukan hanya ditandai.
+                    ev["teks"] = penjaga_angka.samarkan(teks, sesi.sumber_angka) + "\n\n" + CATATAN_ANGKA_DISAMARKAN
                     ev["angka_tak_terverifikasi"] = pelanggaran
                     await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "penjaga_angka",
-                                                      hasil="lolos-bertanda:" + json.dumps(pelanggaran, ensure_ascii=False)[:480]))
+                                                      hasil="disamarkan:" + json.dumps(pelanggaran, ensure_ascii=False)[:480]))
                 peristiwa.append(ev)
 
             if not calls:

@@ -124,3 +124,29 @@ def periksa(teks_jawaban: str, sumber: Iterable[Any]) -> List[str]:
     """Daftar potongan angka yang TIDAK berasal dari sumber. Kosong = lolos."""
     sah = angka_sah(sumber)
     return [asli for nilai, asli, persen in angka_dalam_teks(teks_jawaban) if not _cocok(nilai, persen, sah)]
+
+
+def samarkan(teks_jawaban: str, sumber: Iterable[Any], ganti: str = "…") -> str:
+    """Ganti setiap angka wajib-periksa yang TIDAK berasal dari sumber dengan `ganti` (teks lain utuh).
+    Kode dokumen dan tanggal dilindungi seperti di periksa()."""
+    sah = angka_sah(sumber)
+    lindung = [m.span() for m in _KODE_DOK.finditer(teks_jawaban)] + [m.span() for m in _TANGGAL.finditer(teks_jawaban)]
+
+    def ganti_satu(m: "re.Match") -> str:
+        a, b = m.span()
+        if any(a < y and x < b for x, y in lindung):
+            return m.group(0)
+        try:
+            nilai = _ke_decimal(m.group("angka"))
+        except InvalidOperation:
+            return m.group(0)
+        pengali = (m.group("pengali") or "").lower()
+        if pengali:
+            nilai *= _PENGALI[pengali]
+        persen = bool(m.group("persen"))
+        if not (m.group("rp") or persen or nilai >= 1000) or _cocok(nilai, persen, sah):
+            return m.group(0)
+        spasi = m.group(0)[len(m.group(0).rstrip()):]
+        return ganti + spasi
+
+    return _POLA.sub(ganti_satu, teks_jawaban)

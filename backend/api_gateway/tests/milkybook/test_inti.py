@@ -10,7 +10,7 @@ from app.milkybook.inti import harga_sasaran, penjaga_angka
 from app.milkybook.inti.audit import AuditMemori
 from app.milkybook.inti.kartu import StatusKartu, badan_kanonik, hash_payload
 from app.milkybook.inti.pelaksana import JawabanBE
-from app.milkybook.inti.putaran import Putaran, Sesi
+from app.milkybook.inti.putaran import CATATAN_ANGKA_DISAMARKAN, Putaran, Sesi
 from app.milkybook.inti.registri import Kelas, Paket, Registri, Tool
 
 from .conftest import BEPalsu, ModelPalsu, izin_semua, panggil, teks
@@ -258,12 +258,41 @@ async def test_penjaga_angka_memaksa_koreksi_sekali():
     assert "[penjaga]" in m.permintaan[2]["messages"][-1]["content"]
 
 
-async def test_penjaga_angka_kedua_kali_ditandai_bukan_disembunyikan():
-    p, _ = putaran([teks("Totalnya Rp 1.234.567."), teks("Totalnya Rp 1.234.567.")])
+async def test_penjaga_angka_kedua_kali_angka_disamarkan():
+    # MASTER 25 Okt: dulu "lolos-bertanda" (angka karangan tetap tampil); kini angka itu disamarkan + catatan.
+    p, _ = putaran([teks("Totalnya Rp 1.234.567 untuk QT-2610-0001."), teks("Totalnya Rp 1.234.567 untuk QT-2610-0001.")])
     be, s = be_standar(), sesi()
     ev = await p.giliran(s, "berapa?", be, izin_semua)
     t = [e for e in ev if e["jenis"] == "teks"][0]
     assert t["angka_tak_terverifikasi"] == ["Rp 1.234.567"]
+    assert t["teks"] == "Totalnya … untuk QT-2610-0001.\n\n" + CATATAN_ANGKA_DISAMARKAN
+    assert "1.234.567" not in t["teks"]
+    assert any(b.peristiwa == "penjaga_angka" and b.hasil.startswith("disamarkan:") for b in p.audit.baris)
+
+
+@pytest.mark.parametrize("jawaban,sumber,hasil", [
+    ("Total Rp 9.000.000, diskon Rp 50.000.", [{"total": 9000000}], "Total Rp 9.000.000, diskon …."),
+    ("QT-2610-0001 tanggal 24 Okt 2026 total 300.000", [], "QT-2610-0001 tanggal 24 Okt 2026 total …"),
+    ("Diskon 16,67% dan 3 pcs", [{"discount_percent": "16.67"}], "Diskon 16,67% dan 3 pcs"),
+    ("100.000 × 3 = 300.000 jadi", [{"harga": 100000}], "100.000 × 3 = … jadi"),
+])
+def test_samarkan(jawaban, sumber, hasil):
+    assert penjaga_angka.samarkan(jawaban, sumber) == hasil
+
+
+async def test_teks_pengantar_bersama_tool_tidak_ditampilkan():
+    # eval nyata kaos 25 Okt: "Harga master 100.000 × 3 = 300.000 ..." tampil sebelum tool -> kini hanya jawaban akhir.
+    p, m = putaran([panggil(("cari_x", {"q": "kaos"}), teks_awal="Harga 45.000 × 3 = 135.000, saya cek dulu."),
+                    teks("Harga kaos Rp 45.000.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "harga kaos?", be, izin_semua)
+    assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Harga kaos Rp 45.000."]
+    assert not any(e.get("angka_tak_terverifikasi") for e in ev if e["jenis"] == "teks")
+    model = [b for b in p.audit.baris if b.peristiwa == "model"]
+    assert model[0].hasil.endswith(";pengantar_disembunyikan:42") and len(model[0].payload_hash or "") == 64
+    assert model[1].payload_hash is None and model[1].hasil == "end_turn"
+    # riwayat model tetap utuh (teks pengantar ada di messages untuk giliran berikutnya)
+    assert any(k.get("text") == "Harga 45.000 × 3 = 135.000, saya cek dulu." for k in m.permintaan[1]["messages"][-2]["content"])
 
 
 @pytest.mark.parametrize("jawaban,sumber,lolos", [
