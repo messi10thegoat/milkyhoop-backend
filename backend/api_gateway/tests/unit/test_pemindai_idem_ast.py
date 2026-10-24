@@ -12,7 +12,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 WAJIB = {
     "routers/purchase_orders.py": ["create_purchase_order", "update_purchase_order", "delete_purchase_order", "send_purchase_order",
                                    "receive_goods", "convert_to_bill", "cancel_purchase_order", "close_purchase_order"],
-    "routers/quotes.py": ["create_quote", "update_quote", "void_quote"],
+    "routers/quotes.py": ["create_quote", "update_quote", "void_quote", "convert_to_invoice"],  # AS-G15 (24 Okt) celah ditutup
     "routers/customers.py": ["create_customer"],
     "routers/items.py": ["create_item"],
     "routers/sj_so.py": ["create_sj_so", "void_sj"],
@@ -25,7 +25,7 @@ WAJIB = {
 }
 # Celah TERUKUR (24 Okt, BACKEND2): penawaran -> faktur tanpa kunci/FOR UPDATE/idem -- tiket ke MASTER. Pemindai MEMASTIKAN masih tercatat
 # sebagai celah (bila diperbaiki, pindahkan ke WAJIB -- tes ini merah supaya daftar tak basi).
-CELAH = {"routers/quotes.py": ["convert_to_invoice"]}
+CELAH = {}  # AS-G15: convert_to_invoice pindah ke WAJIB
 
 
 FUNGSI_IDEM = {"mulai", "mulai_aksi"}          # services/idem_buat
