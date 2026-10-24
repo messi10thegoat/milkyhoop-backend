@@ -26,6 +26,7 @@ from app.milkybook.inti.model import PemanggilAnthropic, biaya_usd  # noqa: E402
 from app.milkybook.inti.putaran import Putaran, Sesi  # noqa: E402
 from app.milkybook.inti.registri import Registri  # noqa: E402
 from app.milkybook.paket import penawaran as pw  # noqa: E402
+from app.milkybook.paket import semua as semua_paket  # noqa: E402
 
 from tests.milkybook.eval.stub_be import StubBE  # noqa: E402
 
@@ -115,7 +116,7 @@ async def jalankan_kasus(kasus, pemanggil, effort):
             "penawaran": {q["id"] for q in be.penawaran}}
     gap = tuple(kasus.get("gap", [pw.AS_G1, pw.AS_G14]))
     izin_owner_k = IZIN[kasus.get("izin", "owner")]
-    putaran = Putaran(Registri([pw.paket()]), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
+    putaran = Putaran(Registri(semua_paket()), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
                       gap_mendarat=gap, effort=effort)
     from datetime import date
     sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24 (Sabtu). Usaha: Kaos Biru Konveksi (konveksi kaos).",
@@ -317,7 +318,7 @@ async def utama(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="claude-opus-5-5")
+    ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--batas-usd", type=float, default=0.9)
     ap.add_argument("--kasus", default="")

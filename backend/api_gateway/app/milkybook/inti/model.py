@@ -15,7 +15,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
-MODEL_BAWAAN = "claude-opus-5-5"
+# Putusan MASTER 24 Okt sesudah eval 60 kasus x 3 model (rancangan §11.8): Sonnet 5.5 effort medium = bawaan
+# (setara Opus di syarat mutlak, separuh biaya). Opus = cadangan analisis berat. Haiku belum untuk tulis.
+MODEL_BAWAAN = "claude-sonnet-5-5"
+EFFORT_BAWAAN = "medium"
 
 # Harga per 1 juta token (USD), skill claude-api tabel 2026-10-06. Untuk laporan biaya eval saja.
 HARGA = {
