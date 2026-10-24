@@ -321,3 +321,15 @@ async def test_audit_tanpa_payload_mentah():
     teks_audit = json.dumps(a.sebagai_dict())
     assert "PT Rahasia" not in teks_audit and '"jumlah"' not in teks_audit
     assert any(b["peristiwa"] == "kartu_lahir" and b["kunci_idempotensi"] for b in a.sebagai_dict())
+
+
+async def test_null_dari_skema_strict_dibuang_sebelum_payload():
+    from app.milkybook.inti.registri import buang_null, skema_wajib_nullable
+    s = skema_wajib_nullable(OBJ({"a": {"type": "string"}, "b": OBJ({"c": {"type": "number"}})}, ["a"]))
+    assert s["required"] == ["a", "b"] and s["properties"]["b"]["anyOf"][1] == {"type": "null"}
+    assert buang_null({"a": "x", "b": None, "d": [{"e": None, "f": 1}]}) == {"a": "x", "d": [{"f": 1}]}
+    p2, m = putaran([panggil(("buat_x", {"jumlah": 3, "catatan": None})), teks("Tinjau.")])
+    be, s2 = be_standar(), sesi()
+    ev = await p2.giliran(s2, "x", be, izin_semua)
+    # null dibuang SEBELUM validasi: kunci bernilai null tidak pernah sampai ke payload.
+    assert [e for e in ev if e["jenis"] == "kartu"][0]["payload"] == {"jumlah": 3}
