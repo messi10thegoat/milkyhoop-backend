@@ -1998,20 +1998,35 @@ def _rek_eksplisit(body, nama: str):
 
 @router.post("/{quote_id}/to-invoice", response_model=QuoteResponse)
 async def convert_to_invoice(
-    request: Request, quote_id: str, body: ConvertToInvoiceRequest = None
+    request: Request, quote_id: str, body: ConvertToInvoiceRequest = None, response: _Response = None
 ):
-    """Convert quote to invoice."""
+    """Convert quote to invoice.
+    AS-G15 (24 Okt 2026, temuan pemindai idem AST): dulu TANPA kunci -- SELECT biasa + cek status, dua permintaan BERSAMAAN keduanya lolos
+    = DUA faktur dari satu penawaran (kelas bug to-order 2 Okt). Kini pola _konversi_penawaran: kunci QUOTE:{tenant}:{id} (SAMA dengan
+    to-order -> to-order x to-invoice pada satu penawaran ikut berurutan) + FOR UPDATE; sudah jadi faktur yang MASIH ADA = faktur yang sama
+    (already_converted, idempoten alami); X-Idempotency-Key opsional (QUOTE_TO_INVOICE). converted_to_id menggantung (faktur dihapus) tetap
+    400 seperti dulu (putusan pemilik AS-G15a)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat
+        _kunci = idem_buat.kunci_dari(request)
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Get quote
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(
+                    conn, ctx, _kunci, "QUOTE_TO_INVOICE", quote_id,
+                    lambda: (body.model_dump(mode="json", exclude_unset=True) if body else {}), response)
+                if _lama is not None:
+                    return _lama
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}"
+                )
                 quote = await conn.fetchrow(
                     """
                     SELECT * FROM quotes
                     WHERE id = $1 AND tenant_id = $2
+                    FOR UPDATE
                 """,
                     uuid_module.UUID(quote_id),
                     ctx["tenant_id"],
@@ -2019,6 +2034,23 @@ async def convert_to_invoice(
 
                 if not quote:
                     raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+
+                if (quote["status"] == "converted" and quote.get("converted_to_type") == "invoice"
+                        and quote.get("converted_to_id")):
+                    faktur_lama = await conn.fetchrow(
+                        "SELECT id, invoice_number, due_date FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                        quote["converted_to_id"], ctx["tenant_id"],
+                    )
+                    if faktur_lama:  # permintaan ulang (klik ganda / bersamaan) = faktur YANG SAMA, bukan galat dan bukan faktur kedua
+                        _hasil = QuoteResponse(
+                            success=True,
+                            message="Penawaran sudah dijadikan faktur",
+                            data={"quote_id": quote_id, "invoice_id": str(faktur_lama["id"]),
+                                  "invoice_number": faktur_lama["invoice_number"],
+                                  "due_date": faktur_lama["due_date"].isoformat() if faktur_lama["due_date"] else None,
+                                  "already_converted": True},
+                        )
+                        return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_TO_INVOICE", _hasil, quote_id) if _kp else _hasil
 
                 if quote["status"] not in ("sent", "accepted", "viewed"):
                     raise HTTPException(
@@ -2154,7 +2186,7 @@ async def convert_to_invoice(
                     invoice_id,
                 )
 
-                return QuoteResponse(
+                _hasil = QuoteResponse(
                     success=True,
                     message="Penawaran dijadikan faktur",
                     data={
@@ -2165,6 +2197,7 @@ async def convert_to_invoice(
                         "due_date_source": due_date_source,
                     },
                 )
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_TO_INVOICE", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
