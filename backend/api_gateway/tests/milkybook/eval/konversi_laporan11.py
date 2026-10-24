@@ -66,6 +66,10 @@ def ubah(r):
     if h0.get("harus_tanya") or kelas is None or kelas == "luar":
         h["kartu_maks"] = 0
         h["tulis_maks"] = 0
+        # Kontrol negatif 24 Okt: model DIAM lulus 24/60 kasus bila hanya "nol tulis" yang diperiksa. Syarat positif:
+        h["teks_min_panjang"] = 60
+    if h0.get("harus_tanya"):
+        h["teks_bertanya"] = True
     if kelas == "baca":
         h["tool_wajib"] = [tool]
         if wajib:
