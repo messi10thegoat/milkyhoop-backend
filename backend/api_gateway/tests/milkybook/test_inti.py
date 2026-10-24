@@ -419,3 +419,9 @@ def test_aturan_harga_sasaran_ada_di_system():
     """Putusan MASTER 24 Okt (PNW-056): model tak boleh menurunkan harga satuan dari total sasaran."""
     from app.milkybook.inti.putaran import ATURAN_SISTEM
     assert "HARGA SASARAN" in ATURAN_SISTEM and "JANGAN menghitung harga satuan" in ATURAN_SISTEM
+
+
+def test_aturan_jangan_menghilangkan_permintaan_ada_di_system():
+    """Temuan eval 24 Okt (Sonnet PNW-059): saldo awal 2 jt dibuang tanpa disebut."""
+    from app.milkybook.inti.putaran import ATURAN_SISTEM
+    assert "JANGAN MENGHILANGKAN PERMINTAAN DIAM-DIAM" in ATURAN_SISTEM
