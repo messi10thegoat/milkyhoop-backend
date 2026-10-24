@@ -111,6 +111,33 @@ async def main():
         ada = await c.fetchval("SELECT count(*) FROM vendor_deposits WHERE id = $1", u2)
         cek("A delete: kunci sama 2x = replay 200 (bukan 404), 0 baris", d1 is not None and d2 == d1 and hd.headers.get("X-Idempotent-Replay") == "true"
             and ada == 0, (e1 and e1.detail, e2 and e2.detail, ada))
+        # apply -> unapply 2x (syarat MASTER: lepas NYATA, tercatat SEKALI, sisa tagihan/AP sebelum == sesudah)
+        tg = await c.fetchrow("""SELECT bill_id, vendor_id, outstanding FROM compute_ap_outstanding($1)
+                                 WHERE bill_id IS NOT NULL AND outstanding >= 2000 ORDER BY outstanding DESC LIMIT 1""", T)
+        cek("A ada tagihan kaos terbuka untuk diterapkan", tg is not None, tg)
+        if tg:
+            sisa_tg = lambda: c.fetchval("SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding($1) WHERE bill_id = $2", T, tg["bill_id"])  # noqa: E731
+            ap = lambda: c.fetchval("SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding($1)", T)  # noqa: E731
+            r = dt(await RV.create_vendor_deposit(req(), VendorDepositCreate(deposit_date=hari, vendor_id=tg["vendor_id"], amount=D("1500"),
+                                                                            bank_account_id=bank, reference="TES E2E AS-GP4", notes="TES E2E AS-GP4 terap")))
+            u3 = UUID(str(r.get("id") or r["data"]["id"]))
+            await RV.post_vendor_deposit(req(), u3, Response())
+            s0, ap0 = D(str(await sisa_tg())), D(str(await ap()))
+            from app.schemas.vendor_deposits import ApplyDepositRequest
+            ra = dt(await RV.apply_vendor_deposit(req(), u3, ApplyDepositRequest(bill_id=tg["bill_id"], amount=D("1000")), Response()))
+            app_id = UUID(str(ra.get("application_id") or ra["data"]["application_id"]))
+            s1 = D(str(await sisa_tg()))
+            k4, hu = f"TES-E2E-{uuid4()}", Response()
+            e1, w1 = await galat(RV.unapply_vendor_deposit(req(k4), u3, app_id, Response()))
+            e2, w2 = await galat(RV.unapply_vendor_deposit(req(k4), u3, app_id, hu))
+            n_rev = await c.fetchval("SELECT count(*) FROM vendor_deposit_applications WHERE id = $1 AND status = 'reversed'", app_id)
+            n_jur = await c.fetchval("""SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND reversal_of_id =
+                                        (SELECT journal_id FROM vendor_deposit_applications WHERE id = $2)""", T, app_id)
+            s2, ap2 = D(str(await sisa_tg())), D(str(await ap()))
+            cek(f"A unapply 2x kunci sama = replay; penerapan dilepas SEKALI (status reversed {n_rev}, jurnal pembalik {n_jur}); sisa tagihan "
+                f"{s0}->{s1}->{s2} & AP sebelum == sesudah", w1 is not None and dt(w2) == dt(w1) and hu.headers.get("X-Idempotent-Replay") == "true"
+                and n_rev == 1 and n_jur <= 1 and s1 == s0 - 1000 and s2 == s0 and ap2 == ap0,
+                (e1 and e1.detail, e2 and e2.detail, n_rev, n_jur, s0, s1, s2, ap0, ap2))
     finally:
         await luar.rollback()
         sisa_a = await c.fetchval("SELECT count(*) FROM vendor_deposits WHERE tenant_id = $1 AND reference = 'TES E2E AS-GP4' AND notes LIKE 'TES E2E%'", T)
