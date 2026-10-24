@@ -31,6 +31,8 @@ KHUSUS = {
     # ubah SO terkonfirmasi: pratinjau menjalankan penulis PATCH /sales-orders/{id} (so_ubah_terkonfirmasi.ubah)
     "POST /api/sales-orders/{order_id}/edit/preview": "PATCH /api/sales-orders/{order_id}",
     "POST /api/quotes/{quote_id}/edit/preview": "PATCH /api/quotes/{quote_id}",
+    # AS-G4 (24 Okt): ubah serah-terima SJ = PUT (penentu bersama deliveries._rencana_serah)
+    "POST /api/deliveries/{delivery_id}/serah/preview": "PUT /api/deliveries/{delivery_id}/serah",
     # U2b ubah draf proforma: pratinjau menjalankan penulis PATCH /proformas/{id} (proformas._tulis_ubah)
     "POST /api/proformas/{proforma_id}/update/preview": "PATCH /api/proformas/{proforma_id}",
     # kontrak PO tahap 2: ubah = PATCH, hapus = DELETE (penentu bersama services/po_rencana)
