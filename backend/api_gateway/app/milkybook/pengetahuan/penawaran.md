@@ -1,6 +1,6 @@
 # Penawaran (Quote) di MilkyHoop
 
-Diukur dari kode BE `c8c24092` (routers/quotes.py, schemas/quotes.py, schemas/items.py, schemas/customers.py). Aksi yang sah untuk satu dokumen SELALU dibaca dari server (detail_penawaran), bukan dari kartu ini.
+Diukur dari kode BE `c8c24092` (routers/quotes.py, schemas/quotes.py, schemas/items.py, schemas/customers.py, services/penawaran_kedaluwarsa.py). Status dan kunci tindak lanjut (`aksi`) SELALU dibaca dari server (detail_penawaran / daftar_penawaran). Boleh-tidaknya satu tindakan diputuskan server lewat pratinjau; aturan di bawah hanya untuk menjelaskan.
 
 ## Alur
 draf -> terkirim (sent) -> dilihat pelanggan (viewed) -> diterima (accepted) / ditolak (declined)
@@ -31,7 +31,7 @@ Status yang ada: draft, sent, viewed, accepted, declined, expired, converted, vo
 - Pelanggan baru dibuat TANPA saldo awal piutang; barang baru TANPA stok awal (keduanya membuat jurnal, diurus di halaman masing-masing).
 - Jenis barang: goods (stok dilacak), non_inventory (barang tanpa stok), service (jasa). Untuk non_inventory TANYAKAN: "Dikirim ke pelanggan?" -> bisa_dikirim (dikirim lewat Surat Jalan, tanpa stok/jurnal). Jasa tidak pernah bisa dikirim.
 - Banyak usaha memakai barang non_inventory untuk semua barangnya; jangan menyarankan stok bila pengguna tidak meminta.
-- Daftar penawaran punya pill AKSI dari server: perlu_dikirim, tunggu_jawaban, segera_habis, lewat_masa, perlu_dipesan. Pakai ini untuk pertanyaan "mana yang perlu ditindaklanjuti".
+- Kunci tindak lanjut (`aksi`, services/penawaran_kedaluwarsa.py aksi_penawaran): draf -> perlu_dikirim; diterima dan belum dikonversi -> perlu_dipesan; terkirim/dilihat -> lewat_masa (berlaku < hari ini), segera_habis (sisa hari <= ambang server), selain itu tunggu_jawaban. Pakai daftar_penawaran?aksi=... untuk pertanyaan "mana yang perlu ditindaklanjuti".
 
 ## Bahasa layar
 Penawaran, Pesanan (SO), Faktur, Pelanggan, Barang & Jasa, Tinjau, Setuju, Ubah, Batalkan, Draf, Terkirim, Dilihat, Diterima, Ditolak, Kedaluwarsa, Dikonversi.

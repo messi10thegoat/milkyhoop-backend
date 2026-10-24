@@ -174,10 +174,10 @@ def test_rute_tool_terpetakan_di_tabel_izin(t):
 async def test_sebelum_t0_semua_write_jadi_nav_dan_pratinjau_t0_hilang():
     r = Registri([pw.paket()])
     efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=())}
-    for nama in ("ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"):
+    for nama in ("ubah_penawaran", "batalkan_penawaran", "buat_pelanggan", "buat_barang"):
         assert efektif[nama].kelas == Kelas.NAV, nama
     assert "pratinjau_pelanggan_baru" not in efektif and "pratinjau_barang_baru" not in efektif
-    assert [t.nama for t in efektif.values() if t.kelas == Kelas.WRITE] == ["buat_penawaran"]
+    assert [t.nama for t in efektif.values() if t.kelas == Kelas.WRITE] == ["buat_penawaran", "jadikan_pesanan"]
 
 
 @pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.kelas == Kelas.WRITE], ids=lambda t: t.nama)
@@ -185,12 +185,20 @@ def test_write_tanpa_butuh_harus_idempoten_di_be(t):
     """WRITE aktif tanpa gerbang T0 hanya bila handler BE-nya membaca kunci idempotency."""
     if t.butuh:
         return
-    berkas = _cari_rute(t.metode, t.jalur)[1]
-    s = _src(berkas)
-    m = re.search(r'@router\.' + t.metode.lower() + r'\(\s*""', s) if t.jalur == "/api/quotes" else None
-    assert m, t.nama
-    badan = s[m.end(): m.end() + 6000]
-    assert re.search(r"idem_buat\.kunci_dari\(request\)", badan) and "idem_buat.mulai(" in badan, t.nama
+    s = _src("routers/quotes.py")
+    if t.nama == "buat_penawaran":
+        m = re.search(r'@router\.post\(\s*""', s)
+        badan = s[m.end(): m.end() + 6000]
+        assert re.search(r"idem_buat\.kunci_dari\(request\)", badan) and "idem_buat.mulai(" in badan
+    elif t.nama == "jadikan_pesanan":
+        # idempoten alami: kunci advisory per penawaran + SO lama dikembalikan bila sudah dikonversi
+        i = s.index("async def _konversi_penawaran(")
+        badan = s[i: i + 4000]
+        assert "pg_advisory_xact_lock" in badan and 'f"QUOTE:{ctx[\'tenant_id\']}:{quote_id}"' in badan
+        assert '"already_converted": True' in badan
+        assert re.search(r"await _konversi_penawaran\(conn, ctx, quote_id, body\)", s)
+    else:
+        raise AssertionError(f"{t.nama}: WRITE tanpa butuh tanpa bukti idempotency")
 
 
 async def test_sesudah_t0_write_aktif():
