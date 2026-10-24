@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
@@ -165,6 +166,29 @@ def buang_medan_tak_berubah(payload: dict, sekarang: dict) -> dict:
         else:
             hasil[k] = v
     return hasil
+
+
+def _ucapan_pengguna(sesi, n: int = 4) -> str:
+    """Teks ucapan pengguna terakhir (bukan catatan aplikasi [sistem]/[penjaga]/[konteks] ...)."""
+    hasil = []
+    for m in reversed(sesi.messages):
+        if m["role"] == "user" and isinstance(m["content"], str):
+            t = m["content"]
+            if t.startswith("[konteks]"):
+                t = t.split("\n\n", 1)[-1]
+            elif t.startswith("["):
+                continue
+            hasil.append(t)
+            if len(hasil) >= n:
+                break
+    return "\n".join(hasil)
+
+
+def _cek_tak_didukung(t, sesi) -> list:
+    if not t.tak_didukung:
+        return []
+    teks = _ucapan_pengguna(sesi)
+    return [pesan for pola, pesan in t.tak_didukung if re.search(pola, teks, re.I)]
 
 
 def _ada_blok(isi: Any) -> bool:
@@ -425,14 +449,20 @@ class Putaran:
                                               tool=lama.tool, kartu_id=lama.kartu_id, payload_hash=lama.payload_hash))
         k = Kartu(sesi_id=sesi.sesi_id, tool=t.nama, metode=t.metode, jalur=jalur, payload=sisa,
                   pratinjau=jbp.isi, judul=t.judul_kartu or t.nama, tool_use_id=c.id)
+        tak_dicatat = _cek_tak_didukung(t, sesi)
         sesi.kartu[k.kartu_id] = k
-        peristiwa.append({"jenis": "kartu", **k.untuk_klien()})
+        ev_kartu = {"jenis": "kartu", **k.untuk_klien()}
+        if tak_dicatat:
+            ev_kartu["tak_dicatat"] = tak_dicatat
+        peristiwa.append(ev_kartu)
         await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_lahir", tool=t.nama, kelas="WRITE",
                                           payload_hash=k.payload_hash, kunci_idempotensi=k.kunci, kartu_id=k.kartu_id))
-        return _ringkas({
-            "status": "menunggu_persetujuan", "kartu_id": k.kartu_id, "pratinjau": jbp.isi,
-            "catatan": "BELUM tersimpan. Kartu Tinjau tampil ke pengguna; tunggu pesan [sistem] persetujuan.",
-        }), False, True
+        hasil = {"status": "menunggu_persetujuan", "kartu_id": k.kartu_id, "pratinjau": jbp.isi,
+                 "catatan": "BELUM tersimpan. Kartu Tinjau tampil ke pengguna; tunggu pesan [sistem] persetujuan."}
+        if tak_dicatat:
+            hasil["tidak_dicatat"] = tak_dicatat
+            hasil["wajib_disebut"] = "Sebutkan ke pengguna di jawaban ini bahwa bagian berikut TIDAK dicatat dan di mana mengisinya."
+        return _ringkas(hasil), False, True
 
     def _catat_usage(self, sesi: Sesi, hasil: HasilModel) -> None:
         for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):

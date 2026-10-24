@@ -275,3 +275,20 @@ async def test_pratinjau_pasangan_tersembunyi_dari_model_tetap_dipakai_inti():
         assert any(t.pratinjau == nama for t in pw.TOOLS)  # masih jadi pasangan WRITE
     for nama in ("hitung_penawaran", "hitung_tanggal", "buat_penawaran", "ubah_penawaran", "tutup_kartu_tinjau"):
         assert nama in dikirim  # tool harga/tanggal TIDAK ikut disembunyikan (syarat MASTER)
+
+
+async def test_saldo_awal_disebut_pengguna_kartu_membawa_catatan_tak_dicatat():
+    from app.milkybook.inti.audit import AuditMemori
+    from app.milkybook.inti.putaran import Putaran, Sesi
+    from .conftest import ModelPalsu, panggil, teks
+    from .eval.stub_be import StubBE
+    m = ModelPalsu([panggil(("buat_pelanggan", {"name": "PT Baru Makmur"})), teks("Tinjau.")])
+    p = Putaran(Registri(semua_paket()), m, AuditMemori(), gap_mendarat=(pw.AS_G1, pw.AS_G14))
+    ev = await p.giliran(Sesi("s", "t", "u"), "daftarin PT Baru Makmur, saldo piutang awalnya 2jt", StubBE(), izin_semua)
+    k = [e for e in ev if e["jenis"] == "kartu"][0]
+    assert k["tak_dicatat"] and "Saldo awal" in k["tak_dicatat"][0]
+    assert "tidak_dicatat" in m.permintaan[1]["messages"][-1]["content"][0]["content"]
+    m2 = ModelPalsu([panggil(("buat_pelanggan", {"name": "PT Lain"})), teks("Tinjau.")])
+    p2 = Putaran(Registri(semua_paket()), m2, AuditMemori(), gap_mendarat=(pw.AS_G1, pw.AS_G14))
+    ev2 = await p2.giliran(Sesi("s", "t", "u"), "daftarin PT Lain", StubBE(), izin_semua)
+    assert "tak_dicatat" not in [e for e in ev2 if e["jenis"] == "kartu"][0]
