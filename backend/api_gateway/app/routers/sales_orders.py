@@ -1490,11 +1490,13 @@ async def delete_sales_order(request: Request, order_id: str, response: Response
                 if lama is not None:
                     return lama
                 data = await hapus_so_draf_core(conn, ctx, order_id)
-                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_DELETE", SalesOrderResponse(
+                resp = SalesOrderResponse(
                     success=True,
                     message="Pesanan dihapus",
                     data=data,
-                ), _so_uuid(order_id))
+                )
+                # tanpa kunci = objek model APA ADANYA (perilaku & tipe lama untuk pemanggil langsung); berkunci = JSON tercatat (replay = bentuk sama)
+                return (await idem_buat.simpan(conn, ctx, kp, sidik, "SO_DELETE", resp, _so_uuid(order_id))) if kp else resp
 
     except HTTPException:
         raise
@@ -1574,8 +1576,9 @@ async def confirm_sales_order(request: Request, order_id: str, response: Respons
             if lama is not None:
                 return lama
             h = await _konfirmasi_so(conn, ctx, order_id)
-            return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CONFIRM",
-                                          SalesOrderResponse(success=True, message="Pesanan dikonfirmasi", data=h), _so_uuid(order_id))
+            resp = SalesOrderResponse(success=True, message="Pesanan dikonfirmasi", data=h)
+            # tanpa kunci = objek model APA ADANYA (perilaku & tipe lama untuk pemanggil langsung); berkunci = JSON tercatat (replay = bentuk sama)
+            return (await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CONFIRM", resp, _so_uuid(order_id))) if kp else resp
 
     except HTTPException:
         raise
@@ -1761,12 +1764,14 @@ async def cancel_sales_order(
                 )
 
                 # AS-G2: respons disusun + dicatat DI DALAM transaksi (dulu sesudah blok tx: hanya penyusunan respons, nol efek samping lain)
-                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CANCEL", SalesOrderResponse(
+                resp = SalesOrderResponse(
                     success=True,
                     message="Pesanan dibatalkan",
                     data={"order_number": order["order_number"], "status": "cancelled", "reason": alasan_batal,
                           "proformas_cancelled": proformas_cancelled, "deposits_remaining": deposits_remaining},
-                ), order["id"])
+                )
+                # tanpa kunci = objek model APA ADANYA (perilaku & tipe lama untuk pemanggil langsung); berkunci = JSON tercatat (replay = bentuk sama)
+                return (await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CANCEL", resp, order["id"])) if kp else resp
 
     except HTTPException:
         raise
@@ -2004,13 +2009,15 @@ async def close_sales_order(
                     source="api:sales_orders.close",
                 )
 
-                return await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CLOSE", SalesOrderResponse(
+                resp = SalesOrderResponse(
                     success=True,
                     message="Pesanan ditutup",
                     data={"order_number": order["order_number"], "status": "completed",
                           "forced": bool(kurang), "reason": reason,
                           "cancelled_lines": kurang, "deposits_remaining": dp_tetap},
-                ), order["id"])
+                )
+                # tanpa kunci = objek model APA ADANYA (perilaku & tipe lama untuk pemanggil langsung); berkunci = JSON tercatat (replay = bentuk sama)
+                return (await idem_buat.simpan(conn, ctx, kp, sidik, "SO_CLOSE", resp, order["id"])) if kp else resp
 
     except HTTPException:
         raise

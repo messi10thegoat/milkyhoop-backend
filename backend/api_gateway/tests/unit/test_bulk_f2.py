@@ -118,7 +118,11 @@ def test_inti_hapus_dp_aktif_ditolak_tanpa_menghapus(guard):
 
 def test_rute_tunggal_hanya_membungkus_inti_di_transaksi():
     src = " ".join(inspect.getsource(SO.delete_sales_order).split())
-    assert "async with conn.transaction(): data = await hapus_so_draf_core(conn, ctx, order_id)" in src
+    # AS-G2 (24 Okt 2026): idempotensi SO_DELETE = langkah pertama di transaksi yang SAMA, lalu inti; rute tetap tak menulis sendiri
+    i_tx = src.index("async with conn.transaction():")
+    i_idem = src.index('idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "SO_DELETE", order_id, {}, response)')
+    i_inti = src.index("data = await hapus_so_draf_core(conn, ctx, order_id)")
+    assert i_tx < i_idem < i_inti
     assert 'message="Pesanan dihapus"' in src and "DELETE FROM" not in src  # rute tak menulis sendiri
 
 

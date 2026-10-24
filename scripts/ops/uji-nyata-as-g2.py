@@ -2,7 +2,8 @@
 SELALU di-ROLLBACK (get_pool tertambal), tiap skenario savepoint sendiri. Pohon LAMA & BARU direkam; BARU dinilai.
   C konfirmasi draf SO-2609-0312 kunci K 2x: BARU replay (LAMA 400); kode order TAK terbit ulang (order_code + order_code_events/counters tetap)
   X kunci SAMA dipakai TUTUP sesudah konfirmasi (aksi lain) = JALAN; tutup ulang = replay; alasan beda = 409
-  B batal SO-2609-0003 (confirmed, ber-UM + proforma terbit) kunci K2 2x: BARU replay (LAMA 400); proforma batal SEKALI; tautan UM tak berubah;
+  B0 batal SO-2609-0003 DIBLOK (UM draf) kunci K4 2x: 400 dua-duanya (galat tak dicatat -> bukan replay/409)
+  B batal SO-2609-0024 (confirmed, ber-UM + proforma terbit) kunci K2 2x: BARU replay (LAMA 400); proforma batal SEKALI; tautan UM tak berubah;
     riwayat (audit_logs) +1 SO +n proforma SEKALI; alasan beda = 409
   D hapus draf SO-2609-0001 kunci K3 2x: BARU replay (LAMA 404); log hapus (audit_logs trg_log_deletion) SEKALI
 Efek samping per aksi diukur SESUDAH panggilan pertama dan SESUDAH ulangan: ulangan = nol efek baru. LAMA == BARU untuk keadaan sesudah panggilan
@@ -13,8 +14,9 @@ import asyncpg
 from starlette.requests import Request
 
 T = "kaos-biru-konveksi"
-SO_C, SO_B, SO_D = "c14cf875-f55e-40ff-a0f6-c7f988a018e2", "368efdeb-a344-455d-a54f-bbdf4058ddcd", "3a1d8ebe-32c9-40bc-800d-580f85266957"
-FIX = [SO_C, SO_B, SO_D]
+SO_C, SO_B, SO_D = "c14cf875-f55e-40ff-a0f6-c7f988a018e2", "ecacc69b-7e52-4526-ba69-22a199065474", "3a1d8ebe-32c9-40bc-800d-580f85266957"
+SO_BLOK = "368efdeb-a344-455d-a54f-bbdf4058ddcd"  # SO-2609-0003: batal DIBLOK SO_DEPOSIT_DRAFT (UM draf) -> galat berkunci TAK dicatat
+FIX = [SO_C, SO_B, SO_D, SO_BLOK]
 MODE, NAMA, MERAH = os.environ["MODE"], os.environ.get("NAMA", ""), os.environ.get("MERAH") == "1"
 gagal = []
 
@@ -24,14 +26,15 @@ def cek(ok, l, i=""):
     if not ok: gagal.append(l)
 
 
-ENT = """SELECT ARRAY(SELECT x::text FROM unnest($2::uuid[]) x UNION SELECT p.id::text FROM proformas p WHERE p.sales_order_id = ANY($2::uuid[])
-                 UNION SELECT d.id::text FROM customer_deposits d WHERE d.sales_order_id = ANY($2::uuid[]))"""
+ENT = """SELECT x::text FROM unnest($2::uuid[]) x UNION SELECT p.id::text FROM proformas p WHERE p.sales_order_id = ANY($2::uuid[])
+         UNION SELECT d.id::text FROM customer_deposits d WHERE d.sales_order_id = ANY($2::uuid[])"""
 SQL_JEPRET = {
     "so": "SELECT json_agg(json_build_object('n', order_number, 's', status, 'k', order_code) ORDER BY order_number)::text FROM sales_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
     "pf": "SELECT json_agg(json_build_object('n', proforma_number, 's', status) ORDER BY proforma_number)::text FROM proformas WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])",
     "um": "SELECT json_agg(json_build_object('n', deposit_number, 's', status, 'so', sales_order_id, 'a', amount) ORDER BY deposit_number)::text FROM customer_deposits WHERE tenant_id = $1 AND sales_order_id = ANY($2::uuid[])",
-    "kode": "SELECT (SELECT count(*) FROM order_code_events WHERE tenant_id = $1), (SELECT json_agg(c ORDER BY c::text)::text FROM order_code_counters c WHERE c.tenant_id = $1) WHERE $2::uuid[] IS NOT NULL",
-    "audit": f"SELECT count(*) FROM audit_logs WHERE entity_id::text = ANY(({ENT}))  AND $1::text IS NOT NULL",
+    # penghitung tanpa updated_at (= NOW() transaksi; beda tiap jalan, bukan isi -- diukur 24 Okt)
+    "kode": "SELECT (SELECT count(*) FROM order_code_events WHERE tenant_id = $1), (SELECT json_agg(json_build_object('p', c.period_key, 'n', c.last_seq) ORDER BY c.period_key)::text FROM order_code_counters c WHERE c.tenant_id = $1) WHERE $2::uuid[] IS NOT NULL",
+    "audit": f"SELECT count(*) FROM audit_logs WHERE entity_id::text IN ({ENT}) AND $1::text IS NOT NULL",
     "idem": "SELECT count(*) FROM idempotency_keys WHERE tenant_id = $1 AND $2::uuid[] IS NOT NULL",
 }
 
@@ -56,7 +59,7 @@ async def tulis():
     baru = "response" in inspect.signature(SR.confirm_sales_order).parameters
     c = await asyncpg.connect(os.environ["DATABASE_URL"])
     assert await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', T), "tenant tak ada -- harness menolak"
-    for so, st in ((SO_C, "draft"), (SO_B, "confirmed"), (SO_D, "draft")):
+    for so, st in ((SO_C, "draft"), (SO_B, "confirmed"), (SO_D, "draft"), (SO_BLOK, "confirmed")):
         assert await c.fetchval("SELECT status FROM sales_orders WHERE id = $1 AND tenant_id = $2", uuid.UUID(so), T) == st, f"prasyarat {so} {st}"
     uid = await c.fetchval('SELECT id FROM "User" WHERE "tenantId" = $1 ORDER BY "createdAt" LIMIT 1', T)
 
@@ -100,7 +103,9 @@ async def tulis():
             e2 = await efek()
             h["C"] = {"r1": r1, "r2": r2, "kode1": (d1 or {}).get("order_code"), "kode2": (d2 or {}).get("order_code"),
                       "efek_berubah_1": [kk for kk in e0 if e0[kk] != e1[kk]], "efek_berubah_ulang": [kk for kk in e1 if e1[kk] != e2[kk]],
-                      "status": await c.fetchval("SELECT status FROM sales_orders WHERE id = $1", uuid.UUID(SO_C)), "keadaan1": e1}
+                      "status": await c.fetchval("SELECT status FROM sales_orders WHERE id = $1", uuid.UUID(SO_C)), "keadaan1": e1,
+                      # medan yang DIKECUALIKAN dari perbandingan, direkam mentah untuk bukti tak-deterministik (2 jalan pohon LAMA)
+                      "kode_updated_at": str(await c.fetchval("SELECT max(updated_at) FROM order_code_counters WHERE tenant_id = $1", T))}
             x1, _ = await coba(SR.close_sales_order(req(uid, "TESG2-K"), SO_C, TR(reason="TES E2E tutup"), **kw()))
             e3 = await efek()
             x2, _ = await coba(SR.close_sales_order(req(uid, "TESG2-K"), SO_C, TR(reason="TES E2E tutup"), **kw()))
@@ -108,6 +113,13 @@ async def tulis():
             e4 = await efek()
             h["X"] = {"r1": x1, "r2": x2, "r3": x3, "status": await c.fetchval("SELECT status FROM sales_orders WHERE id = $1", uuid.UUID(SO_C)),
                       "efek_berubah_1": [kk for kk in e2 if e2[kk] != e3[kk]], "efek_berubah_ulang": [kk for kk in e3 if e3[kk] != e4[kk]]}
+        finally:
+            await sp.rollback()
+        sp = c.transaction(); await sp.start()
+        try:
+            g1, _ = await coba(SR.cancel_sales_order(req(uid, "TESG2-K4"), SO_BLOK, BR(reason="TES E2E batal"), **kw()))
+            g2, _ = await coba(SR.cancel_sales_order(req(uid, "TESG2-K4"), SO_BLOK, BR(reason="TES E2E batal"), **kw()))
+            h["B0"] = {"r1": g1, "r2": g2}
         finally:
             await sp.rollback()
         sp = c.transaction(); await sp.start()
@@ -149,6 +161,12 @@ async def main():
     if MODE == "TULIS":
         return await tulis()
     lama, baru = json.load(open("/out/lama.json")), json.load(open("/out/baru.json"))
+    lama2 = json.load(open("/out/lama2.json"))
+    # Bukti pengecualian order_code_counters.updated_at: DUA jalan pohon LAMA (kode sama) -> updated_at BEDA, semua medan bisnis SAMA
+    cek(lama["C"]["kode_updated_at"] != lama2["C"]["kode_updated_at"]
+        and all(lama[s]["keadaan1"] == lama2[s]["keadaan1"] for s in ("C", "B")) and lama["C"]["kode1"] == lama2["C"]["kode1"],
+        "(=0) order_code_counters.updated_at TAK DETERMINISTIK: beda antar 2 jalan LAMA, medan bisnis (kode/last_seq/events/so/pf/um/audit) sama",
+        f"{lama['C']['kode_updated_at']} / {lama2['C']['kode_updated_at']} kode {lama['C']['kode1']}/{lama2['C']['kode1']}")
     print(f"LAMA {json.dumps(lama)}\nBARU {json.dumps(baru)}")
     C, X, B, D = baru["C"], baru["X"], baru["B"], baru["D"]
     cek(C["r1"] == "OK" and C["r2"] == "OK" and lama["C"]["r2"] == "400" and C["status"] == "confirmed",
@@ -164,6 +182,8 @@ async def main():
         "(B) proforma batal + riwayat (1 SO + n proforma) SEKALI; ulangan nol riwayat", f"pf={B['pf_batal']} audit +{B['audit_tambah_1']} ulang +{B['audit_tambah_ulang']}")
     cek(B["um_sama"] and B["um_sisa"] >= 1 and B["pf_ulang_sama"] and B["efek_berubah_ulang"] == [],
         "(B) tautan uang muka TAK berubah (tetap saldo pelanggan); proforma tak disentuh ulang", f"um_sisa={B['um_sisa']} ulang={B['efek_berubah_ulang']}")
+    cek(baru["B0"] == {"r1": "400", "r2": "400"} and lama["B0"] == baru["B0"], "(B0) batal DIBLOK berkunci: galat TAK dicatat (ulang = 400 lagi, bukan replay/409)",
+        f"{lama['B0']} / {baru['B0']}")
     cek(D["r1"] == "OK" and D["r2"] == "OK" and D["ada"] == 0 and lama["D"]["r2"] == "404" and D["audit_tambah_1"] >= 1 and D["audit_tambah_ulang"] == 0,
         "(D) hapus draf: kunci sama = replay (LAMA: 404); log hapus SEKALI", str(D) + f" / lama r2={lama['D']['r2']}")
     cek(lama["C"]["keadaan1"] == C["keadaan1"] and lama["B"]["keadaan1"] == B["keadaan1"] and lama["D"]["audit_tambah_1"] == D["audit_tambah_1"],

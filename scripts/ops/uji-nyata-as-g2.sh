@@ -11,6 +11,7 @@ jalan() { docker run --rm --network milkyhoop_dev_network --env-file "$E" -e MOD
 rc=0
 jalan "$AKAR" JEPRET sebelum || rc=1
 MERAH=0 jalan "$UTAMA" TULIS lama || rc=1
+MERAH=0 jalan "$UTAMA" TULIS lama2 || rc=1   # jalan LAMA kedua: bukti medan tak-deterministik
 jalan "$AKAR" TULIS baru || rc=1
 jalan "$AKAR" JEPRET sesudah || rc=1
 jalan "$AKAR" BANDING x || rc=1
