@@ -25,8 +25,9 @@ def _fn(src, mulai, akhir):
 class _K:
     """Koneksi tiruan: mencatat SQL; jawaban per kata kunci."""
 
-    def __init__(self, bayar=None, periode=None, rekon=None, baris=(1,), alokasi=(), sisa=Decimal("0")):
+    def __init__(self, bayar=None, periode=None, rekon=None, baris=(1,), alokasi=(), sisa=Decimal("0"), rincian=None, bagian=()):
         self.sql, self.bayar, self.periode, self.rekon, self.baris, self.alokasi, self.sisa = [], bayar, periode, rekon, baris, alokasi, sisa
+        self.rincian, self.bagian = rincian, bagian  # rincian: baris compute_ap_rincian (None = tagihan tidak aktif)
 
     async def fetchrow(self, sql, *a):
         self.sql.append(sql)
@@ -36,12 +37,16 @@ class _K:
             return self.periode
         if "bank_transactions" in sql and "reconcil" in sql.lower():
             return self.rekon
+        if "compute_ap_rincian" in sql:
+            return self.rincian
         if "FROM journal_entries" in sql:
             return {"id": uuid4(), "journal_number": "JV-1", "total_debit": Decimal("100")}
         return None
 
     async def fetch(self, sql, *a):
         self.sql.append(sql)
+        if sql is BKR.SQL_BAGIAN_BAYAR:
+            return list(self.bagian)
         if "journal_lines" in sql:
             return [r for _ in self.baris for r in ({"account_id": uuid4(), "debit": Decimal("100"), "credit": 0, "memo": "m"},
                                                      {"account_id": uuid4(), "debit": 0, "credit": Decimal("100"), "memo": "n"})]
@@ -203,3 +208,42 @@ def test_kontrol_merah_penulis_tanpa_penentu_tertangkap():
     f = _fn(palsu, "async def void_bill_payment(", "@router.get(\"/vendors/{vendor_id}/open-bills\"")
     with pytest.raises(ValueError):
         f.index("BKR.rencana_batal_bayar(")
+
+
+# ---------------------------------------------------------------- sisa sesudah void (harness 24 Okt: tagihan void + bayar posted)
+def test_void_pratinjau_sisa_sesudah_ikut_rincian_bukan_amount_applied():
+    bid = uuid4()
+    al = [{"bill_id": bid, "amount_applied": Decimal("100000"), "invoice_number": "B1"}]
+    # tagihan TIDAK aktif (status_v2 void -> tak ada di compute_ap_rincian): sisa 0 sebelum DAN sesudah (dulu 100000 palsu)
+    p = _jalan(BKR.pratinjau_batal_bayar(_K(bayar=_bayar(), alokasi=al, rincian=None,
+                                                bagian=[{"bill_id": bid, "bagian": Decimal("100000")}]), "t", PID))
+    assert p["bills"] == [{"bill_id": str(bid), "bill_number": "B1", "bill_active": False, "remaining_before": 0.0,
+                           "amount_applied": -100000.0, "remaining_after": 0.0}]
+    # tagihan aktif: sisa sesudah = outstanding + BAGIAN debit AP (bukan amount_applied; mis. alokasi > debit AP)
+    p = _jalan(BKR.pratinjau_batal_bayar(_K(bayar=_bayar(), alokasi=al, rincian={"bill_total": Decimal("500000"), "outstanding": Decimal("10")},
+                                                bagian=[{"bill_id": bid, "bagian": Decimal("90000")}]), "t", PID))
+    assert (p["bills"][0]["bill_active"], p["bills"][0]["remaining_before"], p["bills"][0]["remaining_after"]) == (True, 10.0, 90010.0)
+
+
+def test_rumus_bagian_sama_dgn_compute_ap_rincian():
+    """SQL_BAGIAN_BAYAR = CTE pd_bayar/pd_bagian/c_payment V440 yang dibatasi SATU pembayaran: unsur kunci wajib ada."""
+    s = " ".join(BKR.SQL_BAGIAN_BAYAR.split())
+    for u in ("je.status = 'POSTED' AND je.reversed_by_id IS NULL", "coa.account_type = 'PAYABLE' AND jl.debit > 0",
+              "ROUND(pb.ap_debit * a.amount_applied / SUM(a.amount_applied) OVER (), 2)", "ROW_NUMBER() OVER (ORDER BY a.id DESC)",
+              "x.urut_akhir = 1 AND x.jumlah > 0 THEN x.ap_debit - x.jumlah"):
+        assert u in s, u
+
+
+def test_salinan_rumus_terikat_ke_definisi_fungsi():
+    """SQL_BAGIAN_BAYAR menyalin blok pd_bayar..c_payment compute_ap_rincian (V441). Blok berubah ATAU migrasi baru mendefinisikan ulang
+    fungsi -> MERAH: periksa paritas (harness PARITAS) lalu perbarui PIN + SQL_BAGIAN_BAYAR bersama-sama."""
+    import hashlib
+    mig = APP.parents[1] / "migrations"
+    definisi = sorted((p for p in mig.glob("V*__*.sql") if not p.name.endswith("_ROLLBACK.sql")
+                       and "compute_ap_rincian" in (s := p.read_text()) and "BADAN-MULAI" in s),
+                      key=lambda p: int(p.name[1:p.name.index("__")]))
+    assert [p.name for p in definisi][-1] == "V441__ap_atribusi_nota_debit.sql", [p.name for p in definisi]
+    t = definisi[-1].read_text()
+    b = t[t.index("-- BADAN-MULAI"):t.index("-- BADAN-SELESAI")]
+    blok = b[b.index("pd_bayar AS ("):b.index("c_vendor_credit AS (")]
+    assert hashlib.sha256(" ".join(blok.split()).encode()).hexdigest()[:16] == "892e0de7cc824eca"

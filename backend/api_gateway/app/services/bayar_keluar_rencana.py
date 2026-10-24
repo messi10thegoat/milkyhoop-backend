@@ -481,6 +481,31 @@ async def _alokasi_dan_sisa(conn, tid: str, payment_id) -> list:
     return [{"bill_id": r["bill_id"], "bill_number": r["invoice_number"], "amount_applied": r["amount_applied"]} for r in rows]
 
 
+# Bagian debit AP satu pembayaran per tagihan == CTE pd_bayar/pd_bagian/c_payment compute_ap_rincian (V440/V441): debit AP jurnal
+# pembayaran (POSTED, tak dibalik) dibagi proporsional amount_applied, sisa pembulatan ke alokasi id TERBESAR. Void menghapus TEPAT bagian
+# ini dari payment_amount tagihan -> sisa sesudah = outstanding + bagian. Tagihan TIDAK aktif (status_v2 draft/void) tak ada di rincian:
+# sisa 0 sebelum DAN sesudah (dulu pratinjau menambah amount_applied mentah -> 100000 palsu atas tagihan void, harness 24 Okt).
+SQL_BAGIAN_BAYAR = """
+WITH pb AS (
+    SELECT COALESCE(SUM(jl.debit), 0) AS ap_debit
+    FROM bill_payments_v2 p
+    JOIN journal_entries je ON je.id = p.journal_id
+    JOIN journal_lines jl ON jl.journal_id = je.id
+    JOIN chart_of_accounts coa ON coa.id = jl.account_id
+    WHERE p.id = $1 AND p.tenant_id = $2 AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
+      AND coa.account_type = 'PAYABLE' AND jl.debit > 0
+), bg AS (
+    SELECT a.bill_id, a.id, pb.ap_debit,
+           CASE WHEN SUM(a.amount_applied) OVER () > 0 THEN ROUND(pb.ap_debit * a.amount_applied / SUM(a.amount_applied) OVER (), 2)
+                ELSE 0 END AS bagian,
+           ROW_NUMBER() OVER (ORDER BY a.id DESC) AS urut_akhir
+    FROM bill_payment_allocations a CROSS JOIN pb WHERE a.payment_id = $1
+)
+SELECT x.bill_id, SUM(x.bagian + CASE WHEN x.urut_akhir = 1 AND x.jumlah > 0 THEN x.ap_debit - x.jumlah ELSE 0 END) AS bagian
+FROM (SELECT bg.*, SUM(bg.bagian) OVER () AS jumlah FROM bg) x GROUP BY x.bill_id
+"""
+
+
 async def rencana_batal_bayar(conn, tid: str, payment_id, pratinjau: bool = False) -> dict:
     """Aturan POST /bill-payments/{id}/void, URUTAN == penulis lama (sesudah advisory BILL_PAYMENT_VOID): rekon bank (409) · ada (404) ·
     sudah voided = ULANG (tulis: respons sukses lama; pratinjau: blok SUDAH_DIBATALKAN) · draf (400) · bukan posted (400) · periode
@@ -610,10 +635,15 @@ async def pratinjau_batal_bayar(conn, tid: str, payment_id, void_reason: str = "
     if c:
         out["bank_transactions"] = [{"bank_account": c["account_name"], "amount": _f(-c["amount"]),
                                      "transaction_type": "deposit" if c["transaction_type"] == "withdrawal" else "withdrawal"}]
+    from .tagihan_daftar import sisa_tagihan_jurnal
+    bagian = {b["bill_id"]: b["bagian"] for b in await conn.fetch(SQL_BAGIAN_BAYAR, _uuid(payment_id), tid)}
     for a in r["alokasi"]:
-        s = await sisa_tagihan(conn, tid, a["bill_id"])
-        out["bills"].append({"bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "remaining_before": _f(s),
-                             "amount_applied": _f(-a["amount_applied"]), "remaining_after": _f(s + a["amount_applied"])})
+        s = await sisa_tagihan_jurnal(conn, tid, _uuid(a["bill_id"]))  # None = tagihan tidak aktif (== sisa_tagihan 0)
+        aktif = s is not None
+        s = s if aktif else NOL
+        out["bills"].append({"bill_id": str(a["bill_id"]), "bill_number": a["bill_number"], "bill_active": aktif,
+                             "remaining_before": _f(s), "amount_applied": _f(-a["amount_applied"]),
+                             "remaining_after": _f(s + Decimal(str(bagian.get(a["bill_id"], 0))) if aktif else s)})
     out["pph_records_voided"] = r["n_pph"]
     out["can_proceed"] = not r["blocks"]
     out["blocks"] = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]]
