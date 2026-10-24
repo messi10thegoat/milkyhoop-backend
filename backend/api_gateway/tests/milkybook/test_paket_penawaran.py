@@ -117,8 +117,9 @@ def test_main_py_memakai_prefiks_yang_diasumsikan():
         assert re.search(rf'include_router\(\s*{mod}\.router,\s*prefix="{re.escape(p)}"', main), (mod, p)
 
 
-@pytest.mark.parametrize("t", [t for t in pw.TOOLS if not t.butuh], ids=lambda t: t.nama)
+@pytest.mark.parametrize("t", [t for t in pw.TOOLS if t.jalur and not (t.kelas == Kelas.PREVIEW and t.butuh)], ids=lambda t: t.nama)
 def test_rute_tool_ada_di_router_be(t):
+    """Termasuk WRITE ber-butuh dan rute aksi NAV: rutenya SUDAH ada, hanya idempotency/pratinjau yang menunggu T0."""
     ada, berkas = _cari_rute(t.metode, t.jalur)
     assert ada, f"{t.nama}: {t.metode} {t.jalur} tak ditemukan di {berkas}"
 
