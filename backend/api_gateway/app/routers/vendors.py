@@ -5,7 +5,8 @@ CRUD endpoints for managing vendors with search and pagination.
 Integrates with bills module for purchase invoice management.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
+from ..services.fitur_parkir import fitur_belum_tersedia_dengan
 from pydantic import BaseModel
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -15,6 +16,7 @@ import logging
 import asyncpg
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import idem_buat  # VENDOR-IDEM (25 Okt 2026): X-Idempotency-Key buat/status/hapus/gabung
 from ..schemas.vendors import (
     VendorActivity,
     VendorActivityResponse,
@@ -817,10 +819,25 @@ async def get_vendor_balance(request: Request, vendor_id: UUID):
 # =============================================================================
 # CREATE VENDOR
 # =============================================================================
+async def _kunci_vendor(conn, tenant_id: str, *vendor_ids, saldo_awal: bool = False) -> None:
+    """VENDOR-IDEM (25 Okt 2026, Law 13): kunci per vendor VENDOR:{tenant}:{id} (URUT bila lebih dari satu). saldo_awal=True -> ikut kunci
+    VENDOR_OPENING:{id} (kunci yang SAMA dengan POST /{id}/opening-balance) SESUDAH semua kunci VENDOR, supaya hapus tak berpacu dengan
+    pembuatan tagihan pembuka."""
+    ids = sorted({str(v) for v in vendor_ids})
+    for v in ids:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR:{tenant_id}:{v}")
+    if saldo_awal:
+        for v in ids:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_OPENING:{v}")
+
+
 @router.post("", response_model=VendorResponse, status_code=201)
-async def create_vendor(request: Request, body: CreateVendorRequest):
+async def create_vendor(request: Request, body: CreateVendorRequest, response: Response = None):
     """
     Create a new vendor.
+
+    VENDOR-IDEM (25 Okt 2026): idem VENDOR_CREATE (X-Idempotency-Key opsional; ulang ber-kunci = jawaban pertama, bukan 400 "sudah ada")
+    + kunci nama (dan kode) per tenant SEBELUM cek ganda -- dua klik bersamaan dengan nama sama tak lagi sama-sama lolos cek.
 
     **Constraints:**
     - Vendor name must be unique within tenant
@@ -859,6 +876,14 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai(conn, ctx, idem_buat.kunci_dari(request), "VENDOR_CREATE", body, "vendors", "vendor",
+                                                        response)
+                if lama is not None:
+                    return lama
+                # VENDOR-IDEM: kunci nama/kode SEBELUM cek ganda (cek tanpa kunci = dua permintaan bersamaan sama-sama lolos)
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_NAMA:{ctx['tenant_id']}:{body.name.strip().lower()}")
+                if body.code:
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{ctx['tenant_id']}:{body.code.strip().lower()}")
                 # Check for duplicate name
                 existing = await conn.fetchval(
                     "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
@@ -972,7 +997,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                     user_name,
                 )
 
-                return {
+                resp = {
                     "success": True,
                     "message": "Vendor created successfully",
                     "data": {
@@ -981,6 +1006,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest):
                         "code": body.code,
                     },
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VENDOR_CREATE", resp, vendor_id) if kp else resp
 
     except HTTPException:
         raise
@@ -1197,12 +1223,14 @@ async def toggle_vendor_status(
     request: Request,
     vendor_id: UUID,
     status: Literal["active", "inactive"] = Query(..., description="New status"),
+    response: Response = None,
 ):
     """
     Toggle vendor active/inactive status.
 
     This is a convenience endpoint for quickly changing vendor status.
     Equivalent to PATCH /vendors/:id with { is_active: true/false }
+    VENDOR-IDEM (25 Okt 2026): idem VENDOR_STATUS + kunci VENDOR:{tenant}:{id} + FOR UPDATE (aktivitas status tercatat sekali per maksud).
     """
     try:
         ctx = get_user_context(request)
@@ -1210,9 +1238,14 @@ async def toggle_vendor_status(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "VENDOR_STATUS", vendor_id,
+                                                             {"status": status}, response)
+                if lama is not None:
+                    return lama
+                await _kunci_vendor(conn, ctx["tenant_id"], vendor_id)
                 # Check if vendor exists
                 existing = await conn.fetchrow(
-                    "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
+                    "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     vendor_id,
                     ctx["tenant_id"],
                 )
@@ -1261,7 +1294,7 @@ async def toggle_vendor_status(
                     user_name,
                 )
 
-                return {
+                resp = {
                     "success": True,
                     "message": "Status vendor berhasil diubah",
                     "data": {
@@ -1270,6 +1303,7 @@ async def toggle_vendor_status(
                         "is_active": is_active,
                     },
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VENDOR_STATUS", resp, vendor_id) if kp else resp
 
     except HTTPException:
         raise
@@ -1282,8 +1316,10 @@ async def toggle_vendor_status(
 # DELETE VENDOR (Hard delete - removes the row)
 # =============================================================================
 @router.delete("/{vendor_id}", response_model=VendorResponse)
-async def delete_vendor(request: Request, vendor_id: UUID):
-    """Delete a vendor. Hard-deletes if no ledger/transaction footprint; else raises 400."""
+async def delete_vendor(request: Request, vendor_id: UUID, response: Response = None):
+    """Delete a vendor. Hard-deletes if no ledger/transaction footprint; else raises 400.
+    VENDOR-IDEM (25 Okt 2026): idem VENDOR_DELETE (ulang ber-kunci sesudah sukses = jawaban pertama, bukan 404) + kunci VENDOR:{tenant}:{id}
+    + VENDOR_OPENING:{id} -- cek jejak (tagihan) tak lagi berpacu dengan pembuatan tagihan pembuka saldo awal."""
     from ..services.smart_delete import smart_delete
 
     try:
@@ -1291,6 +1327,10 @@ async def delete_vendor(request: Request, vendor_id: UUID):
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "VENDOR_DELETE", vendor_id, {}, response)
+                if lama is not None:
+                    return lama
+                await _kunci_vendor(conn, ctx["tenant_id"], vendor_id, saldo_awal=True)
                 result = await smart_delete(
                     conn,
                     tenant_id=ctx["tenant_id"],
@@ -1320,11 +1360,12 @@ async def delete_vendor(request: Request, vendor_id: UUID):
                         ),
                     ],
                 )
-                return {
+                resp = {
                     "success": True,
                     "message": result["message"],
                     "data": {"id": str(vendor_id), "name": result["name"]},
                 }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VENDOR_DELETE", resp, vendor_id) if kp else resp
     except HTTPException:
         raise
     except Exception as e:
@@ -1969,7 +2010,11 @@ async def get_vendor_activity(
 # =============================================================================
 # MERGE VENDORS (Iron Laws Compliant)
 # =============================================================================
-@router.post("/merge", response_model=MergeVendorResponse)
+# VENDOR-IDEM (25 Okt 2026, putusan MASTER): DIPARKIR 409 sampai unit GABUNG-VENDOR (pola NetSuite/QBO tanpa migrasi). Badan rute di bawah membaca/
+# menulis kolom yang TAK ADA (vendors.merged_into_id/deleted_at/deleted_by) dan tabel yang TAK ADA (master_data_audit_log) -> dulu 500 di SETIAP
+# panggilan, padahal FE MergeVendorSheet memanggilnya. Penolakan jujur menggantikan 500 diam.
+@router.post("/merge", response_model=MergeVendorResponse, dependencies=[Depends(fitur_belum_tersedia_dengan(
+    "Gabung vendor sedang diperbaiki dan belum bisa dipakai. Sementara ini, nonaktifkan vendor yang dobel."))])
 async def merge_vendors(
     request: Request,
     body: MergeVendorRequest,

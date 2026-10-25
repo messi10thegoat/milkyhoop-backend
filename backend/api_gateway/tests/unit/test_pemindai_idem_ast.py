@@ -14,6 +14,7 @@ WAJIB = {
     "routers/purchase_orders.py": ["create_purchase_order", "update_purchase_order", "delete_purchase_order", "send_purchase_order",
                                    "receive_goods", "convert_to_bill", "cancel_purchase_order", "close_purchase_order"],
     "routers/quotes.py": ["create_quote", "update_quote", "void_quote", "convert_to_invoice"],  # AS-G15 (24 Okt) celah ditutup
+    "routers/vendors.py": ["create_vendor", "toggle_vendor_status", "delete_vendor", "set_vendor_opening_balance"],  # VENDOR-IDEM 25 Okt
     "routers/customers.py": ["create_customer"],
     "routers/items.py": ["create_item"],
     "routers/sj_so.py": ["create_sj_so", "void_sj"],
