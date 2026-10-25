@@ -67,6 +67,8 @@ class _Tx:
 
 
 class _Req:
+    headers = {}  # PO-IM: tanpa If-Match / kunci idem (request asli selalu punya headers)
+
     class state:
         user = {"tenant_id": T, "user_id": str(uuid.uuid4())}
 
