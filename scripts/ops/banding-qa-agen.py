@@ -28,6 +28,14 @@ for a, b in zip(lama, baru):
         if b["ulang"] != rs: g("ulang_bukan_jawaban_pertama", b)
         if b["sesudah_ulang"] != b["sesudah"]: g("ulang_menulis", b)
     if b["riwayat_baru"] > 1: g("riwayat_lebih_1", b)
+for nama, berkas in (("lama", sys.argv[1]), ("baru", sys.argv[2])):
+    try:
+        su = json.load(open(berkas + ".surel.json"))
+    except FileNotFoundError:
+        su = None
+    if not su or su["surel_kasus"] != 0: g(f"surel_nyata_{nama}", {"q": "-", "kasus": str(su and su["surel_kasus"])})
+    if not su or su["surel_kontrol"] < 1: g(f"surel_kontrol_tak_tercatat_{nama}", {"q": "-", "kasus": "-"})
+    print(f"surel {nama}: kasus={su and su['surel_kasus']} kontrol={su and su['surel_kontrol']}")
 print(f"kasus={len(baru)} tulis_ok={hit['ok']} diblok={hit['blok']}")
 for k, v in gagal.items(): print(f"GAGAL {k}={v} contoh={contoh[k]}")
 print("LULUS" if not gagal else "GAGAL")

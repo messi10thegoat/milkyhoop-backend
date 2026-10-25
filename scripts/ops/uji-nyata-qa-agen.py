@@ -11,6 +11,27 @@ KELUAR, MODE = sys.argv[1], sys.argv[2]
 BARU = MODE == "baru"
 ABAI = {"updated_at", "search_text"}
 
+# SUREL (syarat MASTER 25 Okt): rollback DB tak menarik surel. SATU-SATUNYA pengirim di app = resend.Emails.send (services/email_service.py);
+# kunci Resend DIKOSONGKAN sebelum app diimpor, resend.Emails.send + smtplib.SMTP/SMTP_SSL DIGANTI stub penghitung (nol panggilan nyata).
+# Kontrol: sesudah semua kasus, send_invitation_email asli dipanggil dengan kunci palsu -> stub WAJIB tercatat 1.
+import smtplib, types
+os.environ["RESEND_API_KEY"] = ""
+SUREL = []
+try:
+    import resend
+except ImportError:
+    resend = types.ModuleType("resend"); resend.Emails = types.SimpleNamespace(); sys.modules["resend"] = resend
+resend.Emails.send = lambda isi, *a, **k: (SUREL.append(("resend", str(isi.get("to") if isinstance(isi, dict) else isi))), {"id": "stub"})[1]
+
+
+class _SmtpDiblok:
+    def __init__(self, *a, **k):
+        SUREL.append(("smtp", str(a)))
+        raise RuntimeError("SMTP diblok harness")
+
+
+smtplib.SMTP = smtplib.SMTP_SSL = _SmtpDiblok
+
 
 def js(v):
     return json.loads(json.dumps(v, default=str))
@@ -96,7 +117,15 @@ async def main():
                 finally:
                     await tx.rollback()
                 f.write(json.dumps(catat, sort_keys=True) + "\n"); n += 1
-    print(f"SELESAI kasus={n} penawaran={len(quotes)}")
+    surel_kasus = len(SUREL)
+    import app.services.email_service as ES
+    ES.RESEND_API_KEY = "stub-kontrol"
+    try:
+        await ES.send_invitation_email("kontrol-harness@example.invalid", "https://example.invalid/undangan", "Admin")
+    except Exception as e:
+        print("kontrol galat:", repr(e))
+    open(KELUAR + ".surel.json", "w").write(json.dumps({"surel_kasus": surel_kasus, "surel_kontrol": len(SUREL) - surel_kasus, "rincian": SUREL}))
+    print(f"SELESAI kasus={n} penawaran={len(quotes)} surel_kasus={surel_kasus} surel_kontrol={len(SUREL) - surel_kasus}")
     await c.close()
 
 
