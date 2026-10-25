@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import harga_sasaran, penjaga_angka, penjaga_tanggal
+from . import aliran, harga_sasaran, penjaga_angka, penjaga_tanggal
 from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
 from .model import GalatModel, HasilModel, PemanggilModel, biaya_usd, pilah_galat_sdk
@@ -123,6 +123,8 @@ class Sesi:
     mode_tulis: bool = False  # hibrida: True = giliran dikerjakan model penulis (ada alur tulis / kartu menunggu)
     # #7 pulihkan percakapan: peristiwa yang SUDAH dikirim ke FE (+ ucapan/aksi pengguna), urut; diisi router.
     tampilan: List[dict] = field(default_factory=list)
+    # #10 id_pesan klien yang sudah diterima (idempoten: coba-ulang sesudah putus koneksi tak diproses dua kali)
+    diproses_id: List[str] = field(default_factory=list)
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -335,6 +337,7 @@ class Putaran:
             disetujui_oleh=sesi.user_id, status_be=jb.status if jb else None, hasil=k.status.value,
         ))
         peristiwa = [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value, "hasil": k.hasil}]
+        aliran.pancar(peristiwa[0])  # #10: status kartu SEBELUM penjelasan model (urutan aliran = urutan JSON)
         sesi.messages.append({"role": "user", "content": pesan})
         sesi.mode_tulis = True  # lanjutan sesudah Setuju = alur tulis
         return peristiwa + await self._putar(sesi, pelaksana, izin_fn,
@@ -354,7 +357,7 @@ class Putaran:
     # ------------------------------------------------------------------ inti putaran
     async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn, sesudah_setuju: bool = False) -> List[dict]:
         tools_semua = [t for t in await self.registri.tools_untuk(izin_fn, self.gap_mendarat) if t.tampil_ke_model]
-        peristiwa: List[dict] = []
+        peristiwa: List[dict] = aliran.Peristiwa()  # #10: anggota baru ikut dipancarkan ke pendengar aktif
         sudah_dikoreksi = False
         menulis_di_giliran = False
 
@@ -370,6 +373,7 @@ class Putaran:
         peta, api_tools = susun(baca)
 
         for _ in range(self.maks_langkah):
+            await self._sisipkan_antre(sesi, peristiwa)
             pemanggil = self.pemanggil_baca if baca else self.pemanggil
             try:
                 hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
@@ -461,7 +465,14 @@ class Putaran:
                     hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "is_error": True,
                                        "content": "Tool tidak tersedia di mode baca."})
                     continue
+                t_ = peta.get(c.nama)
+                langkah = {"jenis": "langkah", "id": c.id, "nama": c.nama, "status": "mulai",
+                           "label": aliran.label_langkah(c.nama, t_.kelas.value if t_ else "")}
+                if c.nama not in aliran.TANPA_LANGKAH:
+                    aliran.pancar(langkah)
                 isi, salah, write_dipakai = await self._jalankan(sesi, c, peta, pelaksana, peristiwa, write_dipakai)
+                if c.nama not in aliran.TANPA_LANGKAH:
+                    aliran.pancar({**langkah, "status": "galat" if salah else "selesai"})
                 menulis_di_giliran = menulis_di_giliran or write_dipakai
                 blok = {"type": "tool_result", "tool_use_id": c.id, "content": isi}
                 if salah:
@@ -481,6 +492,7 @@ class Putaran:
             sesi.tenant_id, sesi.user_id, sesi.sesi_id, "giliran", model=",".join(model_dipakai) or None,
             kelas="BACA" if mulai_baca else "TULIS", eskalasi=eskalasi if mulai_baca else None,
             biaya_usd=round(sesi.biaya_usd - biaya_awal, 6),
+            hasil=("antre:" + ",".join(antre_dibaca))[:500] if (antre_dibaca := self._antre_giliran(sesi)) else None,
         ))
         # Keluar dari alur tulis bila giliran penulis selesai tanpa usulan tulis dan tanpa kartu menunggu.
         if sesi.mode_tulis and not menulis_di_giliran and sesi.kartu_menunggu() is None:
@@ -488,6 +500,41 @@ class Putaran:
 
         peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)})
         return peristiwa
+
+    async def _sisipkan_antre(self, sesi: Sesi, peristiwa: List[dict]) -> None:
+        """#10 kotak masuk: pesan yang datang saat giliran berjalan dibaca SEBELUM panggilan model berikutnya.
+        Tidak dipanggil di tengah Setuju (aliran.boleh_sisip False): Setuju atomik."""
+        a = aliran.aktif()
+        if a is None or not a.boleh_sisip or a.ambil_antre is None:
+            return
+        pesan = await a.ambil_antre()
+        if not pesan:
+            return
+        peristiwa.append({"jenis": "antre_dibaca", "id_pesan": [m["id_pesan"] for m in pesan]})
+        for m in pesan:
+            peristiwa.append({"jenis": "pengguna", "id_pesan": m["id_pesan"], "teks": m["teks"], "dari_antrean": True})
+            sesi.diproses_id.append(m["id_pesan"])
+            a.antre_dibaca.append(aliran.sidik_pesan(m["teks"]))
+            sesi.sumber_angka.append(m["teks"])
+        teks = "\n\n".join(m["teks"] for m in pesan)
+        tambahan = {"type": "text", "text": f"[pesan baru pengguna, dikirim saat kamu sedang bekerja] {teks}"}
+        akhir = sesi.messages[-1] if sesi.messages else None
+        if akhir and akhir["role"] == "user":  # gabung ke giliran user terakhir (mis. tool_result): peran tetap berselang
+            if isinstance(akhir["content"], str):
+                akhir["content"] = [{"type": "text", "text": akhir["content"]}]
+            akhir["content"].append(tambahan)
+        else:
+            sesi.messages.append({"role": "user", "content": [tambahan]})
+        if sesi.kartu_menunggu() is not None:
+            sesi.mode_tulis = True
+
+    @staticmethod
+    def _antre_giliran(sesi: Sesi) -> List[str]:
+        a = aliran.aktif()
+        if a is None or not a.antre_dibaca:
+            return []
+        hasil, a.antre_dibaca = a.antre_dibaca, []
+        return hasil
 
     async def _jalankan(self, sesi, c, peta, pelaksana, peristiwa, write_dipakai):
         if c.nama == TOOL_HITUNG_TANGGAL["name"]:

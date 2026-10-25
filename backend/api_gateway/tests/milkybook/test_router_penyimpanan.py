@@ -33,6 +33,35 @@ class RedisPalsu:
     async def delete(self, k):
         self.d.pop(k, None)
 
+    # list / set (kotak masuk #10): semantik redis-py asyncio (decode_responses=True)
+    async def rpush(self, k, v):
+        self.d.setdefault(k, []).append(v)
+        return len(self.d[k])
+
+    async def lrange(self, k, a, b):
+        x = self.d.get(k, [])
+        return list(x[a:] if b == -1 else x[a:b + 1])
+
+    async def lrem(self, k, n, v):
+        x = self.d.get(k, [])
+        if v in x:
+            x.remove(v)
+            return 1
+        return 0
+
+    async def lpop(self, k):
+        x = self.d.get(k, [])
+        return x.pop(0) if x else None
+
+    async def sadd(self, k, v):
+        self.d.setdefault(k, set()).add(v)
+
+    async def sismember(self, k, v):
+        return v in self.d.get(k, set())
+
+    async def expire(self, k, s):
+        return True
+
 
 async def _sesi_berkartu(store):
     m = ModelPalsu([panggil(("buat_x", {"jumlah": 3})), teks("Tinjau.")])
@@ -68,10 +97,12 @@ async def test_kunci_giliran_menolak_berbarengan(store_fn):
         pass
 
 
-def _app(store, flag=True, model=None):
+def _app(store, flag=True, model=None, kembalikan_be=False):
     model = model or ModelPalsu([teks("Halo.")])
-    p = Putaran(registri(), model, AuditMemori(), gap_mendarat=("G1",))
+    audit = AuditMemori()
+    p = Putaran(registri(), model, audit, gap_mendarat=("G1",))
     app = FastAPI()
+    app.state_audit = audit
 
     @app.middleware("http")
     async def auth(request: Request, call_next):
@@ -99,7 +130,7 @@ def _app(store, flag=True, model=None):
     R.PelaksanaASGI = PelaksanaUji
     app.include_router(buat_router(lambda: p, store, app_fn=lambda: app, izin_fn_untuk=lambda u: izin_semua,
                                    flag_fn=flag_fn, hari_ini_fn=hari), prefix="/api/milkybook")
-    return app, model
+    return (app, be) if kembalikan_be else (app, model)
 
 
 def test_tanpa_token_401():
@@ -125,13 +156,17 @@ def test_tenant_hanya_dari_token_sesi_tenant_lain_404_dan_badan_tak_bisa_memilih
     assert model.permintaan[0]["messages"][0]["content"].startswith("[konteks] Hari ini 2026-10-24.")
 
 
-def test_sesi_sibuk_409():
+def test_sesi_sibuk_pesan_antre_202_kartu_409():
+    # #10: pesan saat sibuk = kotak masuk (202); Setuju/Tolak berbarengan tetap 409.
     store = PenyimpananSesiMemori()
     app, _ = _app(store)
     c = TestClient(app)
     sid = c.post("/api/milkybook/sesi", headers={"X-Uji-Tenant": "t1"}).json()["sesi_id"]
     store._kunci.add(f"t1:u1:{sid}")                                           # giliran lain sedang memegang kunci
-    assert c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "x"}, headers={"X-Uji-Tenant": "t1"}).status_code == 409
+    r = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "x", "id_pesan": "abcd1234"}, headers={"X-Uji-Tenant": "t1"})
+    assert r.status_code == 202 and r.json() == {"antre": True, "posisi": 1, "id_pesan": "abcd1234"}
+    store._kartu[f"t1:u1:k1"] = sid
+    assert c.post("/api/milkybook/kartu/k1/setuju", headers={"X-Uji-Tenant": "t1"}).status_code == 409
 
 
 def test_setuju_kartu_lewat_router_tulis_sekali():
@@ -153,7 +188,8 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
     from app.milkybook.pasang import milkybook_router
     jalur = sorted((r.path, sorted(r.methods)[0]) for r in milkybook_router().routes)
     assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"),
-                     ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/pesan", "POST")]
+                     ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
+                     ("/sesi/{sesi_id}/pesan", "POST")]
 
 
 # ---------------------------------------------------------------- #9 galat API model ramah (ukur 25 Okt: dulu 500 mentah)
@@ -190,14 +226,20 @@ def test_galat_sdk_di_giliran_jadi_peristiwa_ramah_bukan_500(kelas, status, kode
     assert r2.status_code == 200 and r2.json()["peristiwa"][0]["teks"] == "Pulih."
 
 
-def test_galat_bukan_sdk_tetap_naik():
+def test_galat_bukan_sdk_dicatat_log_dan_jadi_galat_internal(caplog):
+    # #10: giliran berjalan di tugas latar (stream tak boleh putus diam) -> bug = galat internal + Traceback di log.
     def bug(*_):
         raise ValueError("bug kode")
-    app, _ = _app(PenyimpananSesiMemori(), model=ModelPalsu([bug]))
+    store = PenyimpananSesiMemori()
+    app, _ = _app(store, model=ModelPalsu([bug, teks("Pulih.")]))
     c = TestClient(app, raise_server_exceptions=False)
     H = {"X-Uji-Tenant": "t1"}
     sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
-    assert c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai"}, headers=H).status_code == 500
+    with caplog.at_level("ERROR"):
+        r = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai"}, headers=H)
+    assert r.status_code == 200 and any(e.get("kode") == "internal" for e in r.json()["peristiwa"])
+    assert any("giliran gagal" in x.message and x.exc_info for x in caplog.records)
+    assert c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "lagi"}, headers=H).status_code == 200  # kunci lepas
 
 
 def test_galat_model_sesudah_setuju_menegaskan_sudah_tersimpan_dan_setuju_ulang_jujur():
@@ -243,7 +285,7 @@ def test_pulihkan_percakapan_urut_dan_tenant_aman():
     H = {"X-Uji-Tenant": "t1"}
     sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
     kosong = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
-    assert kosong == {"sesi_id": sid, "peristiwa": [], "kartu_menunggu": None}
+    assert kosong == {"sesi_id": sid, "peristiwa": [], "kartu_menunggu": None, "sedang_bekerja": False, "antre": []}
     ev = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "buat 3"}, headers=H).json()["peristiwa"]
     kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
     tengah = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
@@ -282,3 +324,30 @@ def test_tampilan_dibatasi_yang_tertua_dibuang(monkeypatch):
     c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "dua"}, headers=H)
     assert c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()["peristiwa"] == [
         {"jenis": "teks", "teks": "a"}, {"jenis": "pengguna", "teks": "dua"}, {"jenis": "teks", "teks": "b"}]
+
+
+@pytest.mark.parametrize("store_fn", [PenyimpananSesiMemori, lambda: PenyimpananSesiRedis(RedisPalsu())])
+async def test_kotak_masuk_kedua_penyimpanan(store_fn):
+    from app.milkybook.inti.aliran import MAKS_ANTRE
+    from app.milkybook.inti.penyimpanan import AntreanPenuh
+    st = store_fn()
+    for i in range(MAKS_ANTRE):
+        assert await st.antre_tambah("t", "u", "s", f"id{i}", f"teks {i}") == i + 1
+    with pytest.raises(AntreanPenuh):
+        await st.antre_tambah("t", "u", "s", "lebih", "x")
+    assert [x["id_pesan"] for x in await st.antre_daftar("t", "u", "s")] == [f"id{i}" for i in range(MAKS_ANTRE)]
+    assert await st.antre_status("t", "u", "s", "id1") == "antre"
+    assert await st.antre_batal("t", "u", "s", "id1") == "dibatalkan"
+    assert await st.antre_batal("t", "u", "s", "id1") is None
+    dibaca = await st.antre_ambil_semua("t", "u", "s")
+    assert [m["id_pesan"] for m in dibaca] == ["id0", "id2", "id3", "id4"] and dibaca[0]["teks"] == "teks 0"
+    assert await st.antre_ambil_semua("t", "u", "s") == []
+    assert await st.antre_status("t", "u", "s", "id2") == "dibaca"
+    assert await st.antre_batal("t", "u", "s", "id2") == "sudah_dibaca"
+    assert await st.antre_daftar("t", "u", "s") == [] and await st.antre_daftar("t", "u2", "s") == []  # ruang pengguna
+    assert not await st.sibuk("t", "u", "s")
+    async with st.kunci("t", "u", "s") as peg:
+        assert await st.sibuk("t", "u", "s")
+        await peg.perpanjang()
+        assert await st.sibuk("t", "u", "s")
+    assert not await st.sibuk("t", "u", "s")

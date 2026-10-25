@@ -32,6 +32,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # dijalankan sebagai permintaan internal dengan token pengguna dan diperiksa pola rutenya sendiri. Huruf masuk = quote R (pilot).
     (r"^/api/milkybook/(sesi|sesi/[^/]+/pesan|kartu/[^/]+/(setuju|tolak))$", ["POST"], "quote", "R"),
     (r"^/api/milkybook/sesi/[^/]+$", ["GET"], "quote", "R"),  # #7 pulihkan percakapan (READ-authz: GET tak terpetakan = tertutup)
+    (r"^/api/milkybook/sesi/[^/]+/antre/[^/]+$", ["DELETE"], "quote", "R"),  # #10 Esc: batalkan pesan antre (izin = pesan)
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     (r"^/api/quotes/[^/]+/edit/preview$", ["POST"], "quote", "U"),  # pratinjau ubah penawaran (13 Okt), izin = PATCH
     # Aksi massal daftar (U1b F1, 5 Okt): ekspor CSV = BACA (izin R modul), DI ATAS pola POST umum (= C). Pengiriman = izin faktur.
