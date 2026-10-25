@@ -5,7 +5,7 @@ Endpoints for managing bills, payments, and attachments.
 Integrates with accounting kernel for AP and journal entries.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Response, Query, UploadFile, File, Body
+from fastapi import APIRouter, HTTPException, Request, Response, Query, UploadFile, File, Body, Depends
 from fastapi.responses import StreamingResponse
 from typing import Optional, Literal
 from uuid import UUID
@@ -18,6 +18,7 @@ import asyncpg
 
 from ..services.nama_pengguna import nama_pengguna, nama_untuk
 from ..services import idem_buat  # AS-GP2: idempotensi aksi post/void/hapus/ubah v2 (kunci klien saja)
+from ..services.fitur_parkir import fitur_belum_tersedia  # P2P-1 (25 Okt): rute tagihan v1 dipensiunkan
 from ..utils.sorting import parse_sort_param
 
 # Import schemas
@@ -1178,7 +1179,8 @@ async def get_bill_pdf(
 # =============================================================================
 # CREATE BILL
 # =============================================================================
-@router.post("", response_model=CreateBillResponse, status_code=201)
+# P2P-1 (25 Okt 2026, MASTER): DIPARKIR -- pengganti POST /bills/v2 (idem BILL_CREATE + kalkulator v2). 0 pemakai FE/agen/log 14 hari.
+@router.post("", response_model=CreateBillResponse, status_code=201, dependencies=[Depends(fitur_belum_tersedia)])
 async def create_bill(request: Request, body: CreateBillRequest):
     """
     Create a new bill (faktur pembelian).
@@ -1225,7 +1227,8 @@ async def create_bill(request: Request, body: CreateBillRequest):
 # =============================================================================
 # UPDATE BILL
 # =============================================================================
-@router.patch("/{bill_id}", response_model=UpdateBillResponse)
+# P2P-1: DIPARKIR -- pengganti PATCH /bills/v2/{id} (idem BILL_UPDATE, FOR UPDATE + TR.blok_ubah).
+@router.patch("/{bill_id}", response_model=UpdateBillResponse, dependencies=[Depends(fitur_belum_tersedia)])
 async def update_bill(request: Request, bill_id: UUID, body: UpdateBillRequest):
     """
     Update a bill.
@@ -1366,7 +1369,8 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
 # =============================================================================
 # MARK AS PAID (Quick Action)
 # =============================================================================
-@router.patch("/{bill_id}/mark-paid", response_model=MarkPaidResponse)
+# P2P-1: DIPARKIR (dulu AS-GP7) -- bayar = POST /bill-payments atau POST /bills/{id}/payments (idem, sisa dari jurnal).
+@router.patch("/{bill_id}/mark-paid", response_model=MarkPaidResponse, dependencies=[Depends(fitur_belum_tersedia)])
 async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest):
     """
     Mark a bill as fully paid.

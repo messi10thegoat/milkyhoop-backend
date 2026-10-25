@@ -970,7 +970,10 @@ class ActionService:
     async def execute_action(
         self, tenant_id: str, user_id: str, pending_id: str
     ) -> Dict[str, Any]:
-        """
+        """KODE MATI (P2P-1, 25 Okt 2026, diukur): NOL pemanggil di backend/ -- /chat/confirm non-direct pensiun 14 Sep
+        (unified_chat ACTION_EXECUTOR_RETIRED); chat buat tagihan = direct_action_registry CREATE_BILL -> POST /api/bills/v2.
+        Jangan dipakai lagi; tests/unit/test_p2p1_pensiun_bill_v1.py merah bila pemanggil baru muncul. Dihapus di unit tersendiri.
+
         Execute a confirmed pending action.
         IRON LAW 0: All writes go through existing Kernel services.
         IRON LAW 14: Idempotency key prevents double-execution.
