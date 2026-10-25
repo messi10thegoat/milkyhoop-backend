@@ -17,7 +17,7 @@ for r in baru:
         blok += 1
         st, det = r["respons"]["galat"]
         if pv["ok"] or st != 409 or not pv["blocks"] or det.get("message") != pv["blocks"][0]["message"]: gagal.append(f"blok_beda {nm} {r['respons']}")
-        if r["ap_sesudah"] != r["ap_sebelum"] or not r["gl_sama"] or r["jejak_baru"] != 0: gagal.append(f"blok_tapi_menulis {nm}")
+        if r["ap_sesudah"] != r["ap_sebelum"] or not r["gl_sama"] or r["jejak_baru"] != 0 or r["dok_sesudah"] != r["dok_sebelum"]: gagal.append(f"blok_tapi_menulis {nm}")
         continue
     lolos += 1
     if not pv["ok"]: gagal.append(f"pratinjau_blok_tulis_lolos {nm}")
@@ -28,9 +28,15 @@ for r in baru:
     if r["sumber_aktif_sesudah"] or r["sisa_di_sumber"]: gagal.append(f"sumber_belum_bersih {nm}")
     if r["jejak_baru"] != 3: gagal.append(f"jejak {nm} {r['jejak_baru']}")
     if r["ulang"] != r["respons"] or not r["ulang_tanpa_tulis"]: gagal.append(f"ulang {nm}")
+    for tb, a in r["dok_sebelum"].items():  # syarat MASTER: PO/GRN/UM ikut pindah utuh
+        z = r["dok_sesudah"][tb]
+        if z["s"] != 0 or z["t"] != a["s"] + a["t"]: gagal.append(f"dok_{tb} {nm} {a} -> {z}")
+    if not r["qty_sama"]: gagal.append(f"qty_PO_berubah {nm}")
 if len(sys.argv) > 2:
     lama = [json.loads(l) for l in open(sys.argv[2])]
     print("LAMA respons:", sorted({json.dumps(x["respons"])[:90] for x in lama}))
-print(f"pasangan={len(baru)} lolos={lolos} diblok={blok}")
+grn = sum(1 for r in baru if r.get("dok_sebelum", {}).get("goods_receipts", {}).get("s"))
+print(f"pasangan={len(baru)} lolos={lolos} diblok={blok} pasangan_ber_GRN_sumber={grn} kirim/terima={sorted({(r.get('po_kirim'), r.get('po_terima')) for r in baru})}")
+if grn == 0: gagal.append("tak satu pun pasangan punya GRN di sumber (syarat MASTER tak teruji)")
 for g in gagal[:12]: print("GAGAL", g)
 print("LULUS" if not gagal and lolos > 0 else "GAGAL")

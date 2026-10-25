@@ -2,7 +2,9 @@
 SEMUA pasangan berurut (sumber, tujuan) vendor kaos AKTIF; tiap pasangan transaksi SENDIRI lalu ROLLBACK. DUA SUMBER independen per kasus:
  (1) compute_ap_outstanding per vendor (subledger), (2) GL: jumlah debit/kredit journal_lines POSTED per akun tenant + jumlah jurnal.
 Mode baru: pratinjau (READ ONLY) dulu -> NOL tulis; lalu POST /merge; ulang dengan kunci sama -> jawaban pertama.
-Mode lama: catat respons POST /merge saja (dulu 500 kolom hantu / kini 409 parkir)."""
+Mode lama: catat respons POST /merge saja (dulu 500 kolom hantu / kini 409 parkir).
+Syarat MASTER: tiap pasangan, di transaksi kasus, sumber diberi PO TERBUKA (buat -> kirim -> terima sebagian = GRN, baris non-stok) lewat
+handler NYATA; dicatat jumlah PO/GRN/UM per vendor sebelum/sesudah + quantity_received/quantity_billed baris PO sumber (WAJIB tak berubah)."""
 import asyncio, json, os, sys, uuid
 from decimal import Decimal
 sys.path.insert(0, "/app/backend/api_gateway"); os.environ.setdefault("OPENAI_API_KEY", "boneka")
@@ -22,6 +24,9 @@ def js(v):
 async def main():
     from app.routers import vendors as V
     from app.schemas.vendors import MergeVendorRequest
+    from app.routers import purchase_orders as RP
+    from app.schemas.purchase_orders import CreatePurchaseOrderRequest, ReceiveGoodsRequest
+    from datetime import date
     c = await asyncpg.connect(os.environ["URL"])
     if not await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', T):
         sys.exit(f"TENANT TAK ADA: {T}")
@@ -39,6 +44,7 @@ async def main():
         def acquire(s): return CMA()
     async def gpa(): return PA()
     V.get_pool = gpa
+    RP.get_pool = gpa
     import app.services.db_pool as DBP
     DBP.get_db_pool = gpa
 
@@ -85,6 +91,28 @@ async def main():
                 catat = {"sumber": s["name"], "tujuan": t["name"]}
                 tx = c.transaction(); await tx.start()
                 try:
+                    # PO terbuka + GRN untuk sumber (handler nyata, baris non-stok -> dokumen saja, tanpa jurnal) -- SATU pasangan per sumber
+                    # (tujuan pertama), supaya nomor PO kaos (sekuens tak ikut rollback) tak melompat 42x per run
+                    pertama = t["id"] == next(x["id"] for x in aktif if x["id"] != s["id"])
+                    po = {"lewati": True} if not pertama else await panggil(lambda: RP.create_purchase_order(req(), CreatePurchaseOrderRequest(
+                        vendor_id=str(s["id"]), vendor_name=s["name"], po_date=date.today(),
+                        items=[{"description": "TES E2E barang gabung", "quantity": 2, "unit_price": 1000}]), Response()))
+                    po_id = uuid.UUID(str(po["ok"]["data"]["id"])) if "ok" in po else None
+                    if po_id:
+                        catat["po_kirim"] = list(await panggil(lambda: RP.send_purchase_order(req(), po_id)))[0]
+                        pi = await c.fetchval("SELECT id FROM purchase_order_items WHERE po_id = $1 LIMIT 1", po_id)
+                        catat["po_terima"] = list(await panggil(lambda: RP.receive_goods(req(), po_id, ReceiveGoodsRequest(
+                            receive_date=date.today(), items=[{"po_item_id": str(pi), "quantity_received": 1}]), Response())))[0]
+                    elif pertama:
+                        catat["po_buat_galat"] = po
+                    async def dok():
+                        return {tb: {v: await c.fetchval(f"SELECT count(*) FROM {tb} WHERE tenant_id = $1 AND vendor_id = $2", T, x)
+                                     for v, x in (("s", s["id"]), ("t", t["id"]))} for tb in ("purchase_orders", "goods_receipts", "vendor_deposits")}
+                    async def qty():
+                        return js([dict(r) for r in await c.fetch("""SELECT i.id, i.quantity_received, i.quantity_billed FROM purchase_order_items i
+                                   JOIN purchase_orders p ON p.id = i.po_id WHERE p.tenant_id = $1 AND p.vendor_id = ANY($2::uuid[]) ORDER BY i.id""",
+                                   T, [s["id"], t["id"]])])
+                    catat["dok_sebelum"], qty_sebelum = await dok(), await qty()
                     sebelum = await tulis_snap()
                     catat["ap_sebelum"] = {k: sebelum["ap"].get(k, "0.00") for k in (str(s["id"]), str(t["id"]))}
                     catat["ap_total_sebelum"] = str(sum(Decimal(v) for v in sebelum["ap"].values()))
@@ -102,6 +130,8 @@ async def main():
                     catat["jejak_baru"] = sesudah["jejak"] - sebelum["jejak"]
                     catat["sumber_aktif_sesudah"] = await c.fetchval("SELECT is_active FROM vendors WHERE id = $1", s["id"])
                     catat["sisa_di_sumber"] = await c.fetchval("SELECT count(*) FROM bills WHERE tenant_id = $1 AND vendor_id = $2", T, s["id"])
+                    catat["dok_sesudah"] = await dok()
+                    catat["qty_sama"] = (await qty()) == qty_sebelum
                     if BARU:
                         catat["ulang"] = await panggil(lambda: merge(req(k), body))
                         catat["ulang_tanpa_tulis"] = (await tulis_snap()) == sesudah
