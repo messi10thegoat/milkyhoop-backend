@@ -11,6 +11,9 @@
   Setuju/Tolak atomik (antre diproses SESUDAHNYA sebagai giliran baru). Setuju/Tolak berbarengan tetap 409.
   Tak ada pesan terlantar: tugas yang selesai memeriksa antre lagi SESUDAH melepas kunci; penambah antre mencoba
   mengambil kunci SESUDAH menambah (salah satunya pasti memproses).
+- Berhenti (tombol stop): POST /sesi/{id}/berhenti memasang bendera; inti berhenti di titik aman (aliran.py) dan menutup
+  giliran dengan `dihentikan` + selesai{dihentikan:true}. Antre yang belum dibaca DIKEMBALIKAN ke FE (tidak diproses).
+  Tulis Setuju yang sedang berjalan TIDAK dipotong. Bendera dihapus di awal + akhir tiap giliran.
 """
 from __future__ import annotations
 
@@ -80,7 +83,7 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
     async def _lanjut_antre(s, a, pegangan, alat):
         """Pesan antre yang belum terbaca -> giliran baru (sesudah Setuju/Tolak, atau datang sesudah panggilan model terakhir)."""
         buat_pelaksana, izin = alat
-        while True:
+        while not await a.diminta_berhenti():
             pesan = await penyimpanan.antre_ambil_semua(s.tenant_id, s.user_id, s.sesi_id)
             if not pesan:
                 return
@@ -123,7 +126,10 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
                 try:
                     await penyimpanan.simpan(s)  # simpan juga bila galat di tengah: riwayat append-only tetap utuh
                 finally:
-                    await cm.__aexit__(None, None, None)
+                    try:
+                        await penyimpanan.berhenti_hapus(s.tenant_id, s.user_id, s.sesi_id)  # bendera basi tak bertahan
+                    finally:
+                        await cm.__aexit__(None, None, None)
             # Balapan: pesan yang masuk antre sesudah pemeriksaan terakhir tapi sebelum kunci lepas.
             if await penyimpanan.antre_daftar(s.tenant_id, s.user_id, s.sesi_id):
                 await _proses_antre_berkunci(s.tenant_id, s.user_id, s.sesi_id, a, alat)
@@ -150,6 +156,8 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
             s = await penyimpanan.ambil(tenant_id, user_id, sesi_id)
             if s is None:
                 return
+            await penyimpanan.berhenti_hapus(tenant_id, user_id, sesi_id)  # giliran baru: stop sebelumnya tak berlaku
+            a.dihentikan = False
             n = len(a.semua)
             try:
                 await _lanjut_antre(s, a, pegangan, alat)
@@ -196,7 +204,9 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
             await cm.__aexit__(None, None, None)
             raise
         tenant_id, user_id = user["tenant_id"], user["user_id"]
-        a = aliran.Aliran(ambil_antre=lambda: penyimpanan.antre_ambil_semua(tenant_id, user_id, sesi_id), boleh_sisip=boleh_sisip)
+        await penyimpanan.berhenti_hapus(tenant_id, user_id, sesi_id)  # stop untuk giliran sebelumnya tak berlaku
+        a = aliran.Aliran(ambil_antre=lambda: penyimpanan.antre_ambil_semua(tenant_id, user_id, sesi_id), boleh_sisip=boleh_sisip,
+                          cek_henti=lambda: penyimpanan.berhenti_diminta(tenant_id, user_id, sesi_id))
         sse = _mau_aliran(request)
         tugas = _latar(_kerjakan(s, cm, pegangan, a, kerja, masuk, _alat(request, user), sse))
         if sse:
@@ -267,12 +277,26 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
     async def _proses_antre_latar(tenant_id, user_id, sesi_id, alat):
         """Penambah antre mencoba kunci SESUDAH menambah: giliran sudah selesai -> proses sendiri (tanpa pendengar;
         hasil masuk tampilan, FE melihatnya lewat GET /sesi)."""
-        a = aliran.Aliran(ambil_antre=lambda: penyimpanan.antre_ambil_semua(tenant_id, user_id, sesi_id))
+        a = aliran.Aliran(ambil_antre=lambda: penyimpanan.antre_ambil_semua(tenant_id, user_id, sesi_id),
+                          cek_henti=lambda: penyimpanan.berhenti_diminta(tenant_id, user_id, sesi_id))
         token = aliran.pasang(a)
         try:
             await _proses_antre_berkunci(tenant_id, user_id, sesi_id, a, alat)
         finally:
             aliran.lepas(token)
+
+    @r.post("/sesi/{sesi_id}/berhenti")
+    async def berhenti(sesi_id: str, request: Request):
+        """Tombol stop / Esc saat bekerja. Tidak sibuk = 200 berhenti:false (idempoten, bukan galat).
+        Antre yang belum dibaca dikembalikan {id_pesan, teks} untuk ditaruh lagi di kotak ketik."""
+        user = await _pengguna(request)
+        await _sesi(user, sesi_id)
+        t, u = user["tenant_id"], user["user_id"]
+        if not await penyimpanan.sibuk(t, u, sesi_id):
+            return {"berhenti": False, "kode": "tidak_bekerja", "antre_dikembalikan": []}
+        await penyimpanan.berhenti_minta(t, u, sesi_id)
+        kembali = await penyimpanan.antre_tarik_semua(t, u, sesi_id)
+        return {"berhenti": True, "antre_dikembalikan": [{"id_pesan": m["id_pesan"], "teks": m["teks"]} for m in kembali]}
 
     @r.delete("/sesi/{sesi_id}/antre/{id_pesan}")
     async def batal_antre(sesi_id: str, id_pesan: str, request: Request):

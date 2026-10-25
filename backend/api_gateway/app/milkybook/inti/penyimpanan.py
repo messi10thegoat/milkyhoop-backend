@@ -9,6 +9,8 @@ Kunci (ruang = tenant x pengguna; sesi orang lain = tidak ditemukan):
   milkybook:kunci:{tenant}:{user}:{sesi_id}  kunci giliran (SET NX PX) -> dua permintaan sesi sama tidak berbarengan
   milkybook:antre:{tenant}:{user}:{sesi_id}  LIST kotak masuk (#10) JSON {id_pesan, teks}; maks aliran.MAKS_ANTRE
   milkybook:dibaca:{tenant}:{user}:{sesi_id} SET id_pesan antre yang sudah dibaca model (DELETE -> 409, ulang -> duplikat)
+  milkybook:henti:{tenant}:{user}:{sesi_id}  bendera berhenti (tombol stop), TTL = KUNCI_GILIRAN_MS; dihapus router di
+                                             awal + akhir tiap giliran (bendera basi tak menghentikan giliran berikut)
 Riwayat disimpan apa adanya (append-only; blok thinking + signature utuh).
 """
 from __future__ import annotations
@@ -90,6 +92,7 @@ class PenyimpananSesiMemori:
         self._kunci: set = set()
         self._antre: Dict[str, list] = {}
         self._dibaca: Dict[str, set] = {}
+        self._henti: set = set()
 
     async def buat(self, tenant_id: str, user_id: str, konteks: str = "", hari_ini: Optional[date] = None) -> Sesi:
         s = Sesi(sesi_id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user_id, konteks=konteks)
@@ -148,6 +151,22 @@ class PenyimpananSesiMemori:
         if any(m["id_pesan"] == id_pesan for m in self._antre.get(k, [])):
             return "antre"
         return "dibaca" if id_pesan in self._dibaca.get(k, set()) else None
+
+    async def antre_tarik_semua(self, tenant_id, user_id, sesi_id) -> list:
+        """Tombol stop: kosongkan antre TANPA menandai dibaca (FE mengembalikan teksnya ke kotak ketik)."""
+        k = f"{tenant_id}:{user_id}:{sesi_id}"
+        q, self._antre[k] = self._antre.get(k, []), []
+        return q
+
+    # ---- berhenti (tombol stop)
+    async def berhenti_minta(self, tenant_id, user_id, sesi_id) -> None:
+        self._henti.add(f"{tenant_id}:{user_id}:{sesi_id}")
+
+    async def berhenti_diminta(self, tenant_id, user_id, sesi_id) -> bool:
+        return f"{tenant_id}:{user_id}:{sesi_id}" in self._henti
+
+    async def berhenti_hapus(self, tenant_id, user_id, sesi_id) -> None:
+        self._henti.discard(f"{tenant_id}:{user_id}:{sesi_id}")
 
     async def antre_batal(self, tenant_id, user_id, sesi_id, id_pesan) -> Optional[str]:
         """-> 'dibatalkan' | 'sudah_dibaca' | None (tak dikenal)."""
@@ -241,3 +260,19 @@ class PenyimpananSesiRedis(PenyimpananSesiMemori):
             if json.loads(x)["id_pesan"] == id_pesan and await self._r.lrem(k, 1, x):
                 return "dibatalkan"
         return "sudah_dibaca" if await self._r.sismember(self._k("dibaca", tenant_id, user_id, sesi_id), id_pesan) else None
+
+    async def antre_tarik_semua(self, tenant_id, user_id, sesi_id):
+        k = self._k("antre", tenant_id, user_id, sesi_id)
+        hasil = []
+        while (x := await self._r.lpop(k)) is not None:
+            hasil.append(json.loads(x))
+        return hasil
+
+    async def berhenti_minta(self, tenant_id, user_id, sesi_id):
+        await self._r.set(self._k("henti", tenant_id, user_id, sesi_id), "1", px=KUNCI_GILIRAN_MS)
+
+    async def berhenti_diminta(self, tenant_id, user_id, sesi_id):
+        return bool(await self._r.get(self._k("henti", tenant_id, user_id, sesi_id)))
+
+    async def berhenti_hapus(self, tenant_id, user_id, sesi_id):
+        await self._r.delete(self._k("henti", tenant_id, user_id, sesi_id))
