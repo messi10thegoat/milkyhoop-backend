@@ -625,14 +625,17 @@
     }
    ],
    "harapan": {
-    "kartu_maks": 0,
+    "kartu_dilarang": [
+     "terima_penawaran"
+    ],
     "tulis_maks": 0,
     "teks_wajib_salah_satu": [
      "kirim",
      "terkirim",
      "draf"
     ]
-   }
+   },
+   "catatan": "KOREKSI 25 Okt (transkrip): model mengusulkan kartu 'tandai terkirim' dulu untuk draf yang disetujui pelanggan (nol tulis, kartu tetap butuh Setuju) -> sah. Yang dilarang: kartu TERIMA untuk draf, dan tulis apa pun."
   },
   {
    "id": "K24-tolak-beralasan",

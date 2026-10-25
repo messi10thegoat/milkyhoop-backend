@@ -712,3 +712,72 @@ def test_buat_putaran_dari_env_hibrida_bawaan_dan_mundur(monkeypatch):
     assert p.pemanggil.model == "claude-sonnet-5-5" and p.pemanggil_baca.model == "claude-haiku-5-5" and p.effort == "medium"
     p2 = K.buat_putaran_dari_env(registri(), AuditMemori(), env={"MILKYBOOK_MODEL_BACA": ""})
     assert p2.pemanggil_baca is None
+
+
+
+# ---------------------------------------------------------------- penjaga kartu (eval 25 Okt PNW-008)
+
+async def test_penjaga_kartu_klaim_tanpa_tool_tulis_dipaksa_koreksi():
+    klaim = "Penawaran sudah saya siapkan untuk Tinjau. Belum tersimpan sampai Anda menekan Setuju."
+    p, m = putaran([teks(klaim), panggil(("buat_x", {"jumlah": 2})), teks("Silakan tinjau kartunya.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat 2", be, izin_semua)
+    assert "kartu Tinjau, padahal belum ada kartu" in m.permintaan[1]["messages"][-1]["content"]
+    assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Silakan tinjau kartunya."]
+    assert any(e["jenis"] == "kartu" for e in ev)
+    assert any(b.peristiwa == "penjaga_angka" and b.hasil == "klaim_kartu" for b in p.audit.baris)
+
+
+async def test_penjaga_kartu_kedua_kali_diberi_catatan_jujur():
+    from app.milkybook.inti.putaran import CATATAN_TANPA_KARTU
+    klaim = "Kartu Tinjau sudah tampil, silakan tekan Setuju."
+    p, _ = putaran([teks(klaim), teks(klaim)])
+    ev = await p.giliran(sesi(), "buat", be_standar(), izin_semua)
+    t = [e for e in ev if e["jenis"] == "teks"][0]
+    assert t["teks"].endswith(CATATAN_TANPA_KARTU) and t["kartu_tak_ada"] is True
+
+
+async def test_penjaga_kartu_tidak_salah_tangkap():
+    # (a) kartu memang lahir di giliran ini; (b) kalimat lampau sesudah Setuju; (c) kartu menunggu dari giliran lalu
+    p, m = putaran([panggil(("buat_x", {"jumlah": 2})), teks("Kartu Tinjau sudah tampil. Tekan Setuju bila benar."),
+                    teks("Tersimpan setelah Anda menekan Setuju."), teks("Kartu tadi masih ada di kartu Tinjau; tekan Setuju.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat 2", be, izin_semua)
+    kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
+    ev2 = await p.setujui(s, kid, be, izin_semua)
+    assert [e["teks"] for e in ev2 if e["jenis"] == "teks"] == ["Tersimpan setelah Anda menekan Setuju."]
+    p2, m2 = putaran([panggil(("buat_x", {"jumlah": 2})), teks("Tinjau."), teks("Kartu tadi masih ada di kartu Tinjau; tekan Setuju.")])
+    s2 = sesi()
+    await p2.giliran(s2, "buat 2", be_standar(), izin_semua)
+    ev3 = await p2.giliran(s2, "yang tadi gimana?", be_standar(), izin_semua)
+    assert [e["teks"] for e in ev3 if e["jenis"] == "teks"] == ["Kartu tadi masih ada di kartu Tinjau; tekan Setuju."]
+    assert not any("[penjaga]" in json.dumps(x) for x in m.permintaan[-1]["messages"][-2:])
+
+
+async def test_hibrida_jawaban_atas_pertanyaan_penulis_tetap_ke_penulis_satu_giliran():
+    # eval 25 Okt PNW-008: penulis bertanya (barang baru? pajak?) -> "lanjutkan" dulu jatuh ke model baca tanpa tool tulis.
+    p, mb, mt = _hibrida([panggil(("perlu_penulis", {"alasan": "buat"})), teks("Ini daftarnya.")],
+                         [teks("Barangnya dibuat baru atau ditulis bebas?"), panggil(("buat_x", {"jumlah": 2})), teks("Tinjau."),
+                          teks("Baik.")])
+    be, s = be_standar(), sesi()
+    await p.giliran(s, "buat penawaran", be, izin_semua)                  # eskalasi -> penulis bertanya
+    assert s.mode_tulis and s.tulis_tertahan
+    n_baca = len(mb.permintaan)
+    ev = await p.giliran(s, "lanjutkan, tulis bebas", be, izin_semua)    # jawaban -> penulis, kartu lahir
+    assert len(mb.permintaan) == n_baca and any(e["jenis"] == "kartu" for e in ev)
+    k = s.kartu_menunggu()
+    await p.tolak(s, k.kartu_id)
+    await p.giliran(s, "ok", be, izin_semua)                              # penulis tanpa eskalasi, tanpa tulis -> lepas
+    assert not s.mode_tulis and not s.tulis_tertahan
+    await p.giliran(s, "ada apa saja?", be, izin_semua)                    # kembali ke model baca
+    assert len(mb.permintaan) > n_baca
+
+
+async def test_hibrida_model_baca_mengklaim_kartu_dialihkan_ke_penulis():
+    p, mb, mt = _hibrida([teks("Penawaran sudah saya siapkan untuk Tinjau. Tekan Setuju.")],
+                         [panggil(("buat_x", {"jumlah": 2})), teks("Silakan tinjau kartunya.")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "lanjut", be, izin_semua)
+    assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Silakan tinjau kartunya."]  # klaim model baca tak tampil
+    assert any(e["jenis"] == "kartu" for e in ev) and s.mode_tulis
+    assert any(b.hasil == "klaim_kartu:alih" for b in p.audit.baris)

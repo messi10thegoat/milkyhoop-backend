@@ -53,7 +53,7 @@ def sesi_ke_dict(s: Sesi) -> dict:
         "kartu": {k: _kartu_ke_dict(v) for k, v in s.kartu.items()}, "sumber_angka": s.sumber_angka,
         "usage": s.usage, "biaya_usd": s.biaya_usd, "konteks": s.konteks,
         "hari_ini": s.hari_ini.isoformat() if s.hari_ini else None, "mode_tulis": s.mode_tulis,
-        "tampilan": s.tampilan, "diproses_id": s.diproses_id[-200:],
+        "tampilan": s.tampilan, "diproses_id": s.diproses_id[-200:], "tulis_tertahan": s.tulis_tertahan,
     }
 
 
@@ -61,7 +61,7 @@ def sesi_dari_dict(d: dict) -> Sesi:
     s = Sesi(sesi_id=d["sesi_id"], tenant_id=d["tenant_id"], user_id=d["user_id"], messages=d["messages"],
              sumber_angka=d.get("sumber_angka", []), usage=d.get("usage", {}), biaya_usd=d.get("biaya_usd", 0.0),
              konteks=d.get("konteks", ""), mode_tulis=d.get("mode_tulis", False), tampilan=d.get("tampilan", []),
-             diproses_id=d.get("diproses_id", []))
+             diproses_id=d.get("diproses_id", []), tulis_tertahan=d.get("tulis_tertahan", False))
     s.hari_ini = date.fromisoformat(d["hari_ini"]) if d.get("hari_ini") else None
     s.kartu = {k: _kartu_dari_dict(v) for k, v in d.get("kartu", {}).items()}
     return s

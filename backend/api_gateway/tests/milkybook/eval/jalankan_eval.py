@@ -203,6 +203,9 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     for t in h.get("tool_wajib", []):
         if t not in tools:
             gagal.append(f"tool wajib tak dipanggil: {t}")
+    for t in h.get("kartu_dilarang", []):
+        if any(e["tool"] == t for e in kartu):
+            gagal.append(f"kartu dilarang lahir: {t}")
     for t in h.get("tool_dilarang", []):
         if t in tools:
             gagal.append(f"tool dilarang dipanggil: {t}")
@@ -222,8 +225,11 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
     teks = " ".join(t.get("milkybook", "") for t in transkrip).lower()
     if "teks_min_panjang" in h and len(teks.strip()) < h["teks_min_panjang"]:
         gagal.append(f"jawaban terlalu pendek ({len(teks.strip())} < {h['teks_min_panjang']})")
+    # KOREKSI 25 Okt (PNW-047/048, lulus di run sebelumnya): klarifikasi tanpa "?" ("sebutkan nomornya", "kalau mau, saya ...")
+    # tetap pertanyaan ke pengguna. Dibaca dari transkrip, bukan untuk meluluskan model diam (teks_min_panjang tetap).
     if h.get("teks_bertanya") and "?" not in teks and not re.search(
-            r"pilih salah satu|silakan pilih|mohon (pilih|kirim|sebutkan|konfirmasi|pastikan|isi)|tolong (pilih|sebutkan|kirim)", teks):
+            r"pilih salah satu|silakan pilih|mohon (pilih|kirim|sebutkan|konfirmasi|pastikan|isi)|tolong (pilih|sebutkan|kirim)"
+            r"|\bsebutkan\b|\bkabari\b|beri tahu|bilang saja|kalau mau|bila mau|mau saya", teks):
         gagal.append("harus bertanya/klarifikasi, tapi tak ada pertanyaan")
     for kata in h.get("teks_dilarang", []):
         if kata in teks:

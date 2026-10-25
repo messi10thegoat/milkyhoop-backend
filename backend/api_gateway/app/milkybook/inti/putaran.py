@@ -86,6 +86,12 @@ PESAN_GALAT_MODEL = {
     "koneksi": "Asisten tidak bisa dihubungi. Coba lagi sebentar lagi.",
     "lain": "Asisten sedang tidak tersedia. Coba lagi nanti.",
 }
+# Penjaga kartu (eval 25 Okt PNW-008): model menulis "sudah saya siapkan untuk Tinjau ... tekan Setuju" TANPA memanggil
+# tool tulis -> tak ada kartu. Frasa ajakan masa kini saja (kalimat lampau sesudah Setuju sah; jalur sesudah Setuju dilewati).
+_KLAIM_KARTU = re.compile(
+    r"kartu\s+tinjau\s+(sudah\s+)?(tampil|muncul|siap|ada)|(di|pada)\s+kartu\s+tinjau|siapkan\s+untuk\s+tinjau"
+    r"|\btekan(lah)?\s+(tombol\s+)?\**setuju", re.IGNORECASE)
+CATATAN_TANPA_KARTU = "Belum ada kartu Tinjau untuk usulan ini; minta saya menyiapkannya lagi."
 PESAN_SESUDAH_SETUJU = "Tindakan di kartu sudah tersimpan; hanya penjelasan asisten yang gagal dimuat."
 CATATAN_ANGKA_DISAMARKAN = "Sebagian angka tidak ditampilkan karena tidak berasal dari data aplikasi."
 
@@ -125,6 +131,9 @@ class Sesi:
     tampilan: List[dict] = field(default_factory=list)
     # #10 id_pesan klien yang sudah diterima (idempoten: coba-ulang sesudah putus koneksi tak diproses dua kali)
     diproses_id: List[str] = field(default_factory=list)
+    # Hibrida (eval 25 Okt PNW-008): penulis hasil eskalasi bertanya lalu pengguna menjawab -> jawaban itu tetap ke penulis
+    # (dulu jatuh ke model baca tanpa tool tulis: mengarang kartu / mengaku tak punya alat). Satu giliran saja.
+    tulis_tertahan: bool = False
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -417,6 +426,28 @@ class Putaran:
 
             pelanggaran = penjaga_angka.periksa(teks, sesi.sumber_angka) if teks and not calls else []
             salah_tanggal = penjaga_tanggal.periksa(teks, sesi.hari_ini) if not calls else []
+            klaim_kartu = bool(teks and not calls and not sesudah_setuju and _KLAIM_KARTU.search(teks)
+                               and not any(e.get("jenis") == "kartu" for e in peristiwa) and sesi.kartu_menunggu() is None)
+
+            if not calls and klaim_kartu and baca:
+                # Model baca mengklaim kartu = niat menulis -> alihkan ke penulis (teks model baca tak ditampilkan).
+                sesi.messages.append({"role": "assistant", "content": hasil.konten})
+                sesi.messages.append({"role": "user", "content": PESAN_ALIH})
+                eskalasi, baca, sesi.mode_tulis = True, False, True
+                peta, api_tools = susun(False)
+                peristiwa.append({"jenis": "tool", "nama": "perlu_penulis", "kelas": "INTI"})
+                await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "penjaga_angka", hasil="klaim_kartu:alih"))
+                continue
+
+            if not calls and klaim_kartu and not sudah_dikoreksi and hasil.stop_reason == "end_turn":
+                sudah_dikoreksi = True
+                sesi.messages.append({"role": "assistant", "content": hasil.konten})
+                await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "penjaga_angka", hasil="klaim_kartu"))
+                sesi.messages.append({"role": "user", "content": (
+                    "[penjaga] Jawabanmu belum ditampilkan karena menyebut kartu Tinjau, padahal belum ada kartu: tool tulis "
+                    "belum dipanggil. Panggil tool tulis yang sesuai untuk mengusulkan (aplikasi yang membuat kartunya), "
+                    "atau tulis ulang jawabanmu tanpa menyebut kartu.")})
+                continue
 
             if not calls and (pelanggaran or salah_tanggal) and not sudah_dikoreksi and hasil.stop_reason == "end_turn":
                 sudah_dikoreksi = True
@@ -438,6 +469,9 @@ class Putaran:
             sesi.messages.append({"role": "assistant", "content": hasil.konten})
             if teks and not calls:
                 ev = {"jenis": "teks", "teks": teks}
+                if klaim_kartu:  # sesudah satu koreksi masih mengklaim kartu: catatan jujur, bukan klaim palsu
+                    ev["teks"] = f"{teks}\n\n{CATATAN_TANPA_KARTU}"
+                    ev["kartu_tak_ada"] = True
                 if salah_tanggal:
                     ev["tanggal_tak_cocok"] = salah_tanggal
                 if pelanggaran:
@@ -496,7 +530,12 @@ class Putaran:
         ))
         # Keluar dari alur tulis bila giliran penulis selesai tanpa usulan tulis dan tanpa kartu menunggu.
         if sesi.mode_tulis and not menulis_di_giliran and sesi.kartu_menunggu() is None:
-            sesi.mode_tulis = False
+            if eskalasi and not sesi.tulis_tertahan:
+                sesi.tulis_tertahan = True  # penulis bertanya: giliran jawaban berikutnya tetap ke penulis
+            else:
+                sesi.mode_tulis, sesi.tulis_tertahan = False, False
+        else:
+            sesi.tulis_tertahan = False
 
         peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)})
         return peristiwa
