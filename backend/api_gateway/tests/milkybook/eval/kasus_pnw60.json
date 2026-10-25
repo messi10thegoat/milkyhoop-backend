@@ -2038,7 +2038,7 @@
     },
     {
      "autopilot": 3,
-     "jawaban_default": "Barang tanpa stok, tidak dikirim. Lanjutkan sesuai yang saya sebut.",
+     "jawaban_default": "Tanpa pajak. Barangnya barang stok sesuai yang saya sebut; stok awal 100 nanti saya isi sendiri di Barang & Jasa. Lanjutkan penawarannya.",
      "setujui_kecuali": "buat_penawaran"
     }
    ],
