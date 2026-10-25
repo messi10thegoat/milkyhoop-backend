@@ -15,7 +15,7 @@ grep -E "^(FAILED|ERROR) |^=+ .* in " $L/unit.log | tail -15
 salin() { POHON=$(mktemp -d /root/.sabgv-XXXX); mkdir -p $POHON/backend
   rsync -a --exclude .pytest_cache --exclude __pycache__ backend/api_gateway $POHON/backend/ && ln -s $W/backend/migrations $POHON/backend/migrations
   python3 scripts/ops/sabotase-gabung-vendor.py $POHON/backend/api_gateway $1; }
-for s in S_hantu S_urut S_tabel; do
+for s in S_hantu S_urut S_tabel S_status; do
   echo "=== sabotase $s (WAJIB merah)"
   if salin $s; then timeout 300 scripts/jalankan_unit.sh $POHON -q -p no:cacheprovider tests/unit/test_gabung_vendor.py tests/unit/test_vendor_idem.py 2>&1 | grep -E "^(FAILED|ERROR) |^=+ .* in " | tail -5
   else echo "FAIL sabotase $s tak terpasang"; fi

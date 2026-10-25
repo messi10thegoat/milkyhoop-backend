@@ -2016,7 +2016,8 @@ async def get_vendor_activity(
 # Dulu: badan rute membaca/menulis kolom yang TAK ADA (vendors.merged_into_id/deleted_at/deleted_by) + tabel TAK ADA (master_data_audit_log)
 # -> 500 di setiap panggilan (diparkir 409 di VENDOR-IDEM 5c9c4395).
 # Penolak (tak dilemahkan, pesan terbaca): (1) jurnal saldo awal LAMA (VENDOR_OPENING_BALANCE, source_id = vendor sumber) bersaldo -- jurnal
-# immutable, tak bisa ikut pindah; (2) sumber DAN tujuan sama-sama punya tagihan pembuka saldo awal aktif (uq_bill_saldo_awal_vendor).
+# immutable, tak bisa ikut pindah; (2) sumber DAN tujuan sama-sama punya tagihan pembuka saldo awal aktif (uq_bill_saldo_awal_vendor);
+# (3) sumber punya tagihan ber-status_v2 NULL (pemicu status menolak UPDATE apa pun pada baris itu).
 GABUNG_TABEL = (  # (tabel, kolom vendor, ada tenant_id, ada vendor_name) -- diukur information_schema 25 Okt 2026
     ("bills", "vendor_id", True, True),
     ("bill_payments_v2", "vendor_id", True, True),
@@ -2079,6 +2080,13 @@ async def _gabung_rencana(conn, tenant_id: str, sumber, tujuan) -> dict:
     if pembuka == 2:
         blok.append({"code": "SALDO_AWAL_GANDA",
                      "message": "Kedua vendor sama-sama punya tagihan saldo awal. Batalkan salah satunya dulu, lalu gabungkan."})
+    # Pemicu trg_validate_bill_status_v2 membandingkan OLD.status_v2 = NEW.status_v2: NULL = NULL bukan TRUE -> UPDATE kolom APA PUN pada
+    # tagihan ber-status_v2 NULL ditolak (diukur 25 Okt: 1 baris, draf uji kaos). Tolak dengan pesan terbaca, bukan 500 di tengah pemindahan.
+    tanpa_status = await conn.fetchval("SELECT count(*) FROM bills WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 IS NULL", tenant_id, sumber)
+    if tanpa_status:
+        blok.append({"code": "TAGIHAN_TANPA_STATUS",
+                     "message": f"Vendor sumber ({peta[sumber]['name']}) punya {tanpa_status} tagihan lama tanpa status yang tidak bisa dipindah. "
+                                "Perbaiki atau hapus tagihan itu dulu, lalu gabungkan."})
     return {"peta": peta, "cacah": cacah, "blocks": blok}
 
 

@@ -52,8 +52,8 @@ def test_tabel_gabung_mencakup_sumber_saldo_hutang():
 
 
 class _K:
-    def __init__(s, vendors, ob=0, pembuka=0):
-        s.vendors, s.ob, s.pembuka = vendors, ob, pembuka
+    def __init__(s, vendors, ob=0, pembuka=0, tanpa_status=0):
+        s.vendors, s.ob, s.pembuka, s.tanpa_status = vendors, ob, pembuka, tanpa_status
 
     async def fetch(s, sql, *a):
         return s.vendors
@@ -63,6 +63,8 @@ class _K:
             return s.ob
         if "is_opening_balance" in sql:
             return s.pembuka
+        if "status_v2 IS NULL" in sql:
+            return s.tanpa_status
         return 0
 
 
@@ -76,6 +78,7 @@ def _v(i, aktif=True):
     ("sumber_nonaktif", _K([_v(A, False), _v(B)]), ["VENDOR_NONAKTIF"]),
     ("saldo_awal_lama", _K([_v(A), _v(B)], ob=1000), ["SALDO_AWAL_LAMA_TAK_BISA_PINDAH"]),
     ("saldo_awal_ganda", _K([_v(A), _v(B)], pembuka=2), ["SALDO_AWAL_GANDA"]),
+    ("tagihan_tanpa_status", _K([_v(A), _v(B)], tanpa_status=1), ["TAGIHAN_TANPA_STATUS"]),
 ])
 def test_penentu_blok(kasus, kon, kode):
     from uuid import UUID

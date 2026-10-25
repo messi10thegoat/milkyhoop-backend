@@ -7,12 +7,15 @@
 import json, sys
 from decimal import Decimal as D
 baru = [json.loads(l) for l in open(sys.argv[1])]
+import os
+PETA = json.load(open(os.environ["PETA_NAMA_ID"])) if os.environ.get("PETA_NAMA_ID") else {}  # hanya untuk berkas lama tanpa *_id
 gagal, lolos, blok = [], 0, 0
 for r in baru:
     nm = f"{r['sumber']}->{r['tujuan']}"
     if not r["pratinjau_tanpa_tulis"]: gagal.append(f"pratinjau_menulis {nm}")
     pv = r["pratinjau"]["ok"]["data"]
-    s_id, t_id = list(r["ap_sebelum"])
+    # id EKSPLISIT (dulu dari urutan kunci ap_sebelum -- json sort_keys mengurutkan abjad -> sumber/tujuan tertukar; bug banding 25 Okt)
+    s_id, t_id = (r["sumber_id"], r["tujuan_id"]) if "sumber_id" in r else (PETA[r["sumber"]], PETA[r["tujuan"]])
     if "galat" in r["respons"]:
         blok += 1
         st, det = r["respons"]["galat"]
@@ -36,7 +39,7 @@ if len(sys.argv) > 2:
     lama = [json.loads(l) for l in open(sys.argv[2])]
     print("LAMA respons:", sorted({json.dumps(x["respons"])[:90] for x in lama}))
 grn = sum(1 for r in baru if r.get("dok_sebelum", {}).get("goods_receipts", {}).get("s"))
-print(f"pasangan={len(baru)} lolos={lolos} diblok={blok} pasangan_ber_GRN_sumber={grn} kirim/terima={sorted({(r.get('po_kirim'), r.get('po_terima')) for r in baru})}")
+print(f"pasangan={len(baru)} lolos={lolos} diblok={blok} pasangan_ber_GRN_sumber={grn} kirim/terima={sorted({str((r.get('po_kirim'), r.get('po_terima'))) for r in baru})}")
 if grn == 0: gagal.append("tak satu pun pasangan punya GRN di sumber (syarat MASTER tak teruji)")
 for g in gagal[:12]: print("GAGAL", g)
 print("LULUS" if not gagal and lolos > 0 else "GAGAL")

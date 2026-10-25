@@ -88,7 +88,7 @@ async def main():
                 if s["id"] == t["id"]:
                     continue
                 body = MergeVendorRequest(source_vendor_id=str(s["id"]), target_vendor_id=str(t["id"]))
-                catat = {"sumber": s["name"], "tujuan": t["name"]}
+                catat = {"sumber": s["name"], "tujuan": t["name"], "sumber_id": str(s["id"]), "tujuan_id": str(t["id"])}
                 tx = c.transaction(); await tx.start()
                 try:
                     # PO terbuka + GRN untuk sumber (handler nyata, baris non-stok -> dokumen saja, tanpa jurnal) -- SATU pasangan per sumber

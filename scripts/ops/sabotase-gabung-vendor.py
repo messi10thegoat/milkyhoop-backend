@@ -1,6 +1,6 @@
 """Sabotase GABUNG-VENDOR pada SALINAN api_gateway (tiap ubahan tepat sekali, dicek). argv: <api_gateway> <mode>
 S_hantu = kolom hantu merged_into_id kembali; S_urut = kunci SESUDAH penentu; S_tabel/M_ap = bill_payments_v2/bills keluar dari GABUNG_TABEL;
-M_pratinjau = pratinjau selalu ok."""
+M_pratinjau = pratinjau selalu ok; S_status = penolak tagihan tanpa status dimatikan."""
 import sys
 p = sys.argv[1] + "/app/routers/vendors.py"; m = sys.argv[2]
 s = open(p).read()
@@ -14,6 +14,7 @@ UB = {
 ''')],
     "S_tabel": [('    ("bill_payments_v2", "vendor_id", True, True),\n', '')],
     "M_ap": [('    ("bills", "vendor_id", True, True),\n', '')],
+    "S_status": [('    if tanpa_status:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",', '    if False:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",')],
     "M_pratinjau": [('"ok": not r["blocks"], "source"', '"ok": True, "source"')],
 }
 for a, b in UB[m]:
