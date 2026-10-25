@@ -62,6 +62,30 @@ class RedisPalsu:
     async def expire(self, k, s):
         return True
 
+    # hash / zset (daftar percakapan)
+    async def hset(self, k, f, v):
+        self.d.setdefault(k, {})[f] = v
+
+    async def hsetnx(self, k, f, v):
+        h = self.d.setdefault(k, {})
+        if f in h:
+            return 0
+        h[f] = v
+        return 1
+
+    async def hgetall(self, k):
+        return dict(self.d.get(k, {}))
+
+    async def zadd(self, k, peta):
+        self.d.setdefault(k, {}).update(peta)
+
+    async def zrevrange(self, k, a, b):
+        x = sorted(self.d.get(k, {}).items(), key=lambda kv: -kv[1])
+        return [m for m, _ in (x[a:] if b == -1 else x[a:b + 1])]
+
+    async def zrem(self, k, m):
+        self.d.get(k, {}).pop(m, None)
+
 
 async def _sesi_berkartu(store):
     m = ModelPalsu([panggil(("buat_x", {"jumlah": 3})), teks("Tinjau.")])
@@ -188,7 +212,8 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
     from app.milkybook.pasang import milkybook_router
     jalur = sorted((r.path, sorted(r.methods)[0]) for r in milkybook_router().routes)
     assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"), ("/kartu/{kartu_id}/ubah", "POST"),
-                     ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
+                     ("/sesi", "GET"), ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}", "PATCH"),
+                     ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
                      ("/sesi/{sesi_id}/berhenti", "POST"), ("/sesi/{sesi_id}/pesan", "POST")]
 
 
