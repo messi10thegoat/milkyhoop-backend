@@ -29,7 +29,7 @@ jalan() {
 echo "=== harness LAMA (kode terpasang: 409 parkir)"; jalan $LAMA/backend lama lama
 echo "=== harness BARU"; jalan $W/backend baru baru
 echo "=== banding (WAJIB LULUS)"; python3 scripts/ops/banding-gabung-vendor.py $L/out/baru.jsonl $L/out/lama.jsonl | tail -14
-for m in M_ap M_pratinjau; do
+for m in M_ap M_pratinjau M_status; do
   echo "=== kontrol merah $m (banding WAJIB GAGAL)"
   if salin $m; then jalan $POHON/backend $m baru; python3 scripts/ops/banding-gabung-vendor.py $L/out/$m.jsonl | tail -4; else echo FAIL; fi; rm -rf $POHON
 done

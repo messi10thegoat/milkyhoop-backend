@@ -14,6 +14,7 @@ UB = {
 ''')],
     "S_tabel": [('    ("bill_payments_v2", "vendor_id", True, True),\n', '')],
     "M_ap": [('    ("bills", "vendor_id", True, True),\n', '')],
+    "M_status": [('    if tanpa_status:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",', '    if False:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",')],
     "S_status": [('    if tanpa_status:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",', '    if False:\n        blok.append({"code": "TAGIHAN_TANPA_STATUS",')],
     "M_pratinjau": [('"ok": not r["blocks"], "source"', '"ok": True, "source"')],
 }

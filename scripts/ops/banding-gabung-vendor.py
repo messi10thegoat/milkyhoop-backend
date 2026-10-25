@@ -16,6 +16,10 @@ for r in baru:
     pv = r["pratinjau"]["ok"]["data"]
     # id EKSPLISIT (dulu dari urutan kunci ap_sebelum -- json sort_keys mengurutkan abjad -> sumber/tujuan tertukar; bug banding 25 Okt)
     s_id, t_id = (r["sumber_id"], r["tujuan_id"]) if "sumber_id" in r else (PETA[r["sumber"]], PETA[r["tujuan"]])
+    if r["respons"].get("galat", [0])[0] >= 500: gagal.append(f"500 {nm}")  # 500 = selalu GAGAL (bukan blok)
+    if r.get("tanpa_status_sumber"):  # syarat MASTER: pasangan bersumber tagihan tanpa status WAJIB berakhir BLOK, bukan dilewati
+        tb_ = r["respons"].get("galat")
+        if not (tb_ and tb_[0] == 409 and isinstance(tb_[1], dict) and tb_[1].get("code") == "TAGIHAN_TANPA_STATUS"): gagal.append(f"tanpa_status_tak_diblok {nm} {r['respons']}")
     if "galat" in r["respons"]:
         blok += 1
         st, det = r["respons"]["galat"]
@@ -38,8 +42,10 @@ for r in baru:
 if len(sys.argv) > 2:
     lama = [json.loads(l) for l in open(sys.argv[2])]
     print("LAMA respons:", sorted({json.dumps(x["respons"])[:90] for x in lama}))
+ts = sum(1 for r in baru if r.get("tanpa_status_sumber"))
+if ts == 0: gagal.append("tak satu pun pasangan bersumber tagihan tanpa status (penolak tak teruji)")
 grn = sum(1 for r in baru if r.get("dok_sebelum", {}).get("goods_receipts", {}).get("s"))
-print(f"pasangan={len(baru)} lolos={lolos} diblok={blok} pasangan_ber_GRN_sumber={grn} kirim/terima={sorted({str((r.get('po_kirim'), r.get('po_terima'))) for r in baru})}")
+print(f"pasangan={len(baru)} lolos={lolos} diblok={blok} tanpa_status={ts} pasangan_ber_GRN_sumber={grn} kirim/terima={sorted({str((r.get('po_kirim'), r.get('po_terima'))) for r in baru})}")
 if grn == 0: gagal.append("tak satu pun pasangan punya GRN di sumber (syarat MASTER tak teruji)")
 for g in gagal[:12]: print("GAGAL", g)
 print("LULUS" if not gagal and lolos > 0 else "GAGAL")

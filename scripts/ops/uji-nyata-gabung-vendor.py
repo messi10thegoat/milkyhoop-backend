@@ -113,6 +113,8 @@ async def main():
                                    JOIN purchase_orders p ON p.id = i.po_id WHERE p.tenant_id = $1 AND p.vendor_id = ANY($2::uuid[]) ORDER BY i.id""",
                                    T, [s["id"], t["id"]])])
                     catat["dok_sebelum"], qty_sebelum = await dok(), await qty()
+                    catat["tanpa_status_sumber"] = await c.fetchval(
+                        "SELECT count(*) FROM bills WHERE tenant_id = $1 AND vendor_id = $2 AND status_v2 IS NULL", T, s["id"])
                     sebelum = await tulis_snap()
                     catat["ap_sebelum"] = {k: sebelum["ap"].get(k, "0.00") for k in (str(s["id"]), str(t["id"]))}
                     catat["ap_total_sebelum"] = str(sum(Decimal(v) for v in sebelum["ap"].values()))
