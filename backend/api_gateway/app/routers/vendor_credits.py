@@ -749,7 +749,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
 
 @router.patch("/{vendor_credit_id}", response_model=VendorCreditResponse)
 async def update_vendor_credit(
-    request: Request, vendor_credit_id: UUID, body: UpdateVendorCreditRequest
+    request: Request, vendor_credit_id: UUID, body: UpdateVendorCreditRequest, response: Response = None
 ):
     """
     Update a draft vendor credit.
@@ -759,21 +759,29 @@ async def update_vendor_credit(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        # Optimistic concurrency (opt-in If-Match): reject a stale write.
-        from ..services.optimistic_concurrency import assert_if_match_row
-        await assert_if_match_row(request, "vendor_credits", vendor_credit_id)
+        from ..services import idem_buat as _ib
+        from ..services.optimistic_concurrency import assert_if_match
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Check status
+                # P2P-3a (25 Okt): Law 14 kunci klien (VC_UPDATE) PERTAMA di tx; lalu kunci posting yang SAMA (VENDOR_CREDIT) + FOR UPDATE ->
+                # ubah||posting berurutan; If-Match + status dibaca DI BAWAH kunci (dulu If-Match di koneksi lain, status tanpa kunci).
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_UPDATE", vendor_credit_id,
+                                                       lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:
+                    return _lama
+
+                async def _jawab(r):
+                    return (await _ib.simpan(conn, ctx, _kp, _sd, "VC_UPDATE", r, vendor_credit_id)) if _kp else r
+
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT:{vendor_credit_id}")
                 vc = await conn.fetchrow(
-                    """
-                    SELECT id, status FROM vendor_credits
-                    WHERE id = $1 AND tenant_id = $2
-                """,
+                    "SELECT id, status, updated_at FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     vendor_credit_id,
                     ctx["tenant_id"],
                 )
+                if vc:
+                    assert_if_match(request, vc["updated_at"])
 
                 if not vc:
                     raise HTTPException(
@@ -790,11 +798,11 @@ async def update_vendor_credit(
                 update_data = body.model_dump(exclude_unset=True)
 
                 if not update_data:
-                    return {
+                    return await _jawab({
                         "success": True,
                         "message": "No changes provided",
                         "data": {"id": str(vendor_credit_id)},
-                    }
+                    })
 
                 # Handle items if provided
                 if "items" in update_data and update_data["items"]:
@@ -915,11 +923,11 @@ async def update_vendor_credit(
 
                 logger.info(f"Vendor credit updated: {vendor_credit_id}")
 
-                return {
+                return await _jawab({
                     "success": True,
                     "message": "Vendor credit updated successfully",
                     "data": {"id": str(vendor_credit_id)},
-                }
+                })
 
     except HTTPException:
         raise
@@ -936,51 +944,58 @@ async def update_vendor_credit(
 
 
 @router.delete("/{vendor_credit_id}", response_model=VendorCreditResponse)
-async def delete_vendor_credit(request: Request, vendor_credit_id: UUID):
+async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, response: Response = None):
     """
     Delete a draft vendor credit.
 
     Only draft vendor credits can be deleted. Use void for posted vendor credits.
+    P2P-3a (25 Okt): satu transaksi -- idem VC_DELETE pertama, kunci posting yang SAMA (VENDOR_CREDIT:) + FOR UPDATE, DELETE bersyarat
+    status draf + tenant (dulu tanpa transaksi: hapus||posting bisa menghapus ND yang baru diposting; DELETE tanpa tenant).
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat as _ib
 
         async with pool.acquire() as conn:
-            # Check status
-            vc = await conn.fetchrow(
-                """
-                SELECT id, status, credit_number FROM vendor_credits
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                vendor_credit_id,
-                ctx["tenant_id"],
-            )
-
-            if not vc:
-                raise HTTPException(status_code=404, detail="Vendor credit not found")
-
-            if vc["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Only draft vendor credits can be deleted. Use void for posted.",
+            async with conn.transaction():
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_DELETE", vendor_credit_id, {}, response)
+                if _lama is not None:
+                    return _lama
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT:{vendor_credit_id}")
+                vc = await conn.fetchrow(
+                    "SELECT id, status, credit_number FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                    vendor_credit_id,
+                    ctx["tenant_id"],
                 )
 
-            # Delete (cascade will delete items)
-            await conn.execute(
-                "DELETE FROM vendor_credits WHERE id = $1", vendor_credit_id
-            )
+                if not vc:
+                    raise HTTPException(status_code=404, detail="Vendor credit not found")
 
-            logger.info(f"Vendor credit deleted: {vendor_credit_id}")
+                if vc["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Only draft vendor credits can be deleted. Use void for posted.",
+                    )
 
-            return {
-                "success": True,
-                "message": "Vendor credit deleted successfully",
-                "data": {
-                    "id": str(vendor_credit_id),
-                    "vendor_credit_number": vc["credit_number"],
-                },
-            }
+                # Delete (cascade will delete items) -- bersyarat: status berubah di sela = 409, bukan menghapus dokumen terbit
+                if not await conn.fetchval(
+                    "DELETE FROM vendor_credits WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+                    vendor_credit_id, ctx["tenant_id"],
+                ):
+                    raise HTTPException(status_code=409, detail="Nota debit sudah berubah status. Muat ulang halaman.")
+
+                logger.info(f"Vendor credit deleted: {vendor_credit_id}")
+
+                resp = {
+                    "success": True,
+                    "message": "Vendor credit deleted successfully",
+                    "data": {
+                        "id": str(vendor_credit_id),
+                        "vendor_credit_number": vc["credit_number"],
+                    },
+                }
+                return (await _ib.simpan(conn, ctx, _kp, _sd, "VC_DELETE", resp, vendor_credit_id)) if _kp else resp
 
     except HTTPException:
         raise
@@ -1755,12 +1770,19 @@ async def preview_void_vendor_credit(request: Request, vendor_credit_id: UUID, b
 
 
 @router.post("/{vendor_credit_id}/create-tax-invoice")
-async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str):
-    """Create faktur pajak retur masukan dari vendor credit."""
+async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str, response: Response = None):
+    """Create faktur pajak retur masukan dari vendor credit.
+    P2P-3a: idem VC_TAX_INV + kunci per sumber DIPEGANG sampai panggilan internal selesai (klik ganda = berurutan, yang kedua melihat
+    tautan yang sudah ada -> 400); respons tercatat untuk replay. Gagal -> transaksi batal, kunci klien tak terpakai."""
+    from ..services import idem_buat as _ib
     ctx = get_user_context(request)
     pool = await get_pool()
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
+        _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_TAX_INV", vendor_credit_id, {}, response)
+        if _lama is not None:
+            return _lama
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"TAX_INV_SRC:vendor_credit:{vendor_credit_id}")
         tid = ctx["tenant_id"]
         await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
         vc = await conn.fetchrow(
@@ -1778,21 +1800,22 @@ async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str):
         if vc["tax_invoice_id"]:
             raise HTTPException(400, "Vendor credit sudah punya faktur pajak")
 
-    # Delegate to main tax-invoices create endpoint via internal HTTP
-    import httpx
+        # Delegate to main tax-invoices create endpoint via internal HTTP (kunci per sumber tetap dipegang transaksi ini)
+        import httpx
 
-    auth_header = request.headers.get("authorization", "")
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(
-            "http://localhost:8000/api/tax-invoices",
-            json={"source_type": "vendor_credit", "source_ids": [vendor_credit_id]},
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            timeout=30.0,
-        )
-    if resp.status_code >= 400:
-        try:
-            detail = resp.json().get("detail", resp.text)
-        except Exception:
-            detail = resp.text
-        raise HTTPException(resp.status_code, detail)
-    return resp.json()
+        auth_header = request.headers.get("authorization", "")
+        async with httpx.AsyncClient(verify=False) as client:
+            resp = await client.post(
+                "http://localhost:8000/api/tax-invoices",
+                json={"source_type": "vendor_credit", "source_ids": [vendor_credit_id]},
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                timeout=30.0,
+            )
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            raise HTTPException(resp.status_code, detail)
+        hasil = resp.json()
+        return (await _ib.simpan(conn, ctx, _kp, _sd, "VC_TAX_INV", hasil, vendor_credit_id)) if _kp else hasil

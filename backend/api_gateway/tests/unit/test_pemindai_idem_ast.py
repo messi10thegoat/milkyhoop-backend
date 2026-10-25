@@ -22,9 +22,12 @@ WAJIB = {
     "routers/vendor_deposits.py": ["create_vendor_deposit", "update_vendor_deposit", "delete_vendor_deposit", "post_vendor_deposit",
                                    "apply_vendor_deposit", "unapply_vendor_deposit", "refund_vendor_deposit", "void_vendor_deposit"],  # AS-GP4
     # alias (_ib / idem_mulai_aksi) & mekanisme lama -- kontrol positif bahwa alias TERBACA
-    "routers/credit_notes.py": ["post_credit_note", "void_credit_note"],
+    "routers/credit_notes.py": ["post_credit_note", "void_credit_note",
+                                 "update_credit_note", "delete_credit_note", "create_tax_invoice_from_cn"],  # + P2P-3a
     "routers/receive_payments.py": ["void_receive_payment", "create_receive_payment"],
     "routers/bill_payments.py": ["create_bill_payment"],
+    # P2P-3a (25 Okt): ND + NK ubah/hapus/faktur pajak (simetri)
+    "routers/vendor_credits.py": ["update_vendor_credit", "delete_vendor_credit", "create_tax_invoice_from_vc"],
     "routers/sales_invoices.py": ["update_invoice", "post_invoice", "void_invoice", "delete_invoice"],
     # AS-G10 (24 Okt): UM pelanggan -- create = mekanisme KOLOM lama (kunci_dari + cari idempotency_key, indeks unik V179)
     "routers/customer_deposits.py": ["create_customer_deposit", "update_customer_deposit", "delete_customer_deposit",

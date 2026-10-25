@@ -187,7 +187,7 @@ async def build_tax_invoice_from_sources(
                 "SELECT id, status, customer_id, customer_name, "
                 "credit_note_number, credit_note_date, "
                 "original_invoice_id, original_invoice_number, "
-                "subtotal, tax_rate, tax_amount, total_amount, tax_invoice_id "
+                "subtotal, tax_rate, tax_amount, total_amount "  # P2P-3a: tax_invoice_id = kolom hantu; tautan dicek di bawah
                 "FROM credit_notes WHERE id = $1 AND tenant_id = $2",
                 source_id,
                 tenant_id,
@@ -198,12 +198,6 @@ async def build_tax_invoice_from_sources(
                 raise HTTPException(
                     400, f"Credit note {cn['credit_note_number']} belum di-post"
                 )
-            if cn["tax_invoice_id"]:
-                raise HTTPException(
-                    400,
-                    f"Credit note {cn['credit_note_number']} sudah punya faktur pajak",
-                )
-
             # Check not already linked
             existing = await conn.fetchval(
                 "SELECT ti.id FROM tax_invoice_sources tis "

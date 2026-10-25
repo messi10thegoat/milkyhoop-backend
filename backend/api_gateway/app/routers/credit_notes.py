@@ -1473,7 +1473,7 @@ async def preview_credit_note(request: Request, body: CreditNotePreviewRequest):
 
 @router.patch("/{credit_note_id}", response_model=CreditNoteResponse)
 async def update_credit_note(
-    request: Request, credit_note_id: UUID, body: UpdateCreditNoteRequest
+    request: Request, credit_note_id: UUID, body: UpdateCreditNoteRequest, response: _Response = None
 ):
     """
     Update a draft credit note.
@@ -1483,21 +1483,29 @@ async def update_credit_note(
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
-        # Optimistic concurrency (opt-in If-Match): reject a stale write.
-        from ..services.optimistic_concurrency import assert_if_match_row
-        await assert_if_match_row(request, "credit_notes", credit_note_id)
+        from ..services import idem_buat as _ib
+        from ..services.optimistic_concurrency import assert_if_match
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Check status
+                # P2P-3a (25 Okt): Law 14 kunci klien (CN_UPDATE) PERTAMA di tx; lalu kunci posting yang SAMA (CREDIT_NOTE) + FOR UPDATE ->
+                # ubah||posting berurutan; If-Match + status dibaca DI BAWAH kunci (dulu If-Match di koneksi lain, status tanpa kunci).
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_UPDATE", credit_note_id,
+                                                       lambda: body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:
+                    return _lama
+
+                async def _jawab(r):
+                    return (await _ib.simpan(conn, ctx, _kp, _sd, "CN_UPDATE", r, credit_note_id)) if _kp else r
+
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE:{credit_note_id}")
                 cn = await conn.fetchrow(
-                    """
-                    SELECT id, status FROM credit_notes
-                    WHERE id = $1 AND tenant_id = $2
-                """,
+                    "SELECT id, status, updated_at FROM credit_notes WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     credit_note_id,
                     ctx["tenant_id"],
                 )
+                if cn:
+                    assert_if_match(request, cn["updated_at"])
 
                 if not cn:
                     raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
@@ -1511,11 +1519,11 @@ async def update_credit_note(
                 update_data = body.model_dump(exclude_unset=True)
 
                 if not update_data:
-                    return {
+                    return await _jawab({
                         "success": True,
                         "message": "No changes provided",
                         "data": {"id": str(credit_note_id)},
-                    }
+                    })
 
                 # 3(c): hitung ulang bila BARIS atau DISKON/TARIF berubah. Dulu: suntingan baris tanpa
                 # mengirim ulang diskon MENOLKAN diskon (default 0, bukan nilai tersimpan), dan
@@ -1679,11 +1687,11 @@ async def update_credit_note(
 
                 logger.info(f"Credit note updated: {credit_note_id}")
 
-                return {
+                return await _jawab({
                     "success": True,
                     "message": "Nota kredit diperbarui",
                     "data": {"id": str(credit_note_id)},
-                }
+                })
 
     except HTTPException:
         raise
@@ -1698,49 +1706,58 @@ async def update_credit_note(
 
 
 @router.delete("/{credit_note_id}", response_model=CreditNoteResponse)
-async def delete_credit_note(request: Request, credit_note_id: UUID):
+async def delete_credit_note(request: Request, credit_note_id: UUID, response: _Response = None):
     """
     Delete a draft credit note.
 
     Only draft credit notes can be deleted. Use void for posted credit notes.
+    P2P-3a (25 Okt, simetri ND): satu transaksi -- idem CN_DELETE pertama, kunci posting yang SAMA (CREDIT_NOTE:) + FOR UPDATE, DELETE
+    bersyarat status draf + tenant (dulu tanpa transaksi: hapus||posting bisa menghapus NK yang baru diposting).
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat as _ib
 
         async with pool.acquire() as conn:
-            # Check status
-            cn = await conn.fetchrow(
-                """
-                SELECT id, status, credit_note_number FROM credit_notes
-                WHERE id = $1 AND tenant_id = $2
-            """,
-                credit_note_id,
-                ctx["tenant_id"],
-            )
-
-            if not cn:
-                raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
-
-            if cn["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Hanya nota kredit berstatus Draf yang bisa dihapus. Nota kredit yang sudah terbit dibatalkan, bukan dihapus.",
+            async with conn.transaction():
+                _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_DELETE", credit_note_id, {}, response)
+                if _lama is not None:
+                    return _lama
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CREDIT_NOTE:{credit_note_id}")
+                cn = await conn.fetchrow(
+                    "SELECT id, status, credit_note_number FROM credit_notes WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                    credit_note_id,
+                    ctx["tenant_id"],
                 )
 
-            # Delete (cascade will delete items)
-            await conn.execute("DELETE FROM credit_notes WHERE id = $1", credit_note_id)
+                if not cn:
+                    raise HTTPException(status_code=404, detail="Nota kredit tidak ditemukan.")
 
-            logger.info(f"Credit note deleted: {credit_note_id}")
+                if cn["status"] != "draft":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Hanya nota kredit berstatus Draf yang bisa dihapus. Nota kredit yang sudah terbit dibatalkan, bukan dihapus.",
+                    )
 
-            return {
-                "success": True,
-                "message": "Nota kredit dihapus",
-                "data": {
-                    "id": str(credit_note_id),
-                    "credit_note_number": cn["credit_note_number"],
-                },
-            }
+                # Delete (cascade will delete items) -- bersyarat: status berubah di sela = 409
+                if not await conn.fetchval(
+                    "DELETE FROM credit_notes WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+                    credit_note_id, ctx["tenant_id"],
+                ):
+                    raise HTTPException(status_code=409, detail="Nota kredit sudah berubah status. Muat ulang halaman.")
+
+                logger.info(f"Credit note deleted: {credit_note_id}")
+
+                resp = {
+                    "success": True,
+                    "message": "Nota kredit dihapus",
+                    "data": {
+                        "id": str(credit_note_id),
+                        "credit_note_number": cn["credit_note_number"],
+                    },
+                }
+                return (await _ib.simpan(conn, ctx, _kp, _sd, "CN_DELETE", resp, credit_note_id)) if _kp else resp
 
     except HTTPException:
         raise
@@ -3146,16 +3163,25 @@ async def void_credit_note(
 
 
 @router.post("/{credit_note_id}/create-tax-invoice")
-async def create_tax_invoice_from_cn(request: Request, credit_note_id: str):
-    """Create faktur pajak retur keluaran dari credit note."""
+async def create_tax_invoice_from_cn(request: Request, credit_note_id: str, response: _Response = None):
+    """Create faktur pajak retur keluaran dari credit note.
+    P2P-3a: (1) kolom hantu credit_notes.tax_invoice_id (TIDAK ADA -> 500 tiap panggilan) diganti tautan nyata tax_invoice_sources
+    (pola U3a ND); (2) idem CN_TAX_INV + kunci per sumber dipegang sampai panggilan internal selesai."""
+    from ..services import idem_buat as _ib
     ctx = get_user_context(request)
     pool = await get_pool()
 
-    async with pool.acquire() as conn:
+    async with pool.acquire() as conn, conn.transaction():
+        _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "CN_TAX_INV", credit_note_id, {}, response)
+        if _lama is not None:
+            return _lama
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"TAX_INV_SRC:credit_note:{credit_note_id}")
         tid = ctx["tenant_id"]
         await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
         cn = await conn.fetchrow(
-            "SELECT id, status, tax_invoice_id FROM credit_notes "
+            "SELECT id, status, EXISTS (SELECT 1 FROM tax_invoice_sources tis JOIN tax_invoices ti ON ti.id = tis.tax_invoice_id "
+            "WHERE tis.source_type = 'credit_note' AND tis.source_id = credit_notes.id AND ti.tenant_id = $2 "
+            "AND ti.status NOT IN ('cancelled', 'replaced')) AS tax_invoice_id FROM credit_notes "  # P2P-3a: kolom hantu -> tautan nyata
             "WHERE id = $1 AND tenant_id = $2",
             credit_note_id,
             ctx["tenant_id"],
@@ -3167,24 +3193,25 @@ async def create_tax_invoice_from_cn(request: Request, credit_note_id: str):
         if cn["tax_invoice_id"]:
             raise HTTPException(400, "Credit note sudah punya faktur pajak")
 
-    # Delegate to main tax-invoices create endpoint via internal HTTP
-    import httpx
+        # Delegate to main tax-invoices create endpoint via internal HTTP (kunci per sumber tetap dipegang transaksi ini)
+        import httpx
 
-    auth_header = request.headers.get("authorization", "")
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(
-            "http://localhost:8000/api/tax-invoices",
-            json={"source_type": "credit_note", "source_ids": [credit_note_id]},
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            timeout=30.0,
-        )
-    if resp.status_code >= 400:
-        try:
-            detail = resp.json().get("detail", resp.text)
-        except Exception:
-            detail = resp.text
-        raise HTTPException(resp.status_code, detail)
-    return resp.json()
+        auth_header = request.headers.get("authorization", "")
+        async with httpx.AsyncClient(verify=False) as client:
+            resp = await client.post(
+                "http://localhost:8000/api/tax-invoices",
+                json={"source_type": "credit_note", "source_ids": [credit_note_id]},
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                timeout=30.0,
+            )
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            raise HTTPException(resp.status_code, detail)
+        hasil = resp.json()
+        return (await _ib.simpan(conn, ctx, _kp, _sd, "CN_TAX_INV", hasil, credit_note_id)) if _kp else hasil
 
 
 # =============================================================================
