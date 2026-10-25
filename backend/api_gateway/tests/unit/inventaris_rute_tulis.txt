@@ -469,10 +469,14 @@ POST /api/purchase-orders/{po_id}/to-bill
 POST /api/purchase-orders/{po_id}/to-bill/preview
 POST /api/quotes
 POST /api/quotes/{quote_id}/accept
+POST /api/quotes/{quote_id}/accept/preview
 POST /api/quotes/{quote_id}/decline
+POST /api/quotes/{quote_id}/decline/preview
+POST /api/quotes/{quote_id}/delete/preview
 POST /api/quotes/{quote_id}/duplicate
 POST /api/quotes/{quote_id}/edit/preview
 POST /api/quotes/{quote_id}/send
+POST /api/quotes/{quote_id}/send/preview
 POST /api/quotes/{quote_id}/to-invoice
 POST /api/quotes/{quote_id}/to-order
 POST /api/quotes/{quote_id}/to-order/preview
