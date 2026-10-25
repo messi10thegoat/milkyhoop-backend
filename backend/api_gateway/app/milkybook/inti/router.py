@@ -239,7 +239,8 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
         k = s.kartu_menunggu()
         t, u = user["tenant_id"], user["user_id"]
         return {"sesi_id": s.sesi_id, "peristiwa": s.tampilan, "kartu_menunggu": k.kartu_id if k else None,
-                "sedang_bekerja": await penyimpanan.sibuk(t, u, sesi_id), "antre": await penyimpanan.antre_daftar(t, u, sesi_id)}
+                "sedang_bekerja": await penyimpanan.sibuk(t, u, sesi_id), "antre": await penyimpanan.antre_daftar(t, u, sesi_id),
+                "konteks": putaran_fn().meter(s)}
 
     @r.post("/sesi/{sesi_id}/pesan")
     async def pesan(sesi_id: str, body: PesanMasuk, request: Request):

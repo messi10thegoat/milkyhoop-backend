@@ -27,6 +27,7 @@ from .pelaksana import JawabanBE, Pelaksana
 from .registri import IzinFn, Kelas, Registri, Tool, buang_null
 
 BATAS_HASIL_TOOL = 20_000  # karakter JSON per tool_result
+RINGKAS_PADA_BAWAAN = 60_000  # token konteks; 100% meteran = ambang peringkasan otomatis (env MILKYBOOK_RINGKAS_TOKEN)
 
 # Tool milik inti (bukan paket): hanya bisa MENGURANGI tulis, jadi selalu tersedia tanpa izin rute.
 TOOL_TUTUP_KARTU = {
@@ -144,6 +145,8 @@ class Sesi:
     tulis_tertahan: bool = False
     # #8 idempotensi /kartu/{id}/ubah: X-Idempotency-Key -> peristiwa respons pertama (ulang = respons sama)
     ubah_idem: Dict[str, List[dict]] = field(default_factory=dict)
+    # Meteran konteks: token masukan panggilan model TERAKHIR (input + cache baca + cache tulis) = ukuran konteks nyata.
+    konteks_token: int = 0
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -297,6 +300,7 @@ class Putaran:
         pemanggil_baca: Optional[PemanggilModel] = None,
         saklar_baca=None,
         batas_bulan=None,
+        ringkas_pada: int = RINGKAS_PADA_BAWAAN,
     ):
         self.registri = registri
         self.pemanggil = pemanggil
@@ -315,6 +319,17 @@ class Putaran:
         self.saklar_baca = saklar_baca or (lambda: True)
         # #11 pagar biaya: tenant_id -> batas USD bulan ini (None = tanpa pagar); dibaca SETIAP giliran.
         self.batas_bulan = batas_bulan or (lambda tenant_id: None)
+        # Meteran konteks: 100% = ambang peringkasan otomatis (bukan jendela model; pembukuan jauh lebih pendek dari coding).
+        self.ringkas_pada = ringkas_pada
+
+    def meter(self, sesi: Sesi) -> dict:
+        n = sesi.konteks_token
+        return {"token": n, "batas": self.ringkas_pada,
+                "persen": min(100, round(100 * n / self.ringkas_pada)) if self.ringkas_pada > 0 else 0}
+
+    def _selesai(self, sesi: Sesi, **tambahan) -> dict:
+        return {"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6),
+                "konteks": self.meter(sesi), **tambahan}
 
     async def _lewat_batas(self, sesi: Sesi) -> bool:
         batas = self.batas_bulan(sesi.tenant_id)
@@ -330,7 +345,7 @@ class Putaran:
 
     def _tolak_batas(self, sesi: Sesi) -> List[dict]:
         return [{"jenis": "galat", "kode": "batas_biaya", "pesan": PESAN_BATAS_BIAYA},
-                {"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)}]
+                self._selesai(sesi)]
 
     # ------------------------------------------------------------------ giliran pengguna
     async def giliran(self, sesi: Sesi, teks: str, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
@@ -426,7 +441,7 @@ class Putaran:
         return hasil
 
     async def _ubah_kartu(self, sesi, kartu_id, payload, pelaksana, izin_fn) -> List[dict]:
-        selesai = {"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)}
+        selesai = self._selesai(sesi)
         cek = self.periksa_ubah(sesi, kartu_id, payload)  # ulang di bawah kunci (balapan)
         if cek:
             return [{"jenis": "galat", "kode": cek[1], "pesan": "Isian kartu tidak bisa dipakai." if cek[0] == 422 else cek[2],
@@ -674,8 +689,7 @@ class Putaran:
         else:
             sesi.tulis_tertahan = False
 
-        peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6),
-                          **({"dihentikan": True} if dihentikan else {})})
+        peristiwa.append(self._selesai(sesi, **({"dihentikan": True} if dihentikan else {})))
         return peristiwa
 
     async def _sisipkan_antre(self, sesi: Sesi, peristiwa: List[dict]) -> None:
@@ -818,3 +832,7 @@ class Putaran:
             if isinstance(v, int):
                 sesi.usage[k] = sesi.usage.get(k, 0) + v
         sesi.biaya_usd += biaya_usd(hasil.model or self.model_nama, hasil.usage)
+        n = sum(v for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                if isinstance(v := hasil.usage.get(k) or 0, int))
+        if n:
+            sesi.konteks_token = n
