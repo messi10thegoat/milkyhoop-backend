@@ -68,6 +68,18 @@ async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
         bl.galat("PERIODE_TERTUTUP", 400, f"Periode akuntansi sudah {r['status']}")
 
 
+# ------------------------------------------------------------------ nomor (P2P-3b)
+SQL_PERKIRAAN_NOMOR_ND = """SELECT 'VC-' || TO_CHAR(tanggal_bisnis($1), 'YYMM') || '-' || LPAD((COALESCE((
+    SELECT last_number FROM vendor_credit_sequences WHERE tenant_id = $1 AND year_month = TO_CHAR(tanggal_bisnis($1), 'YYYY-MM')), 0) + 1)::text,
+    4, '0')"""
+
+
+async def perkiraan_nomor_nd(conn, tid: str) -> str:
+    """Nomor ND yang AKAN diberikan generate_vendor_credit_number(tid, 'VC') -- format & penghitung SAMA, tanpa menulis/mengunci.
+    PERKIRAAN: penulis paralel bisa mengambilnya dulu (pola NetSuite: nomor final saat simpan)."""
+    return await conn.fetchval(SQL_PERKIRAAN_NOMOR_ND, tid)
+
+
 # ------------------------------------------------------------------ posting
 async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, potongan: bool) -> list:
     """[(account_id, debit, credit, memo, peran)] jurnal VENDOR_CREDIT == penulis lama: Dr Hutang total · Cr Retur/Diskon subtotal · Cr PPN Masukan
@@ -84,9 +96,11 @@ async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, poton
     return baris
 
 
-async def rencana_posting(conn, ctx, vc, pratinjau: bool = False) -> dict:
+async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optional[list] = None) -> dict:
     """URUTAN == post_vendor_credit (sesudah kunci + baca): kaitan tagihan draf (dibukukan? ≤ sisa) · status draf · akun peran · pagar potongan
-    PPN (409) · akun dipetakan · periode. -> {blocks, ap, akun_kredit, potongan[, journals, stock, bills]}."""
+    PPN (409) · akun dipetakan · periode. -> {blocks, ap, akun_kredit, potongan[, journals, stock, bills]}.
+    items = baris ND MAYA (P2P-3b, HANYA pratinjau buat ND: vc belum ditulis, id acak) -> HPP/stok dari baris itu, bukan vendor_credit_items.
+    Penulis memanggil TANPA items (perilaku tak berubah)."""
     tid = ctx["tenant_id"]
     bl = Blok(pratinjau)
     sisa_t = None
@@ -121,7 +135,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False) -> dict:
         except HTTPException as e:
             bl.galat("NON_PKP", e.status_code, e.detail)
     if not potongan:
-        hpp, stok = await rencana_hpp(conn, tid, vc)
+        hpp, stok = await rencana_hpp(conn, tid, vc, items)
         jurnal += hpp
     tag = []
     if vc["original_bill_id"] and sisa_t is not None:
@@ -131,12 +145,12 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False) -> dict:
     return hasil
 
 
-async def rencana_hpp(conn, tid: str, vc) -> tuple:
+async def rencana_hpp(conn, tid: str, vc, items: Optional[list] = None) -> tuple:
     """Rencana jurnal HPP + gerak stok retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound."""
     from .inventory_helpers import get_cost_for_sale, resolve_inventory_accounts
     jurnal, stok = [], []
     wh = await conn.fetchval("SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1", tid)
-    for it in await conn.fetch("SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1", vc["id"]):
+    for it in (items if items is not None else await conn.fetch("SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1", vc["id"])):
         if not it["item_id"] or not wh:
             continue
         p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", it["item_id"])

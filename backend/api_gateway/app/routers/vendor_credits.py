@@ -594,6 +594,53 @@ async def get_vendor_credit_history(request: Request, vendor_credit_id: UUID, li
 # =============================================================================
 
 
+async def _susun_nd(conn, ctx: dict, body: CreateVendorCreditRequest, bl) -> dict:
+    """P2P-3b: penyusun ND BERSAMA create_vendor_credit (bl = NDR.Blok(False) -> galat pertama dilempar persis seperti dulu) dan
+    POST /vendor-credits/preview (NDR.Blok(True) -> blok dikumpulkan). Urutan == kode lama: vendor milik tenant · hitung baris (calculate_item_totals)
+    · diskon & pajak dokumen · nomor tagihan asal (ND.tagihan_milik: tenant + vendor yang sama). Nol tulis, nol kunci."""
+    if body.vendor_id and not await conn.fetchval(
+            "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", UUID(body.vendor_id), ctx["tenant_id"]):
+        bl.galat("VENDOR_TIDAK_DITEMUKAN", 400, "Vendor tidak ditemukan.")
+
+    # Calculate items and totals
+    calculated_items = [
+        calculate_item_totals(item.model_dump()) for item in body.items
+    ]
+    subtotal = sum(item["subtotal"] for item in calculated_items)
+    total_tax = sum(item["tax_amount"] for item in calculated_items)
+
+    # Apply overall discount
+    if body.discount_percent > 0:
+        overall_discount = int(
+            subtotal * Decimal(str(body.discount_percent)) / 100
+        )
+    else:
+        overall_discount = body.discount_amount
+
+    # Apply overall tax if specified
+    after_discount = subtotal - overall_discount
+    if body.tax_rate > 0:
+        overall_tax = int(
+            after_discount * Decimal(str(body.tax_rate)) / 100
+        )
+    else:
+        overall_tax = total_tax
+
+    total_amount = after_discount + overall_tax
+
+    # Get original bill number if provided
+    original_bill_number = None
+    if body.original_bill_id:
+        # U3a: tagihan WAJIB milik tenant ini & vendor yang sama (dulu tanpa filter tenant -> nomor tagihan tenant lain bocor).
+        # tagihan_milik melempar 400 (mis. "milik vendor lain"): penulis -> dilempar ulang PERSIS; pratinjau -> blok (200).
+        bill = await bl.coba("TAGIHAN_TIDAK_SESUAI", ND.tagihan_milik(conn, ctx["tenant_id"], body.original_bill_id,
+                                                                     UUID(body.vendor_id) if body.vendor_id else None))
+        if bill:
+            original_bill_number = bill["invoice_number"]
+    return {"items": calculated_items, "subtotal": subtotal, "discount_amount": overall_discount, "tax_amount": overall_tax,
+            "total_amount": total_amount, "original_bill_number": original_bill_number}
+
+
 @router.post("", response_model=VendorCreditResponse, status_code=201)
 async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest, response: Response = None):
     """
@@ -615,49 +662,15 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                 kp, sidik, lama = await idem_buat.mulai(conn, ctx, kunci, "VC_CREATE", body, "vendor_credits", "vendor_credit", response)
                 if lama is not None:
                     return lama
-                if body.vendor_id and not await conn.fetchval(
-                        "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", UUID(body.vendor_id), ctx["tenant_id"]):
-                    raise HTTPException(status_code=400, detail="Vendor tidak ditemukan.")
+                # P2P-3b: penyusun SATU dgn POST /vendor-credits/preview (vendor milik tenant · hitung baris & total · nomor tagihan asal)
+                s = await _susun_nd(conn, ctx, body, NDR.Blok(False))
 
                 # Generate vendor credit number
                 vc_number = await conn.fetchval(
                     "SELECT generate_vendor_credit_number($1, 'VC')", ctx["tenant_id"]
                 )
-
-                # Calculate items and totals
-                calculated_items = [
-                    calculate_item_totals(item.model_dump()) for item in body.items
-                ]
-                subtotal = sum(item["subtotal"] for item in calculated_items)
-                total_tax = sum(item["tax_amount"] for item in calculated_items)
-
-                # Apply overall discount
-                if body.discount_percent > 0:
-                    overall_discount = int(
-                        subtotal * Decimal(str(body.discount_percent)) / 100
-                    )
-                else:
-                    overall_discount = body.discount_amount
-
-                # Apply overall tax if specified
-                after_discount = subtotal - overall_discount
-                if body.tax_rate > 0:
-                    overall_tax = int(
-                        after_discount * Decimal(str(body.tax_rate)) / 100
-                    )
-                else:
-                    overall_tax = total_tax
-
-                total_amount = after_discount + overall_tax
-
-                # Get original bill number if provided
-                original_bill_number = None
-                if body.original_bill_id:
-                    # U3a: tagihan WAJIB milik tenant ini & vendor yang sama (dulu tanpa filter tenant -> nomor tagihan tenant lain bocor)
-                    bill = await ND.tagihan_milik(conn, ctx["tenant_id"], body.original_bill_id,
-                                                  UUID(body.vendor_id) if body.vendor_id else None)
-                    if bill:
-                        original_bill_number = bill["invoice_number"]
+                calculated_items, subtotal, overall_discount = s["items"], s["subtotal"], s["discount_amount"]
+                overall_tax, total_amount, original_bill_number = s["tax_amount"], s["total_amount"], s["original_bill_number"]
 
                 # Insert vendor credit
                 vc_id = await conn.fetchval(
@@ -740,6 +753,59 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
     except Exception as e:
         logger.error(f"Error creating vendor credit: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create vendor credit")
+
+
+@router.post("/preview")
+async def preview_create_vendor_credit(request: Request, body: CreateVendorCreditRequest):
+    """P2P-3b PRATINJAU buat nota debit (kembar /credit-notes/preview AS-G7b): penyusun _susun_nd (SAMA dgn create) + penentu posting
+    NDR.rencana_posting atas ND MAYA (id acak, status draf) -> jurnal/HPP/stok/sisa tagihan yang AKAN lahir saat diposting. Transaksi READ ONLY,
+    tanpa kunci/penomoran/tulis; nomor ND = perkiraan, nomor jurnal null. 200 walau diblok. Tulis = POST /vendor-credits (`payload`, lahir DRAF)
+    lalu POST /vendor-credits/{id}/post."""
+    import uuid as _uuid
+    try:
+        ctx = get_user_context(request)
+        if not ctx["user_id"]:
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        pool = await get_pool()
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
+        async with pool.acquire() as conn:
+            tr = conn.transaction(readonly=True)  # DB menolak tulisan apa pun
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+                tid = ctx["tenant_id"]
+                bl = NDR.Blok(True)
+                s = await _susun_nd(conn, ctx, body, bl)
+                nomor, r = None, {}
+                if not bl.daftar:
+                    nomor = await NDR.perkiraan_nomor_nd(conn, tid)
+                    # ND MAYA: id acak yang tak ada di mana pun (= ND belum ditulis); medan == baris yang AKAN ditulis create
+                    vc = {"id": _uuid.uuid4(), "status": "draft", "credit_number": nomor, "vendor_name": body.vendor_name,
+                          "original_bill_id": UUID(body.original_bill_id) if body.original_bill_id else None,
+                          "original_bill_number": s["original_bill_number"], "subtotal": s["subtotal"], "tax_amount": s["tax_amount"],
+                          "total_amount": s["total_amount"], "reason": body.reason, "credit_date": body.vendor_credit_date}
+                    baris = [{"item_id": UUID(it["item_id"]) if it.get("item_id") else None, "quantity": it["quantity"]} for it in s["items"]]
+                    r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True, items=baris)
+                    bl.daftar += r["blocks"].daftar
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        ok = not bl.daftar
+        return {"success": True, "data": {
+            "action": "create", "can_proceed": ok, "blocks": bl.respons(),
+            "vendor_credit_number_preview": nomor if ok else None, "vendor_credit_number_estimated": ok and nomor is not None,
+            "items": [{k: (float(v) if isinstance(v, Decimal) else v) for k, v in it.items()
+                       if k in ("item_id", "item_code", "description", "quantity", "unit", "unit_price", "discount_percent",
+                                "discount_amount", "tax_rate", "tax_amount", "subtotal", "total")} for it in s["items"]],
+            "subtotal": float(s["subtotal"]), "discount_amount": float(s["discount_amount"]), "tax_amount": float(s["tax_amount"]),
+            "total_amount": float(s["total_amount"]), "original_bill_number": s["original_bill_number"],
+            "journals": r.get("journals", []) if ok else [], "stock": r.get("stock", []) if ok else [],
+            "bills": r.get("bills", []) if ok else [], "bank_transactions": [],
+            "payload": body.model_dump(mode="json"), "preview": True}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing vendor credit create: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau nota debit.")
 
 
 # =============================================================================

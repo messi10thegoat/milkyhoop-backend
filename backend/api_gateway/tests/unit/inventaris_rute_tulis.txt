@@ -585,6 +585,7 @@ POST /api/v3/chat/message
 POST /api/v3/chat/message/stream
 POST /api/v3/chat/message/upload
 POST /api/vendor-credits
+POST /api/vendor-credits/preview
 POST /api/vendor-credits/{vendor_credit_id}/apply
 POST /api/vendor-credits/{vendor_credit_id}/apply/preview
 POST /api/vendor-credits/{vendor_credit_id}/create-tax-invoice
