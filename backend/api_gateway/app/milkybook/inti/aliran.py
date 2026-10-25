@@ -5,6 +5,9 @@ angka/tanggal (tanpa potongan token). `langkah` hanya hidup (tidak masuk tampila
 Peristiwa dipancarkan lewat ContextVar: inti putaran tidak tahu apakah ada pendengar (JSON = pendengar mengumpulkan).
 Kotak masuk: pesan pengguna yang datang saat giliran berjalan; dibaca inti SEBELUM tiap panggilan model (bukan saat
 Setuju menulis: Setuju atomik, pesan diproses sesudahnya sebagai giliran baru).
+Berhenti (Esc / tombol stop): bendera per sesi di penyimpanan (gateway 2 worker), diperiksa di TITIK AMAN saja:
+sebelum tiap panggilan model, selama panggilan model (dibatalkan; riwayat tetap berakhir di user) dan di antara tool.
+Tulis Setuju (pelaksana.kirim) TIDAK pernah dipotong: tak ada titik periksa di dalamnya.
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ from typing import Any, Awaitable, Callable, List, Optional
 MAKS_ANTRE = 5             # pesan per sesi (pagar MASTER 25 Okt)
 MAKS_TEKS_ANTRE = 2000     # karakter per pesan antre
 DETIK_DETAK = 15           # ": ping" (Cloudflare memutus koneksi tanpa byte ~100 dtk)
+DETIK_CEK_HENTI = 0.5      # selang baca bendera berhenti selama panggilan model
 
 # Label langkah: Indonesia ringkas <= 4 kata, tanpa "(...)" (pagar MASTER). Cadangan per kelas, lalu "Memproses".
 LABEL_LANGKAH = {
@@ -47,7 +51,8 @@ def sidik_pesan(teks: str) -> str:
 class Aliran:
     """Pendengar satu permintaan. pancar() sinkron (put_nowait) supaya bisa dipanggil dari mana saja di inti."""
 
-    def __init__(self, ambil_antre: Optional[Callable[[], Awaitable[List[dict]]]] = None, boleh_sisip: bool = True):
+    def __init__(self, ambil_antre: Optional[Callable[[], Awaitable[List[dict]]]] = None, boleh_sisip: bool = True,
+                 cek_henti: Optional[Callable[[], Awaitable[bool]]] = None):
         self.antrian: "asyncio.Queue[Optional[dict]]" = asyncio.Queue()
         self.semua: List[dict] = []          # urut, tanpa langkah/selesai (-> tampilan & JSON)
         self.terkirim: set = set()           # id() peristiwa yang sudah dipancarkan
@@ -59,6 +64,13 @@ class Aliran:
         self.ambil_antre = ambil_antre
         self.boleh_sisip = boleh_sisip
         self.antre_dibaca: List[str] = []    # sidik pesan antre yang dibaca giliran ini (audit)
+        self.cek_henti = cek_henti
+        self.dihentikan = False              # sekali True tetap True sampai giliran berikut (router mengatur ulang)
+
+    async def diminta_berhenti(self) -> bool:
+        if not self.dihentikan and self.cek_henti is not None:
+            self.dihentikan = bool(await self.cek_henti())
+        return self.dihentikan
 
     def pancar(self, e: dict) -> None:
         if id(e) in self.terkirim:
@@ -97,6 +109,30 @@ def pancar(e: dict) -> None:
     a = _ALIRAN.get()
     if a is not None:
         a.pancar(e)
+
+
+async def diminta_berhenti() -> bool:
+    a = _ALIRAN.get()
+    return a is not None and await a.diminta_berhenti()
+
+
+async def atau_berhenti(coro: Awaitable[Any]):
+    """-> (True, hasil) | (False, None) bila pengguna berhenti selama menunggu (tugas dibatalkan). Galat coro naik."""
+    a = _ALIRAN.get()
+    if a is None or a.cek_henti is None:
+        return True, await coro
+    tugas = asyncio.ensure_future(coro)
+    while True:
+        selesai, _ = await asyncio.wait({tugas}, timeout=DETIK_CEK_HENTI)
+        if selesai:
+            return True, tugas.result()
+        if await a.diminta_berhenti():
+            tugas.cancel()
+            try:
+                await tugas
+            except BaseException:  # CancelledError / galat sesudah batal: hasilnya dibuang
+                pass
+            return False, None
 
 
 class Peristiwa(list):

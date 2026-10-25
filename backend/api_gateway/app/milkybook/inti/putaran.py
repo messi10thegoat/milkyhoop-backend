@@ -97,6 +97,9 @@ CATATAN_TANPA_KARTU = "Belum ada kartu Tinjau untuk usulan ini; minta saya menyi
 PESAN_BATAS_BIAYA = "Batas pemakaian Milkybook bulan ini untuk usaha Anda sudah tercapai. Fitur lain tetap bisa dipakai seperti biasa."
 PESAN_SESUDAH_SETUJU = "Tindakan di kartu sudah tersimpan; hanya penjelasan asisten yang gagal dimuat."
 CATATAN_ANGKA_DISAMARKAN = "Sebagian angka tidak ditampilkan karena tidak berasal dari data aplikasi."
+# Tombol stop: model tahu pekerjaan sebelumnya diputus pengguna (jangan diteruskan diam-diam di giliran berikut).
+CATATAN_DIHENTIKAN = ("[sistem] Pengguna menghentikan pekerjaanmu di tengah giliran. Jangan lanjutkan pekerjaan itu "
+                      "kecuali pengguna memintanya lagi.")
 
 ATURAN_SISTEM = """Kamu Milkybook, asisten pembukuan di aplikasi MilkyHoop. Pengguna adalah pemilik atau staf usaha kecil di Indonesia.
 
@@ -495,13 +498,21 @@ class Putaran:
         mulai_baca, biaya_awal, model_dipakai = baca, sesi.biaya_usd, []
         eskalasi = False
         peta, api_tools = susun(baca)
+        dihentikan = False
 
         for _ in range(self.maks_langkah):
+            if await aliran.diminta_berhenti():  # titik aman: riwayat berakhir di user (teks / tool_result)
+                dihentikan = True
+                break
             await self._sisipkan_antre(sesi, peristiwa)
             pemanggil = self.pemanggil_baca if baca else self.pemanggil
             try:
-                hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
-                                        tools=api_tools, effort=self.effort)
+                ok, hasil = await aliran.atau_berhenti(pemanggil(
+                    system=self.system_baca if baca else self.system, messages=sesi.messages, tools=api_tools,
+                    effort=self.effort))
+                if not ok:  # dibatalkan selama panggilan model: jawaban dibuang, riwayat tetap berakhir di user
+                    dihentikan = True
+                    break
             except Exception as e:
                 g = e if isinstance(e, GalatModel) else pilah_galat_sdk(e)
                 if g is None:
@@ -606,6 +617,11 @@ class Putaran:
             write_dipakai = False
             alihkan = False
             for c in calls:
+                if dihentikan or await aliran.diminta_berhenti():  # di antara tool; tool yang sudah jalan tak dipotong
+                    dihentikan = True
+                    hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "is_error": True,
+                                       "content": "Dihentikan pengguna sebelum tool ini dijalankan."})
+                    continue
                 if baca and c.nama == TOOL_PERLU_PENULIS["name"]:
                     alihkan = True
                     hasil_tool.append({"type": "tool_result", "tool_use_id": c.id, "content": PESAN_ALIH})
@@ -628,6 +644,8 @@ class Putaran:
                     blok["is_error"] = True
                 hasil_tool.append(blok)
             sesi.messages.append({"role": "user", "content": hasil_tool})
+            if dihentikan:
+                break
             if alihkan:
                 eskalasi = True
                 baca = False
@@ -636,12 +654,16 @@ class Putaran:
                 peristiwa.append({"jenis": "tool", "nama": "perlu_penulis", "kelas": "INTI"})
         else:
             peristiwa.append({"jenis": "galat", "pesan": "Langkah terlalu banyak; berhenti."})
+        if dihentikan:
+            _tambah_teks_pengguna(sesi, CATATAN_DIHENTIKAN)
+            peristiwa.append({"jenis": "dihentikan"})
         # (2) satu baris audit per giliran: model, eskalasi, biaya dari usage -> porsi baca DIUKUR di pilot.
+        antre_dibaca = ("antre:" + ",".join(x)) if (x := self._antre_giliran(sesi)) else ""
         await self.audit.tulis(BarisAudit(
             sesi.tenant_id, sesi.user_id, sesi.sesi_id, "giliran", model=",".join(model_dipakai) or None,
             kelas="BACA" if mulai_baca else "TULIS", eskalasi=eskalasi if mulai_baca else None,
             biaya_usd=round(sesi.biaya_usd - biaya_awal, 6),
-            hasil=("antre:" + ",".join(antre_dibaca))[:500] if (antre_dibaca := self._antre_giliran(sesi)) else None,
+            hasil=";".join(x for x in ("dihentikan" if dihentikan else "", antre_dibaca) if x)[:500] or None,
         ))
         # Keluar dari alur tulis bila giliran penulis selesai tanpa usulan tulis dan tanpa kartu menunggu.
         if sesi.mode_tulis and not menulis_di_giliran and sesi.kartu_menunggu() is None:
@@ -652,7 +674,8 @@ class Putaran:
         else:
             sesi.tulis_tertahan = False
 
-        peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)})
+        peristiwa.append({"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6),
+                          **({"dihentikan": True} if dihentikan else {})})
         return peristiwa
 
     async def _sisipkan_antre(self, sesi: Sesi, peristiwa: List[dict]) -> None:

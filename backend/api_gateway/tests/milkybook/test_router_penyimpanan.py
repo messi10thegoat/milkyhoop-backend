@@ -189,7 +189,7 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
     jalur = sorted((r.path, sorted(r.methods)[0]) for r in milkybook_router().routes)
     assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"), ("/kartu/{kartu_id}/ubah", "POST"),
                      ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
-                     ("/sesi/{sesi_id}/pesan", "POST")]
+                     ("/sesi/{sesi_id}/berhenti", "POST"), ("/sesi/{sesi_id}/pesan", "POST")]
 
 
 # ---------------------------------------------------------------- #9 galat API model ramah (ukur 25 Okt: dulu 500 mentah)
