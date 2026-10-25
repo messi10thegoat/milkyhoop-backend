@@ -1412,24 +1412,76 @@ async def hapus_penawaran_core(conn, ctx: dict, quote_id) -> dict:
     return {"quote_number": quote["quote_number"]}
 
 
-@router.delete("/{quote_id}", response_model=QuoteResponse)
-async def delete_quote(request: Request, quote_id: str):
-    """Hapus penawaran: HANYA draf yang belum pernah keluar (alasan_tak_bisa_hapus); selain itu 409
-    QUOTE_NOT_DELETABLE. Hapus keras; jejak = trigger trg_log_deletion (audit DOCUMENT_DELETED beraktor + nomor).
-    Isi + aturan: hapus_penawaran_core (juga dipakai hapus massal)."""
+def _blok_galat(e: HTTPException, code: str) -> dict:
+    """QA-AGEN (25 Okt 2026): galat penentu (HTTPException rute tulis) -> blok pratinjau {code, message}; teks = teks rute tulis."""
+    d = e.detail
+    if isinstance(d, dict):
+        return {"code": d.get("code") or code, "message": d.get("message") or str(d)}
+    return {"code": code, "message": str(d)}
+
+
+async def _pratinjau_baca(request: Request, quote_id: str, penentu, kode: str) -> tuple:
+    """QA-AGEN: pratinjau = penentu YANG SAMA dengan rute tulis, kunci=False, transaksi READ ONLY (pola AS-G7a). 404 tetap 404;
+    galat lain -> blok. -> (baris penawaran | None, blocks)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        try:
+            return await penentu(conn, ctx), []
+        except HTTPException as e:
+            if e.status_code == 404:
+                raise
+            q = await conn.fetchrow("SELECT id, status, quote_number FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                    uuid_module.UUID(str(quote_id)), ctx["tenant_id"])
+            return q, [_blok_galat(e, kode)]
+
+
+@router.post("/{quote_id}/delete/preview")
+async def preview_delete_quote(request: Request, quote_id: str):
+    """QA-AGEN (25 Okt 2026, Milkybook): pratinjau hapus SATU penawaran = penentu rencana_hapus_penawaran (dipakai juga pratinjau hapus
+    massal), transaksi READ ONLY, NOL tulisan. 200 walau diblok; 404 bila tak ada."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True):
+            blok = await rencana_hapus_penawaran(conn, ctx, quote_id)
+            if blok and blok[0]["code"] == "QUOTE_TAK_ADA":
+                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+            q = await conn.fetchrow("SELECT status, quote_number FROM quotes WHERE id = $1 AND tenant_id = $2",
+                                    uuid_module.UUID(str(quote_id)), ctx["tenant_id"])
+        return {"success": True, "data": {
+            "ok": not blok, "can_delete": not blok, "quote_number": q["quote_number"], "status": q["status"], "status_after": "deleted",
+            "blocks": [{"code": b["code"], "message": b["message"]} for b in blok]}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing delete quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penghapusan.")
+
+
+@router.delete("/{quote_id}", response_model=QuoteResponse)
+async def delete_quote(request: Request, quote_id: str, response: _Response = None):
+    """Hapus penawaran: HANYA draf yang belum pernah keluar (alasan_tak_bisa_hapus); selain itu 409
+    QUOTE_NOT_DELETABLE. Hapus keras; jejak = trigger trg_log_deletion (audit DOCUMENT_DELETED beraktor + nomor).
+    Isi + aturan: hapus_penawaran_core (juga dipakai hapus massal).
+    QA-AGEN (25 Okt 2026): idem QUOTE_DELETE (X-Idempotency-Key opsional) -- ulang ber-kunci sesudah sukses = jawaban pertama, bukan 404."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        from ..services import idem_buat
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "QUOTE_DELETE", quote_id, {}, response)
+                if _lama is not None:
+                    return _lama
                 data = await hapus_penawaran_core(conn, ctx, quote_id)
-
-            return QuoteResponse(
-                success=True,
-                message="Penawaran dihapus",
-                data=data,
-            )
+                _hasil = QuoteResponse(
+                    success=True,
+                    message="Penawaran dihapus",
+                    data=data,
+                )
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_DELETE", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
@@ -1513,20 +1565,46 @@ async def kirim_penawaran_core(conn, ctx: dict, quote_id, send_email: bool = Fal
     return {"quote_number": quote["quote_number"], "status": "sent"}
 
 
+@router.post("/{quote_id}/send/preview")
+async def preview_send_quote(request: Request, quote_id: str, body: SendQuoteRequest = None):
+    """QA-AGEN (25 Okt 2026, Milkybook): pratinjau kirim SATU penawaran = rencana_kirim_penawaran(kunci=False), transaksi READ ONLY, NOL
+    tulisan. Badan SAMA dengan /send. 200 walau diblok (teks blok = teks galat /send); 404 bila tak ada."""
+    try:
+        kirim_surel = bool(body and body.send_email)
+        q, blok = await _pratinjau_baca(
+            request, quote_id, lambda conn, ctx: rencana_kirim_penawaran(conn, ctx, quote_id, kunci=False, send_email=kirim_surel),
+            "QUOTE_TAK_BISA_DIKIRIM")
+        return {"success": True, "data": {
+            "ok": not blok, "quote_number": q["quote_number"], "status": q["status"], "status_after": "sent",
+            "send_email": kirim_surel, "blocks": blok}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing send quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pengiriman.")
+
+
 @router.post("/{quote_id}/send", response_model=QuoteResponse)
-async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = None):
-    """Mark quote as sent. Isi + aturan: kirim_penawaran_core (juga dipakai kirim massal)."""
+async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = None, response: _Response = None):
+    """Mark quote as sent. Isi + aturan: kirim_penawaran_core (juga dipakai kirim massal).
+    QA-AGEN (25 Okt 2026): idem QUOTE_SEND (X-Idempotency-Key opsional) -- ulang ber-kunci = jawaban pertama, tanpa tandai/riwayat kedua."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat
 
         async with pool.acquire() as conn, conn.transaction():
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(
+                conn, ctx, idem_buat.kunci_dari(request), "QUOTE_SEND", quote_id, lambda: (body.model_dump(mode="json") if body else {}), response)
+            if _lama is not None:
+                return _lama
             data = await kirim_penawaran_core(conn, ctx, quote_id, bool(body and body.send_email))
-            return QuoteResponse(
+            _hasil = QuoteResponse(
                 success=True,
                 message="Penawaran dikirim",
                 data=data,
             )
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_SEND", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
@@ -1535,34 +1613,80 @@ async def send_quote(request: Request, quote_id: str, body: SendQuoteRequest = N
         raise HTTPException(status_code=500, detail="Gagal mengirim penawaran.")
 
 
+async def rencana_terima_tolak(conn, ctx: dict, quote_id, aksi: str, kunci: bool):
+    """QA-AGEN (25 Okt 2026): SATU penentu terima/tolak penawaran -- PENULIS (/accept, /decline; kunci=True: kunci QUOTE + FOR UPDATE)
+    DAN PRATINJAU (/accept/preview, /decline/preview; kunci=False, transaksi READ ONLY). Isi DIPINDAH apa adanya dari kedua rute:
+    404 / status bukan sent|viewed (400) / [tolak] uang muka aktif. aksi = 'diterima' | 'ditolak'. -> baris penawaran."""
+    if kunci:
+        # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
+    quote = await conn.fetchrow(
+        "SELECT id, status, quote_number FROM quotes WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""),
+        uuid_module.UUID(str(quote_id)),
+        ctx["tenant_id"],
+    )
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
+
+    if quote["status"] not in ("sent", "viewed"):
+        raise HTTPException(
+            status_code=400,
+            detail=tg.tak_bisa_status("quote", quote["status"], aksi, quote["quote_number"]),
+        )
+    if aksi == "ditolak":
+        await _tolak_bila_ada_uang_muka_aktif(
+            conn, uuid_module.UUID(str(quote_id)), ctx["tenant_id"], "ditolak"
+        )
+    return quote
+
+
+async def _pratinjau_terima_tolak(request: Request, quote_id: str, aksi: str, status_after: str):
+    q, blok = await _pratinjau_baca(request, quote_id, lambda conn, ctx: rencana_terima_tolak(conn, ctx, quote_id, aksi, kunci=False),
+                                    "QUOTE_TAK_BISA_DITERIMA" if aksi == "diterima" else "QUOTE_TAK_BISA_DITOLAK")
+    return {"success": True, "data": {
+        "ok": not blok, "quote_number": q["quote_number"], "status": q["status"], "status_after": status_after, "blocks": blok}}
+
+
+@router.post("/{quote_id}/accept/preview")
+async def preview_accept_quote(request: Request, quote_id: str):
+    """QA-AGEN (25 Okt 2026, Milkybook): pratinjau terima = rencana_terima_tolak(kunci=False), READ ONLY, NOL tulisan. 200 walau diblok."""
+    try:
+        return await _pratinjau_terima_tolak(request, quote_id, "diterima", "accepted")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing accept quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penerimaan.")
+
+
+@router.post("/{quote_id}/decline/preview")
+async def preview_decline_quote(request: Request, quote_id: str, body: DeclineQuoteRequest = None):
+    """QA-AGEN (25 Okt 2026, Milkybook): pratinjau tolak = rencana_terima_tolak(kunci=False), READ ONLY, NOL tulisan. Badan SAMA dengan
+    /decline (alasan tak memengaruhi blok). 200 walau diblok."""
+    try:
+        return await _pratinjau_terima_tolak(request, quote_id, "ditolak", "declined")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing decline quote {quote_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penolakan.")
+
+
 @router.post("/{quote_id}/accept", response_model=QuoteResponse)
-async def accept_quote(request: Request, quote_id: str):
-    """Mark quote as accepted."""
+async def accept_quote(request: Request, quote_id: str, response: _Response = None):
+    """Mark quote as accepted. QA-AGEN (25 Okt 2026): penentu rencana_terima_tolak (== /accept/preview) + idem QUOTE_ACCEPT
+    (X-Idempotency-Key opsional) -- ulang ber-kunci sesudah sukses = jawaban pertama, bukan 400 status."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat
 
         async with pool.acquire() as conn, conn.transaction():
-            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
-            quote = await conn.fetchrow(
-                """
-                SELECT id, status, quote_number FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-                FOR UPDATE
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-            if quote["status"] not in ("sent", "viewed"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=tg.tak_bisa_status("quote", quote["status"], "diterima", quote["quote_number"]),
-                )
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "QUOTE_ACCEPT", quote_id, {}, response)
+            if _lama is not None:
+                return _lama
+            quote = await rencana_terima_tolak(conn, ctx, quote_id, "diterima", kunci=True)
 
             await conn.execute(
                 """
@@ -1578,11 +1702,12 @@ async def accept_quote(request: Request, quote_id: str):
                 f"Penawaran {quote['quote_number']} disetujui pelanggan", source="api:quotes",
             )
 
-            return QuoteResponse(
+            _hasil = QuoteResponse(
                 success=True,
                 message="Penawaran diterima",
                 data={"quote_number": quote["quote_number"], "status": "accepted"},
             )
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_ACCEPT", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
@@ -1613,37 +1738,20 @@ async def _tolak_bila_ada_uang_muka_aktif(conn, quote_id, tenant_id, aksi: str):
 
 
 @router.post("/{quote_id}/decline", response_model=QuoteResponse)
-async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteRequest):
-    """Mark quote as declined."""
+async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteRequest, response: _Response = None):
+    """Mark quote as declined. QA-AGEN (25 Okt 2026): penentu rencana_terima_tolak (== /decline/preview) + idem QUOTE_DECLINE
+    (X-Idempotency-Key opsional) -- ulang ber-kunci sesudah sukses = jawaban pertama, bukan 400 status."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
+        from ..services import idem_buat
 
         async with pool.acquire() as conn, conn.transaction():
-            # 2 Okt 2026: kunci QUOTE + FOR UPDATE -- dua klik/tab tak lagi saling menimpa status
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{ctx['tenant_id']}:{quote_id}")
-            quote = await conn.fetchrow(
-                """
-                SELECT id, status, quote_number FROM quotes
-                WHERE id = $1 AND tenant_id = $2
-                FOR UPDATE
-            """,
-                uuid_module.UUID(quote_id),
-                ctx["tenant_id"],
-            )
-
-            if not quote:
-                raise HTTPException(status_code=404, detail="Penawaran tidak ditemukan.")
-
-            if quote["status"] not in ("sent", "viewed"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=tg.tak_bisa_status("quote", quote["status"], "ditolak", quote["quote_number"]),
-                )
-
-            await _tolak_bila_ada_uang_muka_aktif(
-                conn, uuid_module.UUID(quote_id), ctx["tenant_id"], "ditolak"
-            )
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(
+                conn, ctx, idem_buat.kunci_dari(request), "QUOTE_DECLINE", quote_id, lambda: body.model_dump(mode="json"), response)
+            if _lama is not None:
+                return _lama
+            quote = await rencana_terima_tolak(conn, ctx, quote_id, "ditolak", kunci=True)
 
             await conn.execute(
                 """
@@ -1660,11 +1768,12 @@ async def decline_quote(request: Request, quote_id: str, body: DeclineQuoteReque
                 f"Penawaran {quote['quote_number']} ditolak" + (f": {body.reason}" if body.reason else ""), source="api:quotes",
             )
 
-            return QuoteResponse(
+            _hasil = QuoteResponse(
                 success=True,
                 message="Penawaran ditolak",
                 data={"quote_number": quote["quote_number"], "status": "declined"},
             )
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_DECLINE", _hasil, quote_id) if _kp else _hasil
 
     except HTTPException:
         raise
