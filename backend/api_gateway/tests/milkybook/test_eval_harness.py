@@ -86,3 +86,29 @@ async def test_harness_antre_disisipkan_sesudah_panggilan_ke_n():
     kedua = json.dumps(p.dalam.permintaan[1]["messages"][-1], ensure_ascii=False)
     assert "[pesan baru pengguna" in kedua and "batal, nggak jadi" in kedua
     assert {"antre": "batal, nggak jadi"} in r["transkrip"]
+
+
+async def test_stub_aksi_penawaran_terima_kirim_tolak_hapus():
+    """Unit QUOTES (cce7facc) di stub: pratinjau 200 walau diblok, tulis idem, status berubah di rekaman asli."""
+    import json
+    import os
+    d = {x["id"]: x for x in json.load(open(os.path.join(os.path.dirname(__file__), "eval", "kasus_penawaran.json")))["kasus"]}
+    q1 = "q0000000-0000-4000-8000-000000000001"
+    p = _Pembungkus([panggil(("terima_penawaran", {"id": q1})), teks("Tinjau kartunya."), teks("Dicatat diterima.")])
+    r = await je.jalankan_kasus(d["K22-terima-disetujui"], p, "medium")
+    assert r["lulus"], r["gagal"]
+    p2 = _Pembungkus([panggil(("terima_penawaran", {"id": "q0000000-0000-4000-8000-000000000002"})),
+                      teks("QT-2610-0002 masih draf; kirim dulu sebelum dicatat diterima.")])
+    r2 = await je.jalankan_kasus(d["K23-terima-draf-diblok"], p2, "medium")
+    assert r2["lulus"], r2["gagal"]
+    be = StubBE()
+    be.kunci_disetujui.add("k1")
+    j1 = await be.kirim("DELETE", f"/api/quotes/{q1}", header={"X-Idempotency-Key": "k1"})
+    assert j1.status == 400 and "Batalkan" in j1.isi["detail"]
+    pv = await be.kirim("POST", f"/api/quotes/{q1}/delete/preview", badan=b"{}")
+    assert pv.status == 200 and pv.isi["data"]["can_delete"] is False and pv.isi["data"]["blocks"][0]["code"] == "QUOTE_NOT_DELETABLE"
+    be.kunci_disetujui.add("k2")
+    b = json.dumps({"reason": "kemahalan"}).encode()
+    a1 = await be.kirim("POST", f"/api/quotes/{q1}/decline", badan=b, header={"X-Idempotency-Key": "k2"})
+    a2 = await be.kirim("POST", f"/api/quotes/{q1}/decline", badan=b, header={"X-Idempotency-Key": "k2"})
+    assert a1.status == 200 and a2.replay and next(x for x in be.penawaran if x["id"] == q1)["status"] == "declined"

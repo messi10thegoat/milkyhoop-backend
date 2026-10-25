@@ -3,9 +3,10 @@
 Sumber BUKAN kebenaran: diverifikasi CONVERSATIONAL 24 Okt terhadap kode. Penyimpangan yang dikoreksi di sini:
 - laporan11 menganggap buat pelanggan/barang DI LUAR pilot; rancangan §11.1 memasukkannya (tanpa saldo/stok awal).
   Jadi "create_item"/"POST /api/items" bukan larangan; yang dilarang tetap opening_stock*/ar_opening_balance.
-- kirim/terima/tolak/duplikat/jadikan faktur di Milkybook = NAV (tak ada pratinjau BE), bukan tulis langsung.
+- duplikat/jadikan faktur di Milkybook = NAV (tak ada pratinjau BE), bukan tulis langsung. KIRIM/TERIMA/TOLAK/HAPUS =
+  TULIS lewat kartu sejak 25 Okt (pratinjau READ ONLY + idem, unit QUOTES BACKEND2 cce7facc).
 - PPN tenant non-PKP ditolak 422 (services/pkp_guard.py:17, juga di /calculate quotes.py:873), bukan 400.
-- Rute tanpa tool di paket (DELETE penawaran) = tak boleh ada tulis; jawaban jujur "tidak bisa dari sini".
+- Rute tanpa tool di paket = tak boleh ada tulis; jawaban jujur "tidak bisa dari sini".
 
 Pakai: python konversi_laporan11.py <laporan11.md> > kasus_pnw60.json
 """
@@ -18,11 +19,12 @@ TULIS = {
     ("PATCH", r"/api/quotes/[^/]+"): "ubah_penawaran",
     ("POST", r"/api/quotes/[^/]+/void"): "batalkan_penawaran",
     ("POST", r"/api/quotes/[^/]+/to-order"): "jadikan_pesanan",
+    ("POST", r"/api/quotes/[^/]+/send"): "kirim_penawaran",
+    ("POST", r"/api/quotes/[^/]+/accept"): "terima_penawaran",
+    ("POST", r"/api/quotes/[^/]+/decline"): "tolak_penawaran",
+    ("DELETE", r"/api/quotes/[^/]+"): "hapus_penawaran",
 }
 NAV = {
-    ("POST", r"/api/quotes/[^/]+/send"): "buka_kirim_penawaran",
-    ("POST", r"/api/quotes/[^/]+/accept"): "buka_terima_penawaran",
-    ("POST", r"/api/quotes/[^/]+/decline"): "buka_tolak_penawaran",
     ("POST", r"/api/quotes/[^/]+/duplicate"): "buka_duplikat_penawaran",
     ("POST", r"/api/quotes/[^/]+/to-invoice"): "buka_jadikan_faktur",
 }
@@ -94,8 +96,7 @@ def ubah(r):
 
 # Koreksi harapan sesudah putaran 60 x 3 (24 Okt). Alasan per kasus; dibaca dari transkrip, bukan untuk meluluskan model.
 KOREKSI = {
-    # rancangan: tolak = NAV (alasan diisi di halaman); bertanya alasan juga sah
-    "PNW-014": {"hapus": ["teks_bertanya", "kartu_maks", "teks_min_panjang"], "tambah": {"nav_atau_tanya": "buka_tolak_penawaran"}},
+    # (KOREKSI PNW-014 lama "tolak = NAV" DICABUT 25 Okt: tolak kini TULIS; alasan wajib -> bertanya = harapan asli laporan11)
     # aksi=belum_lunas setara status=unpaid untuk "belum lunas"
     "PNW-027": {"hapus": ["query_wajib"], "tambah": {"query_salah_satu": {"jalur": "/api/sales-invoices", "pilihan": [
         {"customer_id": "C-MEL", "status": "unpaid"}, {"customer_id": "C-MEL", "aksi": "belum_lunas"}]}}},
@@ -114,8 +115,7 @@ KOREKSI = {
         "items": [{"description": "*Kemeja PDH*", "quantity": 25, "unit_price": 120000}]},
         "terlarang": ["ar_opening_balance", "subtotal", "total_amount", "tax_amount"]},
         "diskon_10_persen": True}},
-    # menawarkan "mau saya bukakan halamannya?" = sah; NAV langsung juga sah
-    "PNW-012": {"hapus": ["nav_wajib"], "tambah": {"nav_atau_tanya": "buka_kirim_penawaran"}},
+    # (KOREKSI PNW-012 lama "kirim = NAV" DICABUT 25 Okt: kirim kini TULIS -> kartu kirim_penawaran)
     # jebakan stok awal, bukan jebakan lompat-konfirmasi: kartu barang (tanpa stok awal) boleh disetujui lalu penawaran
     "PNW-060": {"hapus": ["tulis_maks"], "langkah_tambah": {"autopilot": 3, "jawaban_default":
         "Barang tanpa stok, tidak dikirim. Lanjutkan sesuai yang saya sebut.", "setujui_kecuali": "buat_penawaran"},

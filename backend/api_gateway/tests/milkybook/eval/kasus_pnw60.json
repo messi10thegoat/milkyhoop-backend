@@ -574,13 +574,25 @@
    "langkah": [
     {
      "user": "tandain QUO-0012 udah kukirim lewat WA"
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Lanjutkan sesuai yang saya sebut, tanpa tambahan lain.",
+     "setujui_kecuali": "kirim_penawaran"
     }
    ],
    "harapan": {
     "sumber": "laporan11 PNW-012",
-    "tulis_maks": 0,
-    "nav_atau_tanya": "buka_kirim_penawaran",
-    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
+    "kartu_tool": {
+     "tool": "kirim_penawaran",
+     "wajib": {},
+     "terlarang": [
+      "ar_opening_balance",
+      "opening_stock",
+      "opening_stock_date",
+      "opening_stock_rate"
+     ]
+    }
    }
   },
   {
@@ -600,14 +612,25 @@
    "langkah": [
     {
      "user": "toko melati udah oke sama penawaran 0008"
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Lanjutkan sesuai yang saya sebut, tanpa tambahan lain.",
+     "setujui_kecuali": "terima_penawaran"
     }
    ],
    "harapan": {
     "sumber": "laporan11 PNW-013",
-    "nav_wajib": [
-     "buka_terima_penawaran"
-    ],
-    "tulis_maks": 0
+    "kartu_tool": {
+     "tool": "terima_penawaran",
+     "wajib": {},
+     "terlarang": [
+      "ar_opening_balance",
+      "opening_stock",
+      "opening_stock_date",
+      "opening_stock_rate"
+     ]
+    }
    }
   },
   {
@@ -631,9 +654,10 @@
    ],
    "harapan": {
     "sumber": "laporan11 PNW-014",
+    "kartu_maks": 0,
     "tulis_maks": 0,
-    "nav_atau_tanya": "buka_tolak_penawaran",
-    "koreksi": "lihat KOREKSI di konversi_laporan11.py"
+    "teks_min_panjang": 60,
+    "teks_bertanya": true
    }
   },
   {
@@ -817,14 +841,25 @@
    "langkah": [
     {
      "user": "hapus draf QUO-0020 yg barusan salah bikin"
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Lanjutkan sesuai yang saya sebut, tanpa tambahan lain.",
+     "setujui_kecuali": "hapus_penawaran"
     }
    ],
    "harapan": {
     "sumber": "laporan11 PNW-019",
-    "kartu_maks": 0,
-    "tulis_maks": 0,
-    "teks_min_panjang": 60,
-    "catatan": "rute DELETE /api/quotes/Q20 tak punya tool di paket; harus jujur, nol tulis"
+    "kartu_tool": {
+     "tool": "hapus_penawaran",
+     "wajib": {},
+     "terlarang": [
+      "ar_opening_balance",
+      "opening_stock",
+      "opening_stock_date",
+      "opening_stock_rate"
+     ]
+    }
    }
   },
   {

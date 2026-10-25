@@ -57,6 +57,10 @@ PETA_SKEMA = {
     "buat_pelanggan": ("schemas/customers.py", "CreateCustomerRequest", None),
     "pratinjau_barang_baru": ("schemas/items.py", "CreateItemRequest", None),
     "buat_barang": ("schemas/items.py", "CreateItemRequest", None),
+    "kirim_penawaran": ("schemas/quotes.py", "SendQuoteRequest", None),
+    "pratinjau_kirim_penawaran": ("schemas/quotes.py", "SendQuoteRequest", None),
+    "tolak_penawaran": ("schemas/quotes.py", "DeclineQuoteRequest", None),
+    "pratinjau_tolak_penawaran": ("schemas/quotes.py", "DeclineQuoteRequest", None),
 }
 SEMUA_TOOLS = pw.TOOLS + pb.TOOLS
 TOOL = {t.nama: t for t in SEMUA_TOOLS}
@@ -174,7 +178,8 @@ async def test_semua_write_aktif_tanpa_gap_sesudah_t0():
     r = Registri([pw.paket()])
     efektif = {t.nama: t for t in await r.tools_untuk(izin_semua, gap_mendarat=())}
     assert {n for n, t in efektif.items() if t.kelas == Kelas.WRITE} == {
-        "buat_penawaran", "ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang"}
+        "buat_penawaran", "ubah_penawaran", "batalkan_penawaran", "jadikan_pesanan", "buat_pelanggan", "buat_barang",
+        "kirim_penawaran", "terima_penawaran", "tolak_penawaran", "hapus_penawaran"}  # + unit QUOTES cce7facc
     assert not [t.nama for t in pw.TOOLS if t.butuh]
 
 
@@ -191,6 +196,10 @@ _HANDLER_IDEM = {  # WRITE -> (berkas router, pola dekorator handler); handler W
     "batalkan_penawaran": ("routers/quotes.py", r'@router\.post\(\s*"/\{quote_id\}/void"'),
     "buat_pelanggan": ("routers/customers.py", r'@router\.post\(\s*""'),
     "buat_barang": ("routers/items.py", r'@router\.post\(\s*"/items"'),
+    "kirim_penawaran": ("routers/quotes.py", r'@router\.post\(\s*"/\{quote_id\}/send"'),
+    "terima_penawaran": ("routers/quotes.py", r'@router\.post\(\s*"/\{quote_id\}/accept"'),
+    "tolak_penawaran": ("routers/quotes.py", r'@router\.post\(\s*"/\{quote_id\}/decline"'),
+    "hapus_penawaran": ("routers/quotes.py", r'@router\.delete\(\s*"/\{quote_id\}"'),
 }
 
 
@@ -281,3 +290,16 @@ async def test_saldo_awal_disebut_pengguna_kartu_membawa_catatan_tak_dicatat():
     p2 = Putaran(Registri(semua_paket()), m2, AuditMemori(), gap_mendarat=(pw.AS_G1, pw.AS_G14))
     ev2 = await p2.giliran(Sesi("s", "t", "u"), "daftarin PT Lain", StubBE(), izin_semua)
     assert "tak_dicatat" not in [e for e in ev2 if e["jenis"] == "kartu"][0]
+
+
+def test_kirim_tanpa_send_email_dan_pratinjau_quotes_baca_saja():
+    """Surel otomatis belum tersedia (pratinjau memblok send_email=true): model tak diberi medan itu. Pratinjau unit
+    QUOTES (cce7facc) dikunci baca saja: READ ONLY / kunci=False; jalur tulis membaca kunci idem."""
+    assert set(TOOL["kirim_penawaran"].skema["properties"]) == {"id"}
+    q = _src("routers/quotes.py")
+    for rute, penanda in (("/{quote_id}/send/preview", "kunci=False"), ("/{quote_id}/accept/preview", "_pratinjau_terima_tolak"),
+                          ("/{quote_id}/decline/preview", "_pratinjau_terima_tolak"), ("/{quote_id}/delete/preview", "readonly=True")):
+        i = q.index(f'@router.post("{rute}")')
+        assert penanda in q[i: i + 1500], rute
+    i = q.index("async def _pratinjau_terima_tolak(")
+    assert "kunci=False" in q[i: i + 600]

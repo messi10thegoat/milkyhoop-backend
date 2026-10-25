@@ -2,7 +2,9 @@
 
 TULIS: buat/ubah/batal/jadikan pesanan penawaran, pelanggan baru, barang baru.
 BACA: penawaran, pelanggan, barang, pajak (modul Penjualan lain: paket/penjualan_baca.py).
-NAV: kirim, terima, tolak, duplikat, jadikan faktur (tak ada pratinjau BE -> AS-G3).
+TULIS (25 Okt, unit QUOTES BACKEND2 master cce7facc): kirim (tandai terkirim), terima, tolak, hapus draf: pratinjau
+  READ ONLY tanpa kunci (/send|/accept|/decline|/delete preview) + idem QUOTE_SEND/ACCEPT/DECLINE/DELETE.
+NAV: duplikat, jadikan faktur (jadikan faktur menunggu pratinjau BE + konfirmasi pemilik langsung, #3).
 
 Skema tool = SUBSET medan Pydantic BE (dikunci tests/milkybook/test_paket_penawaran.py, tes teks-sumber):
   CreateQuoteRequest / UpdateQuoteRequest / QuoteItemCreate  schemas/quotes.py
@@ -76,6 +78,10 @@ SKEMA_JADI_PESANAN = _obj({"id": ID, "order_date": TGL, "expected_ship_date": TG
                            "item_ids": {"type": "array", "items": S("Id baris penawaran (dari detail)"),
                                         "description": "Baris yang dipesan; kosongkan = semua baris"}}, ["id"])
 SKEMA_ID = _obj({"id": ID}, ["id"])
+# Kirim: TANPA send_email/email_* (surel otomatis belum tersedia: pratinjau memblok send_email=true). Badan {} =
+# SendQuoteRequest bawaan (send_email false) -> tandai terkirim.
+SKEMA_KIRIM = SKEMA_ID
+SKEMA_TOLAK = _obj({"id": ID, "reason": S("Alasan pelanggan menolak; tanyakan bila belum disebut")}, ["id", "reason"])
 
 # ---- pelanggan baru (CreateCustomerRequest, tanpa saldo awal)
 SKEMA_PELANGGAN = _obj({
@@ -143,6 +149,14 @@ TOOLS = [
          SKEMA_PELANGGAN, "POST", "/api/customers/preview", tampil_ke_model=False),
     Tool("pratinjau_barang_baru", Kelas.PREVIEW, "Pratinjau barang baru (validasi, kembar nama).",
          SKEMA_BARANG, "POST", "/api/items/preview", tampil_ke_model=False),
+    Tool("pratinjau_kirim_penawaran", Kelas.PREVIEW, "Pratinjau tandai penawaran terkirim.",
+         SKEMA_KIRIM, "POST", f"{_Q}/{{id}}/send/preview", tampil_ke_model=False),
+    Tool("pratinjau_terima_penawaran", Kelas.PREVIEW, "Pratinjau catat penawaran diterima pelanggan.",
+         SKEMA_ID, "POST", f"{_Q}/{{id}}/accept/preview", tampil_ke_model=False),
+    Tool("pratinjau_tolak_penawaran", Kelas.PREVIEW, "Pratinjau catat penawaran ditolak pelanggan.",
+         SKEMA_TOLAK, "POST", f"{_Q}/{{id}}/decline/preview", tampil_ke_model=False),
+    Tool("pratinjau_hapus_penawaran", Kelas.PREVIEW, "Pratinjau hapus draf penawaran.",
+         SKEMA_ID, "POST", f"{_Q}/{{id}}/delete/preview", tampil_ke_model=False),
 
     # ---------------- TULIS (hanya lewat kartu Tinjau)
     Tool("buat_penawaran", Kelas.WRITE, "Usulkan penawaran baru (draf). Aplikasi menampilkan kartu Tinjau; tersimpan sesudah Setuju.",
@@ -158,6 +172,20 @@ TOOLS = [
          SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order", pratinjau="pratinjau_jadi_pesanan",
          # idempoten alami: kunci QUOTE + FOR UPDATE, ulang = SO yang sama (quotes.py _konversi_penawaran :2160)
          halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan"),
+    Tool("kirim_penawaran", Kelas.WRITE, "Usulkan menandai penawaran TERKIRIM ke pelanggan (Milkybook tidak mengirim surel/WA). "
+         "Kartu Tinjau; terjadi sesudah Setuju.",
+         SKEMA_KIRIM, "POST", f"{_Q}/{{id}}/send", pratinjau="pratinjau_kirim_penawaran",  # idem QUOTE_SEND (cce7facc)
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Tandai terkirim"),
+    Tool("terima_penawaran", Kelas.WRITE, "Usulkan mencatat penawaran DITERIMA pelanggan. Kartu Tinjau; terjadi sesudah Setuju.",
+         SKEMA_ID, "POST", f"{_Q}/{{id}}/accept", pratinjau="pratinjau_terima_penawaran",  # idem QUOTE_ACCEPT
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat diterima"),
+    Tool("tolak_penawaran", Kelas.WRITE, "Usulkan mencatat penawaran DITOLAK pelanggan (alasan wajib). Kartu Tinjau; terjadi sesudah Setuju.",
+         SKEMA_TOLAK, "POST", f"{_Q}/{{id}}/decline", pratinjau="pratinjau_tolak_penawaran",  # idem QUOTE_DECLINE
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat ditolak"),
+    Tool("hapus_penawaran", Kelas.WRITE, "Usulkan HAPUS draf penawaran yang belum pernah terkirim (tidak bisa dibatalkan). "
+         "Penawaran yang sudah terkirim: batalkan, bukan hapus. Kartu Tinjau; terhapus sesudah Setuju.",
+         SKEMA_ID, "DELETE", f"{_Q}/{{id}}", pratinjau="pratinjau_hapus_penawaran",  # idem QUOTE_DELETE
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Hapus draf penawaran"),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru",
          halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan",
@@ -168,12 +196,8 @@ TOOLS = [
          tak_didukung=((r"stok\s+awal|opening\s+stock", "Stok awal TIDAK ikut dicatat. Isi di halaman Barang & Jasa setelah barang tersimpan."),)),
 
     # ---------------- NAV (izin aksi diperiksa, rute tidak dipanggil)
-    Tool("buka_kirim_penawaran", Kelas.NAV, "Buka halaman penawaran untuk mengirimnya ke pelanggan.",
-         SKEMA_ID, "POST", f"{_Q}/{{id}}/send", halaman=f"{_PEN}/{{id}}"),
-    Tool("buka_terima_penawaran", Kelas.NAV, "Buka halaman penawaran untuk mencatat diterima pelanggan.",
-         SKEMA_ID, "POST", f"{_Q}/{{id}}/accept", halaman=f"{_PEN}/{{id}}"),
-    Tool("buka_tolak_penawaran", Kelas.NAV, "Buka halaman penawaran untuk mencatat ditolak pelanggan.",
-         SKEMA_ID, "POST", f"{_Q}/{{id}}/decline", halaman=f"{_PEN}/{{id}}"),
+    Tool("buka_bagikan_penawaran", Kelas.NAV, "Buka halaman penawaran untuk mengirim PDF ke pelanggan (WA/surel) dari sana.",
+         SKEMA_ID, "GET", f"{_Q}/{{id}}", halaman=f"{_PEN}/{{id}}"),
     Tool("buka_duplikat_penawaran", Kelas.NAV, "Buka halaman penawaran untuk menduplikatnya.",
          SKEMA_ID, "POST", f"{_Q}/{{id}}/duplicate", halaman=f"{_PEN}/{{id}}"),
     Tool("buka_jadikan_faktur", Kelas.NAV, "Buka halaman penawaran untuk menjadikannya faktur.",

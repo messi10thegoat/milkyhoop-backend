@@ -16,6 +16,13 @@ Sumber bentuk respons:
   POST /api/quotes/{id}/void/preview routers/quotes.py:1691-1736 {blocks:[...]} ; VOID_STATUS :1667
   POST /api/quotes/{id}/to-order(/preview) routers/quotes.py:2378/:2407 + _konversi_penawaran :2160 (idempoten alami)
   POST /api/quotes/{id}/edit/preview (bentuk ringkas, BELUM disalin dari kode)
+  25 Okt (unit QUOTES BACKEND2, master cce7facc; disalin dari kode):
+  POST /{id}/send/preview  :1568 {success, data:{ok, quote_number, status, status_after:"sent", send_email, blocks}}
+  POST /{id}/accept/preview :1651, /decline/preview :1663 {success, data:{ok, quote_number, status, status_after, blocks}}
+  POST /{id}/delete/preview :1439 {success, data:{ok, can_delete, quote_number, status, status_after:"deleted", blocks}}
+  tulis /send (QUOTE_SEND) {message:"Penawaran dikirim", data:{quote_number, status:"sent"}}; /accept (QUOTE_ACCEPT)
+  "Penawaran diterima"; /decline (QUOTE_DECLINE, reason WAJIB) "Penawaran ditolak"; DELETE (QUOTE_DELETE) "Penawaran dihapus".
+  Aturan: kirim dari draft|sent; terima/tolak dari sent|viewed; hapus hanya draft tanpa sent_at.
 
 KONTRAK T0 — LIVE master 02307237 (BACKEND2 24 Okt, JSON nyata kaos cocok dengan bentuk di bawah):
   Pratinjau AS-G14: 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{..., efek[]}, payload}};
@@ -163,6 +170,10 @@ class StubBE:
             return JawabanBE(200, {"blocks": [], "sesudah": self._hitung(gabung)})
         if m == "PATCH" and len(p) == 3 and p[1] == "quotes":
             return self._dengan_idem(f"QUOTE_UPDATE:{p[2]}", isi, h, lambda: self._ubah(p[2], isi))
+        if len(p) >= 3 and p[1] == "quotes" and p[2] not in ("calculate", "summary", "expiring", "defaults"):
+            hasil = self._aksi_penawaran(m, p, isi, h)
+            if hasil is not None:
+                return hasil
         if m == "POST" and len(p) == 5 and p[1] == "quotes" and p[3:] == ["to-order", "preview"]:
             return self._ke_pesanan(p[2], isi, pratinjau=True)
         if m == "POST" and len(p) == 4 and p[1] == "quotes" and p[3] == "to-order":
@@ -330,6 +341,61 @@ class StubBE:
             return JawabanBE(200, {"success": True, "data": self.respons.get("history", [
                 {"waktu": "2026-10-15T09:00:00+08:00", "pengguna": "Pemilik", "aksi": "dibuat", "rincian": None}])})
         return None
+
+    # ------------------------------------------------------------------ kirim / terima / tolak / hapus (cce7facc)
+    _ATURAN_AKSI = {"send": (("draft", "sent"), "sent", "dikirim", "QUOTE_TAK_BISA_DIKIRIM", "Penawaran dikirim"),
+                    "accept": (("sent", "viewed"), "accepted", "diterima", "QUOTE_TAK_BISA_DITERIMA", "Penawaran diterima"),
+                    "decline": (("sent", "viewed"), "declined", "ditolak", "QUOTE_TAK_BISA_DITOLAK", "Penawaran ditolak")}
+
+    def _blok_aksi(self, qt, aksi, isi):
+        if aksi == "delete":
+            if qt["status"] != "draft" or qt.get("sent_at"):
+                return [{"code": "QUOTE_NOT_DELETABLE", "message": f"Penawaran {qt['quote_number']} sudah pernah dikirim atau bukan draf "
+                         "— tidak bisa dihapus. Batalkan saja."}]
+            return []
+        boleh, _, kata, kode, _ = self._ATURAN_AKSI[aksi]
+        if qt["status"] not in boleh:
+            return [{"code": kode, "message": f"Penawaran {qt['quote_number']} berstatus {qt['status']} — tidak bisa {kata}."}]
+        if aksi == "send" and isi.get("send_email"):
+            return [{"code": kode, "message": "Pengiriman surel belum tersedia."}]
+        return []
+
+    def _aksi_penawaran(self, m, p, isi, h) -> Optional[JawabanBE]:
+        aksi = "delete" if (m == "DELETE" and len(p) == 3) else (p[3] if len(p) >= 4 else None)
+        if aksi not in ("send", "accept", "decline", "delete"):
+            return None
+        pratinjau = len(p) == 5 and p[4] == "preview"
+        if not pratinjau and not (m == "DELETE" and len(p) == 3) and not (m == "POST" and len(p) == 4):
+            return None
+        if aksi == "delete" and not pratinjau and m != "DELETE":
+            return None
+        qt = next((x for x in self.penawaran if x["id"] == p[2]), None)  # rekaman ASLI (_qt = salinan + aksi)
+        if not qt:
+            return JawabanBE(404, {"detail": "Penawaran tidak ditemukan."})
+        blok = self._blok_aksi(qt, aksi, isi)
+        if pratinjau:
+            sesudah = "deleted" if aksi == "delete" else self._ATURAN_AKSI[aksi][1]
+            data = {"ok": not blok, "quote_number": qt["quote_number"], "status": qt["status"], "status_after": sesudah, "blocks": blok}
+            if aksi == "send":
+                data["send_email"] = bool(isi.get("send_email"))
+            if aksi == "delete":
+                data["can_delete"] = not blok
+            return JawabanBE(200, {"success": True, "data": data})
+        if aksi == "decline" and not (isi.get("reason") or "").strip():
+            return JawabanBE(422, {"detail": "reason wajib"})
+
+        def tulis():
+            if blok:
+                return JawabanBE(400, {"detail": blok[0]["message"]})
+            if aksi == "delete":
+                self.penawaran.remove(qt)
+                return JawabanBE(200, {"success": True, "message": "Penawaran dihapus", "data": {"quote_number": qt["quote_number"]}})
+            _, sesudah, _, _, pesan = self._ATURAN_AKSI[aksi]
+            qt["status"] = sesudah
+            if aksi == "send":
+                qt["sent_at"] = "2026-10-24T09:00:00+08:00"
+            return JawabanBE(200, {"success": True, "message": pesan, "data": {"quote_number": qt["quote_number"], "status": sesudah}})
+        return self._dengan_idem(f"QUOTE_{aksi.upper()}:{p[2]}", isi, h, tulis)
 
     def _pratinjau_void(self, qid, isi=None):
         """Bentuk = quotes.py:1750 {"success", "data": {"ok", "quote_number", "status", "alasan_wajib", "blocks"}}."""

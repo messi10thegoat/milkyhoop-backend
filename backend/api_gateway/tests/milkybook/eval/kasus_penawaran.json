@@ -267,19 +267,27 @@
    }
   },
   {
-   "id": "K12-kirim-nav",
-   "kategori": "nav",
+   "id": "K12-kirim-kartu",
+   "kategori": "tulis",
    "langkah": [
     {
      "user": "Kirim penawaran QT-2610-0002 ke Toko Sumber Rejeki sekarang."
     }
    ],
    "harapan": {
+    "kartu_tool": {
+     "tool": "kirim_penawaran",
+     "wajib": {}
+    },
     "tulis_maks": 0,
-    "nav_wajib": [
-     "buka_kirim_penawaran"
+    "teks_wajib_salah_satu": [
+     "halaman",
+     "pdf",
+     "tandai",
+     "menandai"
     ]
-   }
+   },
+   "catatan": "KOREKSI 25 Okt: kirim kini TULIS lewat kartu (unit QUOTES cce7facc). Milkybook hanya MENANDAI terkirim; kirim PDF lewat halaman penawaran."
   },
   {
    "id": "K13-ubah-sesudah-t0",
@@ -585,6 +593,85 @@
    "harapan": {
     "tulis_maks": 0,
     "tanpa_kartu_menunggu": true
+   }
+  },
+  {
+   "id": "K22-terima-disetujui",
+   "kategori": "tulis",
+   "langkah": [
+    {
+     "user": "CV Maju Bersama sudah setuju penawaran QT-2610-0001."
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Ya, catat diterima."
+    }
+   ],
+   "harapan": {
+    "tool_wajib": [
+     "terima_penawaran"
+    ],
+    "status_akhir": {
+     "QT-2610-0001": "accepted"
+    }
+   }
+  },
+  {
+   "id": "K23-terima-draf-diblok",
+   "kategori": "blok",
+   "langkah": [
+    {
+     "user": "Toko Sumber Rejeki sudah setuju QT-2610-0002."
+    }
+   ],
+   "harapan": {
+    "kartu_maks": 0,
+    "tulis_maks": 0,
+    "teks_wajib_salah_satu": [
+     "kirim",
+     "terkirim",
+     "draf"
+    ]
+   }
+  },
+  {
+   "id": "K24-tolak-beralasan",
+   "kategori": "tulis",
+   "langkah": [
+    {
+     "user": "QT-2610-0001 ditolak CV Maju Bersama, katanya kemahalan."
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Ya, catat ditolak."
+    }
+   ],
+   "harapan": {
+    "kartu_tool": {
+     "tool": "tolak_penawaran",
+     "wajib": {
+      "reason": "*mahal*"
+     }
+    },
+    "status_akhir": {
+     "QT-2610-0001": "declined"
+    }
+   }
+  },
+  {
+   "id": "K25-hapus-terkirim-diblok",
+   "kategori": "blok",
+   "langkah": [
+    {
+     "user": "Hapus penawaran QT-2610-0001."
+    }
+   ],
+   "harapan": {
+    "kartu_maks": 0,
+    "tulis_maks": 0,
+    "teks_wajib_salah_satu": [
+     "batal"
+    ]
    }
   }
  ]

@@ -1,6 +1,6 @@
 # Penawaran (Quote) di MilkyHoop
 
-Diukur dari kode BE `c8c24092` (routers/quotes.py, schemas/quotes.py, schemas/items.py, schemas/customers.py, services/penawaran_kedaluwarsa.py). Status dan kunci tindak lanjut (`aksi`) SELALU dibaca dari server (detail_penawaran / daftar_penawaran). Boleh-tidaknya satu tindakan diputuskan server lewat pratinjau; aturan di bawah hanya untuk menjelaskan.
+Diukur dari kode BE `c8c24092` (aksi kirim/terima/tolak/hapus: `cce7facc`) (routers/quotes.py, schemas/quotes.py, schemas/items.py, schemas/customers.py, services/penawaran_kedaluwarsa.py). Status dan kunci tindak lanjut (`aksi`) SELALU dibaca dari server (detail_penawaran / daftar_penawaran). Boleh-tidaknya satu tindakan diputuskan server lewat pratinjau; aturan di bawah hanya untuk menjelaskan.
 
 ## Alur
 draf -> terkirim (sent) -> dilihat pelanggan (viewed) -> diterima (accepted) / ditolak (declined)
@@ -10,8 +10,9 @@ Status yang ada: draft, sent, viewed, accepted, declined, expired, converted, vo
 ## Aturan per aksi (dari kode)
 - Ubah: hanya draf, terkirim, dilihat (STATUS_BOLEH_UBAH). Sesudah dijawab pelanggan tidak bisa diubah.
 - Hapus: hanya draf yang belum pernah terkirim/dibagikan. Selain itu: batalkan.
-- Kirim: dari draf atau terkirim.
-- Terima: dari terkirim atau dilihat.
+- Kirim (kirim_penawaran): menandai penawaran TERKIRIM (status sent). Milkybook TIDAK mengirim surel/WA; untuk mengirim PDF ke pelanggan, buka halaman penawaran (buka_bagikan_penawaran). Sesudah terkirim, penawaran tidak bisa dihapus lagi (hanya dibatalkan): sebut ini saat mengusulkan.
+- Terima / tolak (terima_penawaran / tolak_penawaran): hanya dari terkirim atau dilihat. Tolak wajib alasan pelanggan; tanyakan bila belum disebut. Draf harus dikirim dulu.
+- Hapus (hapus_penawaran): hanya draf yang belum pernah terkirim/dibagikan, permanen. Penawaran lain: batalkan.
 - Batal (void): dari draf, terkirim, dilihat, diterima. Batal penawaran yang sudah diterima WAJIB alasan. Tidak bisa batal bila sudah dikonversi atau ada uang muka.
 - Jadikan pesanan: dari terkirim, dilihat, atau diterima.
 - Kedaluwarsa: turunan tanggal berlaku (expiry_date) dan tanggal bisnis server, bukan tombol. Penawaran lewat masa tetap bisa diubah tanggalnya selama statusnya masih boleh diubah.
