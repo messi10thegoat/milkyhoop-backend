@@ -3984,184 +3984,176 @@ class BillsService:
             Bill detail dict or None if not found
         """
         async with self.pool.acquire() as conn:
-            hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
-            # Get bill with V2 fields -- Law 1/16/29: compute_ap_rincian (V440; termasuk tagihan lunas), ungkapan SAMA dgn daftar & detail v1
-            bill_query = f"""
-                SELECT
-                    b.*,
-                    {TD.sql_dibayar()} AS journal_paid,
-                    {TD.sql_sisa()} as amount_due,
-                    {TD.sql_keadaan("$3::date")} as calculated_status,
-                    {TD.sql_hutang()} AS hutang_baris
-                FROM bills b
-                LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
-                WHERE b.id = $1 AND b.tenant_id = $2
+            return await self.get_bill_v2_conn(conn, tenant_id, bill_id)
+
+    async def get_bill_v2_conn(self, conn, tenant_id: str, bill_id: UUID) -> Optional[Dict[str, Any]]:
+        """Badan get_bill_v2 di koneksi pemanggil: cetak /api/documents/bill tanpa acquire bersarang (Law 32)."""
+        hari_ini = await tanggal_dokumen(conn, tenant_id)  # #10b-3a: tanggal bisnis tenant, bukan UTC
+        # Get bill with V2 fields -- Law 1/16/29: compute_ap_rincian (V440; termasuk tagihan lunas), ungkapan SAMA dgn daftar & detail v1
+        bill_query = f"""
+            SELECT
+                b.*,
+                {TD.sql_dibayar()} AS journal_paid,
+                {TD.sql_sisa()} as amount_due,
+                {TD.sql_keadaan("$3::date")} as calculated_status,
+                {TD.sql_hutang()} AS hutang_baris
+            FROM bills b
+            LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id
+            WHERE b.id = $1 AND b.tenant_id = $2
+        """
+        bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
+
+        if not bill:
+            return None
+
+        # Get items with V2 fields
+        items_query = """
+            SELECT
+                bi.*,
+                p.nama_produk as linked_product_name,
+                tc.name as tax_code_name
+            FROM bill_items bi
+            LEFT JOIN products p ON bi.product_id = p.id
+            LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
+            WHERE bi.bill_id = $1
+            ORDER BY bi.line_number
+        """
+        items = await conn.fetch(items_query, bill_id)
+
+        # Get payments
+        payments_query = """
+            SELECT bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
+                   bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
+                   bp.payment_number, bp.status,
+                   bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
+                   ba.account_name AS bank_account_name,
+                   COALESCE(NULLIF(trim(up_c.display_name), ''), NULLIF(trim(u_created.fullname), ''), NULLIF(trim(u_created.name), ''), u_created.email) AS created_by_name,
+                   COALESCE(NULLIF(trim(up_p.display_name), ''), NULLIF(trim(u_posted.fullname), ''), NULLIF(trim(u_posted.name), ''), u_posted.email) AS posted_by_name
+            FROM bill_payments_v2 bp
+            JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
+            LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
+            LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
+            LEFT JOIN user_profiles up_c ON up_c.user_id = u_created.id
+            LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
+            LEFT JOIN user_profiles up_p ON up_p.user_id = u_posted.id
+            WHERE bp.status != 'voided'
+            ORDER BY bp.created_at ASC
+        """
+        payments = await conn.fetch(payments_query, bill_id)
+
+        # Fetch document_tax_lines (Fase 2.2)
+        tax_lines_rows = await conn.fetch(
             """
-            bill = await conn.fetchrow(bill_query, bill_id, tenant_id, hari_ini)
+            SELECT
+                dtl.tax_code_id,
+                tc.name AS tax_code_name,
+                tc.rate AS tax_rate,
+                dtl.direction,
+                dtl.base_amount,
+                dtl.tax_amount
+            FROM document_tax_lines dtl
+            LEFT JOIN tax_codes tc ON tc.id = dtl.tax_code_id
+            WHERE dtl.document_id = $1 AND dtl.document_type = 'BILL'
+              AND dtl.tenant_id = $2
+            ORDER BY dtl.created_at
+            """,
+            bill_id,
+            tenant_id,
+        )
+        tax_lines = [
+            {
+                "tax_code_id": str(row["tax_code_id"]),
+                "tax_code_name": row["tax_code_name"] or "Unknown",
+                "tax_rate": float(row["tax_rate"] or 0),
+                "direction": row["direction"],
+                "base_amount": str(row["base_amount"]),
+                "tax_amount": str(row["tax_amount"]),
+            }
+            for row in tax_lines_rows
+        ]
+        # Build vendor info
+        vendor_name = bill["vendor_name"] or ""
+        words = vendor_name.split()
+        if len(words) >= 2:
+            initials = (words[0][0] + words[1][0]).upper()
+        elif len(words) == 1 and len(words[0]) >= 2:
+            initials = words[0][:2].upper()
+        else:
+            initials = "??"
 
-            if not bill:
-                return None
-
-            # Get items with V2 fields
-            items_query = """
-                SELECT
-                    bi.*,
-                    p.nama_produk as linked_product_name,
-                    tc.name as tax_code_name
-                FROM bill_items bi
-                LEFT JOIN products p ON bi.product_id = p.id
-                LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
-                WHERE bi.bill_id = $1
-                ORDER BY bi.line_number
-            """
-            items = await conn.fetch(items_query, bill_id)
-
-            # Get payments
-            payments_query = """
-                SELECT bp.id, bpa.amount_applied as amount, bp.payment_date, bp.payment_method,
-                       bp.reference_number as reference, bp.notes, bp.created_at, bp.created_by,
-                       bp.payment_number, bp.status,
-                       bp.posted_at, bp.posted_by, bp.journal_id, bp.bank_account_id,
-                       ba.account_name AS bank_account_name,
-                       COALESCE(NULLIF(trim(up_c.display_name), ''), NULLIF(trim(u_created.fullname), ''), NULLIF(trim(u_created.name), ''), u_created.email) AS created_by_name,
-                       COALESCE(NULLIF(trim(up_p.display_name), ''), NULLIF(trim(u_posted.fullname), ''), NULLIF(trim(u_posted.name), ''), u_posted.email) AS posted_by_name
-                FROM bill_payments_v2 bp
-                JOIN bill_payment_allocations bpa ON bpa.payment_id = bp.id AND bpa.bill_id = $1
-                LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
-                LEFT JOIN "User" u_created ON u_created.id = bp.created_by::text
-                LEFT JOIN user_profiles up_c ON up_c.user_id = u_created.id
-                LEFT JOIN "User" u_posted ON u_posted.id = bp.posted_by::text
-                LEFT JOIN user_profiles up_p ON up_p.user_id = u_posted.id
-                WHERE bp.status != 'voided'
-                ORDER BY bp.created_at ASC
-            """
-            payments = await conn.fetch(payments_query, bill_id)
-
-            # Fetch document_tax_lines (Fase 2.2)
-            tax_lines_rows = await conn.fetch(
-                """
-                SELECT
-                    dtl.tax_code_id,
-                    tc.name AS tax_code_name,
-                    tc.rate AS tax_rate,
-                    dtl.direction,
-                    dtl.base_amount,
-                    dtl.tax_amount
-                FROM document_tax_lines dtl
-                LEFT JOIN tax_codes tc ON tc.id = dtl.tax_code_id
-                WHERE dtl.document_id = $1 AND dtl.document_type = 'BILL'
-                  AND dtl.tenant_id = $2
-                ORDER BY dtl.created_at
-                """,
-                bill_id,
-                tenant_id,
-            )
-            tax_lines = [
-                {
-                    "tax_code_id": str(row["tax_code_id"]),
-                    "tax_code_name": row["tax_code_name"] or "Unknown",
-                    "tax_rate": float(row["tax_rate"] or 0),
-                    "direction": row["direction"],
-                    "base_amount": str(row["base_amount"]),
-                    "tax_amount": str(row["tax_amount"]),
-                }
-                for row in tax_lines_rows
-            ]
-            # Build vendor info
-            vendor_name = bill["vendor_name"] or ""
-            words = vendor_name.split()
-            if len(words) >= 2:
-                initials = (words[0][0] + words[1][0]).upper()
-            elif len(words) == 1 and len(words[0]) >= 2:
-                initials = words[0][:2].upper()
-            else:
-                initials = "??"
-
-            # Build items list with money as strings
-            items_list = [
-                {
-                    "id": str(item["id"]),
-                    "product_id": str(item["product_id"])
-                    if item["product_id"]
-                    else None,
-                    "product_code": item["product_code"],
-                    "product_name": item["product_name"]
-                    or item.get("linked_product_name"),
-                    "qty": float(item["quantity"]),
-                    "unit": item["unit"],
-                    "price": self._money_str(item["unit_price"]),
-                    "discount_percent": float(item["discount_percent"] or 0),
-                    "discount_amount": self._money_str(item["discount_amount"]),
-                    "total": self._money_str(item["total"] or item["subtotal"]),
-                    "batch_no": item["batch_no"],
-                    "exp_date": item["exp_date"].strftime("%Y-%m")
-                    if item["exp_date"]
-                    else None,
-                    "bonus_qty": int(item["bonus_qty"] or 0),
-                    "tax_code_id": str(item["tax_code_id"])
-                    if item.get("tax_code_id")
-                    else None,
-                    "tax_code_name": item.get("tax_code_name") or "",
-                    "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
-                    "tax_amount": float(item["tax_amount"])
-                    if item.get("tax_amount")
-                    else 0,
-                    "dpp": float(item["dpp"]) if item.get("dpp") else 0,
-                }
-                for item in items
-            ]
-
-            _dok_tgh = TD.documents_baris((await TD.kelompok_tagihan(conn, tenant_id, [bill["id"]])).get(bill["id"], []))  # == baris daftar
-            return {
-                "id": str(bill["id"]),
-                "invoice_number": bill["invoice_number"],
-                "ref_no": bill["ref_no"],
-                "vendor": {
-                    "id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
-                    "name": bill["vendor_name"],
-                    "initials": initials,
-                },
-                "status": bill["calculated_status"],
-                # kontrak seragam (22 Okt 2026): medan turunan == baris daftar (TD.fakta_baris, fungsi SAMA)
-                **TD.fakta_baris(bill["calculated_status"], bill["journal_paid"], bill["hutang_baris"], bill["due_date"], bill["issue_date"], hari_ini,
-                                await ambang_segera(conn, tenant_id)),
-                "documents": _dok_tgh,
-                "doc_count": len(_dok_tgh),
-                "is_overdue": bill["calculated_status"] == "overdue",  # detail == daftar (26 Sep 2026)
-                "overdue_days": hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini),
-                # tanggal + alasan pembatalan -> baris tanda DIBATALKAN di PDF tagihan (pdf_service._tanda_batal)
-                "voided_at": bill["voided_at"],
-                "voided_reason": bill["voided_reason"],
-                "issue_date": bill["issue_date"].isoformat(),
-                "due_date": bill["due_date"].isoformat(),
-                "tax_rate": bill["tax_rate"],
-                "tax_code_id": str(bill["tax_code_id"])
-                if bill.get("tax_code_id")
+        # Build items list with money as strings
+        items_list = [
+            {
+                "id": str(item["id"]),
+                "product_id": str(item["product_id"])
+                if item["product_id"]
                 else None,
-                "tax_lines": tax_lines,
-                "tax_inclusive": bill["tax_inclusive"],
-                "invoice_discount_percent": float(
-                    bill["invoice_discount_percent"] or 0
-                ),
-                "invoice_discount_amount": self._money_str(
-                    bill["invoice_discount_amount"]
-                ),
-                "cash_discount_percent": float(bill["cash_discount_percent"] or 0),
-                "cash_discount_amount": self._money_str(bill["cash_discount_amount"]),
-                "dpp_manual": bill["dpp_manual"],
-                "calculation": {
-                    "subtotal": self._money_str(bill["subtotal"]),
-                    "item_discount_total": self._money_str(bill["item_discount_total"]),
-                    "invoice_discount_total": self._money_str(
-                        bill["invoice_discount_total"]
-                    ),
-                    "cash_discount_total": self._money_str(bill["cash_discount_total"]),
-                    "dpp": self._money_str(bill["dpp"]),
-                    "tax_amount": self._money_str(bill["tax_amount"]),
-                    "grand_total": self._money_str(
-                        bill["grand_total"] or bill["amount"]
-                    ),
-                },
+                "product_code": item["product_code"],
+                "product_name": item["product_name"]
+                or item.get("linked_product_name"),
+                "qty": float(item["quantity"]),
+                "unit": item["unit"],
+                "price": self._money_str(item["unit_price"]),
+                "discount_percent": float(item["discount_percent"] or 0),
+                "discount_amount": self._money_str(item["discount_amount"]),
+                "total": self._money_str(item["total"] or item["subtotal"]),
+                "batch_no": item["batch_no"],
+                "exp_date": item["exp_date"].strftime("%Y-%m")
+                if item["exp_date"]
+                else None,
+                "bonus_qty": int(item["bonus_qty"] or 0),
+                "tax_code_id": str(item["tax_code_id"])
+                if item.get("tax_code_id")
+                else None,
+                "tax_code_name": item.get("tax_code_name") or "",
+                "tax_rate": float(item["tax_rate"]) if item.get("tax_rate") else 0,
+                "tax_amount": float(item["tax_amount"])
+                if item.get("tax_amount")
+                else 0,
+                "dpp": float(item["dpp"]) if item.get("dpp") else 0,
+            }
+            for item in items
+        ]
+
+        _dok_tgh = TD.documents_baris((await TD.kelompok_tagihan(conn, tenant_id, [bill["id"]])).get(bill["id"], []))  # == baris daftar
+        return {
+            "id": str(bill["id"]),
+            "invoice_number": bill["invoice_number"],
+            "ref_no": bill["ref_no"],
+            "vendor": {
+                "id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
+                "name": bill["vendor_name"],
+                "initials": initials,
+            },
+            "status": bill["calculated_status"],
+            # kontrak seragam (22 Okt 2026): medan turunan == baris daftar (TD.fakta_baris, fungsi SAMA)
+            **TD.fakta_baris(bill["calculated_status"], bill["journal_paid"], bill["hutang_baris"], bill["due_date"], bill["issue_date"], hari_ini,
+                            await ambang_segera(conn, tenant_id)),
+            "documents": _dok_tgh,
+            "doc_count": len(_dok_tgh),
+            "is_overdue": bill["calculated_status"] == "overdue",  # detail == daftar (26 Sep 2026)
+            "overdue_days": hari_terlambat(bill["calculated_status"] == "overdue", bill["due_date"], hari_ini),
+            # tanggal + alasan pembatalan -> baris tanda DIBATALKAN di PDF tagihan (pdf_service._tanda_batal)
+            "voided_at": bill["voided_at"],
+            "voided_reason": bill["voided_reason"],
+            "issue_date": bill["issue_date"].isoformat(),
+            "due_date": bill["due_date"].isoformat(),
+            "tax_rate": bill["tax_rate"],
+            "tax_code_id": str(bill["tax_code_id"])
+            if bill.get("tax_code_id")
+            else None,
+            "tax_lines": tax_lines,
+            "tax_inclusive": bill["tax_inclusive"],
+            "invoice_discount_percent": float(
+                bill["invoice_discount_percent"] or 0
+            ),
+            "invoice_discount_amount": self._money_str(
+                bill["invoice_discount_amount"]
+            ),
+            "cash_discount_percent": float(bill["cash_discount_percent"] or 0),
+            "cash_discount_amount": self._money_str(bill["cash_discount_amount"]),
+            "dpp_manual": bill["dpp_manual"],
+            "calculation": {
                 "subtotal": self._money_str(bill["subtotal"]),
                 "item_discount_total": self._money_str(bill["item_discount_total"]),
                 "invoice_discount_total": self._money_str(
@@ -4170,50 +4162,62 @@ class BillsService:
                 "cash_discount_total": self._money_str(bill["cash_discount_total"]),
                 "dpp": self._money_str(bill["dpp"]),
                 "tax_amount": self._money_str(bill["tax_amount"]),
-                "grand_total": self._money_str(bill["grand_total"] or bill["amount"]),
-                "amount": self._money_str(bill["amount"]),
-                "amount_paid": self._money_str(
-                    bill["journal_paid"]
-                ),  # Law 16: journal-derived
-                "amount_due": self._money_str(bill["amount_due"]),
-                "notes": bill["notes"],
-                "operational_status": bill.get("operational_status") or "DRAFT",
-                "doc_status": derive_doc_status(bill),
-                "accounting_status": bill.get("accounting_status") or "UNPOSTED",
-                "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
-                "vendor_name": bill["vendor_name"],
-                "items": items_list,
-                "lines": items_list,  # Alias for OpenAPI v2 compatibility
-                "payments": [
-                    {
-                        "id": str(payment["id"]),
-                        "payment_number": payment["payment_number"] or "",
-                        "amount": self._money_str(payment["amount"]),
-                        "total_amount": self._money_str(payment["amount"]),
-                        "payment_date": payment["payment_date"].isoformat(),
-                        "payment_method": payment["payment_method"],
-                        "status": payment["status"],
-                        "reference": payment["reference"],
-                        "notes": payment["notes"],
-                        "created_at": payment["created_at"].isoformat(),
-                        "bank_account_id": str(payment["bank_account_id"])
-                        if payment.get("bank_account_id")
-                        else None,
-                        "bank_account_name": payment.get("bank_account_name"),
-                        "journal_id": str(payment["journal_id"])
-                        if payment.get("journal_id")
-                        else None,
-                        "created_by_name": payment.get("created_by_name"),
-                        "posted_at": payment["posted_at"].isoformat()
-                        if payment.get("posted_at")
-                        else None,
-                        "posted_by_name": payment.get("posted_by_name"),
-                    }
-                    for payment in payments
-                ],
-                "posted_at": bill["posted_at"].isoformat()
-                if bill["posted_at"]
-                else None,
-                "created_at": bill["created_at"].isoformat(),
-                "updated_at": bill["updated_at"].isoformat(),
-            }
+                "grand_total": self._money_str(
+                    bill["grand_total"] or bill["amount"]
+                ),
+            },
+            "subtotal": self._money_str(bill["subtotal"]),
+            "item_discount_total": self._money_str(bill["item_discount_total"]),
+            "invoice_discount_total": self._money_str(
+                bill["invoice_discount_total"]
+            ),
+            "cash_discount_total": self._money_str(bill["cash_discount_total"]),
+            "dpp": self._money_str(bill["dpp"]),
+            "tax_amount": self._money_str(bill["tax_amount"]),
+            "grand_total": self._money_str(bill["grand_total"] or bill["amount"]),
+            "amount": self._money_str(bill["amount"]),
+            "amount_paid": self._money_str(
+                bill["journal_paid"]
+            ),  # Law 16: journal-derived
+            "amount_due": self._money_str(bill["amount_due"]),
+            "notes": bill["notes"],
+            "operational_status": bill.get("operational_status") or "DRAFT",
+            "doc_status": derive_doc_status(bill),
+            "accounting_status": bill.get("accounting_status") or "UNPOSTED",
+            "vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None,
+            "vendor_name": bill["vendor_name"],
+            "items": items_list,
+            "lines": items_list,  # Alias for OpenAPI v2 compatibility
+            "payments": [
+                {
+                    "id": str(payment["id"]),
+                    "payment_number": payment["payment_number"] or "",
+                    "amount": self._money_str(payment["amount"]),
+                    "total_amount": self._money_str(payment["amount"]),
+                    "payment_date": payment["payment_date"].isoformat(),
+                    "payment_method": payment["payment_method"],
+                    "status": payment["status"],
+                    "reference": payment["reference"],
+                    "notes": payment["notes"],
+                    "created_at": payment["created_at"].isoformat(),
+                    "bank_account_id": str(payment["bank_account_id"])
+                    if payment.get("bank_account_id")
+                    else None,
+                    "bank_account_name": payment.get("bank_account_name"),
+                    "journal_id": str(payment["journal_id"])
+                    if payment.get("journal_id")
+                    else None,
+                    "created_by_name": payment.get("created_by_name"),
+                    "posted_at": payment["posted_at"].isoformat()
+                    if payment.get("posted_at")
+                    else None,
+                    "posted_by_name": payment.get("posted_by_name"),
+                }
+                for payment in payments
+            ],
+            "posted_at": bill["posted_at"].isoformat()
+            if bill["posted_at"]
+            else None,
+            "created_at": bill["created_at"].isoformat(),
+            "updated_at": bill["updated_at"].isoformat(),
+        }

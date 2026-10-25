@@ -107,12 +107,12 @@ def test_daftar_dan_summary_memakai_satu_sumber():
     sm = inspect.getsource(BS.BillsService.get_summary)
     assert "TD.syarat_cari(" in sm and "TD.sql_aksi(" in sm
     # SATU pembaca N (pengingat.ambang_segera) di daftar, summary, detail v1/v2; alias summary == segera_tempo
-    for f in (BS.BillsService.list_bills, BS.BillsService.get_summary, BS.BillsService.get_bill, BS.BillsService.get_bill_v2):
+    for f in (BS.BillsService.list_bills, BS.BillsService.get_summary, BS.BillsService.get_bill, BS.BillsService.get_bill_v2_conn):
         assert "ambang_segera(conn, tenant_id)" in inspect.getsource(f), f.__name__
     assert '"jatuh_tempo_minggu_ini_count": int(aksi_row["segera_tempo_count"])' in sm
     assert '"jatuh_tempo_minggu_ini_value": float(aksi_row["segera_tempo_value"])' in sm
     assert "akhir_minggu" not in inspect.getsource(TD)
-    for f in (BS.BillsService.get_bill, BS.BillsService.get_bill_v2):
+    for f in (BS.BillsService.get_bill, BS.BillsService.get_bill_v2_conn):
         assert "TD.fakta_baris(" in inspect.getsource(f) and "TD.kelompok_tagihan(" in inspect.getsource(f)
     lit = typing.get_args(inspect.signature(BR.list_bills).parameters["aksi"].annotation)
     assert set(typing.get_args(lit[0])) == set(TD.AKSI_TAGIHAN) | set(TD.AKSI_USANG) | set(TD.SARING_UMUR)

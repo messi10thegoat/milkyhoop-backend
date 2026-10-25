@@ -415,41 +415,22 @@ class PDFService:
         return html.replace("<html", f'<html data-kertas="{kertas}"', 1)
 
     def generate_bill_pdf(self, bill: Dict[str, Any]) -> bytes:
-        """
-        Generate PDF for a bill (purchase invoice).
+        """PDF Faktur Pembelian -- rute lama /api/bills/{id}/pdf. Render SAMA dengan /api/documents/bill (render_bill)."""
+        return self.tulis_pdf(self.render_bill(bill))
 
-        Args:
-            bill: Bill data dict with items, vendor info, and totals.
-                  Expected fields: invoice_number, vendor/vendor_name,
-                  issue_date, due_date, status, items, subtotal, amount, etc.
-
-        Returns:
-            PDF content as bytes
-        """
-        template = self.jinja_env.get_template("bill_invoice.html")
-
-        # Get status label
+    def render_bill(self, bill: Dict[str, Any]) -> Render:
+        """Faktur Pembelian (P2P cetak, 25 Okt 2026): konteks = BillsService.get_bill_v2(_conn) + bill["tenant"].
+        Gaya = faktur penjualan (CSS_DOKUMEN + font Inter berkas; dulu invoice.css saja -> jatuh ke DejaVu)."""
         status = bill.get("status", "draft")
-        status_label = self.STATUS_LABELS.get(status, status.upper())
-
-        # Render HTML
-        html_content = template.render(
+        html_content = self.jinja_env.get_template("bill_invoice.html").render(
             bill=bill,
-            status_label=status_label,
+            status_label=self.STATUS_LABELS.get(status, str(status).upper()),
             generated_at=datetime.now(),
             batal=self._tanda_batal(bill),
+            draf=str(status).lower() == "draft",
+            draf_keterangan="Belum diposting",
         )
-
-        # Load CSS
-        css_path = TEMPLATE_DIR / "invoice.css"
-        stylesheets = []
-        if css_path.exists():
-            stylesheets.append(CSS(filename=str(css_path)))
-
-        # Generate PDF
-        pdf_bytes = HTML(string=html_content).write_pdf(stylesheets=stylesheets)
-
-        return pdf_bytes
+        return Render(html_content, CSS_DOKUMEN, font=True)
 
     @staticmethod
     def _label_terms(invoice: Dict[str, Any]) -> str:
@@ -881,6 +862,18 @@ class PDFService:
         )
         return Render(html_content, CSS_DOKUMEN, font=True)
 
+    def render_debit_note(self, debit_note_data: dict, tenant_info: dict) -> Render:
+        """Nota Debit (P2P cetak, 25 Okt 2026) -- simetri render_credit_note; konteks = services/cetak_debit_note."""
+        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
+                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
+                   "logo_base64": tenant_info.get("logo_data")}
+        status = str(debit_note_data.get("status") or "draft").lower()
+        html_content = self.jinja_env.get_template("debit_note.html").render(
+            debit_note=debit_note_data, company=company, generated_at=datetime.now(),
+            batal=self._tanda_batal(debit_note_data), draf=status == "draft", draf_keterangan="Belum diposting",
+        )
+        return Render(html_content, CSS_DOKUMEN, font=True)
+
     def render_rekap_pesanan(self, rekap: dict, tenant_info: dict) -> Render:
         """Rekap Pesanan (P3 SO-dokumen) -- konteks dari services/rekap_pesanan.muat_rekap_pesanan."""
         company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
@@ -929,6 +922,11 @@ class PDFService:
         )
         # P3d: SEMUA kwitansi A5 melintang (putusan pemilik 1 Okt 2026) -- kwitansi.css sesudah invoice.css.
         return Render(html_content, CSS_KWITANSI, font=True)
+
+    def render_payment_out(self, payment_data, tenant_info) -> Render:
+        """Bukti Pembayaran ke pemasok (P2P cetak, 25 Okt 2026) -- simetri kwitansi penerimaan: templat kwitansi.html
+        yang SAMA (A5 melintang) dengan label keluar dari services/cetak_payment_out."""
+        return self.render_receipt(payment_data, tenant_info)
 
 
 # Singleton instance

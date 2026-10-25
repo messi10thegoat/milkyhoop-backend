@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Nota Debit {{ debit_note.credit_number or '-' }}</title>
+<style>
+  /* Pola yang sama dengan proforma.html: "Dicetak…" ke kotak margin @page (running element) supaya tak mendorong isi
+     ke halaman 2; !important krn invoice.css dimuat sesudah. */
+  .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
+  @page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }
+  .header { margin-bottom: 18px !important; }
+  .meta-block { margin-bottom: 18px !important; }
+  .parties { margin-bottom: 22px !important; }
+  .company-logo { max-height: 60px !important; }
+  .meta-table { border-spacing: 20px 3px !important; }
+  .notes-section { margin-bottom: 10px !important; }
+</style>
+</head>
+<body>
+{% include "_partials/tanda_batal.html" %}
+{% include "_partials/tanda_draf.html" %}
+<div class="invoice">
+
+    <!-- 1. Header -->
+    <div class="header">
+        <div>
+            <h1 class="doc-title">Nota Debit</h1>
+        </div>
+        {% if company and company.logo_base64 %}
+        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        {% endif %}
+    </div>
+
+    <!-- 2. Meta -->
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr>
+                <td class="meta-label">Nomor Nota Debit</td>
+                <td class="meta-value">{{ debit_note.credit_number or '-' }}</td>
+            </tr>
+            <tr>
+                <td class="meta-label">Tanggal</td>
+                <td class="meta-value">{{ debit_note.credit_date | date_id }}</td>
+            </tr>
+            {% if debit_note.original_bill_number %}
+            <tr>
+                <td class="meta-label">Faktur Asal</td>
+                <td class="meta-value">{{ debit_note.original_bill_number }}{% if debit_note.original_bill_date %} ({{ debit_note.original_bill_date | date_id }}){% endif %}</td>
+            </tr>
+            {% endif %}
+            <tr>
+                <td class="meta-label">Alasan</td>
+                <td class="meta-value">{{ debit_note.reason_label or '-' }}</td>
+            </tr>
+            {% if debit_note.ref_no %}
+            <tr>
+                <td class="meta-label">Referensi</td>
+                <td class="meta-value">{{ debit_note.ref_no }}</td>
+            </tr>
+            {% endif %}
+        </table>
+    </div>
+
+    <!-- 3. Parties -->
+    <div class="parties">
+        {% if company %}
+        <div class="party">
+            <div class="party-label">Dari</div>
+            <div class="party-name">{{ company.name }}</div>
+            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
+            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+            {% if company.email %}<div class="party-detail"><!--email_off-->{{ company.email }}<!--/email_off--></div>{% endif %}
+        </div>
+        {% endif %}
+        <div class="party">
+            <div class="party-label">Kepada</div>
+            <div class="party-name">{{ debit_note.vendor_name or '-' }}</div>
+        </div>
+    </div>
+
+    <!-- 4. Hero: nilai pengurang hutang ke pemasok -->
+    <div class="hero">
+        <div class="hero-amount">Rp {{ debit_note.total_amount | currency }}</div>
+        <div class="hero-due">Pengurang hutang ke pemasok{% if debit_note.original_bill_number %} atas faktur {{ debit_note.original_bill_number }}{% endif %}</div>
+    </div>
+
+    <div style="height: 16px;"></div>
+
+    <!-- 5. Rincian -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th class="col-desc">Keterangan</th>
+                <th class="col-qty">Qty</th>
+                <th class="col-price">Harga satuan</th>
+                <th class="col-amount">Jumlah</th>
+            </tr>
+        </thead>
+        <tbody>
+            {# bracket notation: debit_note["items"] (dot = dict.items()) #}
+            {% for item in debit_note["items"] %}
+            <tr>
+                <td class="col-desc">{{ item.description or '-' }}{% if item.discount_amount and item.discount_amount|float > 0 %}<br><span class="text-muted">Diskon -Rp {{ item.discount_amount | currency }}</span>{% endif %}</td>
+                <td class="col-qty">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+                <td class="col-price">Rp {{ item.unit_price | harga }}</td>
+                <td class="col-amount">Rp {{ item.net | currency }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {# 6. Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
+    <div class="summary">
+        <table class="summary-table">
+            <tr>
+                <td class="label">Subtotal</td>
+                <td class="value">Rp {{ debit_note.subtotal | currency }}</td>
+            </tr>
+            {% if debit_note.item_discount_total and debit_note.item_discount_total|float > 0 %}
+            <tr>
+                <td class="label">Diskon item</td>
+                <td class="value">-Rp {{ debit_note.item_discount_total | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if debit_note.discount_amount and debit_note.discount_amount|float > 0 %}
+            <tr>
+                <td class="label">Diskon</td>
+                <td class="value">-Rp {{ debit_note.discount_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            {% if debit_note.tax_amount and debit_note.tax_amount|float > 0 %}
+            <tr>
+                <td class="label">PPN{% if debit_note.tax_rate and debit_note.tax_rate|float > 0 %} ({{ "%g" % (debit_note.tax_rate|float) }}%){% endif %}</td>
+                <td class="value">Rp {{ debit_note.tax_amount | currency }}</td>
+            </tr>
+            {% endif %}
+            <tr class="total-row">
+                <td class="label"><strong>Total Nota Debit</strong></td>
+                <td class="value"><strong>Rp {{ debit_note.total_amount | currency }}</strong></td>
+            </tr>
+        </table>
+    </div>
+
+    {% if debit_note.reason_detail %}
+    <div class="notes-section">
+        <div class="notes-label">Keterangan Alasan</div>
+        <div class="notes-text">{{ debit_note.reason_detail }}</div>
+    </div>
+    {% endif %}
+
+    {% if debit_note.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ debit_note.notes }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 7. Footer (running element -> kotak margin @page) -->
+    <div class="footer-running">
+        Dicetak {{ generated_at | date_id }}
+    </div>
+
+</div>
+</body>
+</html>

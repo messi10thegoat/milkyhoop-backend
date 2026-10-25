@@ -31,7 +31,15 @@ router = APIRouter()
 JENIS = ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice", "credit_note")
 # Jenis yang bisa DICETAK (/html, /pdf) = JENIS (bisa juga dibagikan) + dokumen Pembelian (22 Okt 2026, tiket PDF PO).
 # Pembelian BELUM bisa dibagikan: document_shares.kind dijaga CHECK (V379) == JENIS; menambah kind = migrasi tersendiri.
-JENIS_CETAK = JENIS + ("purchase_order",)
+# Satu jenis per baris, urut abjad (25 Okt 2026, disepakati BACKEND + BACKEND2): cabang paralel hanya menambah blok _render.
+JENIS_CETAK = JENIS + (
+    "bill",
+    "debit_note",
+    "goods_receipt",
+    "payment_out",
+    "purchase_order",
+    "vendor_deposit",
+)
 FONT_SAH = {f"Inter-{b}.ttf" for b in ("Regular", "Medium", "SemiBold", "Bold", "Italic")}
 VERSI_RENDER = "p3-1"  # naikkan bila mesin/aturan render berubah tanpa mengubah HTML
 NOL = Decimal("0")
@@ -106,6 +114,18 @@ async def _render(conn, ctx: dict, request: Request, jenis: str, did: str, cek_i
         from ..services.po_cetak import muat_pdf_po
         m = await muat_pdf_po(conn, ctx, uid)
         return ps.render_purchase_order(m["po_data"], m["tenant_info"]), m["po_data"]["po_number"]
+    if jenis == "bill":
+        from ..services.cetak_bill import muat_pdf_bill
+        m = await muat_pdf_bill(conn, ctx, uid)
+        return ps.render_bill(m["bill"]), (m["bill"]["invoice_number"] or "Faktur Pembelian")
+    if jenis == "payment_out":
+        from ..services.cetak_payment_out import muat_pdf_payment_out
+        m = await muat_pdf_payment_out(conn, ctx, uid)
+        return ps.render_payment_out(m["receipt_data"], m["tenant_info"]), (m["receipt_data"]["receipt_number"] or "Bukti Pembayaran")
+    if jenis == "debit_note":
+        from ..services.cetak_debit_note import muat_pdf_debit_note
+        m = await muat_pdf_debit_note(conn, ctx, uid)
+        return ps.render_debit_note(m["debit_note_data"], m["tenant_info"]), (m["debit_note_data"]["credit_number"] or "Nota Debit")
     if jenis == "credit_note":
         from ..services.nota_kredit_dokumen import muat_pdf_nota_kredit
         m = await muat_pdf_nota_kredit(conn, ctx, uid)

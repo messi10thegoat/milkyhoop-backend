@@ -270,6 +270,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/credit_note/[^/]+/(html|pdf)$", ["GET"], "credit_note", "R"),
     (r"^/api/documents/invoice/[^/]+/(html|pdf)$", ["GET"], "sales_invoice", "R"),
     (r"^/api/documents/purchase_order/[^/]+/(html|pdf)$", ["GET"], "purchase_order", "R"),
+    (r"^/api/documents/bill/[^/]+/(html|pdf)$", ["GET"], "purchase_invoice", "R"),
+    (r"^/api/documents/payment_out/[^/]+/(html|pdf)$", ["GET"], "send_payment", "R"),
+    (r"^/api/documents/debit_note/[^/]+/(html|pdf)$", ["GET"], "debit_note", "R"),
     (r"^/api/documents/receipts/pdf$", ["GET"], "receive_payment", "R"),
     (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-invoices/[^/]+/documents$", ["GET"], "sales_invoice", "R"),  # S1-U2 bundel faktur

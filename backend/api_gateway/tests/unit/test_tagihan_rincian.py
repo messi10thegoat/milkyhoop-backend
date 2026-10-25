@@ -54,7 +54,7 @@ def test_satu_sumber_di_semua_jalur():
     daftar = inspect.getsource(BS.BillsService.list_bills)
     for k in ("TD.sql_keadaan(TOK_HARI_INI)", "TD.sql_keadaan(hari_ph)", "TD.sql_sisa()", "TD.sql_dibayar()", "TD.sql_urut_keadaan(", "TD.join_rincian()"):
         assert k in daftar, k
-    for fn in ("get_bill", "get_bill_v2"):
+    for fn in ("get_bill", "get_bill_v2_conn"):
         seg = inspect.getsource(getattr(BS.BillsService, fn))
         assert "LEFT JOIN compute_ap_rincian($2) apr ON apr.bill_id = b.id" in seg
         assert 'TD.sql_keadaan("$3::date")' in seg and "TD.sql_sisa()" in seg and "TD.sql_dibayar()" in seg

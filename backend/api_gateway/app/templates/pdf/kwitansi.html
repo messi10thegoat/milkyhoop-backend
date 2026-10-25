@@ -86,7 +86,7 @@
         <td>
             {% if not batal and not receipt.get('hide_method') and (receipt.status or 'posted')|lower not in ('draft',) %}
             <div class="kw-stempel kw-stempel-diterima">
-                <div class="kw-stempel-teks">DITERIMA</div>
+                <div class="kw-stempel-teks">{{ receipt.get('stamp_label') or 'DITERIMA' }}</div>
                 <div class="kw-stempel-kecil">{{ receipt.receipt_date | date_id | upper }}</div>
             </div>
             {% endif %}

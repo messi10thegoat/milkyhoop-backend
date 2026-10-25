@@ -35,7 +35,7 @@ def test_detail_faktur_memakai_aturan_daftar():
     assert "_syarat_jatuh_tempo(" in daftar
 
 
-@pytest.mark.parametrize("fn", ["get_bill", "get_bill_v2"])
+@pytest.mark.parametrize("fn", ["get_bill", "get_bill_v2_conn"])
 def test_detail_tagihan_memakai_status_terhitung(fn):
     from app.services import bills_service as BS
     seg = inspect.getsource(getattr(BS.BillsService, fn))
