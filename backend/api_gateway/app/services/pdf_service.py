@@ -929,6 +929,15 @@ class PDFService:
         return self.render_receipt(payment_data, tenant_info)
 
 
+    def render_goods_receipt(self, gr_data: dict, tenant_info: dict) -> Render:
+        """Penerimaan Barang (25 Okt 2026) -- kembaran render_delivery_note (kerangka SAMA, arah masuk). Konteks = services/cetak_goods_receipt."""
+        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
+                   "phone": tenant_info.get("phone"), "logo_base64": tenant_info.get("logo_data")}
+        html_content = self.jinja_env.get_template("goods_receipt.html").render(
+            gr=gr_data, company=company, generated_at=datetime.now(), batal=self._tanda_batal(gr_data))
+        return Render(html_content, CSS_DOKUMEN, font=True)
+
+
 # Singleton instance
 _pdf_service: Optional[PDFService] = None
 

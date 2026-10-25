@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Penerimaan Barang {{ gr.receipt_number or '' }}</title>
+{# Kembaran delivery_note.html (Surat Jalan): kerangka & ukuran SAMA, arah MASUK (Dari vendor, ke gudang). Konteks = services/cetak_goods_receipt.
+   Teks #1a1a1a (skill milkyhoop-pdf; tanpa abu). Tanpa harga: dokumen gudang. #}
+<style>
+  @page { size: A4; margin: 20mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', 'DejaVu Sans', sans-serif; font-size: 12px; color: #1a1a1a; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #1a1a1a; padding-bottom: 16px; }
+  .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
+  .company-info p { font-size: 11px; line-height: 1.5; }
+  .doc-title { text-align: right; }
+  .doc-logo { max-height: 52px; max-width: 130px; object-fit: contain; display: block; margin: 0 0 6px auto; }
+  .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .meta-block table { width: 100%; }
+  .meta-block td { padding: 3px 6px 3px 0; font-size: 11px; vertical-align: top; }
+  .meta-block td:first-child { white-space: nowrap; width: 110px; }
+  .meta-block td:nth-child(2) { width: 10px; }
+  .meta-block td:last-child { font-weight: 500; white-space: pre-line; }
+  table.items { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  table.items thead { display: table-header-group; }
+  table.items thead tr { background: #1a1a1a; color: #fff; }
+  table.items th { padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 600; }
+  table.items th.center, table.items td.center { text-align: center; }
+  table.items tbody tr:nth-child(even) { background: #f9f9f9; }
+  table.items td { padding: 7px 10px; font-size: 11px; border-bottom: 1px solid #eee; vertical-align: top; }
+  table.items .kode { font-size: 10px; }
+  .notes { margin-bottom: 32px; }
+  .notes label { font-size: 11px; display: block; margin-bottom: 4px; }
+  .notes p { font-size: 11px; border: 1px solid #ddd; padding: 8px 10px; border-radius: 4px; min-height: 36px; white-space: pre-line; }
+  .signatures { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-top: 40px; break-inside: avoid; }
+  .sig-block { text-align: center; }
+  .sig-block .sig-label { font-size: 11px; margin-bottom: 60px; }
+  .sig-block .sig-line { border-top: 1px solid #1a1a1a; padding-top: 4px; font-size: 11px; }
+  .footer { margin-top: 32px; text-align: center; font-size: 10px; }
+</style>
+</head>
+<body>
+{% include "_partials/tanda_batal.html" %}
+
+<div class="header">
+  <div class="company-info">
+    <h1>{{ company.name }}</h1>
+    {% if company.address %}<p>{{ company.address }}</p>{% endif %}
+    {% if company.phone %}<p>Telp: {{ company.phone }}</p>{% endif %}
+  </div>
+  <div class="doc-title">
+    {% if company.logo_base64 %}<img src="{{ company.logo_base64 }}" class="doc-logo" alt="">{% endif %}
+    <h2>PENERIMAAN BARANG</h2>
+  </div>
+</div>
+
+<div class="meta-grid">
+  <div class="meta-block">
+    <table>
+      <tr><td>No. Penerimaan</td><td>:</td><td><strong>{{ gr.receipt_number or "-" }}</strong></td></tr>
+      <tr><td>Tanggal</td><td>:</td><td>{{ gr.receipt_date | date_id if gr.receipt_date else "-" }}</td></tr>
+      <tr><td>No. Pesanan</td><td>:</td><td>{{ gr.po_number or "-" }}</td></tr>
+      {% if gr.po_ref_no %}<tr><td>No. Referensi</td><td>:</td><td>{{ gr.po_ref_no }}</td></tr>{% endif %}
+      {% if gr.warehouse_name %}<tr><td>Gudang</td><td>:</td><td>{{ gr.warehouse_name }}</td></tr>{% endif %}
+    </table>
+  </div>
+  <div class="meta-block">
+    <table>
+      <tr><td>Dari</td><td>:</td><td><strong>{{ gr.vendor_name or "-" }}</strong></td></tr>
+      {% if gr.vendor_alamat %}<tr><td>Alamat</td><td>:</td><td>{{ gr.vendor_alamat }}</td></tr>{% endif %}
+      {% if gr.vendor_telepon %}<tr><td>Telepon</td><td>:</td><td>{{ gr.vendor_telepon }}</td></tr>{% endif %}
+    </table>
+  </div>
+</div>
+
+<table class="items">
+  <thead>
+    <tr>
+      <th style="width:32px">No</th>
+      <th>Deskripsi Barang</th>
+      <th class="center" style="width:80px">Qty Diterima</th>
+      {% if gr.ada_retur %}<th class="center" style="width:80px">Qty Diretur</th>{% endif %}
+      <th class="center" style="width:70px">Satuan</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for item in gr["items"] %}
+    <tr>
+      <td class="center">{{ loop.index }}</td>
+      <td>
+        {{ item.description or "-" }}
+        {% if item.item_code %}<br><span class="kode">Kode: {{ item.item_code }}</span>{% endif %}
+      </td>
+      <td class="center">{{ item.quantity | qty }}</td>
+      {% if gr.ada_retur %}<td class="center">{{ item.quantity_returned | qty if item.quantity_returned|float > 0 else "" }}</td>{% endif %}
+      <td class="center">{{ item.unit or "-" }}</td>
+    </tr>
+    {% endfor %}
+    {% if not gr["items"] %}
+    <tr><td colspan="{{ 5 if gr.ada_retur else 4 }}" class="center" style="padding:20px">Tidak ada item</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if gr.notes %}
+<div class="notes">
+  <label>Catatan:</label>
+  <p>{{ gr.notes }}</p>
+</div>
+{% endif %}
+
+<div class="signatures">
+  <div class="sig-block">
+    <div class="sig-label">Diserahkan oleh,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+  <div class="sig-block">
+    <div class="sig-label">Diterima oleh,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+  <div class="sig-block">
+    <div class="sig-label">Diperiksa oleh,</div>
+    <div class="sig-line">( __________________ )</div>
+  </div>
+</div>
+
+<div class="footer">Dicetak {{ generated_at | date_id }} &bull; Dokumen ini sah tanpa tanda tangan basah</div>
+
+</body>
+</html>

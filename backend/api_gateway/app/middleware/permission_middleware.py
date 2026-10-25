@@ -273,6 +273,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/bill/[^/]+/(html|pdf)$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/documents/payment_out/[^/]+/(html|pdf)$", ["GET"], "send_payment", "R"),
     (r"^/api/documents/debit_note/[^/]+/(html|pdf)$", ["GET"], "debit_note", "R"),
+    (r"^/api/documents/vendor_deposit/[^/]+/(html|pdf)$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/documents/goods_receipt/[^/]+/(html|pdf)$", ["GET"], "purchase_order", "R"),  # izin GRN = modul purchase_order (sama bundel GRN)
     (r"^/api/documents/receipts/pdf$", ["GET"], "receive_payment", "R"),
     (r"^/api/sales-orders/[^/]+/documents$", ["GET"], "sales_order", "R"),
     (r"^/api/sales-invoices/[^/]+/documents$", ["GET"], "sales_invoice", "R"),  # S1-U2 bundel faktur

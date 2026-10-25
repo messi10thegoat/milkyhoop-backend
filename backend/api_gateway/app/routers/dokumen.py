@@ -126,6 +126,14 @@ async def _render(conn, ctx: dict, request: Request, jenis: str, did: str, cek_i
         from ..services.cetak_debit_note import muat_pdf_debit_note
         m = await muat_pdf_debit_note(conn, ctx, uid)
         return ps.render_debit_note(m["debit_note_data"], m["tenant_info"]), (m["debit_note_data"]["credit_number"] or "Nota Debit")
+    if jenis == "vendor_deposit":  # kwitansi.html arah KELUAR (Bukti Pembayaran Uang Muka), simetri kwitansi uang muka pelanggan
+        from ..services.cetak_vendor_deposit import muat_pdf_vendor_deposit
+        m = await muat_pdf_vendor_deposit(conn, ctx, uid)
+        return ps.render_receipt(m["receipt_data"], m["tenant_info"]), m["receipt_data"]["receipt_number"]
+    if jenis == "goods_receipt":  # kembaran Surat Jalan (dokumen gudang, tanpa harga)
+        from ..services.cetak_goods_receipt import muat_pdf_goods_receipt
+        m = await muat_pdf_goods_receipt(conn, ctx, uid)
+        return ps.render_goods_receipt(m["gr_data"], m["tenant_info"]), m["gr_data"]["receipt_number"]
     if jenis == "credit_note":
         from ..services.nota_kredit_dokumen import muat_pdf_nota_kredit
         m = await muat_pdf_nota_kredit(conn, ctx, uid)
