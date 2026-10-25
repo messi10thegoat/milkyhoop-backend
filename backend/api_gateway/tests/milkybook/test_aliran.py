@@ -286,3 +286,17 @@ def test_sse_selalu_diakhiri_selesai_dan_langkah_berpasangan():
     mulai = [d["id"] for n, d in ev if n == "langkah" and d["status"] == "mulai"]
     akhir = [d["id"] for n, d in ev if n == "langkah" and d["status"] != "mulai"]
     assert len(mulai) == 6 and mulai == akhir
+
+
+def test_aliran_dibuang_sesudah_permintaan_rujukan_tak_tumbuh_lintas_giliran():
+    import gc
+    store = PenyimpananSesiMemori()
+    app, _ = _app(store, model=ModelPalsu([panggil(("cari_x", {"q": "a"})), teks("a."), panggil(("cari_x", {"q": "b"})), teks("b.")]))
+    c = TestClient(app)
+    sid = _sesi(c)
+    c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "satu"}, headers=H)
+    with c.stream("POST", f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "dua"}, headers=SSE) as r:
+        "".join(r.iter_text())
+    time.sleep(0.05)
+    gc.collect()
+    assert [o for o in gc.get_objects() if isinstance(o, aliran.Aliran)] == []
