@@ -441,6 +441,151 @@
     ],
     "penawaran_baru_maks": 1
    }
+  },
+  {
+   "id": "K19-antre-koreksi-jumlah",
+   "kategori": "antre",
+   "catatan": "#10 kotak masuk: koreksi jumlah datang saat Milkybook bekerja.",
+   "konteks_stub": {
+    "pelanggan": [
+     {
+      "id": "C-FL",
+      "nama": "Flowry"
+     },
+     {
+      "id": "C-BL",
+      "nama": "Billy Lombok"
+     }
+    ],
+    "barang": [
+     {
+      "id": "I-KP",
+      "nama": "Kaos Polo Bordir",
+      "harga_jual": 100000
+     }
+    ]
+   },
+   "langkah": [
+    {
+     "user": "Buat penawaran untuk Flowry: 3 pcs Kaos Polo Bordir, tanpa pajak, tanggal hari ini.",
+     "antre": [
+      {
+       "setelah_panggilan": 1,
+       "teks": "eh, jumlahnya 5 ya, bukan 3"
+      }
+     ]
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Ya, lanjutkan."
+    }
+   ],
+   "harapan": {
+    "penawaran_baru": [
+     {
+      "customer_mengandung": "flowry",
+      "baris": [
+       {
+        "quantity": 5,
+        "unit_price": 100000
+       }
+      ],
+      "total_amount": 500000
+     }
+    ],
+    "penawaran_baru_maks": 1
+   }
+  },
+  {
+   "id": "K20-antre-ganti-pelanggan",
+   "kategori": "antre",
+   "catatan": "#10 kotak masuk: pelanggan diganti di tengah giliran.",
+   "konteks_stub": {
+    "pelanggan": [
+     {
+      "id": "C-FL",
+      "nama": "Flowry"
+     },
+     {
+      "id": "C-BL",
+      "nama": "Billy Lombok"
+     }
+    ],
+    "barang": [
+     {
+      "id": "I-KP",
+      "nama": "Kaos Polo Bordir",
+      "harga_jual": 100000
+     }
+    ]
+   },
+   "langkah": [
+    {
+     "user": "Buat penawaran untuk Flowry: 3 pcs Kaos Polo Bordir, tanpa pajak, tanggal hari ini.",
+     "antre": [
+      {
+       "setelah_panggilan": 1,
+       "teks": "maaf, pelanggannya Billy Lombok, bukan Flowry"
+      }
+     ]
+    },
+    {
+     "autopilot": 3,
+     "jawaban_default": "Ya, lanjutkan."
+    }
+   ],
+   "harapan": {
+    "penawaran_baru": [
+     {
+      "customer_mengandung": "billy",
+      "baris": [
+       {
+        "quantity": 3
+       }
+      ]
+     }
+    ],
+    "penawaran_baru_maks": 1
+   }
+  },
+  {
+   "id": "K21-antre-batal",
+   "kategori": "antre",
+   "catatan": "#10 kotak masuk: pengguna membatalkan di tengah giliran -> nol tulis, nol kartu menunggu.",
+   "konteks_stub": {
+    "pelanggan": [
+     {
+      "id": "C-FL",
+      "nama": "Flowry"
+     },
+     {
+      "id": "C-BL",
+      "nama": "Billy Lombok"
+     }
+    ],
+    "barang": [
+     {
+      "id": "I-KP",
+      "nama": "Kaos Polo Bordir",
+      "harga_jual": 100000
+     }
+    ]
+   },
+   "langkah": [
+    {
+     "user": "Buat penawaran untuk Flowry: 3 pcs Kaos Polo Bordir, tanpa pajak, tanggal hari ini.",
+     "antre": [
+      {
+       "setelah_panggilan": 1,
+       "teks": "batal, nggak jadi"
+      }
+     ]
+    }
+   ],
+   "harapan": {
+    "tulis_maks": 0,
+    "tanpa_kartu_menunggu": true
+   }
   }
  ]
 }

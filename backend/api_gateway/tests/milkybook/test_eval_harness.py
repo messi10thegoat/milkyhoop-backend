@@ -73,3 +73,16 @@ async def test_set60_kasus_tulis_dinilai_tanpa_galat_harness():
                       teks("Tidak ada faktur Toko Melati yang belum lunas saat ini menurut data server.")])
     r2 = await je.jalankan_kasus(k2, p2, "medium")
     assert r2["lulus"], r2["gagal"]
+
+
+async def test_harness_antre_disisipkan_sesudah_panggilan_ke_n():
+    import json
+    import os
+    d = json.load(open(os.path.join(os.path.dirname(__file__), "eval", "kasus_penawaran.json")))
+    k = next(x for x in d["kasus"] if x["id"] == "K21-antre-batal")
+    p = _Pembungkus([panggil(("cari_pelanggan", {"q": "Flowry"})), teks("Baik, tidak jadi. Tidak ada yang dibuat.")])
+    r = await je.jalankan_kasus(k, p, "medium")
+    assert r["lulus"], r["gagal"]
+    kedua = json.dumps(p.dalam.permintaan[1]["messages"][-1], ensure_ascii=False)
+    assert "[pesan baru pengguna" in kedua and "batal, nggak jadi" in kedua
+    assert {"antre": "batal, nggak jadi"} in r["transkrip"]

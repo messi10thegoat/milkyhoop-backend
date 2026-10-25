@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import aliran
+from .audit import BarisAudit
 from .pelaksana import PelaksanaASGI
 from .penyimpanan import AntreanPenuh, SesiSibuk
 
@@ -88,8 +89,11 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
             for e in await putaran_fn().giliran(s, "\n\n".join(m["teks"] for m in pesan), buat_pelaksana(), izin):
                 a.pancar(e)
 
-    async def _kerjakan(s, cm, pegangan, a, kerja, masuk, alat):
+    async def _kerjakan(s, cm, pegangan, a, kerja, masuk, alat, sse: bool):
+        """Bug non-SDK: SSE -> galat kode internal (stream tak putus diam); JSON -> TETAP 500 (putusan #9). Keduanya:
+        Traceback di log + audit baris model "galat:internal:<jenis>"."""
         token = aliran.pasang(a)
+        bug: Optional[BaseException] = None
         try:
             try:
                 if masuk:
@@ -99,9 +103,15 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
                 for e in await kerja(s):
                     a.pancar(e)  # yang belum dipancarkan (jalur sederhana: galat kartu, tolak)
                 await _lanjut_antre(s, a, pegangan, alat)
-            except Exception:
+            except Exception as e:
                 logger.exception("milkybook: giliran gagal")
-                a.pancar({"jenis": "galat", "kode": "internal", "pesan": "Terjadi kesalahan. Coba lagi."})
+                await _audit_bug(s, e)
+                if sse:
+                    a.pancar({"jenis": "galat", "kode": "internal", "pesan": "Terjadi kesalahan. Coba lagi."})
+                    if a.selesai is None:  # giliran berakhir jelas (FE tak perlu menebak)
+                        a.pancar({"jenis": "selesai", "galat": True})
+                else:
+                    bug = e
             finally:
                 s.tampilan.extend(a.semua)
                 del s.tampilan[:-MAKS_TAMPILAN]
@@ -115,6 +125,15 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
         finally:
             aliran.lepas(token)
             a.tutup()
+        if bug is not None:
+            raise bug  # JSON: tugas gagal -> handler 500 (kunci sudah lepas, sesi tersimpan)
+
+    async def _audit_bug(s, e):
+        try:
+            await putaran_fn().audit.tulis(BarisAudit(s.tenant_id, s.user_id, s.sesi_id, "model",
+                                                      hasil=f"galat:internal:{type(e).__name__}"[:500]))
+        except Exception:
+            logger.exception("milkybook: audit galat gagal")
 
     async def _proses_antre_berkunci(tenant_id, user_id, sesi_id, a, alat):
         try:
@@ -129,8 +148,9 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
             n = len(a.semua)
             try:
                 await _lanjut_antre(s, a, pegangan, alat)
-            except Exception:
+            except Exception as e:
                 logger.exception("milkybook: giliran antre gagal")
+                await _audit_bug(s, e)
                 a.pancar({"jenis": "galat", "kode": "internal", "pesan": "Terjadi kesalahan. Coba lagi."})
             finally:
                 s.tampilan.extend(a.semua[n:])
@@ -172,8 +192,9 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
             raise
         tenant_id, user_id = user["tenant_id"], user["user_id"]
         a = aliran.Aliran(ambil_antre=lambda: penyimpanan.antre_ambil_semua(tenant_id, user_id, sesi_id), boleh_sisip=boleh_sisip)
-        tugas = _latar(_kerjakan(s, cm, pegangan, a, kerja, masuk, _alat(request, user)))
-        if _mau_aliran(request):
+        sse = _mau_aliran(request)
+        tugas = _latar(_kerjakan(s, cm, pegangan, a, kerja, masuk, _alat(request, user), sse))
+        if sse:
             return _respons_aliran(a)
         await asyncio.shield(tugas)  # klien putus: tugas tetap selesai
         return {"peristiwa": a.semua + ([a.selesai] if a.selesai else [])}

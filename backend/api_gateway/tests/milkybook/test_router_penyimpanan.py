@@ -226,19 +226,28 @@ def test_galat_sdk_di_giliran_jadi_peristiwa_ramah_bukan_500(kelas, status, kode
     assert r2.status_code == 200 and r2.json()["peristiwa"][0]["teks"] == "Pulih."
 
 
-def test_galat_bukan_sdk_dicatat_log_dan_jadi_galat_internal(caplog):
-    # #10: giliran berjalan di tugas latar (stream tak boleh putus diam) -> bug = galat internal + Traceback di log.
+def test_galat_bukan_sdk_json_tetap_500_sse_galat_internal_keduanya_log_dan_audit(caplog):
+    # Putusan #9 + syarat MASTER #10: JSON tetap 500 untuk bug non-SDK; SSE = galat kode internal (stream tak putus
+    # diam). Keduanya: Traceback di log + audit model "galat:internal:<jenis>"; kunci lepas, sesi lanjut.
     def bug(*_):
         raise ValueError("bug kode")
     store = PenyimpananSesiMemori()
-    app, _ = _app(store, model=ModelPalsu([bug, teks("Pulih.")]))
+    app, _ = _app(store, model=ModelPalsu([bug, bug, teks("Pulih.")]))
     c = TestClient(app, raise_server_exceptions=False)
     H = {"X-Uji-Tenant": "t1"}
     sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
     with caplog.at_level("ERROR"):
         r = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai"}, headers=H)
-    assert r.status_code == 200 and any(e.get("kode") == "internal" for e in r.json()["peristiwa"])
-    assert any("giliran gagal" in x.message and x.exc_info for x in caplog.records)
+    assert r.status_code == 500
+    with c.stream("POST", f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai lagi"},
+                  headers={**H, "Accept": "text/event-stream"}) as rs:
+        badan = "".join(rs.iter_text())
+    blok = [x for x in badan.split("\n\n") if x.startswith("event:")]
+    assert rs.status_code == 200 and '"kode": "internal"' in blok[-2] and blok[-1].startswith("event: selesai")
+    assert '"galat": true' in blok[-1]
+    assert sum(1 for x in caplog.records if "giliran gagal" in x.message and x.exc_info) == 2
+    galat = [b for b in app.state_audit.baris if b.peristiwa == "model" and (b.hasil or "").startswith("galat:internal")]
+    assert [b.hasil for b in galat] == ["galat:internal:ValueError"] * 2
     assert c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "lagi"}, headers=H).status_code == 200  # kunci lepas
 
 

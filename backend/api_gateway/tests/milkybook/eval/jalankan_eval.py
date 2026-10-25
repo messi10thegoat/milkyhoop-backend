@@ -117,18 +117,48 @@ async def jalankan_kasus(kasus, pemanggil, effort, pemanggil_baca=None):
             "penawaran": {q["id"] for q in be.penawaran}}
     gap = tuple(kasus.get("gap", [pw.AS_G1, pw.AS_G14]))
     izin_owner_k = IZIN[kasus.get("izin", "owner")]
-    putaran = Putaran(Registri(semua_paket()), pemanggil, AuditMemori(), model_nama=pemanggil.dalam.model,
-                      gap_mendarat=gap, effort=effort, pemanggil_baca=pemanggil_baca)
+    # #10 kotak masuk: langkah {"user", "antre": [{"setelah_panggilan": k, "teks"}]} -> pesan masuk antre sesudah panggilan
+    # model ke-k (relatif terhadap awal giliran), dibaca inti sebelum panggilan berikut; sisa sesudah giliran = giliran baru.
+    jadwal, tertunda, hit = [], [], {"n": 0}
+
+    class _Hitung:
+        def __init__(self, dalam):
+            self.dalam = dalam
+
+        async def __call__(self, **kw):
+            h = await self.dalam(**kw)
+            hit["n"] += 1
+            for j in [j for j in jadwal if j[0] == hit["n"]]:
+                jadwal.remove(j)
+                tertunda.append({"id_pesan": f"antre{hit['n']}", "teks": j[1]})
+                transkrip.append({"antre": j[1]})
+            return h
+
+    async def _ambil_antre():
+        hasil = list(tertunda)
+        tertunda.clear()
+        return hasil
+
+    putaran = Putaran(Registri(semua_paket()), _Hitung(pemanggil), AuditMemori(), model_nama=pemanggil.dalam.model,
+                      gap_mendarat=gap, effort=effort, pemanggil_baca=_Hitung(pemanggil_baca) if pemanggil_baca else None)
     from datetime import date
     sesi = Sesi(f"eval-{kasus['id']}", be.tenant, "u-eval", konteks="Hari ini 2026-10-24 (Sabtu). Usaha: Kaos Biru Konveksi (konveksi kaos).",
                 hari_ini=date.fromisoformat(kasus.get("hari_ini", StubBE.HARI_INI)))
     semua_ev, transkrip, galat = [], [], None
+    from app.milkybook.inti import aliran as _aliran
+    token_aliran = _aliran.pasang(_aliran.Aliran(ambil_antre=_ambil_antre))
     try:
         for lk in kasus["langkah"]:
             if "user" in lk:
+                jadwal.extend((hit["n"] + j["setelah_panggilan"], j["teks"]) for j in lk.get("antre", []))
                 ev = await putaran.giliran(sesi, lk["user"], be, izin_owner_k)
                 transkrip.append({"user": lk["user"], "milkybook": _semua_teks(ev)})
                 semua_ev += ev
+                while tertunda:  # datang sesudah panggilan terakhir giliran -> giliran baru (cermin router _lanjut_antre)
+                    teks_antre = "\n\n".join(m["teks"] for m in await _ambil_antre())
+                    ev = await putaran.giliran(sesi, teks_antre, be, izin_owner_k)
+                    transkrip.append({"user (antre)": teks_antre, "milkybook": _semua_teks(ev)})
+                    semua_ev += ev
             elif "autopilot" in lk:
                 for _ in range(lk["autopilot"]):
                     k = sesi.kartu_menunggu()
@@ -140,7 +170,7 @@ async def jalankan_kasus(kasus, pemanggil, effort, pemanggil_baca=None):
                         transkrip.append({"setuju": k.tool, "milkybook": _semua_teks(ev)})
                         semua_ev += ev
                         continue
-                    terakhir = transkrip[-1]["milkybook"] if transkrip else ""
+                    terakhir = next((t["milkybook"] for t in reversed(transkrip) if "milkybook" in t), "")
                     if "?" in terakhir or re.search(r"pilih salah satu|silakan pilih|mohon (pilih|kirim|sebutkan|konfirmasi|pastikan|isi)", terakhir):
                         ev = await putaran.giliran(sesi, lk["jawaban_default"], be, izin_owner_k)
                         transkrip.append({"user": lk["jawaban_default"], "milkybook": _semua_teks(ev)})
@@ -149,6 +179,8 @@ async def jalankan_kasus(kasus, pemanggil, effort, pemanggil_baca=None):
                     break
     except BatasBiaya as e:
         galat = str(e)
+    finally:
+        _aliran.lepas(token_aliran)
 
     return nilai(kasus, be, awal, sesi, semua_ev, transkrip, galat)
 
@@ -187,7 +219,7 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         lain = [l["jalur"] for l in tulis_sah if pola not in l["jalur"]]
         if lain:
             gagal.append(f"tulis di luar '{pola}': {lain}")
-    teks = " ".join(t["milkybook"] for t in transkrip).lower()
+    teks = " ".join(t.get("milkybook", "") for t in transkrip).lower()
     if "teks_min_panjang" in h and len(teks.strip()) < h["teks_min_panjang"]:
         gagal.append(f"jawaban terlalu pendek ({len(teks.strip())} < {h['teks_min_panjang']})")
     if h.get("teks_bertanya") and "?" not in teks and not re.search(
@@ -273,6 +305,8 @@ def nilai(kasus, be, awal, sesi, ev, transkrip, galat):
         q = next((q for q in be.penawaran if q["quote_number"] == nomor), None)
         if not q or q["status"] != st:
             gagal.append(f"status {nomor} = {q and q['status']} != {st}")
+    if h.get("tanpa_kartu_menunggu") and sesi.kartu_menunggu() is not None:
+        gagal.append(f"masih ada kartu menunggu: {sesi.kartu_menunggu().tool}")
     if galat:
         gagal.append(f"BERHENTI: {galat}")
     return {
