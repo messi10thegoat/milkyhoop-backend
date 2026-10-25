@@ -301,7 +301,7 @@ async def list_vendor_credits(
         raise
     except Exception as e:
         logger.error(f"Error listing vendor credits: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list vendor credits")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar nota debit.")
 
 
 # =============================================================================
@@ -379,7 +379,7 @@ async def get_vendor_credits_summary(request: Request, search: Optional[str] = Q
         raise
     except Exception as e:
         logger.error(f"Error getting vendor credits summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 # =============================================================================
@@ -406,7 +406,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
             )
 
             if not vc:
-                raise HTTPException(status_code=404, detail="Vendor credit not found")
+                raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
 
             # Get items
             items = await conn.fetch(
@@ -542,7 +542,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
         logger.error(
             f"Error getting vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to get vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal memuat nota debit.")
 
 
 @router.get("/{vendor_credit_id}/documents")
@@ -746,7 +746,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
 
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "VC_CREATE", {
                     "success": True,
-                    "message": "Vendor credit created successfully",
+                    "message": "Nota debit dibuat.",
                     "data": {
                         "id": str(vc_id),
                         "vendor_credit_number": vc_number,
@@ -759,7 +759,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
         raise
     except Exception as e:
         logger.error(f"Error creating vendor credit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal membuat nota debit.")
 
 
 @router.post("/preview")
@@ -858,13 +858,13 @@ async def update_vendor_credit(
 
                 if not vc:
                     raise HTTPException(
-                        status_code=404, detail="Vendor credit not found"
+                        status_code=404, detail="Nota debit tidak ditemukan."
                     )
 
                 if vc["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail="Only draft vendor credits can be updated",
+                        detail="Hanya nota debit berstatus Draf yang bisa diubah.",
                     )
 
                 # Build update data
@@ -873,7 +873,7 @@ async def update_vendor_credit(
                 if not update_data:
                     return await _jawab({
                         "success": True,
-                        "message": "No changes provided",
+                        "message": "Tidak ada perubahan.",
                         "data": {"id": str(vendor_credit_id)},
                     })
 
@@ -996,7 +996,7 @@ async def update_vendor_credit(
 
                 return await _jawab({
                     "success": True,
-                    "message": "Vendor credit updated successfully",
+                    "message": "Nota debit diubah.",
                     "data": {"id": str(vendor_credit_id)},
                 })
 
@@ -1006,7 +1006,7 @@ async def update_vendor_credit(
         logger.error(
             f"Error updating vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to update vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal mengubah nota debit.")
 
 
 # =============================================================================
@@ -1041,12 +1041,12 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, respons
                 )
 
                 if not vc:
-                    raise HTTPException(status_code=404, detail="Vendor credit not found")
+                    raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
 
                 if vc["status"] != "draft":
                     raise HTTPException(
                         status_code=400,
-                        detail="Only draft vendor credits can be deleted. Use void for posted.",
+                        detail="Hanya nota debit berstatus Draf yang bisa dihapus. Nota debit terbit dibatalkan, bukan dihapus.",
                     )
 
                 # Delete (cascade will delete items) -- bersyarat: status berubah di sela = 409, bukan menghapus dokumen terbit
@@ -1060,7 +1060,7 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, respons
 
                 resp = {
                     "success": True,
-                    "message": "Vendor credit deleted successfully",
+                    "message": "Nota debit dihapus.",
                     "data": {
                         "id": str(vendor_credit_id),
                         "vendor_credit_number": vc["credit_number"],
@@ -1074,7 +1074,7 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, respons
         logger.error(
             f"Error deleting vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to delete vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal menghapus nota debit.")
 
 
 # =============================================================================
@@ -1299,7 +1299,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
 
                 return await _ib.simpan(conn, ctx, _kp, _sd, "VC_POST", {
                     "success": True,
-                    "message": "Vendor credit posted to accounting",
+                    "message": "Nota debit diposting.",
                     "data": {
                         "id": str(vendor_credit_id),
                         "journal_id": str(journal_id),
@@ -1314,7 +1314,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
         logger.error(
             f"Error posting vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to post vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal memposting nota debit.")
 
 
 # =============================================================================
@@ -1543,7 +1543,7 @@ async def receive_refund(
 
                 return await _ib.simpan(conn, ctx, _kp, _sd, "VC_REFUND", {
                     "success": True,
-                    "message": "Refund received successfully",
+                    "message": "Pengembalian dana dicatat.",
                     "data": {
                         "id": str(vendor_credit_id),
                         "refund_id": str(refund_id),
@@ -1559,7 +1559,7 @@ async def receive_refund(
             f"Error receiving refund for vendor credit {vendor_credit_id}: {e}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Failed to receive refund")
+        raise HTTPException(status_code=500, detail="Gagal mencatat pengembalian dana.")
 
 
 # =============================================================================
@@ -1610,7 +1610,7 @@ async def void_vendor_credit(
                     )
                     return await _ib.simpan(conn, ctx, _kp, _sd, "VC_VOID", {
                         "success": True,
-                        "message": "Draft vendor credit deleted",
+                        "message": "Nota debit draf dihapus.",
                         "data": {"id": str(vendor_credit_id)},
                     }, vendor_credit_id)
 
@@ -1711,7 +1711,7 @@ async def void_vendor_credit(
 
                 return await _ib.simpan(conn, ctx, _kp, _sd, "VC_VOID", {
                     "success": True,
-                    "message": "Vendor credit voided successfully",
+                    "message": "Nota debit dibatalkan.",
                     "data": {"id": str(vendor_credit_id), "status": "void"},
                 }, vendor_credit_id)
 
@@ -1721,7 +1721,7 @@ async def void_vendor_credit(
         logger.error(
             f"Error voiding vendor credit {vendor_credit_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to void vendor credit")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan nota debit.")
 
 
 # =============================================================================

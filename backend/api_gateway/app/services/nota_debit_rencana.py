@@ -113,7 +113,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
                 f"Melebihi sisa tagihan {sisa_t:,.0f}: nota debit {Decimal(str(vc['total_amount'])):,.0f} atas "
                 f"{vc['original_bill_number'] or 'tagihan'}.").replace(",", "."))
     if vc["status"] != "draft":
-        bl.galat("BUKAN_DRAF", 400, f"Cannot post vendor credit with status '{vc['status']}'")
+        bl.galat("BUKAN_DRAF", 400, tg.tak_bisa_status("vc", vc["status"], "diposting", vc["credit_number"]))
     ap = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
     akun_kredit = await resolve_account_id_by_role(conn, tid, AccountRole.COGS_PURCHASE_RETURN)
     potongan = vc["reason"] in ND.ALASAN_POTONGAN
@@ -233,10 +233,10 @@ async def rencana_kembali(conn, ctx, vc_id, body, pratinjau: bool = False) -> di
     bl = Blok(pratinjau)
     vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vc_id, tid)
     if not vc:
-        bl.galat("TIDAK_DITEMUKAN", 404, "Vendor credit not found")
+        bl.galat("TIDAK_DITEMUKAN", 404, "Nota debit tidak ditemukan.")
         return {"blocks": bl, "vc": None}
     if vc["status"] not in ("posted", "partial"):
-        bl.galat("STATUS_TAK_SAH", 400, f"Cannot receive refund for vendor credit with status '{vc['status']}'")
+        bl.galat("STATUS_TAK_SAH", 400, tg.tak_bisa_status("vc", vc["status"], "menerima pengembalian dana", vc["credit_number"]))
     if vc["original_bill_id"] is not None:
         bl.galat("ND_BERTAUT", 400, (
             f"Nota debit ini terkait tagihan {vc['original_bill_number'] or ''}; lepas penerapan dulu sebelum menerima pengembalian dana."))
@@ -253,14 +253,14 @@ async def rencana_kembali(conn, ctx, vc_id, body, pratinjau: bool = False) -> di
     elif body.account_id:
         akun_id = UUID(body.account_id)
     else:
-        bl.galat("AKUN_WAJIB", 400, "Either account_id or bank_account_id is required")
+        bl.galat("AKUN_WAJIB", 400, "Rekening wajib dipilih.")
     akun = await conn.fetchrow(
         """SELECT id, account_code as code, name, account_type, is_cash, is_bank_account FROM chart_of_accounts
            WHERE id = $1 AND tenant_id = $2""", akun_id, tid) if akun_id else None
     if akun and not (akun["account_type"] == "ASSET" and (akun["is_cash"] or akun["is_bank_account"] or body.bank_account_id)):
         bl.galat("AKUN_BUKAN_KAS", 400, "Akun penerima pengembalian dana harus akun kas atau bank.")
     if akun_id and not akun:
-        bl.galat("AKUN_TIDAK_DITEMUKAN", 400, "Payment account not found")
+        bl.galat("AKUN_TIDAK_DITEMUKAN", 400, "Rekening penerima tidak ditemukan.")
     await periode_terbuka(conn, tid, body.refund_date, bl)
     hasil = {"blocks": bl, "vc": vc, "akun_id": akun_id, "sisa": sisa}
     if not pratinjau:
@@ -293,10 +293,10 @@ async def rencana_batal(conn, ctx, vc_id, alasan: Optional[str], pratinjau: bool
         bl.galat("VOID_REASON_REQUIRED", 422, "Alasan pembatalan wajib diisi.")
     vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vc_id, tid)
     if not vc:
-        bl.galat("TIDAK_DITEMUKAN", 404, "Vendor credit not found")
+        bl.galat("TIDAK_DITEMUKAN", 404, "Nota debit tidak ditemukan.")
         return {"blocks": bl, "vc": None}
     if vc["status"] == "void":
-        bl.galat("SUDAH_DIBATALKAN", 400, "Vendor credit already voided")
+        bl.galat("SUDAH_DIBATALKAN", 400, "Nota debit sudah dibatalkan.")
         return {"blocks": bl, "vc": vc, "hapus": False}
     if vc["status"] == "draft":
         return {"blocks": bl, "vc": vc, "hapus": True, "journals": [], "bank_transactions": [], "bills": [], "stock": []}

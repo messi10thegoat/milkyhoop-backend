@@ -9,6 +9,7 @@ otomatis di transaksi void (sejajar SI Unit 6). Pembayaran posted -> blok (peril
 Blok: {"code", "message"}. Semua kueri berpagar tenant."""
 from decimal import Decimal
 from typing import Optional
+from . import teks_galat as tg  # 6a
 
 NOL = Decimal("0")
 
@@ -215,7 +216,7 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
     from .role_resolver import PESAN_NON_PKP_PEMBELIAN, AccountRole, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
     bloks = []
     if bill["status_v2"] != "draft":
-        bloks.append(blok("BUKAN_DRAF", f"Cannot post bill with status '{bill['status_v2']}'. Only draft bills can be posted."))
+        bloks.append(blok("BUKAN_DRAF", tg.tak_bisa_status("bill", bill["status_v2"], "diposting")))
     st = await periode_tertutup(conn, tid, bill["issue_date"])
     if st:
         bloks.append(blok("PERIODE_TERTUTUP", f"Periode akuntansi untuk tanggal faktur sudah {st}."))
@@ -283,12 +284,12 @@ def blok_hapus(bill, ada_ref: Optional[str]) -> list:
     from .status_helpers import derive_doc_status
     ds = derive_doc_status(dict(bill))
     if ds == "void":
-        return [blok("SUDAH_BATAL", "Cannot delete voided bill")]
+        return [blok("SUDAH_BATAL", "Faktur pembelian batal tidak bisa dihapus.")]
     bloks = []
     if ds != "draft":
-        bloks.append(blok("BUKAN_DRAF", f"Cannot delete bill with status '{ds}'. Only draft bills can be deleted. Use void instead."))
+        bloks.append(blok("BUKAN_DRAF", tg.tak_bisa_status("bill", ds, "dihapus") + " Batalkan saja."))
     if (bill["amount_paid"] or 0) > 0:
-        bloks.append(blok("ADA_PEMBAYARAN", "Cannot delete bill with payments. Void the bill instead."))
+        bloks.append(blok("ADA_PEMBAYARAN", "Faktur pembelian yang sudah dibayar tidak bisa dihapus, batalkan saja."))
     if ada_ref:
         bloks.append(blok("ADA_REFERENSI", f"Tidak dapat menghapus faktur draft: masih ada referensi {ada_ref}. Lepas referensi terlebih dahulu."))
     return bloks
@@ -309,7 +310,7 @@ async def ref_hapus(conn, bill_id) -> Optional[str]:
 async def blok_void(conn, tid: str, bill) -> list:
     """Aturan void_bill. Pembayaran posted (jurnal BP efektif) -> blok sebut nomor + nominal; ND aktif diterapkan -> blok (putusan pemilik)."""
     if bill["status"] == "void" or (bill.get("status_v2") or "") == "void":
-        return [blok("SUDAH_BATAL", "Bill is already voided")]
+        return [blok("SUDAH_BATAL", "Faktur pembelian sudah dibatalkan.")]
     bloks = []
     # ATURAN D: penerimaan yang DATANG SESUDAH tagihan (tautan aktif 'tagih_dulu' / 'legacy') -> tagihan tak boleh dibatalkan (void yang
     # LEBIH AKHIR dulu: batalkan penerimaannya). WAJIB sebelum grn_tagih.balik_tautan (yang gagal-keras bila tautan itu masih ada).

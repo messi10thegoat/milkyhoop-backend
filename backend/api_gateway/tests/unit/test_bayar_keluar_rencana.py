@@ -163,8 +163,8 @@ def test_urutan_cek_rencana_bayar_sama_dgn_kode_lama():
     pos = [s.index(u) for u in urut]
     assert pos == sorted(pos)
     r = _tanpa_docstring(inspect.getsource(BKR.rencana_bayar_tagihan))
-    urut2 = ["Bill not found", "Cannot pay voided bill", "SQL_SISA_LAMA", "Payment amount must be positive", "melebihi sisa tagihan",
-             "Bank account not found or inactive", "adalah akun induk", "bank_account_id atau account_id wajib diisi"]
+    urut2 = ["Faktur pembelian tidak ditemukan.", "Faktur pembelian batal tidak bisa dibayar.", "SQL_SISA_LAMA", "Nominal pembayaran harus lebih dari 0.", "melebihi sisa tagihan",
+             "Rekening kas/bank tidak ditemukan atau tidak aktif.", "adalah akun induk", "bank_account_id atau account_id wajib diisi"]
     pos2 = [r.index(u) for u in urut2]
     assert pos2 == sorted(pos2)
     assert re.search(r"remaining == 0 and bill\[[\"']amount_paid[\"']\] == 0", r)  # cadangan cache lama DIPERTAHANKAN (U2a = putusan pemilik)

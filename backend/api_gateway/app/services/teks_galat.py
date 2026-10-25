@@ -67,10 +67,15 @@ _STATUS = {
     # Nota debit (U3c 23 Okt 2026): kata SAMA dengan nota kredit (kembar Penjualan<->Pembelian)
     "vc": {"draft": "Draf", "posted": "Terbit", "partial": "Sebagian terpakai", "applied": "Terpakai", "void": "Batal",
            "partially_refunded": "Sebagian dikembalikan", "refunded": "Dikembalikan"},
+    # 6a Pembelian (25 Okt 2026): label == FE recipes/bill.ts STATUS_TAGIHAN dan billPayment.ts STATUS_BAYAR_KELUAR (kembar si / rp)
+    "bill": {"draft": "Draf", "posted": "Belum lunas", "unpaid": "Belum lunas", "partial": "Sebagian", "paid": "Lunas",
+             "overdue": "Jatuh tempo", "void": "Batal", "voided": "Batal"},
+    "bp": {"draft": "Draf", "posted": "Dibayar", "void": "Batal", "voided": "Batal"},
 }
 
 _DOKUMEN = {"so": "Pesanan", "si": "Faktur", "quote": "Penawaran", "proforma": "Proforma",
-            "rp": "Penerimaan", "dp": "Uang muka", "cn": "Nota kredit", "vc": "Nota debit"}
+            "rp": "Penerimaan", "dp": "Uang muka", "cn": "Nota kredit", "vc": "Nota debit",
+            "bill": "Faktur pembelian", "bp": "Pembayaran"}
 
 _PERIODE = {"CLOSED": "ditutup", "LOCKED": "dikunci"}
 

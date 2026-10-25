@@ -204,14 +204,14 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
         vid = await _uuid_sah(bl, payload.vendor_id, "vendor_id")
         v = await conn.fetchrow("SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tid) if vid else None
         if vid and not v:
-            bl.galat("VENDOR_TIDAK_DITEMUKAN", 400, "Vendor not found")
+            bl.galat("VENDOR_TIDAK_DITEMUKAN", 400, "Vendor tidak ditemukan.")
         vendor_name = v["name"] if v else None
     bank_account_name = payload.bank_account_name
     if not bank_account_name:
         bid = await _uuid_sah(bl, payload.bank_account_id, "bank_account_id")
         b = await conn.fetchrow("SELECT account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2", bid, tid) if bid else None
         if bid and not b:
-            bl.galat("REKENING_TIDAK_DITEMUKAN", 400, "Bank account not found")
+            bl.galat("REKENING_TIDAK_DITEMUKAN", 400, "Rekening kas/bank tidak ditemukan.")
         bank_account_name = b["account_name"] if b else None
 
     vendor_bayar = await bl.coba("VENDOR_TIDAK_SAH", _sinkron(normalisasi_pihak, payload.vendor_id, "Vendor pembayaran"))
@@ -219,7 +219,7 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
     for a in payload.allocations:
         t = await conn.fetchrow("SELECT invoice_number, vendor_id FROM bills WHERE id = $1::uuid AND tenant_id = $2", a.bill_id, tid)
         if not t:
-            bl.galat("TAGIHAN_TIDAK_DITEMUKAN", 400, f"Bill {a.bill_id} not found")
+            bl.galat("TAGIHAN_TIDAK_DITEMUKAN", 400, "Faktur pembelian tidak ditemukan.")
             continue
         nomor_tagihan[str(a.bill_id)] = t["invoice_number"]
         if vendor_bayar is not None:
@@ -229,7 +229,7 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
     allocated_amount = sum(a.amount_applied for a in payload.allocations)
     unapplied_amount = payload.total_amount + payload.discount_amount - allocated_amount
     if allocated_amount > payload.total_amount + payload.discount_amount:
-        bl.galat("ALOKASI_MELEBIHI_PEMBAYARAN", 400, "Allocations exceed payment amount plus discount")
+        bl.galat("ALOKASI_MELEBIHI_PEMBAYARAN", 400, "Alokasi melebihi nominal pembayaran ditambah potongan.")
 
     alokasi = []
     for a in payload.allocations:
@@ -237,11 +237,11 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
                                 + ("" if pratinjau else " FOR UPDATE"), a.bill_id, tid)
         if not t:
             if not pratinjau:
-                bl.galat("TAGIHAN_TIDAK_DITEMUKAN", 400, f"Bill {a.bill_id} not found")
+                bl.galat("TAGIHAN_TIDAK_DITEMUKAN", 400, "Faktur pembelian tidak ditemukan.")
             continue
         sebelum = await sisa_tagihan(conn, tid, a.bill_id)
         if a.amount_applied > sebelum:
-            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Amount exceeds remaining")
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Nominal melebihi sisa faktur pembelian.")
         alokasi.append({"bill_id": a.bill_id, "remaining_before": sebelum, "amount_applied": a.amount_applied,
                         "remaining_after": sebelum - a.amount_applied})
 
@@ -354,10 +354,10 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
                     """ + ("" if pratinjau else "FOR UPDATE"), bill_id, tid)
     out = {"blocks": bloks, "bill": bill}
     if not bill:
-        blok("TAGIHAN_TIDAK_DITEMUKAN", "Bill not found")
+        blok("TAGIHAN_TIDAK_DITEMUKAN", "Faktur pembelian tidak ditemukan.")
         return out
     if bill["status"] in ("void",) or (bill.get("status_v2") or "") == "void":
-        blok("TAGIHAN_DIBATALKAN", "Cannot pay voided bill")
+        blok("TAGIHAN_DIBATALKAN", "Faktur pembelian batal tidak bisa dibayar.")
         if not pratinjau:
             return out
     if bill["status_v2"] == "draft" or (bill["status_v2"] is None and bill["status"] == "draft"):
@@ -372,7 +372,7 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
         remaining = int(bill["amount"] - bill["amount_paid"])
     payment_amount = Decimal(str(request["amount"]))
     if payment_amount <= 0:
-        blok("NOMINAL_TIDAK_POSITIF", "Payment amount must be positive")
+        blok("NOMINAL_TIDAK_POSITIF", "Nominal pembayaran harus lebih dari 0.")
         if not pratinjau:
             return out
     if payment_amount > remaining:
@@ -403,7 +403,7 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
                         WHERE ba.id = $1 AND ba.tenant_id = $2 AND ba.is_active = true
                         """, bank_account_id, tid)
         if not bank_account:
-            blok("REKENING_TIDAK_DITEMUKAN", "Bank account not found or inactive")
+            blok("REKENING_TIDAK_DITEMUKAN", "Rekening kas/bank tidak ditemukan atau tidak aktif.")
             if not pratinjau:
                 return out
         elif bank_account["is_header"]:
@@ -521,19 +521,19 @@ async def rencana_batal_bayar(conn, tid: str, payment_id, pratinjau: bool = Fals
         """SELECT bp.*, ba.coa_id AS bank_coa_id FROM bill_payments_v2 bp LEFT JOIN bank_accounts ba ON ba.id = bp.bank_account_id
            WHERE bp.id = $1::uuid AND bp.tenant_id = $2""" + ("" if pratinjau else " FOR UPDATE OF bp"), _uuid(payment_id), tid)
     if not p:
-        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        bl.galat("TIDAK_DITEMUKAN", 404, "Pembayaran tidak ditemukan.")
         return h
     h["payment"] = p
     if p["status"] == "voided":
         h["ulang"] = True
         if pratinjau:
-            bl.galat("SUDAH_DIBATALKAN", 400, "Payment already voided")
+            bl.galat("SUDAH_DIBATALKAN", 400, "Pembayaran sudah dibatalkan.")
         return h
     if p["status"] == "draft":
-        bl.galat("STATUS_DRAF", 400, "Cannot void draft payment. Delete it instead.")
+        bl.galat("STATUS_DRAF", 400, "Pembayaran draf tidak dibatalkan, hapus saja.")
         return h
     if p["status"] != "posted":
-        bl.galat("STATUS_TIDAK_SAH", 400, "Only posted payments can be voided")
+        bl.galat("STATUS_TIDAK_SAH", 400, "Hanya pembayaran berstatus Dibayar yang bisa dibatalkan.")
         return h
     await periode_terbuka(conn, tid, p["payment_date"], bl)
     hari_ini = await tanggal_dokumen(conn, tid)
@@ -545,7 +545,7 @@ async def rencana_batal_bayar(conn, tid: str, payment_id, pratinjau: bool = Fals
                                                p["journal_id"], tid)
         h["baris_asli"] = await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", p["journal_id"])
         if not h["baris_asli"]:
-            bl.galat("BARIS_JURNAL_HILANG", 500, "Original journal lines not found")
+            bl.galat("BARIS_JURNAL_HILANG", 500, "Baris jurnal asal tidak ditemukan.")
         if p["bank_account_id"]:
             # GP3a: cermin dicari lewat JURNAL pembayaran + tenant (kedua jenis: BP- 'bill' dan PAY- 'bill_payment'); maks 1 per jurnal
             h["cermin_asli"] = await conn.fetchrow(
@@ -567,11 +567,11 @@ async def rencana_posting_draf_bayar(conn, tid: str, payment_id, pratinjau: bool
     h = {"blocks": bl.daftar, "payment": None, "alokasi": [], "sisa": {}}
     p = await conn.fetchrow("SELECT * FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2", _uuid(payment_id), tid)
     if not p:
-        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        bl.galat("TIDAK_DITEMUKAN", 404, "Pembayaran tidak ditemukan.")
         return h
     h["payment"] = p
     if p["status"] != "draft":
-        bl.galat("STATUS_BUKAN_DRAF", 400, "Only draft payments can be posted")
+        bl.galat("STATUS_BUKAN_DRAF", 400, "Hanya pembayaran berstatus Draf yang bisa diposting.")
         return h
     await periode_terbuka(conn, tid, p["payment_date"], bl)
     h["alokasi"] = await _alokasi_dan_sisa(conn, tid, payment_id)
@@ -584,7 +584,7 @@ async def rencana_posting_draf_bayar(conn, tid: str, payment_id, pratinjau: bool
     for bid, jml in per_tagihan.items():
         h["sisa"][bid] = await sisa_tagihan(conn, tid, bid)
         if jml > h["sisa"][bid]:
-            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Amount exceeds remaining")
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Nominal melebihi sisa faktur pembelian.")
     return h
 
 
@@ -596,11 +596,11 @@ async def rencana_hapus_draf_bayar(conn, tid: str, payment_id, pratinjau: bool =
     p = await conn.fetchrow("SELECT id, payment_number, status, total_amount FROM bill_payments_v2 WHERE id = $1::uuid AND tenant_id = $2"
                             + ("" if pratinjau else " FOR UPDATE"), _uuid(payment_id), tid)
     if not p:
-        bl.galat("TIDAK_DITEMUKAN", 404, "Payment not found")
+        bl.galat("TIDAK_DITEMUKAN", 404, "Pembayaran tidak ditemukan.")
         return h
     h["payment"] = p
     if p["status"] != "draft":
-        bl.galat("STATUS_BUKAN_DRAF", 400, "Only draft payments can be deleted")
+        bl.galat("STATUS_BUKAN_DRAF", 400, "Hanya pembayaran berstatus Draf yang bisa dihapus.")
         return h
     h["alokasi"] = await _alokasi_dan_sisa(conn, tid, payment_id)
     return h

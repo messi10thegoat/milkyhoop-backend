@@ -23,7 +23,8 @@ from .jatuh_tempo import hari_terlambat
 from .pihak_helpers import segarkan_cache_hutang_tagihan
 from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from decimal import Decimal, ROUND_HALF_UP
-from .sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP
+from .sales_doc_calc import q2 as _q2
+from . import teks_galat as tg  # 6a  # item 7: 0.01 HALF_UP
 from .tax_factor import resolve_dpp_factor
 
 _Dec = Decimal
@@ -387,6 +388,9 @@ def _uang(v):
     ber-sen -> float ("999.9")."""
     d = _q2(Decimal(str(v if v is not None else 0)))
     return int(d) if d == d.to_integral_value() else float(d)
+
+
+PESAN_TAGIHAN_TAK_ADA = "Faktur pembelian tidak ditemukan."  # 6a: SATU teks; routers/bills memakainya untuk memilih 404
 
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
@@ -999,7 +1003,7 @@ class BillsService:
                 if not vendor_name:
                     return {
                         "success": False,
-                        "message": "Vendor name is required",
+                        "message": "Vendor wajib diisi.",
                         "data": None,
                     }
 
@@ -1176,7 +1180,7 @@ class BillsService:
 
                 return {
                     "success": True,
-                    "message": "Bill created successfully",
+                    "message": "Faktur pembelian dibuat.",
                     "data": {
                         "id": str(bill_id),
                         "invoice_number": invoice_number,
@@ -1211,19 +1215,19 @@ class BillsService:
             )
 
             if not bill:
-                return {"success": False, "message": "Bill not found", "data": None}
+                return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
 
             if bill["amount_paid"] > 0:
                 return {
                     "success": False,
-                    "message": "Cannot update bill with payments",
+                    "message": "Faktur pembelian yang sudah dibayar tidak bisa diubah.",
                     "data": None,
                 }
 
             if bill["status"] == "void":
                 return {
                     "success": False,
-                    "message": "Cannot update voided bill",
+                    "message": "Faktur pembelian batal tidak bisa diubah.",
                     "data": None,
                 }
 
@@ -1231,7 +1235,7 @@ class BillsService:
             if bill.get("status_v2") and bill["status_v2"] != "draft":
                 return {
                     "success": False,
-                    "message": f"Cannot edit bill with status '{bill['status_v2']}'. Only draft bills can be edited.",
+                    "message": tg.tak_bisa_status("bill", bill["status_v2"], "diubah", bill.get("invoice_number")),
                     "data": None,
                 }
 
@@ -1317,7 +1321,7 @@ class BillsService:
 
                 return {
                     "success": True,
-                    "message": "Bill updated successfully",
+                    "message": "Faktur pembelian diubah.",
                     "data": {
                         "id": str(bill_id),
                         "updated_at": datetime.now().isoformat(),
@@ -1362,7 +1366,7 @@ class BillsService:
                 )
 
                 if not bill:
-                    return {"success": False, "message": "Bill not found"}
+                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA}
 
                 # Blok (penentu SATU dgn POST /bills/{id}/delete/preview; tagihan_aksi.blok_hapus, teks lama): pertama -> pesan.
                 _bloks = TA.blok_hapus(bill, await TA.ref_hapus(conn, bill_id))
@@ -1392,7 +1396,7 @@ class BillsService:
                     if _po_ids:
                         await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
                     _hasil = await _idem_simpan(conn, idem, _kp, _sidik, "BILL_DELETE",
-                                                {"success": True, "message": "Bill deleted successfully"}, bill_id)
+                                                {"success": True, "message": "Faktur pembelian dihapus."}, bill_id)
                 except asyncpg.ForeignKeyViolationError as fk_err:
                     return {
                         "success": False,
@@ -1676,7 +1680,7 @@ class BillsService:
 
                 _hasil = {
                     "success": True,
-                    "message": "Payment recorded successfully",
+                    "message": "Pembayaran dicatat.",
                     "created_payment_id": str(payment_id),
                     "data": {
                         "id": str(payment_id),
@@ -1720,7 +1724,7 @@ class BillsService:
             )
 
             if not bill:
-                return {"success": False, "message": "Bill not found", "data": None}
+                return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
 
             if bill["status"] == "draft":
                 return {"success": False, "message": "Tagihan draf belum bisa dibayar. Posting dulu.", "data": None}
@@ -1728,14 +1732,14 @@ class BillsService:
             if bill["status"] == "void":
                 return {
                     "success": False,
-                    "message": "Cannot pay voided bill",
+                    "message": "Faktur pembelian batal tidak bisa dibayar.",
                     "data": None,
                 }
 
             if bill["status"] == "paid":
                 return {
                     "success": False,
-                    "message": "Bill is already paid",
+                    "message": "Faktur pembelian sudah lunas.",
                     "data": None,
                 }
 
@@ -1799,11 +1803,11 @@ class BillsService:
                     tenant_id,
                 )
                 if not bill_exists:
-                    return {"success": False, "message": "Bill not found", "data": None}
+                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
                 if bill_exists["status"] == "void":
                     return {
                         "success": False,
-                        "message": "Bill is already voided",
+                        "message": "Faktur pembelian sudah dibatalkan.",
                         "data": None,
                     }
 
@@ -1828,7 +1832,7 @@ class BillsService:
                 )
 
                 if not bill:
-                    return {"success": False, "message": "Bill not found", "data": None}
+                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
 
                 # Blok (penentu SATU dgn POST /bills/{id}/void/preview; tagihan_aksi.blok_void): sudah batal; pembayaran posted (sebut nomor +
                 # nominal, sejajar SI VOID_HAS_PAYMENTS); nota debit aktif diterapkan (putusan pemilik 22 Okt, sejajar VOID_HAS_CREDIT_NOTES).
@@ -2081,7 +2085,7 @@ class BillsService:
 
                 return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_VOID", {
                     "success": True,
-                    "message": "Bill voided successfully",
+                    "message": "Faktur pembelian dibatalkan.",
                     "data": {
                         "id": str(bill_id),
                         "status": "void",
@@ -2502,7 +2506,7 @@ class BillsService:
                     else:
                         return {
                             "success": False,
-                            "message": f"Vendor with ID {vendor_id} not found",
+                            "message": "Vendor tidak ditemukan.",
                             "data": None,
                         }
                 elif vendor_name:
@@ -2532,7 +2536,7 @@ class BillsService:
                 else:
                     return {
                         "success": False,
-                        "message": "Either vendor_id or vendor_name is required",
+                        "message": "Vendor wajib diisi.",
                         "data": None,
                     }
 
@@ -2561,7 +2565,7 @@ class BillsService:
                 if not due_date:
                     return {
                         "success": False,
-                        "message": "Tanggal jatuh tempo (due_date) wajib diisi",
+                        "message": "Tanggal jatuh tempo wajib diisi.",
                         "data": None,
                     }
 
@@ -3241,7 +3245,7 @@ class BillsService:
 
                 _hasil = {
                     "success": True,
-                    "message": f"Bill created as {status}",
+                    "message": "Faktur pembelian dibuat." if status == "draft" else "Faktur pembelian diposting.",
                     "data": {
                         "id": str(bill_id),
                         "invoice_number": invoice_number,
@@ -3351,7 +3355,7 @@ class BillsService:
                 )
 
                 if not bill:
-                    return {"success": False, "message": "Bill not found", "data": None}
+                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
 
                 # Blok (penentu SATU dgn POST /bills/{id}/post/preview; tagihan_aksi.blok_posting): pertama -> pesan.
                 _bloks, _akun = await TA.blok_posting(conn, tenant_id, bill)
@@ -3716,7 +3720,7 @@ class BillsService:
 
                 return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_POST", {
                     "success": True,
-                    "message": "Bill posted successfully",
+                    "message": "Faktur pembelian diposting.",
                     "data": {
                         "id": str(bill_id),
                         "status": "posted",
@@ -3752,7 +3756,7 @@ class BillsService:
                 )
 
                 if not bill:
-                    return {"success": False, "message": "Bill not found", "data": None}
+                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA, "data": None}
 
                 # Blok (penentu SATU dgn POST /bills/{id}/edit/preview; tagihan_rencana.blok_ubah): pertama -> pesan.
                 _bloks = await TR.blok_ubah(conn, tenant_id, bill, request)
@@ -3939,7 +3943,7 @@ class BillsService:
 
                 return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_UPDATE", {
                     "success": True,
-                    "message": "Bill updated successfully",
+                    "message": "Faktur pembelian diubah.",
                     "data": {"id": str(bill_id), "calculation": calc},
                 }, bill_id)
 

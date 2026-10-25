@@ -36,7 +36,7 @@ def test_posting_draf_cek_ulang_sisa_di_bawah_kunci():
     i_kunci = s.index("FOR UPDATE")
     i_cek = s.index("await sisa_tagihan(conn, tid, bid)")
     assert i_kunci < i_cek
-    assert 'bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Amount exceeds remaining")' in s  # pesan == buat-posted
+    assert 'bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Nominal melebihi sisa faktur pembelian.")' in s  # pesan == buat-posted
 
 
 class _K:

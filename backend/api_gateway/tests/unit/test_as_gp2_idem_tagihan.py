@@ -13,8 +13,8 @@ APP = Path(__file__).resolve().parents[2] / "app"
 SVC = (APP / "services/bills_service.py").read_text()
 RTR = (APP / "routers/bills.py").read_text()
 AKSI = {"post_bill": "BILL_POST", "void_bill": "BILL_VOID", "delete_bill": "BILL_DELETE", "update_bill_v2": "BILL_UPDATE"}
-SUKSES = {"post_bill": "Bill posted successfully", "void_bill": "Bill voided successfully", "delete_bill": "Bill deleted successfully",
-          "update_bill_v2": "Bill updated successfully"}
+SUKSES = {"post_bill": "Faktur pembelian diposting.", "void_bill": "Faktur pembelian dibatalkan.", "delete_bill": "Faktur pembelian dihapus.",
+          "update_bill_v2": "Faktur pembelian diubah."}
 
 
 def _metode(src, kelas_atau_none, nama):
@@ -67,7 +67,7 @@ def test_void_pracek_sesudah_idem_di_dalam_transaksi():
     f = _svc("void_bill")
     fn = _fn_ast("void_bill")
     idem = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_idem_mulai"]
-    pracek = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and n.value == "Bill is already voided"]
+    pracek = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and n.value == "Faktur pembelian sudah dibatalkan."]
     adv = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and "pg_advisory_xact_lock" in n.value]
     tx = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "transaction"]
     assert min(tx) < idem[0] < min(pracek) < min(adv), (tx, idem, pracek, adv)

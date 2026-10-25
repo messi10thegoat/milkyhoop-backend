@@ -690,7 +690,7 @@ async def list_bill_payments(
         raise
     except Exception as e:
         logger.error(f"Error listing bill payments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list bill payments")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar pembayaran.")
 
 
 @router.get("/summary", response_model=BillPaymentSummaryResponse)
@@ -781,7 +781,7 @@ async def get_bill_payments_summary(request: Request, search: Optional[str] = Qu
         raise
     except Exception as e:
         logger.error(f"Error getting summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 @router.get("/{payment_id}", response_model=BillPaymentDetailResponse)
@@ -820,7 +820,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                 )
 
                 if not journal_row:
-                    raise HTTPException(status_code=404, detail="Payment not found")
+                    raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
 
                 # Try reverse lookup via source_id
                 if journal_row["source_id"]:
@@ -1049,7 +1049,7 @@ async def get_bill_payment(request: Request, payment_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get payment")
+        raise HTTPException(status_code=500, detail="Gagal memuat pembayaran.")
 
 
 @router.post("", response_model=BillPaymentResponse, status_code=201)
@@ -1235,8 +1235,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     return {
                         "success": True,
                         "message": (
-                            f"Payment {payment_number} "
-                            f"{'created as draft' if payload.save_as_draft else 'posted'}"
+                            f"Pembayaran {payment_number} "
+                            f"{'disimpan sebagai draf.' if payload.save_as_draft else 'dibayar.'}"
                         ),
                         "data": {
                             "id": str(payment_id),
@@ -1255,7 +1255,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
         raise
     except Exception as e:
         logger.error(f"Error creating payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create payment")
+        raise HTTPException(status_code=500, detail="Gagal membuat pembayaran.")
 
 
 @router.delete("/{payment_id}", response_model=BillPaymentResponse)
@@ -1286,7 +1286,7 @@ async def delete_bill_payment(request: Request, payment_id: str, response: Respo
 
                 resp = BillPaymentResponse(
                     success=True,
-                    message=f"Payment {payment['payment_number']} deleted",
+                    message=f"Pembayaran {payment['payment_number']} dihapus.",
                     data={"id": payment_id},
                 )
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_DELETE", resp, payment_id)
@@ -1294,7 +1294,7 @@ async def delete_bill_payment(request: Request, payment_id: str, response: Respo
         raise
     except Exception as e:
         logger.error(f"Error deleting payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete payment")
+        raise HTTPException(status_code=500, detail="Gagal menghapus pembayaran.")
 
 
 @router.post("/{payment_id}/post", response_model=BillPaymentResponse)
@@ -1377,7 +1377,7 @@ async def post_bill_payment(request: Request, payment_id: str, response: Respons
 
                 resp = BillPaymentResponse(
                     success=True,
-                    message=f"Payment {payment['payment_number']} posted",
+                    message=f"Pembayaran {payment['payment_number']} dibayar.",
                     data={
                         "id": payment_id,
                         "status": "posted",
@@ -1390,7 +1390,7 @@ async def post_bill_payment(request: Request, payment_id: str, response: Respons
         raise
     except Exception as e:
         logger.error(f"Error posting payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post payment")
+        raise HTTPException(status_code=500, detail="Gagal memposting pembayaran.")
 
 
 @router.post("/{payment_id}/void", response_model=BillPaymentResponse)
@@ -1437,7 +1437,7 @@ async def void_bill_payment(
                 if r["ulang"]:
                     resp = BillPaymentResponse(
                         success=True,
-                        message="Payment already voided",
+                        message="Pembayaran sudah dibatalkan.",
                         data={"id": payment_id, "status": "voided"},
                     )
                     return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_VOID", resp, payment_id)
@@ -1604,7 +1604,7 @@ async def void_bill_payment(
 
                 resp = BillPaymentResponse(
                     success=True,
-                    message=f"Payment {payment['payment_number']} voided",
+                    message=f"Pembayaran {payment['payment_number']} dibatalkan.",
                     data={
                         "id": payment_id,
                         "status": "voided",
@@ -1616,7 +1616,7 @@ async def void_bill_payment(
         raise
     except Exception as e:
         logger.error(f"Error voiding payment: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void payment")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan pembayaran.")
 
 
 @router.get("/vendors/{vendor_id}/open-bills", response_model=OpenBillsResponse)
@@ -1680,7 +1680,7 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting open bills: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get open bills")
+        raise HTTPException(status_code=500, detail="Gagal memuat faktur pembelian terbuka.")
 
 
 # =============================================================================
@@ -1713,7 +1713,7 @@ async def get_payment_activities(
                 ctx["tenant_id"],
             )
             if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found")
+                raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
 
             offset = (page - 1) * limit
 
@@ -1799,7 +1799,7 @@ async def get_payment_activities(
         raise
     except Exception as e:
         logger.error(f"Error getting payment activities: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get activities")
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat.")
 
 
 @router.get("/{payment_id}/journal-entries")
@@ -1835,7 +1835,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                     ctx["tenant_id"],
                 )
                 if not je_exists:
-                    raise HTTPException(status_code=404, detail="Payment not found")
+                    raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
                 # Use payment_id directly as journal_id
                 journal_ids = [je_exists]
             else:
@@ -1937,7 +1937,7 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting payment journal entries: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get journal entries")
+        raise HTTPException(status_code=500, detail="Gagal memuat jurnal.")
 
 
 @router.get("/{payment_id}/transactions")
@@ -1965,7 +1965,7 @@ async def get_payment_transactions(
                 ctx["tenant_id"],
             )
             if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found")
+                raise HTTPException(status_code=404, detail="Pembayaran tidak ditemukan.")
 
             offset = (page - 1) * limit
 
@@ -2022,7 +2022,7 @@ async def get_payment_transactions(
         raise
     except Exception as e:
         logger.error(f"Error getting payment transactions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get transactions")
+        raise HTTPException(status_code=500, detail="Gagal memuat transaksi.")
 
 
 
@@ -2198,6 +2198,6 @@ async def download_payment_attachment(
                 _BP_ATT_SQL_UNDUH, attachment_id, payment_id, tenant_id
             )
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())

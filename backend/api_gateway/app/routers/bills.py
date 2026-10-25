@@ -51,7 +51,7 @@ from ..schemas.bills import (
 )
 
 # Import calculator for preview endpoint
-from ..services.bills_service import BillCalculator
+from ..services.bills_service import PESAN_TAGIHAN_TAK_ADA, BillCalculator
 from ..services.tax_factor import resolve_dpp_factor
 from ..services.role_resolver import (  # noqa: E402
     AccountRole,
@@ -629,7 +629,7 @@ async def list_bills(
         raise
     except Exception as e:
         logger.error(f"Error listing bills: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list bills")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar faktur pembelian.")
 
 
 # =============================================================================
@@ -661,7 +661,7 @@ async def get_bills_summary(
         raise
     except Exception as e:
         logger.error(f"Error getting summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan.")
 
 
 # =============================================================================
@@ -707,7 +707,7 @@ async def get_outstanding_summary(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting outstanding summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get outstanding summary")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan hutang.")
 
 
 # =============================================================================
@@ -741,7 +741,7 @@ async def get_filter_presets(request: Request):
         raise
     except Exception as e:
         logger.error(f"Error getting presets: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get presets")
+        raise HTTPException(status_code=500, detail="Gagal memuat filter tersimpan.")
 
 
 # =============================================================================
@@ -773,7 +773,7 @@ async def apply_preset(
 
         if not preset:
             raise HTTPException(
-                status_code=404, detail=f"Preset '{preset_id}' not found"
+                status_code=404, detail=f"Filter tersimpan {preset_id} tidak ditemukan."
             )
 
         config = preset["config"]
@@ -805,7 +805,7 @@ async def apply_preset(
         raise
     except Exception as e:
         logger.error(f"Error applying preset {preset_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to apply preset")
+        raise HTTPException(status_code=500, detail="Gagal menerapkan filter tersimpan.")
 
 
 # =============================================================================
@@ -834,7 +834,7 @@ async def get_bill_detail(request: Request, bill_id: UUID):
         bill = await service.get_bill(tenant_id=ctx["tenant_id"], bill_id=bill_id)
 
         if not bill:
-            raise HTTPException(status_code=404, detail="Bill not found")
+            raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
         return {"success": True, "data": bill}
 
@@ -842,7 +842,7 @@ async def get_bill_detail(request: Request, bill_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get bill")
+        raise HTTPException(status_code=500, detail="Gagal memuat faktur pembelian.")
 
 
 # =============================================================================
@@ -990,7 +990,7 @@ async def get_bill_journals(request: Request, bill_id: UUID):
             )
 
             if not bill:
-                raise HTTPException(status_code=404, detail="Bill not found")
+                raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
             # Get journals linked to this bill (AP invoice + payment journals)
             journals_rows = await conn.fetch(
@@ -1072,7 +1072,7 @@ async def get_bill_journals(request: Request, bill_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting journals for bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get bill journals")
+        raise HTTPException(status_code=500, detail="Gagal memuat jurnal faktur pembelian.")
 
 
 # =============================================================================
@@ -1106,7 +1106,7 @@ async def get_bill_pdf(
         bill = await service.get_bill_v2(tenant_id=ctx["tenant_id"], bill_id=bill_id)
 
         if not bill:
-            raise HTTPException(status_code=404, detail="Bill not found")
+            raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
         # Fetch tenant info for PDF header
         pool = await get_pool()
@@ -1173,7 +1173,7 @@ async def get_bill_pdf(
         raise
     except Exception as e:
         logger.error(f"Error generating PDF for bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate PDF")
+        raise HTTPException(status_code=500, detail="Gagal membuat PDF.")
 
 
 # =============================================================================
@@ -1201,7 +1201,7 @@ async def create_bill(request: Request, body: CreateBillRequest):
 
         if not body.vendor_name and not body.vendor_id:
             raise HTTPException(
-                status_code=400, detail="Either vendor_name or vendor_id is required"
+                status_code=400, detail="Vendor wajib diisi."
             )
 
         service = await get_bills_service()
@@ -1221,7 +1221,7 @@ async def create_bill(request: Request, body: CreateBillRequest):
         raise
     except Exception as e:
         logger.error(f"Error creating bill: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to create bill")
+        raise HTTPException(status_code=500, detail="Gagal membuat faktur pembelian.")
 
 
 # =============================================================================
@@ -1259,7 +1259,7 @@ async def update_bill(request: Request, bill_id: UUID, body: UpdateBillRequest):
         raise
     except Exception as e:
         logger.error(f"Error updating bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update bill")
+        raise HTTPException(status_code=500, detail="Gagal mengubah faktur pembelian.")
 
 
 # =============================================================================
@@ -1285,7 +1285,7 @@ async def delete_bill(request: Request, bill_id: UUID, response: Response = None
         )
 
         if not result["success"]:
-            status_code = 404 if result["message"] == "Bill not found" else 400
+            status_code = 404 if result["message"] == PESAN_TAGIHAN_TAK_ADA else 400  # 6a: konstanta bersama (dulu teks Inggris dicocokkan)
             raise HTTPException(status_code=status_code, detail=result["message"])
         return result
 
@@ -1293,7 +1293,7 @@ async def delete_bill(request: Request, bill_id: UUID, response: Response = None
         raise
     except Exception as e:
         logger.error(f"Error deleting bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to delete bill")
+        raise HTTPException(status_code=500, detail="Gagal menghapus faktur pembelian.")
 
 
 # =============================================================================
@@ -1358,7 +1358,7 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     if r["after"] is None:
-        raise HTTPException(status_code=404, detail="Bill not found")
+        raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
     return {"success": True, "data": {
         "bill_id": str(bill_id), "action": "pay", "can_proceed": not r["blocks"],
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
@@ -1402,7 +1402,7 @@ async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest)
         raise
     except Exception as e:
         logger.error(f"Error marking bill {bill_id} as paid: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to mark as paid")
+        raise HTTPException(status_code=500, detail="Gagal menandai lunas.")
 
 
 # =============================================================================
@@ -1445,7 +1445,7 @@ async def void_bill(request: Request, bill_id: UUID, body: VoidBillRequest, resp
         raise
     except Exception as e:
         logger.error(f"Error voiding bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to void bill")
+        raise HTTPException(status_code=500, detail="Gagal membatalkan faktur pembelian.")
 
 
 # =============================================================================
@@ -1468,7 +1468,7 @@ async def upload_attachment(
         # Validate file size (5MB max)
         content = await file.read()
         if len(content) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File size exceeds 5MB limit")
+            raise HTTPException(status_code=400, detail="Ukuran berkas melebihi batas 5 MB.")
         await file.seek(0)
 
         # L2: satu sumber aturan lampiran (dulu 4 tipe di sini + 6 di storage).
@@ -1490,7 +1490,7 @@ async def upload_attachment(
                 tenant_id,
             )
             if not bill:
-                raise HTTPException(status_code=404, detail="Bill not found")
+                raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
             # Upload to MinIO
             # storage_service already imported at top level
@@ -1537,7 +1537,7 @@ async def upload_attachment(
         logger.error(
             f"Error uploading attachment for bill {bill_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Failed to upload attachment")
+        raise HTTPException(status_code=500, detail="Gagal mengunggah lampiran.")
 
 
 # =============================================================================
@@ -1562,7 +1562,7 @@ async def list_bill_attachments(
             tenant_id,
         )
         if not bill:
-            raise HTTPException(status_code=404, detail="Bill not found")
+            raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
         rows = await conn.fetch(
             """SELECT sa.id, sa.filename, sa.file_path, sa.file_size, sa.mime_type, sa.uploaded_at, sa.uploaded_by, COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''), NULLIF(trim(u.name), ''), u.email) AS uploaded_by_name FROM bill_attachments sa LEFT JOIN "User" u ON u.id = sa.uploaded_by::text LEFT JOIN user_profiles up ON up.user_id = u.id WHERE sa.bill_id = $1 ORDER BY sa.uploaded_at DESC""",
@@ -1663,7 +1663,7 @@ async def delete_bill_attachment(
             tenant_id,
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Attachment not found")
+            raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
         # Delete from MinIO
         # storage_service already imported at top level
@@ -1676,7 +1676,7 @@ async def delete_bill_attachment(
         # Delete from DB
         await conn.execute("DELETE FROM bill_attachments WHERE id = $1", attachment_id)
 
-        return {"success": True, "message": "Attachment deleted"}
+        return {"success": True, "message": "Lampiran dihapus."}
 
 
 # =============================================================================
@@ -1712,7 +1712,7 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: 
 
         if not body.vendor_name and not body.vendor_id:
             raise HTTPException(
-                status_code=400, detail="Either vendor_name or vendor_id is required"
+                status_code=400, detail="Vendor wajib diisi."
             )
 
         # Law 14: X-Idempotency-Key (pola idem_buat; kunci satu per buka form). Format salah -> 400; kunci sama + badan beda -> 409.
@@ -1797,7 +1797,7 @@ async def post_bill(request: Request, bill_id: UUID, response: Response = None):
         raise
     except Exception as e:
         logger.error(f"Error posting bill {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to post bill")
+        raise HTTPException(status_code=500, detail="Gagal memposting faktur pembelian.")
 
 
 @router.patch("/v2/{bill_id}", response_model=CreateBillResponseV2)
@@ -1836,7 +1836,7 @@ async def update_bill_v2(request: Request, bill_id: UUID, body: UpdateBillReques
         raise
     except Exception as e:
         logger.error(f"Error updating bill v2 {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update bill")
+        raise HTTPException(status_code=500, detail="Gagal mengubah faktur pembelian.")
 
 
 @router.get("/v2/{bill_id}", response_model=BillDetailResponse)
@@ -1856,7 +1856,7 @@ async def get_bill_v2(request: Request, bill_id: UUID):
         bill = await service.get_bill_v2(tenant_id=ctx["tenant_id"], bill_id=bill_id)
 
         if not bill:
-            raise HTTPException(status_code=404, detail="Bill not found")
+            raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
         return {"success": True, "data": bill}
 
@@ -1864,7 +1864,7 @@ async def get_bill_v2(request: Request, bill_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting bill v2 {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get bill")
+        raise HTTPException(status_code=500, detail="Gagal memuat faktur pembelian.")
 
 
 @router.post("/calculate", response_model=CalculateBillResponse)
@@ -1968,7 +1968,7 @@ async def get_bill_activity(request: Request, bill_id: UUID):
             )
 
             if not bill:
-                raise HTTPException(status_code=404, detail="Bill not found")
+                raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
             activities = []
 
@@ -2088,7 +2088,7 @@ async def get_bill_activity(request: Request, bill_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting bill activity for {bill_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get bill activity")
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat faktur pembelian.")
 
 
 @router.get("/{bill_id}/attachments/{attachment_id}/download")
@@ -2120,6 +2120,6 @@ async def download_bill_attachment(
                     _BILL_ATT_SQL_UNDUH_DOKUMEN, attachment_id, bill_id, tenant_id
                 )
     if not row:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())

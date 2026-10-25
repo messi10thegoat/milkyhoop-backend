@@ -16,6 +16,7 @@ Aturan hitung (TIDAK diubah; diangkat apa adanya dari create/update v2 supaya /c
 Blok: {"code", "message"}; pesan = teks galat create/update v2 yang sudah ada (FE/chat mencocokkan teks)."""
 from decimal import Decimal
 from typing import Optional
+from . import teks_galat as tg  # 6a
 
 NOL = Decimal("0")
 
@@ -30,13 +31,13 @@ async def blok_buat(conn, tenant_id: str, req: dict) -> list:
     vid = req.get("vendor_id")
     if vid:
         if not await conn.fetchval("SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tenant_id):
-            bloks.append(blok("VENDOR_TIDAK_ADA", f"Vendor with ID {vid} not found"))
+            bloks.append(blok("VENDOR_TIDAK_ADA", "Vendor tidak ditemukan."))
     elif not req.get("vendor_name"):
-        bloks.append(blok("VENDOR_WAJIB", "Either vendor_id or vendor_name is required"))
+        bloks.append(blok("VENDOR_WAJIB", "Vendor wajib diisi."))
     if not req.get("items"):
         bloks.append(blok("ITEM_KOSONG", "Minimal satu item harus diisi"))
     if not req.get("due_date"):
-        bloks.append(blok("JATUH_TEMPO_WAJIB", "Tanggal jatuh tempo (due_date) wajib diisi"))
+        bloks.append(blok("JATUH_TEMPO_WAJIB", "Tanggal jatuh tempo wajib diisi."))
     bloks += blok_baris(req.get("items") or [])
     return bloks
 
@@ -63,13 +64,13 @@ async def blok_ubah(conn, tenant_id: str, bill, req: dict) -> list:
     bloks = []
     st = bill["status_v2"]
     if st != "draft":
-        bloks.append(blok("BUKAN_DRAF", f"Cannot edit bill with status '{st}'. Only draft bills can be edited."))
+        bloks.append(blok("BUKAN_DRAF", tg.tak_bisa_status("bill", st, "diubah")))
     vid = req.get("vendor_id")
     if vid and str(vid) != str(bill["vendor_id"]) and not await conn.fetchval(
             "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tenant_id):
-        bloks.append(blok("VENDOR_TIDAK_ADA", f"Vendor with ID {vid} not found"))
+        bloks.append(blok("VENDOR_TIDAK_ADA", "Vendor tidak ditemukan."))
     if "due_date" in req and not req["due_date"]:
-        bloks.append(blok("JATUH_TEMPO_WAJIB", "Tanggal jatuh tempo (due_date) wajib diisi"))
+        bloks.append(blok("JATUH_TEMPO_WAJIB", "Tanggal jatuh tempo wajib diisi."))
     if "items" in req and req["items"] is not None and len(req["items"]) == 0:
         bloks.append(blok("ITEM_KOSONG", "Minimal satu item harus diisi"))
     bloks += blok_baris(req.get("items") or [])

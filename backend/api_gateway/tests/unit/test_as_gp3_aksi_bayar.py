@@ -88,9 +88,9 @@ def _jalan(c):
 
 # ---------------------------------------------------------------- void
 def test_void_tulis_melempar_galat_lama_persis():
-    for bayar, harap in ((None, (404, "Payment not found")),
-                         (_bayar("draft"), (400, "Cannot void draft payment. Delete it instead.")),
-                         (_bayar("cancelled"), (400, "Only posted payments can be voided"))):
+    for bayar, harap in ((None, (404, "Pembayaran tidak ditemukan.")),
+                         (_bayar("draft"), (400, "Pembayaran draf tidak dibatalkan, hapus saja.")),
+                         (_bayar("cancelled"), (400, "Hanya pembayaran berstatus Dibayar yang bisa dibatalkan."))):
         with pytest.raises(HTTPException) as e:
             _jalan(BKR.rencana_batal_bayar(_K(bayar=bayar), "t", PID))
         assert (e.value.status_code, e.value.detail) == harap
@@ -99,7 +99,7 @@ def test_void_tulis_melempar_galat_lama_persis():
     assert e.value.status_code == 403
     with pytest.raises(HTTPException) as e:
         _jalan(BKR.rencana_batal_bayar(_K(bayar=_bayar(), baris=()), "t", PID))
-    assert (e.value.status_code, e.value.detail) == (500, "Original journal lines not found")
+    assert (e.value.status_code, e.value.detail) == (500, "Baris jurnal asal tidak ditemukan.")
     with pytest.raises(HTTPException) as e:
         _jalan(BKR.rencana_batal_bayar(_K(bayar=_bayar(), rekon=True), "t", PID))
     assert e.value.status_code == 409 and e.value.detail["code"] == "BANK_TX_RECONCILED"
@@ -130,7 +130,7 @@ def test_void_tulis_mengunci_baris_pembayaran():
 
 # ---------------------------------------------------------------- posting draf
 def test_posting_tulis_galat_lama_dan_sisa_di_bawah_kunci():
-    for bayar, harap in ((None, (404, "Payment not found")), (_bayar("posted"), (400, "Only draft payments can be posted"))):
+    for bayar, harap in ((None, (404, "Pembayaran tidak ditemukan.")), (_bayar("posted"), (400, "Hanya pembayaran berstatus Draf yang bisa diposting."))):
         with pytest.raises(HTTPException) as e:
             _jalan(BKR.rencana_posting_draf_bayar(_K(bayar=bayar), "t", PID))
         assert (e.value.status_code, e.value.detail) == harap
@@ -139,7 +139,7 @@ def test_posting_tulis_galat_lama_dan_sisa_di_bawah_kunci():
                                            {"bill_id": bid, "amount_applied": Decimal("50"), "invoice_number": "B1"}], sisa=Decimal("100"))
     with pytest.raises(HTTPException) as e:  # Σ per tagihan 110 > sisa 100 (alokasi ke tagihan sama dijumlah)
         _jalan(BKR.rencana_posting_draf_bayar(k, "t", PID))
-    assert (e.value.status_code, e.value.detail) == (400, "Amount exceeds remaining")
+    assert (e.value.status_code, e.value.detail) == (400, "Nominal melebihi sisa faktur pembelian.")
     assert any("FROM bills" in s and "FOR UPDATE" in s for s in k.sql)
 
 
@@ -154,7 +154,7 @@ def test_posting_pratinjau_tanpa_kunci_mengumpulkan():
 
 # ---------------------------------------------------------------- hapus draf
 def test_hapus_galat_lama_dan_kunci():
-    for bayar, harap in ((None, (404, "Payment not found")), (_bayar("posted"), (400, "Only draft payments can be deleted"))):
+    for bayar, harap in ((None, (404, "Pembayaran tidak ditemukan.")), (_bayar("posted"), (400, "Hanya pembayaran berstatus Draf yang bisa dihapus."))):
         with pytest.raises(HTTPException) as e:
             _jalan(BKR.rencana_hapus_draf_bayar(_K(bayar=bayar), "t", PID))
         assert (e.value.status_code, e.value.detail) == harap
@@ -183,7 +183,7 @@ def test_penulis_idem_lalu_kunci_lalu_penentu_lalu_simpan(mulai, akhir, penentu,
 
 def test_void_penulis_tak_lagi_punya_cek_sendiri():
     f = _fn(BP, "async def void_bill_payment(", "@router.get(\"/vendors/{vendor_id}/open-bills\"")
-    for lama in ("tolak_void_bila_terekonsiliasi(", "Cannot void draft payment", 'detail="Original journal lines not found"', "check_period_is_open("):
+    for lama in ("tolak_void_bila_terekonsiliasi(", "Cannot void draft payment", 'detail="Baris jurnal asal tidak ditemukan."', "check_period_is_open("):
         assert lama not in f, lama
     assert 'original_btxn = r["cermin_asli"]' in f
 
