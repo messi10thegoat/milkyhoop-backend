@@ -22,10 +22,10 @@ TENANT = "kaos-biru-konveksi"
 BARIS = [
     {"id": uuid.uuid4(), "code": "PPN-12-OUT", "name": "PPN 12%", "rate": Decimal("12.00"),
      "tax_type": "ppn", "direction": "output", "is_default": True,
-     "dpp_factor_num": 11, "dpp_factor_den": 12},
+     "dpp_factor_num": 11, "dpp_factor_den": 12, "is_withholding": False},
     {"id": uuid.uuid4(), "code": "PPN-11-OUT", "name": "PPN 11%", "rate": Decimal("11.00"),
      "tax_type": "ppn", "direction": "output", "is_default": False,
-     "dpp_factor_num": 1, "dpp_factor_den": 1},
+     "dpp_factor_num": 1, "dpp_factor_den": 1, "is_withholding": False},
 ]
 
 

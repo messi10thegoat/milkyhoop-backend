@@ -110,6 +110,7 @@ class TaxCodeListItem(BaseModel):
     is_default: bool
     dpp_factor_num: int = 1
     dpp_factor_den: int = 1
+    is_withholding: bool = False  # PPh dipotong (25 Okt 2026): penyaring FE PPh vs pajak baris
 
 
 class TaxCodeListResponse(BaseModel):
@@ -138,6 +139,7 @@ class TaxCodeDetail(BaseModel):
     description: Optional[str] = None
     is_active: bool
     is_default: bool
+    is_withholding: bool = False
     created_at: str
     updated_at: str
 
@@ -176,6 +178,8 @@ class TaxCodeDropdownItem(BaseModel):
     # Faktor DPP kode pajak (V289): DPP dikenai tarif = DPP x num/den (mis. 12% -> 11/12).
     dpp_factor_num: int = 1
     dpp_factor_den: int = 1
+    # PPh dipotong (25 Okt 2026): FE menyaring PPh lewat medan ini (dulu tak dikirim -> penyaring diam-diam tak pernah cocok).
+    is_withholding: bool = False
 
 
 class TaxCodeDropdownResponse(BaseModel):

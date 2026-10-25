@@ -1627,18 +1627,11 @@ class BillsService:
                         if isinstance(pph_tax_code_id, str)
                         else pph_tax_code_id
                     )
-                    pph_tc = await conn.fetchrow(
-                        "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
-                        _pph_tc_id,
-                    )
                     vendor_npwp = None  # vendors table has no npwp column yet
-                    pph_rate = _Dec(str(pph_tc["rate"])) if pph_tc else _Dec("2")
-                    pph_dpp = (
-                        (_Dec(str(pph_amount)) / pph_rate * 100).quantize(_Dec("1"))
-                        if pph_rate > 0
-                        else _Dec("0")
-                    )
-                    tax_period = payment_date.strftime("%Y%m")
+                    # PPh SERVER (BKR.tentukan_pph, putusan pemilik 25 Okt 2026): dasar = nilai tanpa PPN prorata, bukan pph ÷ tarif
+                    pph_dpp = _r["pph"]["base"]
+                    # "YYYY-MM" == beban/gaji == laporan /api/tax-reports/pph (cross_check); dulu "YYYYMM" tak pernah terhitung
+                    tax_period = payment_date.strftime("%Y-%m")
 
                     await conn.execute(
                         """

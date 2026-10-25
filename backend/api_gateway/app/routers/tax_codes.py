@@ -98,7 +98,7 @@ async def get_tax_dropdown(
 
             query = f"""
                 SELECT id, code, name, rate, tax_type, direction, is_default,
-                       dpp_factor_num, dpp_factor_den
+                       dpp_factor_num, dpp_factor_den, is_withholding
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY is_default DESC, rate ASC, name ASC
@@ -117,6 +117,7 @@ async def get_tax_dropdown(
                     # Faktor DPP (V289, PMK 131/2024): pratinjau lokal FE = angka server.
                     "dpp_factor_num": row["dpp_factor_num"],
                     "dpp_factor_den": row["dpp_factor_den"],
+                    "is_withholding": bool(row["is_withholding"]),
                 }
                 for row in rows
             ]
@@ -226,7 +227,7 @@ async def list_tax_codes(
             # Get items
             query = f"""
                 SELECT id, code, name, rate, tax_type, is_inclusive, is_active, is_default,
-                       dpp_factor_num, dpp_factor_den
+                       dpp_factor_num, dpp_factor_den, is_withholding
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -248,6 +249,7 @@ async def list_tax_codes(
                     "is_default": row["is_default"],
                     "dpp_factor_num": row["dpp_factor_num"],
                     "dpp_factor_den": row["dpp_factor_den"],
+                    "is_withholding": bool(row["is_withholding"]),
                 }
                 for row in rows
             ]
@@ -281,7 +283,7 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                 SELECT id, code, name, rate, tax_type, is_inclusive,
                        sales_tax_account, purchase_tax_account, description,
                        is_active, is_default, created_at, updated_at,
-                       dpp_factor_num, dpp_factor_den
+                       dpp_factor_num, dpp_factor_den, is_withholding
                 FROM tax_codes
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -306,6 +308,7 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                     "description": row["description"],
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
+                    "is_withholding": bool(row["is_withholding"]),
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                 },

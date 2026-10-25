@@ -292,31 +292,34 @@ async def create_bill_payment_journal(
 
 
 async def efek_posting_bayar(conn, ctx: dict, *, payment_id, payment_number: str, payment_date, vendor_id, vendor_name: str,
-                             bank_account_id, total_amount, pph_tax_code_id, pph_amount, journal_id) -> None:
+                             bank_account_id, total_amount, pph_tax_code_id, pph_amount, journal_id,
+                             pph_base=None) -> None:
     """Efek posting Pembayaran Keluar di luar jurnal: rekaman PPh dipotong (withholding_tax_records, Fase 2.3) + cermin bank
     (bank_transactions, BankSync R1). SATU penulis untuk POST /bill-payments (buat-posted) DAN POST /bill-payments/{id}/post (draf ->
     posted); dulu posting draf tak menulis keduanya (U2a, putusan pemilik LANGSUNG 23 Okt 2026). Isi == blok lama buat-posted."""
     # === PPh RIDER: withholding_tax_records (Fase 2.3) ===
     if pph_amount > 0 and pph_tax_code_id:
         pph_tc = await conn.fetchrow(
-            "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1",
-            BKR._uuid(pph_tax_code_id),
+            "SELECT code, rate, tax_type FROM tax_codes WHERE id = $1 AND tenant_id = $2",
+            BKR._uuid(pph_tax_code_id), ctx["tenant_id"],
         )
         vendor_npwp = None  # vendors table has no npwp column yet
         pph_rate = (
             Decimal(str(pph_tc["rate"])) if pph_tc else Decimal("2")
         )
-        pph_dpp = (
+        # dasar = hitungan server (BKR.tentukan_pph) bila ada; posting DRAF lama tanpa dasar tersimpan -> diturunkan seperti dulu
+        pph_dpp = pph_base if pph_base is not None else (
             (
                 Decimal(str(pph_amount)) / pph_rate * 100
             ).quantize(Decimal("1"))
             if pph_rate > 0
             else Decimal("0")
         )
+        # "YYYY-MM" == beban/gaji == laporan /api/tax-reports/pph (cross_check); dulu "YYYYMM" tak pernah terhitung
         tax_period = (
-            payment_date.strftime("%Y%m")
+            payment_date.strftime("%Y-%m")
             if hasattr(payment_date, "strftime")
-            else str(payment_date)[:7].replace("-", "")
+            else str(payment_date)[:7]
         )
 
         await conn.execute(
@@ -483,7 +486,7 @@ async def preview_create_bill_payment(request: Request, payload: CreateBillPayme
         "payment_id": None, "action": "create", "can_proceed": not r["blocks"],
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
-        "bills": r["bills"], "payload": payload.model_dump(mode="json"), "preview": True}}
+        "bills": r["bills"], "pph": r.get("pph"), "payload": payload.model_dump(mode="json"), "preview": True}}
 
 
 # === PRATINJAU AKSI (AS-GP3, 24 Okt 2026): void / posting draf / hapus draf. READ ONLY tanpa kunci; penentu == penulis
@@ -1167,8 +1170,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         status,
                         ctx["user_id"],
                         payload.idempotency_key,
-                        UUID(payload.pph_tax_code_id) if payload.pph_tax_code_id else None,
-                        Decimal(str(payload.pph_amount or 0)),
+                        _r["pph"]["tax_code_id"],  # PPh SERVER (putusan pemilik 25 Okt 2026), bukan angka klien
+                        _r["pph"]["amount"],
                     )
 
                     for _al in _r["alokasi"]:  # tagihan sudah FOR UPDATE + sisa dicek di rencana_bayar
@@ -1204,8 +1207,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                             source_type=payload.source_type,
                             source_deposit_id=payload.source_deposit_id,
                             unapplied_amount=unapplied_amount,
-                            pph_tax_code_id=payload.pph_tax_code_id,
-                            pph_amount=payload.pph_amount or 0,
+                            pph_tax_code_id=_r["pph"]["tax_code_id"],
+                            pph_amount=_r["pph"]["amount"],
                         )
 
                         # Update payment with journal info
@@ -1226,8 +1229,8 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         await efek_posting_bayar(
                             conn, ctx, payment_id=payment_id, payment_number=payment_number, payment_date=payload.payment_date,
                             vendor_id=payload.vendor_id, vendor_name=vendor_name, bank_account_id=payload.bank_account_id,
-                            total_amount=payload.total_amount, pph_tax_code_id=payload.pph_tax_code_id,
-                            pph_amount=payload.pph_amount or 0, journal_id=journal_id,
+                            total_amount=payload.total_amount, pph_tax_code_id=_r["pph"]["tax_code_id"],
+                            pph_amount=_r["pph"]["amount"], journal_id=journal_id, pph_base=_r["pph"]["base"],
                         )
 
                     # dict, BUKAN BillPaymentResponse: execute_idempotent

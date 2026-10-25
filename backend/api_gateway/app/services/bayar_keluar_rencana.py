@@ -12,7 +12,7 @@ U2 (perilaku berbeda dua jalur: nomor BP/PAY, sisa V440 vs SQL lama + cadangan c
 mengubah perilaku tulis apa pun."""
 import logging
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -90,6 +90,65 @@ async def sisa_tagihan(conn, tid: str, bill_id) -> Decimal:
     return d.quantize(Decimal(1)) if d == d.to_integral_value() else d
 
 
+# ------------------------------------------------------------------ PPh dipotong (putusan pemilik LANGSUNG 25 Okt 2026)
+# PPh dihitung SERVER dari pph_tax_code_id: dasar = nilai tagihan TANPA PPN x (dibayar / total tagihan) -- bayar penuh = nilai tanpa
+# PPN penuh; beberapa tagihan = jumlah dasar prorata lalu tarif SEKALI; rupiah penuh HALF_UP. Bukan DPP nilai lain 11/12: itu hanya
+# untuk PPN. pph_amount dari klien hanya pembanding: > 0 dan beda -> DITOLAK (blok), tak pernah dipakai diam-diam.
+def dasar_pph_prorata(total_tagihan, ppn, dibayar) -> Decimal:
+    """MURNI. Nilai tanpa PPN bagian yang dibayar; total <= 0 -> 0. Tanpa pembulatan antara (dibulatkan sekali di pph_dari_dasar)."""
+    total = Decimal(str(total_tagihan or 0))
+    if total <= 0:
+        return NOL
+    return (total - Decimal(str(ppn or 0))) * Decimal(str(dibayar or 0)) / total
+
+
+def pph_dari_dasar(dasar, tarif) -> Decimal:
+    """MURNI. dasar x tarif% -> rupiah penuh HALF_UP (Law 9, putusan pemilik 25 Okt 2026)."""
+    return (Decimal(str(dasar)) * Decimal(str(tarif)) / 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+
+
+async def tentukan_pph(conn, tid: str, pph_tax_code_id, pph_klien, bagian: list) -> dict:
+    """-> {tax_code_id, code, rate, base, amount, coa_id, blocks}. bagian = [(total_tagihan, ppn, dibayar)] per tagihan yang dilunasi.
+    Tanpa jenis PPh: amount 0 (nominal klien > 0 tanpa jenis = blok). Jenis wajib milik tenant, is_withholding, aktif."""
+    from . import teks_galat as tg
+    klien = Decimal(str(pph_klien or 0))
+    out = {"tax_code_id": None, "code": None, "rate": None, "base": NOL, "amount": NOL, "coa_id": None, "blocks": []}
+
+    def blok(code, pesan):
+        out["blocks"].append({"code": code, "message": pesan, "status": 400})
+
+    if not pph_tax_code_id:
+        if klien > 0:
+            blok("PPH_TANPA_JENIS", "Pilih jenis PPh untuk nominal PPh.")
+        return out
+    try:
+        tcid = _uuid(pph_tax_code_id)
+    except ValueError:
+        blok("PPH_JENIS_TIDAK_SAH", "Jenis PPh tidak ditemukan.")
+        return out
+    tc = await conn.fetchrow(
+        "SELECT id, code, rate, coa_id FROM tax_codes WHERE id = $1 AND tenant_id = $2 AND is_withholding AND is_active", tcid, tid)
+    if not tc:
+        blok("PPH_JENIS_TIDAK_SAH", "Jenis PPh tidak ditemukan.")
+        return out
+    dasar = sum((dasar_pph_prorata(t, p, d) for t, p, d in bagian), NOL)
+    jumlah = pph_dari_dasar(dasar, tc["rate"])
+    out.update({"tax_code_id": str(tc["id"]), "code": tc["code"], "rate": Decimal(str(tc["rate"])),
+                "base": dasar.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "amount": jumlah,
+                "coa_id": tc["coa_id"] or await resolve_account_id_by_role(conn, tid, AccountRole.WHT_PPH_PAYABLE)})
+    if klien > 0 and klien != jumlah:
+        blok("PPH_TIDAK_SESUAI", f"Nominal PPh tidak sesuai. PPh {tc['code']} dihitung {tg.rp(jumlah)}.")
+    return out
+
+
+def pph_respons(p: dict) -> Optional[dict]:
+    """Bentuk pratinjau: None bila tanpa PPh."""
+    if not p["tax_code_id"]:
+        return None
+    return {"tax_code_id": str(p["tax_code_id"]), "code": p["code"], "rate": _f(p["rate"]), "base": _f(p["base"]),
+            "amount": _f(p["amount"])}
+
+
 # ------------------------------------------------------------------ jurnal /bill-payments (SATU sumber baris)
 async def baris_jurnal_bayar(conn, tid: str, *, payment_number: str, vendor_name: str, bank_account_id, total_amount,
                              allocated_amount, discount_amount=0, discount_account_id=None, bank_fee_amount=0,
@@ -114,7 +173,7 @@ async def baris_jurnal_bayar(conn, tid: str, *, payment_number: str, vendor_name
         vendor_deposit_account_id = await resolve_account_id_by_role(conn, tid, AccountRole.AP_PREPAID)
     pph_coa_id = None
     if pph_amount > 0 and pph_tax_code_id:
-        pph_coa_id = await conn.fetchval("SELECT coa_id FROM tax_codes WHERE id = $1", _uuid(pph_tax_code_id))
+        pph_coa_id = await conn.fetchval("SELECT coa_id FROM tax_codes WHERE id = $1 AND tenant_id = $2", _uuid(pph_tax_code_id), tid)
         if not pph_coa_id:
             pph_coa_id = await resolve_account_id_by_role(conn, tid, AccountRole.WHT_PPH_PAYABLE)
 
@@ -231,9 +290,10 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
     if allocated_amount > payload.total_amount + payload.discount_amount:
         bl.galat("ALOKASI_MELEBIHI_PEMBAYARAN", 400, "Alokasi melebihi nominal pembayaran ditambah potongan.")
 
-    alokasi = []
+    alokasi, bagian_pph = [], []
     for a in payload.allocations:
-        t = await conn.fetchrow("SELECT id, amount as total_amount FROM bills WHERE id = $1::uuid AND tenant_id = $2"
+        t = await conn.fetchrow("SELECT id, amount as total_amount, COALESCE(grand_total, amount) AS total_tagihan, tax_amount "
+                                "FROM bills WHERE id = $1::uuid AND tenant_id = $2"
                                 + ("" if pratinjau else " FOR UPDATE"), a.bill_id, tid)
         if not t:
             if not pratinjau:
@@ -244,9 +304,13 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
             bl.galat("MELEBIHI_SISA_TAGIHAN", 400, "Nominal melebihi sisa faktur pembelian.")
         alokasi.append({"bill_id": a.bill_id, "remaining_before": sebelum, "amount_applied": a.amount_applied,
                         "remaining_after": sebelum - a.amount_applied})
+        bagian_pph.append((t["total_tagihan"], t["tax_amount"], a.amount_applied))
+    pph = await tentukan_pph(conn, tid, payload.pph_tax_code_id, payload.pph_amount, bagian_pph)
+    for b in pph["blocks"]:
+        bl.galat(b["code"], b["status"], b["message"])
 
     hasil = {"blocks": bl.daftar, "vendor_name": vendor_name, "bank_account_name": bank_account_name,
-             "allocated_amount": allocated_amount, "unapplied_amount": unapplied_amount, "alokasi": alokasi}
+             "allocated_amount": allocated_amount, "unapplied_amount": unapplied_amount, "alokasi": alokasi, "pph": pph}
     if not pratinjau:
         return hasil
 
@@ -260,7 +324,7 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
                 discount_account_id=payload.discount_account_id, bank_fee_amount=payload.bank_fee_amount,
                 bank_fee_account_id=payload.bank_fee_account_id, source_type=payload.source_type,
                 source_deposit_id=payload.source_deposit_id, unapplied_amount=unapplied_amount,
-                pph_tax_code_id=payload.pph_tax_code_id, pph_amount=payload.pph_amount or 0)
+                pph_tax_code_id=pph["tax_code_id"], pph_amount=pph["amount"])
             jurnal = [await _rencana_jurnal(conn, tid, bl, f"Pembayaran ke {vendor_name} - {NOMOR_NANTI}", payload.payment_date,
                                             baris, total_debit)]
         except HTTPException as e:
@@ -269,11 +333,11 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
             bl.galat("AKUN_JURNAL", 400, str(e))
         if payload.bank_account_id:
             cb = await bl.coba("REKENING_TIDAK_SAH", cermin_bank(conn, tid, payload.bank_account_id, payload.total_amount,
-                                                                 payload.pph_amount or 0))
+                                                                 pph["amount"]))
             if cb:
                 bank = [{"bank_account": cb["bank_account"], "amount": _f(cb["amount"]), "transaction_type": cb["transaction_type"]}]
     hasil.update({
-        "journals": jurnal, "bank_transactions": bank,
+        "journals": jurnal, "bank_transactions": bank, "pph": pph_respons(pph),
         "bills": [{"bill_id": str(a["bill_id"]), "bill_number": nomor_tagihan.get(str(a["bill_id"])),
                    "remaining_before": _f(a["remaining_before"]), "amount_applied": _f(a["amount_applied"]),
                    "remaining_after": _f(a["remaining_after"])} for a in alokasi],
@@ -281,7 +345,7 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
         "after": {"exists": True, "status": status, "payment_number": None, "total_amount": _f(payload.total_amount),
                   "allocated_amount": _f(allocated_amount), "unapplied_amount": _f(unapplied_amount),
                   "discount_amount": _f(payload.discount_amount), "bank_fee_amount": _f(payload.bank_fee_amount),
-                  "pph_amount": _f(payload.pph_amount or 0)},
+                  "pph_amount": _f(pph["amount"])},
     })
     return hasil
 
@@ -348,7 +412,8 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
 
     bill = await conn.fetchrow(
         """
-                    SELECT id, amount, amount_paid, status, status_v2, ap_id, vendor_id, vendor_name, invoice_number
+                    SELECT id, amount, amount_paid, status, status_v2, ap_id, vendor_id, vendor_name, invoice_number,
+                           COALESCE(grand_total, amount) AS total_tagihan, tax_amount
                     FROM bills
                     WHERE id = $1 AND tenant_id = $2
                     """ + ("" if pratinjau else "FOR UPDATE"), bill_id, tid)
@@ -384,8 +449,6 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
     payment_date = request.get("payment_date") or await tanggal_dokumen(conn, tid)
     if isinstance(payment_date, str):
         payment_date = date.fromisoformat(payment_date)
-    pph_tax_code_id = request.get("pph_tax_code_id")
-    pph_amount = Decimal(str(request.get("pph_amount") or 0))
 
     bank_account_id = request.get("bank_account_id")
     coa_id = request.get("account_id")
@@ -422,13 +485,14 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
             return out
 
     ap_account_id = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
-    pph_coa_id = None
-    if pph_amount > 0 and pph_tax_code_id:
-        pph_coa_id = await conn.fetchval("SELECT coa_id FROM tax_codes WHERE id = $1",
-                                         UUID(pph_tax_code_id) if isinstance(pph_tax_code_id, str) else pph_tax_code_id)
-        if not pph_coa_id:
-            pph_coa_id = await resolve_account_id_by_role(conn, tid, AccountRole.WHT_PPH_PAYABLE)
-    out.update({"remaining": remaining, "payment_amount": payment_amount, "payment_date": payment_date,
+    # PPh SERVER (putusan pemilik 25 Okt 2026): pph_amount klien hanya pembanding (beda -> blok PPH_TIDAK_SESUAI)
+    pph = await tentukan_pph(conn, tid, request.get("pph_tax_code_id"), request.get("pph_amount"),
+                             [(bill["total_tagihan"], bill["tax_amount"], payment_amount)])
+    bloks.extend(pph["blocks"])
+    if pph["blocks"] and not pratinjau:
+        return out
+    pph_tax_code_id, pph_amount, pph_coa_id = pph["tax_code_id"], pph["amount"], (pph["coa_id"] if pph["amount"] > 0 else None)
+    out.update({"remaining": remaining, "payment_amount": payment_amount, "payment_date": payment_date, "pph": pph,
                 "pph_tax_code_id": pph_tax_code_id, "pph_amount": pph_amount, "bank_account_id": bank_account_id,
                 "bank_account": bank_account, "bank_coa_id": bank_coa_id, "ap_account_id": ap_account_id, "pph_coa_id": pph_coa_id})
     return out
@@ -456,6 +520,7 @@ async def pratinjau_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict) 
                 "amount_applied": _f(amt), "remaining_after": _f(r["remaining"] - amt)}]
     return {"blocks": r["blocks"], "journals": jurnal, "bank_transactions": bank, "bills": tag,
             "before": {"exists": False},
+            "pph": pph_respons(r["pph"]) if r.get("pph") else None,
             "after": {"exists": True, "status": "posted", "payment_number": None,
                       "total_amount": _f(r.get("payment_amount")), "pph_amount": _f(r.get("pph_amount"))} if bill else None}
 

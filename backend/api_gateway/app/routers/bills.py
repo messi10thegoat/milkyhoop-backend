@@ -1363,7 +1363,7 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
         "bill_id": str(bill_id), "action": "pay", "can_proceed": not r["blocks"],
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
-        "bills": r["bills"], "payload": body.model_dump(mode="json"), "preview": True}}
+        "bills": r["bills"], "pph": r.get("pph"), "payload": body.model_dump(mode="json"), "preview": True}}
 
 
 # =============================================================================
