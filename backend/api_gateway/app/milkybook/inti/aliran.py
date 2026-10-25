@@ -51,6 +51,10 @@ class Aliran:
         self.antrian: "asyncio.Queue[Optional[dict]]" = asyncio.Queue()
         self.semua: List[dict] = []          # urut, tanpa langkah/selesai (-> tampilan & JSON)
         self.terkirim: set = set()           # id() peristiwa yang sudah dipancarkan
+        # Rujukan KUAT tiap peristiwa terkirim: tanpa ini dict yang sudah diambil konsumen dibuang GC, id()-nya dipakai
+        # ulang dict baru, lalu peristiwa baru dianggap "sudah terkirim" dan HILANG (uji nyata kaos 25 Okt MB5:
+        # 'selesai' + satu langkah tak sampai; reproduksi: 1 dari 2000 sampai).
+        self._rujukan: List[dict] = []
         self.selesai: Optional[dict] = None  # hanya 'selesai' TERAKHIR yang dipancarkan, di akhir
         self.ambil_antre = ambil_antre
         self.boleh_sisip = boleh_sisip
@@ -60,6 +64,7 @@ class Aliran:
         if id(e) in self.terkirim:
             return
         self.terkirim.add(id(e))
+        self._rujukan.append(e)
         if e.get("jenis") == "selesai":
             self.selesai = e
             return

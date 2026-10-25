@@ -256,3 +256,33 @@ def test_202_tidak_terlantar_bila_giliran_selesai_tepat_sesudah_antre():
         time.sleep(0.02)
     jenis = [(e["jenis"], e.get("id_pesan")) for e in pul["peristiwa"]]
     assert ("pengguna", "pesan4000") in jenis and ("teks", None) in jenis and pul["antre"] == []
+
+
+async def test_pancar_tidak_kehilangan_peristiwa_saat_konsumen_cepat_id_dipakai_ulang():
+    # Uji nyata kaos 25 Okt (MB5): 'selesai' + "langkah mulai" hilang di SSE. Reproduksi: konsumen mengambil tiap
+    # peristiwa segera -> dict dibuang GC -> id() dipakai ulang -> dedupe salah. Sebelum perbaikan: 1 dari 2000 sampai.
+    a = aliran.Aliran()
+    sampai = []
+    for i in range(2000):
+        a.pancar({"jenis": "langkah", "id": i, "status": "mulai"})
+        while not a.antrian.empty():
+            sampai.append(a.antrian.get_nowait()["id"])
+    assert sampai == list(range(2000))
+    e = {"jenis": "teks", "teks": "x"}
+    a.pancar(e)
+    a.pancar(e)  # objek yang SAMA tetap tak dikirim dua kali
+    assert a.antrian.qsize() == 1
+
+
+def test_sse_selalu_diakhiri_selesai_dan_langkah_berpasangan():
+    store = PenyimpananSesiMemori()
+    langkah = [panggil(("cari_x", {"q": f"k{i}"})) for i in range(6)]
+    app, _ = _app(store, model=ModelPalsu(langkah + [teks("Harga kaos Rp 45.000.")]))
+    c = TestClient(app)
+    sid = _sesi(c)
+    with c.stream("POST", f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "harga?"}, headers=SSE) as r:
+        ev = [x for x in _uraikan("".join(r.iter_text())) if x[0] != "#"]
+    assert ev[-1][0] == "selesai"
+    mulai = [d["id"] for n, d in ev if n == "langkah" and d["status"] == "mulai"]
+    akhir = [d["id"] for n, d in ev if n == "langkah" and d["status"] != "mulai"]
+    assert len(mulai) == 6 and mulai == akhir
