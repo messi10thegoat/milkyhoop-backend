@@ -45,6 +45,12 @@ class PesanMasuk(BaseModel):
     id_pesan: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9-]{8,64}$")  # uuid dari FE (idempoten)
 
 
+class UbahSesi(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    judul: Optional[str] = Field(None, max_length=80)
+    diarsip: Optional[bool] = None
+
+
 class UbahKartu(BaseModel):
     model_config = ConfigDict(extra="forbid")
     payload: dict  # payload kartu LENGKAP sesudah diedit FE (#8)
@@ -230,6 +236,23 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
         s = await penyimpanan.buat(user["tenant_id"], user["user_id"], konteks=f"Hari ini {hari_ini.isoformat()}.",
                                    hari_ini=hari_ini)
         return {"sesi_id": s.sesi_id}
+
+    @r.get("/sesi")
+    async def daftar_sesi(request: Request, arsip: bool = False):
+        """Daftar percakapan pengguna ini (terbaru dulu, maks 50; hanya sesi yang belum kedaluwarsa)."""
+        user = await _pengguna(request)
+        return {"sesi": await penyimpanan.daftar(user["tenant_id"], user["user_id"], arsip=arsip)}
+
+    @r.patch("/sesi/{sesi_id}")
+    async def ubah_sesi(sesi_id: str, body: UbahSesi, request: Request):
+        """Ganti nama / arsipkan (arsip = tersembunyi dari daftar; sesi tetap bisa dibuka & dilanjutkan)."""
+        user = await _pengguna(request)
+        await _sesi(user, sesi_id)
+        judul = " ".join(body.judul.split()) if body.judul is not None else None
+        if judul == "" or (judul is None and body.diarsip is None):
+            return JSONResponse({"kode": "masukan_tidak_sah", "detail": [{"path": "judul", "pesan": "Judul wajib diisi."}]},
+                                status_code=422)
+        return await penyimpanan.ubah_meta(user["tenant_id"], user["user_id"], sesi_id, judul=judul, diarsip=body.diarsip)
 
     @r.get("/sesi/{sesi_id}")
     async def pulihkan(sesi_id: str, request: Request):

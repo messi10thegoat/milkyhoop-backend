@@ -11,6 +11,9 @@ Kunci (ruang = tenant x pengguna; sesi orang lain = tidak ditemukan):
   milkybook:dibaca:{tenant}:{user}:{sesi_id} SET id_pesan antre yang sudah dibaca model (DELETE -> 409, ulang -> duplikat)
   milkybook:henti:{tenant}:{user}:{sesi_id}  bendera berhenti (tombol stop), TTL = KUNCI_GILIRAN_MS; dihapus router di
                                              awal + akhir tiap giliran (bendera basi tak menghentikan giliran berikut)
+  milkybook:meta:{tenant}:{user}:{sesi_id}   HASH daftar percakapan {judul, diarsip, dibuat, diubah}; medan ditulis
+                                             TERPISAH (HSET/HSETNX) -> ganti nama tak tertimpa simpan giliran
+  milkybook:daftar:{tenant}:{user}:-         ZSET sesi_id skor = diubah (terbaru dulu); anggota tanpa meta = kedaluwarsa
 Riwayat disimpan apa adanya (append-only; blok thinking + signature utuh).
 """
 from __future__ import annotations
@@ -28,6 +31,21 @@ from .putaran import Sesi
 
 UMUR_SESI_DETIK = 6 * 3600
 KUNCI_GILIRAN_MS = 180_000
+PANJANG_JUDUL = 60
+MAKS_DAFTAR = 50
+
+
+def judul_otomatis(s: Sesi) -> Optional[str]:
+    """Judul = ucapan pertama pengguna, dipangkas (seperti Claude Code). None bila belum ada ucapan."""
+    for e in s.tampilan:
+        if e.get("jenis") == "pengguna" and (t := " ".join(str(e.get("teks", "")).split())):
+            return t if len(t) <= PANJANG_JUDUL else t[:PANJANG_JUDUL - 1].rstrip() + "…"
+    return None
+
+
+def _meta_tampil(sesi_id: str, m: dict) -> dict:
+    return {"sesi_id": sesi_id, "judul": m.get("judul") or "Percakapan baru", "diarsip": m.get("diarsip") in (True, "1"),
+            "dibuat": float(m.get("dibuat") or 0), "diubah": float(m.get("diubah") or 0)}
 
 
 class SesiSibuk(RuntimeError):
@@ -95,6 +113,7 @@ class PenyimpananSesiMemori:
         self._antre: Dict[str, list] = {}
         self._dibaca: Dict[str, set] = {}
         self._henti: set = set()
+        self._meta: Dict[str, dict] = {}
 
     async def buat(self, tenant_id: str, user_id: str, konteks: str = "", hari_ini: Optional[date] = None) -> Sesi:
         s = Sesi(sesi_id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user_id, konteks=konteks)
@@ -112,6 +131,27 @@ class PenyimpananSesiMemori:
         self._isi[f"{s.tenant_id}:{s.user_id}:{s.sesi_id}"] = (json.dumps(sesi_ke_dict(s), default=str), time.time())
         for kid in s.kartu:
             self._kartu[f"{s.tenant_id}:{s.user_id}:{kid}"] = s.sesi_id
+        m = self._meta.setdefault(f"{s.tenant_id}:{s.user_id}:{s.sesi_id}", {"dibuat": time.time()})
+        m["diubah"] = time.time()
+        if not m.get("judul") and (j := judul_otomatis(s)):
+            m["judul"] = j
+
+    # ---- daftar percakapan
+    async def daftar(self, tenant_id, user_id, arsip: bool = False) -> list:
+        awal = f"{tenant_id}:{user_id}:"
+        hasil = [_meta_tampil(k[len(awal):], m) for k, m in self._meta.items()
+                 if k.startswith(awal) and k in self._isi and time.time() - self._isi[k][1] <= UMUR_SESI_DETIK]
+        hasil = [x for x in hasil if x["diarsip"] == arsip]
+        return sorted(hasil, key=lambda x: -x["diubah"])[:MAKS_DAFTAR]
+
+    async def ubah_meta(self, tenant_id, user_id, sesi_id, *, judul: Optional[str] = None,
+                        diarsip: Optional[bool] = None) -> dict:
+        m = self._meta.setdefault(f"{tenant_id}:{user_id}:{sesi_id}", {"dibuat": time.time(), "diubah": time.time()})
+        if judul is not None:
+            m["judul"] = judul
+        if diarsip is not None:
+            m["diarsip"] = diarsip
+        return _meta_tampil(sesi_id, m)
 
     async def sesi_untuk_kartu(self, tenant_id: str, user_id: str, kartu_id: str) -> Optional[str]:
         return self._kartu.get(f"{tenant_id}:{user_id}:{kartu_id}")
@@ -198,6 +238,7 @@ class PenyimpananSesiRedis(PenyimpananSesiMemori):
                           ex=UMUR_SESI_DETIK)
         for kid in s.kartu:
             await self._r.set(self._k("kartu", s.tenant_id, s.user_id, kid), s.sesi_id, ex=UMUR_SESI_DETIK)
+        await self.simpan_meta_redis(s)
 
     async def sesi_untuk_kartu(self, tenant_id, user_id, kartu_id):
         return await self._r.get(self._k("kartu", tenant_id, user_id, kartu_id))
@@ -278,3 +319,38 @@ class PenyimpananSesiRedis(PenyimpananSesiMemori):
 
     async def berhenti_hapus(self, tenant_id, user_id, sesi_id):
         await self._r.delete(self._k("henti", tenant_id, user_id, sesi_id))
+
+    async def simpan_meta_redis(self, s):
+        km = self._k("meta", s.tenant_id, s.user_id, s.sesi_id)
+        kd = self._k("daftar", s.tenant_id, s.user_id, "-")
+        kini = time.time()
+        await self._r.hsetnx(km, "dibuat", str(kini))
+        await self._r.hset(km, "diubah", str(kini))
+        if (j := judul_otomatis(s)) is not None:
+            await self._r.hsetnx(km, "judul", j)
+        await self._r.expire(km, UMUR_SESI_DETIK)
+        await self._r.zadd(kd, {s.sesi_id: kini})
+        await self._r.expire(kd, UMUR_SESI_DETIK)
+
+    async def daftar(self, tenant_id, user_id, arsip: bool = False):
+        kd = self._k("daftar", tenant_id, user_id, "-")
+        hasil = []
+        for sid in await self._r.zrevrange(kd, 0, -1):
+            m = await self._r.hgetall(self._k("meta", tenant_id, user_id, sid))
+            if not m or not await self._r.get(self._k("sesi", tenant_id, user_id, sid)):
+                await self._r.zrem(kd, sid)  # sesi kedaluwarsa
+                continue
+            x = _meta_tampil(sid, m)
+            if x["diarsip"] == arsip:
+                hasil.append(x)
+            if len(hasil) >= MAKS_DAFTAR:
+                break
+        return hasil
+
+    async def ubah_meta(self, tenant_id, user_id, sesi_id, *, judul=None, diarsip=None):
+        km = self._k("meta", tenant_id, user_id, sesi_id)
+        if judul is not None:
+            await self._r.hset(km, "judul", judul)
+        if diarsip is not None:
+            await self._r.hset(km, "diarsip", "1" if diarsip else "0")
+        return _meta_tampil(sesi_id, await self._r.hgetall(km))

@@ -157,6 +157,7 @@ PATCH /api/intercompany/transactions/{transaction_id}
 PATCH /api/item-batches/{batch_id}
 PATCH /api/items/{item_id}/status
 PATCH /api/metode-serah/{metode_id}
+PATCH /api/milkybook/sesi/{sesi_id}
 PATCH /api/nsfp-ranges/{range_id}
 PATCH /api/price-lists/{price_list_id}
 PATCH /api/production/{order_id}

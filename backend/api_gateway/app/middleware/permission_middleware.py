@@ -34,6 +34,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/milkybook/sesi/[^/]+$", ["GET"], "quote", "R"),  # #7 pulihkan percakapan (READ-authz: GET tak terpetakan = tertutup)
     (r"^/api/milkybook/sesi/[^/]+/antre/[^/]+$", ["DELETE"], "quote", "R"),  # #10 Esc: batalkan pesan antre (izin = pesan)
     (r"^/api/milkybook/sesi/[^/]+/berhenti$", ["POST"], "quote", "R"),  # tombol stop (izin = pesan)
+    (r"^/api/milkybook/sesi$", ["GET"], "quote", "R"),  # daftar percakapan
+    (r"^/api/milkybook/sesi/[^/]+$", ["PATCH"], "quote", "R"),  # ganti nama / arsip percakapan
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     (r"^/api/quotes/[^/]+/edit/preview$", ["POST"], "quote", "U"),  # pratinjau ubah penawaran (13 Okt), izin = PATCH
     (r"^/api/quotes/[^/]+/delete/preview$", ["POST"], "quote", "D"),  # QA-AGEN 25 Okt: pratinjau hapus satu penawaran, izin = DELETE
