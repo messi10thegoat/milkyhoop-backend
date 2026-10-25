@@ -146,11 +146,11 @@ class PemanggilAnthropic:
             max_tokens=self.max_tokens,
             system=sistem_berbreakpoint(system, self.ttl_prefiks),
             messages=messages,
-            tools=tools,
-            tool_choice={"type": "auto"},
             output_config={"effort": effort},
             cache_control={"type": "ephemeral"},
         )
+        if tools:  # peringkas (c) memanggil tanpa tool: tool_choice tanpa tools ditolak API
+            kw.update(tools=tools, tool_choice={"type": "auto"})
         try:
             if self.model in ("claude-opus-5-5", "claude-sonnet-5-5"):
                 resp = await self._client.beta.messages.create(
