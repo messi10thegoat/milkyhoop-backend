@@ -30,7 +30,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/sales-orders/calculate$", ["POST"], "sales_order", "R"),  # 3d pratinjau
     # Milkybook (24 Okt 2026, CONVERSATIONAL, paket aktivasi): percakapan = membaca/mengusulkan; setiap aksi BE di baliknya
     # dijalankan sebagai permintaan internal dengan token pengguna dan diperiksa pola rutenya sendiri. Huruf masuk = quote R (pilot).
-    (r"^/api/milkybook/(sesi|sesi/[^/]+/pesan|kartu/[^/]+/(setuju|tolak))$", ["POST"], "quote", "R"),
+    (r"^/api/milkybook/(sesi|sesi/[^/]+/pesan|kartu/[^/]+/(setuju|tolak|ubah))$", ["POST"], "quote", "R"),
     (r"^/api/milkybook/sesi/[^/]+$", ["GET"], "quote", "R"),  # #7 pulihkan percakapan (READ-authz: GET tak terpetakan = tertutup)
     (r"^/api/milkybook/sesi/[^/]+/antre/[^/]+$", ["DELETE"], "quote", "R"),  # #10 Esc: batalkan pesan antre (izin = pesan)
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis

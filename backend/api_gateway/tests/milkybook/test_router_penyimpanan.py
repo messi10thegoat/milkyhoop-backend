@@ -187,7 +187,7 @@ def test_setuju_kartu_lewat_router_tulis_sekali():
 def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
     from app.milkybook.pasang import milkybook_router
     jalur = sorted((r.path, sorted(r.methods)[0]) for r in milkybook_router().routes)
-    assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"),
+    assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"), ("/kartu/{kartu_id}/ubah", "POST"),
                      ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
                      ("/sesi/{sesi_id}/pesan", "POST")]
 

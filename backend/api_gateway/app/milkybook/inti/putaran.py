@@ -19,7 +19,7 @@ from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import aliran, harga_sasaran, penjaga_angka, penjaga_tanggal
+from . import aliran, harga_sasaran, penjaga_angka, penjaga_tanggal, ubah_kartu as _uk
 from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
 from .model import GalatModel, HasilModel, PemanggilModel, biaya_usd, pilah_galat_sdk
@@ -139,6 +139,8 @@ class Sesi:
     # Hibrida (eval 25 Okt PNW-008): penulis hasil eskalasi bertanya lalu pengguna menjawab -> jawaban itu tetap ke penulis
     # (dulu jatuh ke model baca tanpa tool tulis: mengarang kartu / mengaku tak punya alat). Satu giliran saja.
     tulis_tertahan: bool = False
+    # #8 idempotensi /kartu/{id}/ubah: X-Idempotency-Key -> peristiwa respons pertama (ulang = respons sama)
+    ubah_idem: Dict[str, List[dict]] = field(default_factory=dict)
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -250,6 +252,18 @@ def _cek_tak_didukung(t, sesi) -> list:
         return []
     teks = _ucapan_pengguna(sesi)
     return [pesan for pola, pesan in t.tak_didukung if re.search(pola, teks, re.I)]
+
+
+def _tambah_teks_pengguna(sesi, teks: str) -> None:
+    """Gabung ke giliran user terakhir (mis. tool_result) bila ada: peran tetap berselang."""
+    tambahan = {"type": "text", "text": teks}
+    akhir = sesi.messages[-1] if sesi.messages else None
+    if akhir and akhir["role"] == "user":
+        if isinstance(akhir["content"], str):
+            akhir["content"] = [{"type": "text", "text": akhir["content"]}]
+        akhir["content"].append(tambahan)
+    else:
+        sesi.messages.append({"role": "user", "content": [tambahan]})
 
 
 def _ada_blok(isi: Any) -> bool:
@@ -379,6 +393,79 @@ class Putaran:
             return peristiwa + self._tolak_batas(sesi)
         return peristiwa + await self._putar(sesi, pelaksana, izin_fn,
                                              sesudah_setuju=k.status == StatusKartu.SELESAI)
+
+    # ------------------------------------------------------------------ #8 ubah isian langsung di kartu (tanpa model)
+    def periksa_ubah(self, sesi: Sesi, kartu_id: str, payload: Any):
+        """Pemeriksaan tanpa kunci untuk router: None = lanjut; selain itu (status_http, kode, detail)."""
+        k = sesi.kartu.get(kartu_id)
+        if k is None:
+            return 404, "kartu_tidak_ditemukan", "Kartu tidak ditemukan."
+        if k.status != StatusKartu.MENUNGGU:
+            return 409, "kartu_tidak_menunggu", f"Kartu sudah {k.status.value}."
+        t = self.registri.ambil(k.tool)
+        param = t.param_dari_jalur(k.jalur) if t else None
+        if t is None or param is None or not isinstance(payload, dict):
+            return 422, "masukan_tidak_sah", [{"path": "", "pesan": "Isian kartu tidak sah."}]
+        e = _validasi(t.skema, buang_null({**_uk.normalkan_angka(t.skema, payload), **param}), "masukan")
+        return (422, "masukan_tidak_sah", _uk.galat_kolom(e)) if e else None
+
+    async def ubah_kartu(self, sesi: Sesi, kartu_id: str, payload: dict, pelaksana: Pelaksana, izin_fn: IzinFn,
+                         kunci: Optional[str] = None) -> List[dict]:
+        """Ubah isian = pratinjau ulang = kartu BARU + kunci BARU, kartu lama BASI (kartu.py). Nol panggilan model.
+        kunci (X-Idempotency-Key FE): ulang = peristiwa respons pertama (respons hilang saat koneksi putus)."""
+        if kunci and kunci in sesi.ubah_idem:
+            return sesi.ubah_idem[kunci]
+        hasil = await self._ubah_kartu(sesi, kartu_id, payload, pelaksana, izin_fn)
+        if kunci:
+            sesi.ubah_idem[kunci] = hasil
+            for lama in list(sesi.ubah_idem)[:-20]:
+                del sesi.ubah_idem[lama]
+        return hasil
+
+    async def _ubah_kartu(self, sesi, kartu_id, payload, pelaksana, izin_fn) -> List[dict]:
+        selesai = {"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)}
+        cek = self.periksa_ubah(sesi, kartu_id, payload)  # ulang di bawah kunci (balapan)
+        if cek:
+            return [{"jenis": "galat", "kode": cek[1], "pesan": "Isian kartu tidak bisa dipakai." if cek[0] == 422 else cek[2],
+                     "detail": cek[2] if cek[0] == 422 else None, "kartu_id": kartu_id}, selesai]
+        k = sesi.kartu[kartu_id]
+        efektif = {x.nama: x for x in await self.registri.tools_untuk(izin_fn, self.gap_mendarat)}
+        t = efektif.get(k.tool)
+        if t is None or t.kelas != Kelas.WRITE:  # izin/tiket berubah sejak kartu lahir
+            return [{"jenis": "galat", "kode": "tidak_diizinkan", "pesan": "Tindakan ini tidak tersedia untuk Anda.",
+                     "kartu_id": kartu_id}, selesai]
+        masukan = buang_null({**_uk.normalkan_angka(t.skema, payload), **t.param_dari_jalur(k.jalur)})  # id dari kartu lama
+        jalur, sisa = t.jalur_konkret(masukan)
+        if t.pembanding:
+            pb = self.registri.ambil(t.pembanding)
+            jb_now = await pelaksana.kirim("GET", pb.jalur_konkret(masukan)[0])
+            sekarang = jb_now.isi.get("data", jb_now.isi) if isinstance(jb_now.isi, dict) else {}
+            if jb_now.status < 400 and isinstance(sekarang, dict):
+                sisa = buang_medan_tak_berubah(sisa, sekarang)
+        pr = self.registri.ambil(t.pratinjau)
+        jbp = await pelaksana.kirim(pr.metode, pr.jalur_konkret(masukan)[0], badan=badan_kanonik(sisa))
+        if jbp.status >= 400 or _ada_blok(jbp.isi) or not sisa:
+            return [{"jenis": "galat", "kode": "pratinjau_menolak", "kartu_id": kartu_id,
+                     "blocks": _uk.blok_pratinjau(jbp.status, jbp.isi) if sisa else [],
+                     "pesan": "Isian baru ditolak server; kartu lama tetap menunggu." if sisa else
+                              "Tidak ada perubahan dibanding dokumen sekarang."}, selesai]
+        k.status = StatusKartu.BASI
+        await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_basi",
+                                          tool=k.tool, kartu_id=k.kartu_id, payload_hash=k.payload_hash, hasil="ubah_di_kartu"))
+        baru = Kartu(sesi_id=sesi.sesi_id, tool=k.tool, metode=k.metode, jalur=jalur, payload=sisa, pratinjau=jbp.isi,
+                     judul=k.judul, tool_use_id=None)
+        sesi.kartu[baru.kartu_id] = baru
+        await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_lahir", tool=k.tool, kelas="WRITE",
+                                          payload_hash=baru.payload_hash, kunci_idempotensi=baru.kunci, kartu_id=baru.kartu_id,
+                                          hasil="ubah_di_kartu"))
+        sesi.sumber_angka += [sisa, jbp.isi]
+        _tambah_teks_pengguna(sesi, (
+            f"[sistem] Pengguna mengubah isian kartu {k.kartu_id} ({k.tool}) langsung di layar. Kartu lama tidak berlaku; "
+            f"kartu baru {baru.kartu_id} menunggu Setuju. Isian baru: {_ringkas(sisa)}. Pratinjau server: {_ringkas(jbp.isi)}"))
+        sesi.mode_tulis = True
+        return [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value},
+                {"jenis": "kartu", **baru.untuk_klien(), "menggantikan": k.kartu_id,
+                 "ubah": _uk.daftar_medan(t.skema, baru.payload, t.param_jalur())}, selesai]
 
     async def tolak(self, sesi: Sesi, kartu_id: str, catat_pesan: bool = True) -> List[dict]:
         k = sesi.kartu.get(kartu_id)
@@ -584,14 +671,7 @@ class Putaran:
             a.antre_dibaca.append(aliran.sidik_pesan(m["teks"]))
             sesi.sumber_angka.append(m["teks"])
         teks = "\n\n".join(m["teks"] for m in pesan)
-        tambahan = {"type": "text", "text": f"[pesan baru pengguna, dikirim saat kamu sedang bekerja] {teks}"}
-        akhir = sesi.messages[-1] if sesi.messages else None
-        if akhir and akhir["role"] == "user":  # gabung ke giliran user terakhir (mis. tool_result): peran tetap berselang
-            if isinstance(akhir["content"], str):
-                akhir["content"] = [{"type": "text", "text": akhir["content"]}]
-            akhir["content"].append(tambahan)
-        else:
-            sesi.messages.append({"role": "user", "content": [tambahan]})
+        _tambah_teks_pengguna(sesi, f"[pesan baru pengguna, dikirim saat kamu sedang bekerja] {teks}")
         if sesi.kartu_menunggu() is not None:
             sesi.mode_tulis = True
 
@@ -696,7 +776,7 @@ class Putaran:
                   pratinjau=jbp.isi, judul=t.judul_kartu or t.nama, tool_use_id=c.id)
         tak_dicatat = _cek_tak_didukung(t, sesi)
         sesi.kartu[k.kartu_id] = k
-        ev_kartu = {"jenis": "kartu", **k.untuk_klien()}
+        ev_kartu = {"jenis": "kartu", **k.untuk_klien(), "ubah": _uk.daftar_medan(t.skema, k.payload, t.param_jalur())}
         if tak_dicatat:
             ev_kartu["tak_dicatat"] = tak_dicatat
         peristiwa.append(ev_kartu)

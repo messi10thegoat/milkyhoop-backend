@@ -42,6 +42,11 @@ class PesanMasuk(BaseModel):
     id_pesan: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9-]{8,64}$")  # uuid dari FE (idempoten)
 
 
+class UbahKartu(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    payload: dict  # payload kartu LENGKAP sesudah diedit FE (#8)
+
+
 def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_untuk: Callable,
                 flag_fn: Callable, hari_ini_fn: Callable) -> APIRouter:
     """putaran_fn() -> Putaran (dibuat malas: kunci API & model dari env saat permintaan pertama);
@@ -300,6 +305,24 @@ def buat_router(putaran_fn: Callable, penyimpanan, *, app_fn: Callable, izin_fn_
         buat_pelaksana, izin = _alat(request, user)
         return await _aksi_kartu(request, user, sid, lambda s: putaran_fn().setujui(s, kartu_id, buat_pelaksana(), izin),
                                  {"jenis": "aksi_pengguna", "aksi": "setuju", "kartu_id": kartu_id})
+
+    @r.post("/kartu/{kartu_id}/ubah")
+    async def ubah(kartu_id: str, body: UbahKartu, request: Request):
+        """#8 ubah isian langsung di kartu: pratinjau ulang, kartu lama BASI, kartu BARU (menggantikan). Nol model.
+        X-Idempotency-Key: ulang = peristiwa respons pertama."""
+        user = await _pengguna(request)
+        sid = await _sesi_kartu(user, kartu_id)
+        s = await _sesi(user, sid)
+        kunci = request.headers.get("X-Idempotency-Key") or None
+        if kunci and kunci in s.ubah_idem:
+            return {"peristiwa": s.ubah_idem[kunci], "replay": True}
+        cek = putaran_fn().periksa_ubah(s, kartu_id, body.payload)
+        if cek:
+            return JSONResponse({"kode": cek[1], "detail": cek[2]}, status_code=cek[0])
+        buat_pelaksana, izin = _alat(request, user)
+        return await _aksi_kartu(request, user, sid,
+                                 lambda s: putaran_fn().ubah_kartu(s, kartu_id, body.payload, buat_pelaksana(), izin, kunci),
+                                 {"jenis": "aksi_pengguna", "aksi": "ubah", "kartu_id": kartu_id})
 
     @r.post("/kartu/{kartu_id}/tolak")
     async def tolak(kartu_id: str, request: Request):

@@ -63,6 +63,14 @@ class Tool:
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)
 
+    def param_dari_jalur(self, jalur: str) -> Optional[dict]:
+        """Kebalikan jalur_konkret: {param: nilai} dari jalur terisi (kartu lama); None bila tak cocok templat."""
+        pola = re.escape(self.jalur)
+        for p in self.param_jalur():
+            pola = pola.replace(re.escape("{" + p + "}"), f"(?P<{p}>[A-Za-z0-9_-]+)")
+        m = re.fullmatch(pola, jalur)
+        return m.groupdict() if m else None
+
     def jalur_contoh(self) -> str:
         return _PARAM_JALUR.sub(_ID_CONTOH, self.jalur)
 

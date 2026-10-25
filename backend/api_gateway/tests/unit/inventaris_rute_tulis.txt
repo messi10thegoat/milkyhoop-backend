@@ -72,6 +72,7 @@ POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
 POST /api/milkybook/kartu/{kartu_id}/tolak
+POST /api/milkybook/kartu/{kartu_id}/ubah
 POST /api/milkybook/sesi
 POST /api/milkybook/sesi/{sesi_id}/pesan
 POST /api/quotes/bulk/export
