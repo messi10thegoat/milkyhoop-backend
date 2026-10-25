@@ -31,8 +31,12 @@ async def main():
     async def jaring():
         k = await asyncpg.connect(url)
         try:
-            return {t: await k.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = $1", T)
-                    for t in ("journal_entries", "bills", "vendor_deposits", "vendor_deposit_applications", "audit_logs")}
+            # kolom diukur information_schema 25 Okt: vendor_deposit_applications TANPA tenant_id -> lewat vendor_deposits
+            n = {t: await k.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = $1", T)
+                 for t in ("journal_entries", "bills", "vendor_deposits", "audit_logs", "vendor_activities", "idempotency_keys")}
+            n["vendor_deposit_applications"] = await k.fetchval(
+                "SELECT count(*) FROM vendor_deposit_applications a JOIN vendor_deposits d ON d.id = a.vendor_deposit_id WHERE d.tenant_id = $1", T)
+            return n
         finally:
             await k.close()
 
