@@ -49,6 +49,7 @@ KHUSUS = {
     "POST /api/bills/{bill_id}/delete/preview": "DELETE /api/bills/{bill_id}",
     # AS-GP3 Pembayaran Keluar: hapus draf = DELETE (penentu bersama services/bayar_keluar_rencana.rencana_hapus_draf_bayar)
     "POST /api/bill-payments/{payment_id}/delete/preview": "DELETE /api/bill-payments/{payment_id}",
+    "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {
