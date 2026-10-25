@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import harga_sasaran, penjaga_angka, penjaga_tanggal
 from .audit import BarisAudit, PenulisAudit
 from .kartu import Kartu, StatusKartu, badan_kanonik
-from .model import HasilModel, PemanggilModel, biaya_usd
+from .model import GalatModel, HasilModel, PemanggilModel, biaya_usd, pilah_galat_sdk
 from .pelaksana import JawabanBE, Pelaksana
 from .registri import IzinFn, Kelas, Registri, Tool, buang_null
 
@@ -79,6 +79,14 @@ TOOL_HARGA_SASARAN = {
         "required": ["baris", "target_total"], "additionalProperties": False},
 }
 MAKS_COBA_ULANG = 2
+# Galat API model (#9, ukur 25 Okt: dulu 500 mentah ke FE). Teks ringkas untuk pengguna; kode untuk FE.
+PESAN_GALAT_MODEL = {
+    "sibuk": "Asisten sedang sibuk. Coba lagi sebentar lagi.",
+    "batas": "Asisten sedang mencapai batas pemakaian. Coba lagi beberapa menit lagi.",
+    "koneksi": "Asisten tidak bisa dihubungi. Coba lagi sebentar lagi.",
+    "lain": "Asisten sedang tidak tersedia. Coba lagi nanti.",
+}
+PESAN_SESUDAH_SETUJU = "Tindakan di kartu sudah tersimpan; hanya penjelasan asisten yang gagal dimuat."
 CATATAN_ANGKA_DISAMARKAN = "Sebagian angka tidak ditampilkan karena tidak berasal dari data aplikasi."
 
 ATURAN_SISTEM = """Kamu Milkybook, asisten pembukuan di aplikasi MilkyHoop. Pengguna adalah pemilik atau staf usaha kecil di Indonesia.
@@ -113,6 +121,8 @@ class Sesi:
     konteks: str = ""  # volatil (tanggal, nama usaha): dikirim sebagai pesan [konteks] pertama
     hari_ini: Optional[date] = None  # tanggal bisnis tenant; dasar penjaga tanggal + hitung_tanggal
     mode_tulis: bool = False  # hibrida: True = giliran dikerjakan model penulis (ada alur tulis / kartu menunggu)
+    # #7 pulihkan percakapan: peristiwa yang SUDAH dikirim ke FE (+ ucapan/aksi pengguna), urut; diisi router.
+    tampilan: List[dict] = field(default_factory=list)
 
     def kartu_menunggu(self) -> Optional[Kartu]:
         for k in self.kartu.values():
@@ -285,8 +295,13 @@ class Putaran:
         if k is None:
             return [{"jenis": "galat", "pesan": "Kartu tidak ditemukan."}]
         if k.status != StatusKartu.MENUNGGU:
-            # Enter kedua / kartu basi: NOL tulis.
-            return [{"jenis": "galat", "pesan": f"Kartu sudah {k.status.value}; tidak ada yang ditulis.", "kartu_id": k.kartu_id}]
+            # Enter kedua / kartu basi / Setuju diulang sesudah galat model: NOL tulis BARU. Ukur #9 25 Okt: dulu
+            # "tidak ada yang ditulis" padahal Setuju pertama sudah menyimpan -> pengguna mengira gagal.
+            if k.status == StatusKartu.SELESAI:
+                return [{"jenis": "galat", "kode": "kartu_sudah_disetujui", "kartu_id": k.kartu_id, "hasil": k.hasil,
+                         "pesan": "Kartu ini sudah disetujui dan tersimpan sebelumnya; tidak ada tulisan baru."}]
+            return [{"jenis": "galat", "kode": "kartu_tidak_menunggu", "kartu_id": k.kartu_id,
+                     "pesan": f"Kartu sudah {k.status.value}; tidak ada tulisan baru."}]
         k.status = StatusKartu.DIJALANKAN
         jb: Optional[JawabanBE] = None
         galat = None
@@ -322,7 +337,8 @@ class Putaran:
         peristiwa = [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value, "hasil": k.hasil}]
         sesi.messages.append({"role": "user", "content": pesan})
         sesi.mode_tulis = True  # lanjutan sesudah Setuju = alur tulis
-        return peristiwa + await self._putar(sesi, pelaksana, izin_fn)
+        return peristiwa + await self._putar(sesi, pelaksana, izin_fn,
+                                             sesudah_setuju=k.status == StatusKartu.SELESAI)
 
     async def tolak(self, sesi: Sesi, kartu_id: str, catat_pesan: bool = True) -> List[dict]:
         k = sesi.kartu.get(kartu_id)
@@ -336,7 +352,7 @@ class Putaran:
         return [{"jenis": "kartu_status", "kartu_id": k.kartu_id, "status": k.status.value}]
 
     # ------------------------------------------------------------------ inti putaran
-    async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
+    async def _putar(self, sesi: Sesi, pelaksana: Pelaksana, izin_fn: IzinFn, sesudah_setuju: bool = False) -> List[dict]:
         tools_semua = [t for t in await self.registri.tools_untuk(izin_fn, self.gap_mendarat) if t.tampil_ke_model]
         peristiwa: List[dict] = []
         sudah_dikoreksi = False
@@ -355,8 +371,22 @@ class Putaran:
 
         for _ in range(self.maks_langkah):
             pemanggil = self.pemanggil_baca if baca else self.pemanggil
-            hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
-                                    tools=api_tools, effort=self.effort)
+            try:
+                hasil = await pemanggil(system=self.system_baca if baca else self.system, messages=sesi.messages,
+                                        tools=api_tools, effort=self.effort)
+            except Exception as e:
+                g = e if isinstance(e, GalatModel) else pilah_galat_sdk(e)
+                if g is None:
+                    raise  # bukan galat API model (bug): tetap naik
+                # Riwayat tetap sah: pesan terakhir = user (teks atau tool_result); giliran berikut melanjutkan dari sana.
+                await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "model",
+                                                  model=self.model_nama, prompt_hash=self.prompt_hash,
+                                                  hasil=f"galat:{g.jenis}:{g.rinci}"[:500]))
+                pesan = PESAN_GALAT_MODEL.get(g.jenis, PESAN_GALAT_MODEL["lain"])
+                if sesudah_setuju:
+                    pesan = f"{PESAN_SESUDAH_SETUJU} {pesan}"
+                peristiwa.append({"jenis": "galat", "kode": f"model_{g.jenis}", "pesan": pesan})
+                break
             self._catat_usage(sesi, hasil)
             if hasil.model and hasil.model not in model_dipakai:
                 model_dipakai.append(hasil.model)

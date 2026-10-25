@@ -153,4 +153,132 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
     from app.milkybook.pasang import milkybook_router
     jalur = sorted((r.path, sorted(r.methods)[0]) for r in milkybook_router().routes)
     assert jalur == [("/kartu/{kartu_id}/setuju", "POST"), ("/kartu/{kartu_id}/tolak", "POST"),
-                     ("/sesi", "POST"), ("/sesi/{sesi_id}/pesan", "POST")]
+                     ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}/pesan", "POST")]
+
+
+# ---------------------------------------------------------------- #9 galat API model ramah (ukur 25 Okt: dulu 500 mentah)
+
+def _galat_sdk(kelas, status):
+    import anthropic
+    import httpx
+
+    def lempar(*_):
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        if kelas is anthropic.APITimeoutError:
+            raise anthropic.APITimeoutError(request=req)
+        raise kelas("galat uji", response=httpx.Response(status, request=req), body=None)
+    return lempar
+
+
+@pytest.mark.parametrize("kelas,status,kode", [
+    ("OverloadedError", 529, "model_sibuk"), ("InternalServerError", 500, "model_sibuk"),
+    ("RateLimitError", 429, "model_batas"), ("APITimeoutError", 0, "model_koneksi"), ("BadRequestError", 400, "model_lain")])
+def test_galat_sdk_di_giliran_jadi_peristiwa_ramah_bukan_500(kelas, status, kode):
+    import anthropic
+    store = PenyimpananSesiMemori()
+    m = ModelPalsu([_galat_sdk(getattr(anthropic, kelas), status), teks("Pulih.")])
+    app, _ = _app(store, model=m)
+    c = TestClient(app, raise_server_exceptions=False)
+    H = {"X-Uji-Tenant": "t1"}
+    sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
+    r = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai"}, headers=H)
+    assert r.status_code == 200
+    ev = r.json()["peristiwa"]
+    g = [e for e in ev if e["jenis"] == "galat"]
+    assert g and g[0]["kode"] == kode and "Asisten" in g[0]["pesan"] and ev[-1]["jenis"] == "selesai"
+    r2 = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai lagi"}, headers=H)  # kunci lepas, sesi lanjut
+    assert r2.status_code == 200 and r2.json()["peristiwa"][0]["teks"] == "Pulih."
+
+
+def test_galat_bukan_sdk_tetap_naik():
+    def bug(*_):
+        raise ValueError("bug kode")
+    app, _ = _app(PenyimpananSesiMemori(), model=ModelPalsu([bug]))
+    c = TestClient(app, raise_server_exceptions=False)
+    H = {"X-Uji-Tenant": "t1"}
+    sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
+    assert c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "hai"}, headers=H).status_code == 500
+
+
+def test_galat_model_sesudah_setuju_menegaskan_sudah_tersimpan_dan_setuju_ulang_jujur():
+    import anthropic
+    from app.milkybook.inti.putaran import PESAN_SESUDAH_SETUJU
+    store = PenyimpananSesiMemori()
+    m = ModelPalsu([panggil(("buat_x", {"jumlah": 3})), teks("Tinjau."), _galat_sdk(anthropic.OverloadedError, 529)])
+    app, _ = _app(store, model=m)
+    c = TestClient(app, raise_server_exceptions=False)
+    H = {"X-Uji-Tenant": "t1"}
+    sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
+    ev = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "buat 3"}, headers=H).json()["peristiwa"]
+    kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
+    r = c.post(f"/api/milkybook/kartu/{kid}/setuju", headers=H)
+    assert r.status_code == 200
+    ev = r.json()["peristiwa"]
+    assert ev[0]["jenis"] == "kartu_status" and ev[0]["status"] == "selesai"
+    assert any(e["jenis"] == "galat" and e["pesan"].startswith(PESAN_SESUDAH_SETUJU) for e in ev)
+    ulang = c.post(f"/api/milkybook/kartu/{kid}/setuju", headers=H).json()["peristiwa"][0]
+    assert ulang["kode"] == "kartu_sudah_disetujui" and ulang["hasil"] == {"id": "baru1", "total": 9000000}
+    assert "tidak ada yang ditulis" not in ulang["pesan"]
+
+
+def test_pilah_galat_sdk():
+    import anthropic
+    import httpx
+    from app.milkybook.inti.model import pilah_galat_sdk
+    req = httpx.Request("POST", "https://x")
+    assert pilah_galat_sdk(anthropic.RateLimitError("x", response=httpx.Response(429, request=req), body=None)).jenis == "batas"
+    assert pilah_galat_sdk(anthropic.APIConnectionError(request=req)).jenis == "koneksi"
+    assert pilah_galat_sdk(anthropic.ServiceUnavailableError("x", response=httpx.Response(503, request=req), body=None)).jenis == "sibuk"
+    assert pilah_galat_sdk(anthropic.AuthenticationError("x", response=httpx.Response(401, request=req), body=None)).jenis == "lain"
+    assert pilah_galat_sdk(ValueError("x")) is None
+
+
+# ---------------------------------------------------------------- #7 pulihkan percakapan
+
+def test_pulihkan_percakapan_urut_dan_tenant_aman():
+    store = PenyimpananSesiMemori()
+    m = ModelPalsu([panggil(("buat_x", {"jumlah": 3})), teks("Tinjau."), teks("Tersimpan.")])
+    app, _ = _app(store, model=m)
+    c = TestClient(app)
+    H = {"X-Uji-Tenant": "t1"}
+    sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
+    kosong = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
+    assert kosong == {"sesi_id": sid, "peristiwa": [], "kartu_menunggu": None}
+    ev = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "buat 3"}, headers=H).json()["peristiwa"]
+    kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
+    tengah = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
+    assert tengah["kartu_menunggu"] == kid
+    assert tengah["peristiwa"][0] == {"jenis": "pengguna", "teks": "buat 3"}
+    assert tengah["peristiwa"][1:] == [e for e in ev if e["jenis"] != "selesai"]
+    c.post(f"/api/milkybook/kartu/{kid}/setuju", headers=H)
+    akhir = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
+    jenis = [e["jenis"] for e in akhir["peristiwa"]]
+    assert akhir["kartu_menunggu"] is None and "aksi_pengguna" in jenis and jenis[-1] == "teks"
+    assert "selesai" not in jenis
+    assert c.get(f"/api/milkybook/sesi/{sid}", headers={"X-Uji-Tenant": "t2"}).status_code == 404
+    assert c.get(f"/api/milkybook/sesi/{sid}", headers={"X-Uji-Tenant": "t1", "X-Uji-User": "u2"}).status_code == 404
+    assert c.get(f"/api/milkybook/sesi/{sid}").status_code == 401
+
+
+@pytest.mark.parametrize("store_fn", [PenyimpananSesiMemori, lambda: PenyimpananSesiRedis(RedisPalsu())])
+async def test_tampilan_ikut_round_trip_dan_dibatasi(store_fn):
+    from app.milkybook.inti.router import MAKS_TAMPILAN
+    store = store_fn()
+    s = await store.buat("t", "u", konteks="", hari_ini=date(2026, 10, 25))
+    s.tampilan = [{"jenis": "teks", "teks": str(i)} for i in range(5)]
+    await store.simpan(s)
+    assert (await store.ambil("t", "u", s.sesi_id)).tampilan == s.tampilan
+    assert MAKS_TAMPILAN >= 100
+
+
+def test_tampilan_dibatasi_yang_tertua_dibuang(monkeypatch):
+    import app.milkybook.inti.router as R
+    monkeypatch.setattr(R, "MAKS_TAMPILAN", 3)
+    app, _ = _app(PenyimpananSesiMemori(), model=ModelPalsu([teks("a"), teks("b")]))
+    c = TestClient(app)
+    H = {"X-Uji-Tenant": "t1"}
+    sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
+    c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "satu"}, headers=H)
+    c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "dua"}, headers=H)
+    assert c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()["peristiwa"] == [
+        {"jenis": "teks", "teks": "a"}, {"jenis": "pengguna", "teks": "dua"}, {"jenis": "teks", "teks": "b"}]

@@ -94,6 +94,34 @@ def sistem_berbreakpoint(system: List[dict], ttl: Optional[str]) -> List[dict]:
     return sal
 
 
+class GalatModel(Exception):
+    """Galat API model yang sudah dipilah (SDK sudah mengulang sendiri; lihat max_retries bawaan).
+    jenis: sibuk (5xx/overloaded) | batas (429) | koneksi (koneksi/timeout) | lain (4xx lain, mis. kredit/izin).
+    Ditangkap putaran -> peristiwa galat ramah (tanpa 500 ke FE). Ukur #9 25 Okt: dulu 500 mentah."""
+
+    def __init__(self, jenis: str, rinci: str = ""):
+        super().__init__(f"{jenis}: {rinci}")
+        self.jenis = jenis
+        self.rinci = rinci
+
+
+def pilah_galat_sdk(e: Exception) -> Optional[GalatModel]:
+    """Galat SDK anthropic -> GalatModel; bukan galat SDK -> None (dibiarkan naik)."""
+    try:
+        import anthropic
+    except ImportError:  # suite unit tanpa paket
+        return None
+    if isinstance(e, anthropic.RateLimitError):
+        return GalatModel("batas", type(e).__name__)
+    if isinstance(e, (anthropic.APITimeoutError, anthropic.APIConnectionError)):
+        return GalatModel("koneksi", type(e).__name__)
+    if isinstance(e, anthropic.APIStatusError):
+        return GalatModel("sibuk" if e.status_code >= 500 else "lain", f"{type(e).__name__} {e.status_code}")
+    if isinstance(e, anthropic.AnthropicError):
+        return GalatModel("lain", type(e).__name__)
+    return None
+
+
 class PemanggilModel(Protocol):
     async def __call__(
         self, *, system: List[dict], messages: List[dict], tools: List[dict], effort: str
@@ -123,13 +151,19 @@ class PemanggilAnthropic:
             output_config={"effort": effort},
             cache_control={"type": "ephemeral"},
         )
-        if self.model in ("claude-opus-5-5", "claude-sonnet-5-5"):
-            resp = await self._client.beta.messages.create(
-                betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kw
-            )
-        else:
-            # Haiku 5.5: tanpa fallback sisi server (skill: refusals have no server-side fallback).
-            resp = await self._client.messages.create(**kw)
+        try:
+            if self.model in ("claude-opus-5-5", "claude-sonnet-5-5"):
+                resp = await self._client.beta.messages.create(
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kw
+                )
+            else:
+                # Haiku 5.5: tanpa fallback sisi server (skill: refusals have no server-side fallback).
+                resp = await self._client.messages.create(**kw)
+        except Exception as e:
+            g = pilah_galat_sdk(e)
+            if g is None:
+                raise
+            raise g from e
         konten = [b.model_dump(exclude_none=True) for b in resp.content]
         usage = resp.usage.model_dump(exclude_none=True) if resp.usage else {}
         return HasilModel(konten=konten, stop_reason=resp.stop_reason or "", usage=usage, model=resp.model)

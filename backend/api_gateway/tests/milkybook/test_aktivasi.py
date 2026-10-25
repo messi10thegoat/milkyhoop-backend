@@ -34,6 +34,8 @@ def test_setiap_rute_terpetakan_izin_quote_r_pola_pertama():
 def test_inventaris_rute_tulis_memuat_rute_milkybook():
     inv = set(_src("tests/unit/inventaris_rute_tulis.txt").splitlines())
     for jalur, metode in _rute():
+        if metode == "GET":  # inventaris = rute TULIS saja; GET dijaga tabel izin (READ-authz STEP 2)
+            continue
         assert f"{metode} {jalur}" in inv
 
 
