@@ -616,6 +616,8 @@ POST /api/vendors
 POST /api/vendors/merge
 POST /api/vendors/merge/preview
 POST /api/vendors/{vendor_id}/opening-balance
+POST /api/vendors/{vendor_id}/opening-balance/legacy/reverse
+POST /api/vendors/{vendor_id}/opening-balance/legacy/reverse/preview
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
 POST /{tenant_id}/chat

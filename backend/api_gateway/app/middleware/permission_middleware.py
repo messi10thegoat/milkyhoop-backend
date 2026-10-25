@@ -818,6 +818,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/tax-invoices/[^/]+/status$", ["PATCH"], "tax", "U"),
     # vendors
     (r"^/api/vendors/[^/]+/opening-balance$", ["POST"], "supplier", "C"),
+    (r"^/api/vendors/[^/]+/opening-balance/legacy/reverse(/preview)?$", ["POST"], "supplier", "C"),  # SA-KOREKSI 25 Okt: izin = saldo awal
     (r"^/api/vendors/[^/]+/status$", ["PATCH"], "supplier", "U"),
     (r"^/api/vendors/merge$", ["POST"], "supplier", "C"),
     (r"^/api/vendors/merge/preview$", ["POST"], "supplier", "C"),  # GABUNG-VENDOR 25 Okt: pratinjau, izin = /merge

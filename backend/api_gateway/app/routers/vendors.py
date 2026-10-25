@@ -1627,6 +1627,120 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str, response:
             return await _ib.simpan(conn, ctx, kp, sidik, "VENDOR_OB", resp, bill_id) if kp else resp
 
 
+# =============================================================================
+# SA-KOREKSI (25 Okt 2026): BALIK saldo awal vendor CARA LAMA (jurnal VENDOR_OPENING_BALANCE langsung, arah TERBALIK Dr Hutang, V457)
+# =============================================================================
+# Aturan DIKONFIRMASI LANGSUNG pemilik 25 Okt: koreksi saldo awal = batalkan lalu buat baru; saldo awal cara lama dibalik dengan JURNAL PEMBALIK
+# (jurnal lama TETAP ada sebagai jejak, ditandai reversed_by_id; Law 2). Pintu umum POST /journals/{id}/reverse menolak VENDOR_OPENING_BALANCE
+# ("perbaiki lewat modul saldo awal") -- inilah pintunya. Pembalik ber-source_type REVERSAL (whitelist pemicu guard_arap_requires_obligation:
+# kredit Hutang tanpa tagihan ditolak untuk source_type lain), reversal_of_id = jurnal lama, source_id = vendor. compute_ap_outstanding (ob_rows)
+# membuang jurnal yang dibalik -> saldo awal lama vendor = 0; sesudahnya saldo awal baru lewat POST /{id}/opening-balance (tagihan pembuka).
+
+
+async def _rencana_balik_saldo_awal_lama(conn, tenant_id: str, vid) -> dict:
+    """SATU penentu (pratinjau READ ONLY dan tulis di dalam kunci). NOL tulisan. -> {vendor, journals:[{id,number,date,lines}], blocks}."""
+    vendor = await conn.fetchrow("SELECT id, name FROM vendors WHERE id = $1 AND tenant_id = $2", vid, tenant_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    jurnal = await conn.fetch(
+        """SELECT id, journal_number, journal_date FROM journal_entries WHERE tenant_id = $1 AND source_type = 'VENDOR_OPENING_BALANCE'
+             AND source_id = $2 AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL ORDER BY journal_date, journal_number""",
+        tenant_id, vid)
+    hasil = []
+    for j in jurnal:
+        baris = await conn.fetch(
+            """SELECT jl.account_id, coa.account_code, coa.name AS account_name, jl.debit, jl.credit, jl.memo, jl.line_number
+               FROM journal_lines jl JOIN chart_of_accounts coa ON coa.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""", j["id"])
+        hasil.append({"id": j["id"], "number": j["journal_number"], "date": j["journal_date"], "lines": [dict(b) for b in baris]})
+    blok = [] if hasil else [{"code": "TAK_ADA_SALDO_AWAL_LAMA",
+                              "message": f"Vendor {vendor['name']} tidak punya saldo awal cara lama yang perlu dibalik."}]
+    return {"vendor": vendor, "journals": hasil, "blocks": blok}
+
+
+def _bentuk_balik(r: dict) -> dict:
+    return {"vendor_id": str(r["vendor"]["id"]), "vendor_name": r["vendor"]["name"],
+            "journals": [{"journal_id": str(j["id"]), "journal_number": j["number"], "journal_date": j["date"].isoformat(),
+                          "reversal_lines": [{"account_code": b["account_code"], "account_name": b["account_name"],
+                                              "debit": f"{Decimal(str(b['credit'])):.2f}", "credit": f"{Decimal(str(b['debit'])):.2f}"}
+                                             for b in j["lines"]]} for j in r["journals"]]}
+
+
+@router.post("/{vendor_id}/opening-balance/legacy/reverse/preview")
+async def preview_reverse_legacy_opening_balance(request: Request, vendor_id: UUID):
+    """Pratinjau balik saldo awal cara lama: penentu SAMA dengan tulis, transaksi READ ONLY tanpa kunci, NOL tulisan. 200 walau diblok."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True):
+            r = await _rencana_balik_saldo_awal_lama(conn, ctx["tenant_id"], vendor_id)
+        return {"success": True, "data": {"ok": not r["blocks"], **_bentuk_balik(r), "blocks": r["blocks"]}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing legacy OB reverse {vendor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau pembalikan saldo awal.")
+
+
+@router.post("/{vendor_id}/opening-balance/legacy/reverse")
+async def reverse_legacy_opening_balance(request: Request, vendor_id: UUID, response: Response = None):
+    """Balik SEMUA jurnal saldo awal cara lama vendor ini (jurnal pembalik REVERSAL, DRAFT -> POSTED, jurnal lama ditandai reversed_by_id).
+    Idem VENDOR_OB_LAMA_BALIK; kunci VENDOR:{tenant}:{id} + VENDOR_OPENING:{id} (SAMA dengan POST /{id}/opening-balance); penentu diulang
+    DI DALAM kunci. Blok -> 409."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx.get("user_id"):
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "VENDOR_OB_LAMA_BALIK", vendor_id, {},
+                                                             response)
+                if lama is not None:
+                    return lama
+                await _kunci_vendor(conn, ctx["tenant_id"], vendor_id, saldo_awal=True)
+                r = await _rencana_balik_saldo_awal_lama(conn, ctx["tenant_id"], vendor_id)
+                if r["blocks"]:
+                    raise HTTPException(status_code=409, detail=r["blocks"][0])
+                tanggal = await tanggal_dokumen(conn, ctx["tenant_id"])
+                dibalik = []
+                for j in r["journals"]:
+                    total = sum(Decimal(str(b["debit"])) for b in j["lines"])
+                    nomor = await conn.fetchval("SELECT get_next_journal_number($1, $2, $3)", ctx["tenant_id"], "REV", tanggal)
+                    rid = await conn.fetchval(
+                        """INSERT INTO journal_entries (tenant_id, journal_number, journal_date, description, source_type, source_id, total_debit,
+                                                        total_credit, status, created_by, reversal_of_id, reversal_reason)
+                           VALUES ($1, $2, $3, $4, 'REVERSAL', $5, $6, $6, 'DRAFT', $7, $8, $9) RETURNING id""",
+                        ctx["tenant_id"], nomor, tanggal, f"Balik saldo awal lama {j['number']} - {r['vendor']['name']}", vendor_id, total,
+                        UUID(str(ctx["user_id"])), j["id"], "Koreksi saldo awal vendor cara lama")
+                    for i, b in enumerate(j["lines"], 1):
+                        await conn.execute(
+                            "INSERT INTO journal_lines (journal_id, account_id, debit, credit, memo, line_number) VALUES ($1, $2, $3, $4, $5, $6)",
+                            rid, b["account_id"], b["credit"], b["debit"], f"BALIK: {b['memo'] or j['number']}", i)
+                    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", rid)  # Law 20
+                    await conn.execute("UPDATE journal_entries SET reversed_by_id = $1, reversed_at = NOW() WHERE id = $2 AND reversed_by_id IS NULL",
+                                       rid, j["id"])
+                    dibalik.append({"journal_number": j["number"], "reversal_journal_id": str(rid), "reversal_journal_number": nomor})
+                user = request.state.user
+                aktor = user.get("fullname") or user.get("username") or user.get("email") or "System"
+                await conn.execute(
+                    """INSERT INTO vendor_activities (vendor_id, tenant_id, type, description, actor_id, actor_name, metadata)
+                       VALUES ($1, $2, 'opening_balance_reversed', $3, $4, $5, $6::jsonb)""",
+                    vendor_id, ctx["tenant_id"], "Saldo awal cara lama dibalik", ctx["user_id"], aktor, json.dumps({"dibalik": dibalik}))
+                await conn.execute(
+                    """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+                       VALUES (gen_random_uuid()::text, 'VENDOR_OPENING_BALANCE_REVERSED', 'vendor', $1, $2, $3, 'api:vendors.ob_legacy_reverse',
+                               jsonb_build_object('dibalik', $4::jsonb, 'user_id', $5::text), true, now())""",
+                    str(vendor_id), r["vendor"]["name"], ctx["tenant_id"], json.dumps(dibalik), str(ctx["user_id"]))
+                resp = {"success": True, "message": "Saldo awal cara lama dibalik.",
+                        "data": {**_bentuk_balik(r), "reversed": dibalik}}
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VENDOR_OB_LAMA_BALIK", resp, vendor_id) if kp else resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reversing legacy OB {vendor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal membalik saldo awal cara lama.")
+
+
 @router.get("/{vendor_id}/journal-entries")
 async def get_vendor_journal_entries(
     request: Request,

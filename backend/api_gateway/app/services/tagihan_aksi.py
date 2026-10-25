@@ -337,6 +337,13 @@ async def blok_void(conn, tid: str, bill) -> list:
     if nd:
         bloks.append(blok("ADA_NOTA_DEBIT", f"Faktur pembelian {bill['invoice_number']} punya nota debit terkait ("
                                             + ", ".join(r["credit_number"] for r in nd) + "). Lepas nota debit itu dulu, lalu batalkan fakturnya."))
+    # SA-KOREKSI (25 Okt 2026, aturan DIKONFIRMASI LANGSUNG pemilik): tagihan PEMBUKA saldo awal yang sudah dipotong uang muka -> DITOLAK (bukan
+    # dilepas otomatis seperti tagihan biasa, putusan 22 Okt). Koreksi saldo awal = void pembuka bersih lalu buat baru.
+    if await tagihan_pembuka(conn, tid, bill["id"]):
+        um = await um_aktif(conn, tid, bill["id"])
+        if um:
+            bloks.append(blok("SALDO_AWAL_ADA_UANG_MUKA", f"Tagihan saldo awal {bill['invoice_number']} sudah dipotong uang muka ("
+                                                          + ", ".join(u["deposit_number"] for u in um) + "). Lepas uang muka itu dulu, lalu batalkan."))
     return bloks
 
 
