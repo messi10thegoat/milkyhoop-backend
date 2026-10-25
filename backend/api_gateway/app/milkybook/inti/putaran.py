@@ -92,6 +92,9 @@ _KLAIM_KARTU = re.compile(
     r"kartu\s+tinjau\s+(sudah\s+)?(tampil|muncul|siap|ada)|(di|pada)\s+kartu\s+tinjau|siapkan\s+untuk\s+tinjau"
     r"|\btekan(lah)?\s+(tombol\s+)?\**setuju", re.IGNORECASE)
 CATATAN_TANPA_KARTU = "Belum ada kartu Tinjau untuk usulan ini; minta saya menyiapkannya lagi."
+# #11 pagar biaya per tenant per bulan (putusan pemilik 25 Okt). Tolak sopan TANPA memanggil model; Setuju kartu yang
+# sudah ada tetap menulis (keputusan pengguna), hanya penjelasan model yang dilewati.
+PESAN_BATAS_BIAYA = "Batas pemakaian Milkybook bulan ini untuk usaha Anda sudah tercapai. Fitur lain tetap bisa dipakai seperti biasa."
 PESAN_SESUDAH_SETUJU = "Tindakan di kartu sudah tersimpan; hanya penjelasan asisten yang gagal dimuat."
 CATATAN_ANGKA_DISAMARKAN = "Sebagian angka tidak ditampilkan karena tidak berasal dari data aplikasi."
 
@@ -275,6 +278,7 @@ class Putaran:
         effort: str = "medium",
         pemanggil_baca: Optional[PemanggilModel] = None,
         saklar_baca=None,
+        batas_bulan=None,
     ):
         self.registri = registri
         self.pemanggil = pemanggil
@@ -291,9 +295,29 @@ class Putaran:
         self.pemanggil_baca = pemanggil_baca
         # Saklar mundur cepat (syarat MASTER): dibaca SETIAP giliran; False = Sonnet saja tanpa deploy kode.
         self.saklar_baca = saklar_baca or (lambda: True)
+        # #11 pagar biaya: tenant_id -> batas USD bulan ini (None = tanpa pagar); dibaca SETIAP giliran.
+        self.batas_bulan = batas_bulan or (lambda tenant_id: None)
+
+    async def _lewat_batas(self, sesi: Sesi) -> bool:
+        batas = self.batas_bulan(sesi.tenant_id)
+        baca = getattr(self.audit, "biaya_bulan_ini", None)
+        if batas is None or baca is None:
+            return False
+        terpakai = await baca(sesi.tenant_id)
+        if terpakai is None or terpakai < batas:  # galat baca = fail-open (batas keras = batas belanja Console)
+            return False
+        await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "model",
+                                          hasil=f"batas_biaya:{terpakai:.4f}/{batas:.2f}"))
+        return True
+
+    def _tolak_batas(self, sesi: Sesi) -> List[dict]:
+        return [{"jenis": "galat", "kode": "batas_biaya", "pesan": PESAN_BATAS_BIAYA},
+                {"jenis": "selesai", "usage": dict(sesi.usage), "biaya_usd": round(sesi.biaya_usd, 6)}]
 
     # ------------------------------------------------------------------ giliran pengguna
     async def giliran(self, sesi: Sesi, teks: str, pelaksana: Pelaksana, izin_fn: IzinFn) -> List[dict]:
+        if await self._lewat_batas(sesi):
+            return self._tolak_batas(sesi)  # pesan TIDAK masuk riwayat model (tidak diproses)
         if not sesi.messages and sesi.konteks:
             teks = f"[konteks] {sesi.konteks}\n\n{teks}"
         sesi.messages.append({"role": "user", "content": teks})
@@ -350,6 +374,8 @@ class Putaran:
         aliran.pancar(peristiwa[0])  # #10: status kartu SEBELUM penjelasan model (urutan aliran = urutan JSON)
         sesi.messages.append({"role": "user", "content": pesan})
         sesi.mode_tulis = True  # lanjutan sesudah Setuju = alur tulis
+        if await self._lewat_batas(sesi):  # tulis SUDAH jalan (keputusan pengguna); penjelasan model dilewati
+            return peristiwa + self._tolak_batas(sesi)
         return peristiwa + await self._putar(sesi, pelaksana, izin_fn,
                                              sesudah_setuju=k.status == StatusKartu.SELESAI)
 

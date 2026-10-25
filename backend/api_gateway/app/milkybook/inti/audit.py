@@ -39,12 +39,24 @@ class PenulisAudit(Protocol):
     async def tulis(self, baris: BarisAudit) -> None: ...
 
 
+def awal_bulan_utc(t: Optional[float] = None) -> float:
+    """Batas bulan pagar biaya (#11) = awal bulan UTC (sama dengan date_trunc('month', now()) Postgres UTC)."""
+    import datetime as _dt
+    d = _dt.datetime.fromtimestamp(t if t is not None else time.time(), _dt.timezone.utc)
+    return d.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
 class AuditMemori:
     def __init__(self):
         self.baris: List[BarisAudit] = []
 
     async def tulis(self, baris: BarisAudit) -> None:
         self.baris.append(baris)
+
+    async def biaya_bulan_ini(self, tenant_id: str) -> float:
+        awal = awal_bulan_utc()
+        return sum(b.biaya_usd or 0 for b in self.baris
+                   if b.tenant_id == tenant_id and b.peristiwa == "giliran" and b.waktu >= awal)
 
     def sebagai_dict(self) -> List[dict]:
         return [asdict(b) for b in self.baris]
@@ -58,11 +70,22 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, 
 """
 
 
+_SQL_BIAYA = """
+SELECT COALESCE(SUM(biaya_usd), 0) FROM asisten_aksi
+WHERE tenant_id = $1 AND peristiwa = 'giliran' AND dibuat >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+"""
+
+
 class AuditPostgres:
     """Dipakai sesudah migrasi diterapkan (izin pemilik + slot). Filter tenant eksplisit di baris."""
 
     def __init__(self, pool):
         self._pool = pool
+
+    async def biaya_bulan_ini(self, tenant_id: str) -> float:
+        """#11 pagar biaya: SUM biaya_usd baris 'giliran' bulan ini (indeks asisten_aksi_giliran (tenant_id, dibuat))."""
+        async with self._pool.acquire() as conn:
+            return float(await conn.fetchval(_SQL_BIAYA, tenant_id) or 0)
 
     async def tulis(self, b: BarisAudit) -> None:
         async with self._pool.acquire() as conn:

@@ -5,6 +5,9 @@ MILKYBOOK_MODEL_BACA  model giliran baca (bawaan MODEL_BACA = claude-haiku-5-5);
                       Dibaca SETIAP giliran lewat saklar -> mundur cepat tanpa deploy kode
                       (ubah .env + `compose up -d` = muat ulang env kontainer, bukan rilis).
 MILKYBOOK_EFFORT      bawaan medium.
+MILKYBOOK_BATAS_BULAN_USD  #11 pagar biaya per tenant per bulan (UTC), "bawaan=5,<tenant_id>=15"; bawaan kode =
+                      BATAS_BULAN_BAWAAN (putusan pemilik LANGSUNG 25 Okt: grapgrap $15, lain $5; batas belanja Console
+                      kunci Milkybook $20/bulan = batas keras semua tenant). "0" = tanpa pagar untuk tenant itu.
 Kunci API: MILKYBOOK_ANTHROPIC_API_KEY (kunci Milkybook TERPISAH dengan batas belanja; tidak pernah dicetak).
 """
 from __future__ import annotations
@@ -34,9 +37,28 @@ def pemanggil_dari_env(env=os.environ) -> Tuple[object, Optional[object], str]:
     return penulis, baca, env.get("MILKYBOOK_EFFORT", EFFORT_BAWAAN)
 
 
+BATAS_BULAN_BAWAAN = "bawaan=5,grapgrap-manado=15"
+
+
+def batas_bulan_dari_env(env=os.environ) -> Callable[[str], Optional[float]]:
+    """tenant_id -> batas USD bulan ini (None = tanpa pagar). Dibaca SETIAP giliran (ubah .env tanpa rilis kode)."""
+    def batas(tenant_id: str) -> Optional[float]:
+        peta = {}
+        for bagian in (env.get("MILKYBOOK_BATAS_BULAN_USD") or BATAS_BULAN_BAWAAN).split(","):
+            if "=" in bagian:
+                k, v = bagian.split("=", 1)
+                try:
+                    peta[k.strip()] = float(v)
+                except ValueError:
+                    continue
+        v = peta.get(tenant_id, peta.get("bawaan"))
+        return v if v and v > 0 else None
+    return batas
+
+
 def buat_putaran_dari_env(registri, audit, env=os.environ, **kw):
     """Putaran siap pakai router: hibrida bawaan (Haiku baca / Sonnet tulis), saklar mundur dibaca tiap giliran."""
     from .putaran import Putaran
     penulis, baca, effort = pemanggil_dari_env(env)
     return Putaran(registri, penulis, audit, model_nama=getattr(penulis, "model", ""), effort=effort,
-                   pemanggil_baca=baca, saklar_baca=saklar_baca_dari_env(env), **kw)
+                   pemanggil_baca=baca, saklar_baca=saklar_baca_dari_env(env), batas_bulan=batas_bulan_dari_env(env), **kw)

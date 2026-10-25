@@ -781,3 +781,70 @@ async def test_hibrida_model_baca_mengklaim_kartu_dialihkan_ke_penulis():
     assert [e["teks"] for e in ev if e["jenis"] == "teks"] == ["Silakan tinjau kartunya."]  # klaim model baca tak tampil
     assert any(e["jenis"] == "kartu" for e in ev) and s.mode_tulis
     assert any(b.hasil == "klaim_kartu:alih" for b in p.audit.baris)
+
+
+# ---------------------------------------------------------------- #11 pagar biaya per tenant (putusan pemilik 25 Okt)
+
+def test_batas_bulan_bawaan_pemilik_dan_env():
+    from app.milkybook.inti.konfigurasi import batas_bulan_dari_env
+    b = batas_bulan_dari_env({})
+    assert b("grapgrap-manado") == 15 and b("kaos-biru-konveksi") == 5 and b("tenant-lain") == 5
+    b = batas_bulan_dari_env({"MILKYBOOK_BATAS_BULAN_USD": "bawaan=0, kaos-biru-konveksi = 2, rusak=xx"})
+    assert b("kaos-biru-konveksi") == 2 and b("tenant-lain") is None and b("rusak") is None
+
+
+def _audit_terpakai(tenant, usd, bulan_lalu=False):
+    from app.milkybook.inti.audit import AuditMemori, BarisAudit, awal_bulan_utc
+    a = AuditMemori()
+    w = awal_bulan_utc() - 3600 if bulan_lalu else awal_bulan_utc() + 60
+    a.baris.append(BarisAudit(tenant, "u", "s", "giliran", biaya_usd=usd, waktu=w))
+    a.baris.append(BarisAudit("tenant-lain", "u", "s", "giliran", biaya_usd=99, waktu=w))
+    return a
+
+
+def _putaran_batas(audit, naskah, batas=5.0):
+    m = ModelPalsu(naskah)
+    return Putaran(registri(), m, audit, gap_mendarat=("G1",), batas_bulan=lambda t: batas), m
+
+
+async def test_lewat_batas_giliran_ditolak_tanpa_model_tenant_lain_dan_bulan_lalu_tak_terhitung():
+    from app.milkybook.inti.putaran import PESAN_BATAS_BIAYA
+    p, m = _putaran_batas(_audit_terpakai("kaos-biru-konveksi", 5.0), [teks("tak boleh")])
+    s = sesi()
+    ev = await p.giliran(s, "hai", be_standar(), izin_semua)
+    assert ev[0] == {"jenis": "galat", "kode": "batas_biaya", "pesan": PESAN_BATAS_BIAYA} and ev[-1]["jenis"] == "selesai"
+    assert m.permintaan == [] and s.messages == []
+    assert any(b.peristiwa == "model" and b.hasil.startswith("batas_biaya:5.0000/5.00") for b in p.audit.baris)
+    p2, m2 = _putaran_batas(_audit_terpakai("kaos-biru-konveksi", 4.99), [teks("Halo.")])
+    assert (await p2.giliran(sesi(), "hai", be_standar(), izin_semua))[0]["teks"] == "Halo."
+    p3, _ = _putaran_batas(_audit_terpakai("kaos-biru-konveksi", 50, bulan_lalu=True), [teks("Halo.")])
+    assert (await p3.giliran(sesi(), "hai", be_standar(), izin_semua))[0]["teks"] == "Halo."
+
+
+async def test_lewat_batas_setuju_tetap_menulis_penjelasan_dilewati():
+    audit = _audit_terpakai("kaos-biru-konveksi", 0)
+    p, m = _putaran_batas(audit, [panggil(("buat_x", {"jumlah": 2})), teks("Tinjau."), teks("tak boleh")])
+    be, s = be_standar(), sesi()
+    ev = await p.giliran(s, "buat", be, izin_semua)
+    kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
+    from app.milkybook.inti.audit import BarisAudit, awal_bulan_utc
+    audit.baris.append(BarisAudit("kaos-biru-konveksi", "u", "s", "giliran", biaya_usd=6.0, waktu=awal_bulan_utc() + 120))
+    n = len(m.permintaan)
+    ev2 = await p.setujui(s, kid, be, izin_semua)
+    assert ev2[0]["jenis"] == "kartu_status" and ev2[0]["status"] == "selesai"
+    assert ev2[1]["kode"] == "batas_biaya" and len(m.permintaan) == n
+    assert [c["metode"] for c in be.panggilan].count("POST") >= 1
+
+
+async def test_lewat_batas_galat_baca_fail_open():
+    class AuditRusak(AuditMemori):
+        async def biaya_bulan_ini(self, t):
+            return None
+    p, _ = _putaran_batas(AuditRusak(), [teks("Halo.")], batas=0.0001)
+    assert (await p.giliran(sesi(), "hai", be_standar(), izin_semua))[0]["teks"] == "Halo."
+
+
+def test_sql_biaya_per_tenant_giliran_bulan_ini():
+    from app.milkybook.inti.audit import _SQL_BIAYA
+    sql = " ".join(_SQL_BIAYA.split())
+    assert "tenant_id = $1" in sql and "peristiwa = 'giliran'" in sql and "date_trunc('month'" in sql

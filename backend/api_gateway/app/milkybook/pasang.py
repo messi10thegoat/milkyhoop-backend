@@ -29,6 +29,18 @@ class _AuditMalas:
         except Exception as e:  # pragma: no cover - jalur produksi
             logger.error("[MILKYBOOK] audit gagal (%s): %s", baris.peristiwa, type(e).__name__)
 
+    async def biaya_bulan_ini(self, tenant_id: str):
+        """#11: galat baca -> None = pagar TIDAK memblok (fail-open, dicatat); batas keras tetap batas belanja Console."""
+        try:
+            if self._inti is None:
+                from ..services.db_pool import get_db_pool
+                from .inti.audit import AuditPostgres
+                self._inti = AuditPostgres(await get_db_pool())
+            return await self._inti.biaya_bulan_ini(tenant_id)
+        except Exception as e:  # pragma: no cover - jalur produksi
+            logger.error("[MILKYBOOK] baca biaya gagal: %s", type(e).__name__)
+            return None
+
 
 @lru_cache(maxsize=1)
 def _putaran():
