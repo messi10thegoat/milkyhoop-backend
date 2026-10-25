@@ -801,7 +801,10 @@ async def update_purchase_order(
     """
     Ubah pesanan pembelian (hanya Draf atau Terkirim). Kunci PO + baca ulang di dalam lock; total dihitung ulang dari baris + diskon/pajak
     header sesudah SETIAP perubahan (baris ATAU diskon/pajak header).
+    PO-IM (25 Okt 2026): If-Match opt-in (pola AS-GP4b/AS-G1b) diperiksa SESUDAH replay idem PO_UPDATE dan SESUDAH kunci PO -- ulang ber-kunci =
+    jawaban pertama (bukan 412), dan If-Match tak berpacu dengan penulis lain (kirim/terima/tagih juga memajukan updated_at di bawah kunci yang sama).
     """
+    from ..services.optimistic_concurrency import assert_if_match_row
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -816,6 +819,7 @@ async def update_purchase_order(
                 po = await _kunci_po(conn, ctx["tenant_id"], po_id)
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+                await assert_if_match_row(request, "purchase_orders", po_id)  # PO-IM: sesudah replay & kunci
 
                 _tolak((await PR.rencana_ubah(conn, ctx["tenant_id"], po, body))["blocks"])  # = /edit/preview
 
