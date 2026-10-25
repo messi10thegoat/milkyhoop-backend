@@ -8,6 +8,7 @@ MILKYBOOK_EFFORT      bawaan medium.
 MILKYBOOK_BATAS_BULAN_USD  #11 pagar biaya per tenant per bulan (UTC), "bawaan=5,<tenant_id>=15"; bawaan kode =
                       BATAS_BULAN_BAWAAN (putusan pemilik LANGSUNG 25 Okt: grapgrap $15, lain $5; batas belanja Console
                       kunci Milkybook $20/bulan = batas keras semua tenant). "0" = tanpa pagar untuk tenant itu.
+MILKYBOOK_RINGKAS_TOKEN  ambang peringkasan otomatis = 100% meteran konteks (bawaan putaran.RINGKAS_PADA_BAWAAN).
 Kunci API: MILKYBOOK_ANTHROPIC_API_KEY (kunci Milkybook TERPISAH dengan batas belanja; tidak pernah dicetak).
 """
 from __future__ import annotations
@@ -56,9 +57,19 @@ def batas_bulan_dari_env(env=os.environ) -> Callable[[str], Optional[float]]:
     return batas
 
 
+def ringkas_pada_dari_env(env=os.environ) -> int:
+    from .putaran import RINGKAS_PADA_BAWAAN
+    try:
+        v = int(env.get("MILKYBOOK_RINGKAS_TOKEN") or RINGKAS_PADA_BAWAAN)
+    except ValueError:
+        return RINGKAS_PADA_BAWAAN
+    return v if v > 0 else RINGKAS_PADA_BAWAAN
+
+
 def buat_putaran_dari_env(registri, audit, env=os.environ, **kw):
     """Putaran siap pakai router: hibrida bawaan (Haiku baca / Sonnet tulis), saklar mundur dibaca tiap giliran."""
     from .putaran import Putaran
     penulis, baca, effort = pemanggil_dari_env(env)
     return Putaran(registri, penulis, audit, model_nama=getattr(penulis, "model", ""), effort=effort,
-                   pemanggil_baca=baca, saklar_baca=saklar_baca_dari_env(env), batas_bulan=batas_bulan_dari_env(env), **kw)
+                   pemanggil_baca=baca, saklar_baca=saklar_baca_dari_env(env), batas_bulan=batas_bulan_dari_env(env),
+                   ringkas_pada=ringkas_pada_dari_env(env), **kw)

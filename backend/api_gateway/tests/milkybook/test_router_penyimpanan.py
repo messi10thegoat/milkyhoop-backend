@@ -294,7 +294,8 @@ def test_pulihkan_percakapan_urut_dan_tenant_aman():
     H = {"X-Uji-Tenant": "t1"}
     sid = c.post("/api/milkybook/sesi", headers=H).json()["sesi_id"]
     kosong = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()
-    assert kosong == {"sesi_id": sid, "peristiwa": [], "kartu_menunggu": None, "sedang_bekerja": False, "antre": []}
+    assert kosong == {"sesi_id": sid, "peristiwa": [], "kartu_menunggu": None, "sedang_bekerja": False, "antre": [],
+                      "konteks": {"token": 0, "batas": 60000, "persen": 0}}
     ev = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "buat 3"}, headers=H).json()["peristiwa"]
     kid = next(e["kartu_id"] for e in ev if e["jenis"] == "kartu")
     tengah = c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()

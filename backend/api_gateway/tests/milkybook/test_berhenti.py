@@ -191,3 +191,30 @@ async def test_penyimpanan_bendera_dan_tarik_antre(store_fn):
     await store.antre_tambah("t", "u", "s", "pesan6001", "satu")
     assert await store.antre_tarik_semua("t", "u", "s") == [{"id_pesan": "pesan6001", "teks": "satu"}]
     assert await store.antre_daftar("t", "u", "s") == [] and await store.antre_status("t", "u", "s", "pesan6001") is None
+
+
+# ---------------------------------------------------------------- (d) meteran konteks
+
+def test_meteran_konteks_di_selesai_dan_pulihkan_dari_usage_panggilan_terakhir():
+    from app.milkybook.inti.model import HasilModel
+    store = PenyimpananSesiMemori()
+    m = ModelPalsu([
+        HasilModel([{"type": "tool_use", "id": "tu1", "name": "cari_x", "input": {"q": "a"}}], "tool_use",
+                   {"input_tokens": 50, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 950}, "m"),
+        HasilModel([{"type": "text", "text": "Ada."}], "end_turn",
+                   {"input_tokens": 70, "cache_read_input_tokens": 11930, "output_tokens": 8}, "m"),
+    ])
+    app, _ = _app(store, model=m)
+    c = TestClient(app)
+    sid = _sesi(c)
+    ev = c.post(f"/api/milkybook/sesi/{sid}/pesan", json={"teks": "cari"}, headers=H).json()["peristiwa"]
+    assert ev[-1]["konteks"] == {"token": 12000, "batas": 60000, "persen": 20}  # panggilan TERAKHIR, bukan jumlah
+    assert c.get(f"/api/milkybook/sesi/{sid}", headers=H).json()["konteks"] == {"token": 12000, "batas": 60000, "persen": 20}
+
+
+def test_ambang_ringkas_dari_env():
+    from app.milkybook.inti.konfigurasi import ringkas_pada_dari_env
+    assert ringkas_pada_dari_env({}) == 60000
+    assert ringkas_pada_dari_env({"MILKYBOOK_RINGKAS_TOKEN": "40000"}) == 40000
+    assert ringkas_pada_dari_env({"MILKYBOOK_RINGKAS_TOKEN": "abc"}) == 60000
+    assert ringkas_pada_dari_env({"MILKYBOOK_RINGKAS_TOKEN": "0"}) == 60000
