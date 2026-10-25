@@ -4,6 +4,7 @@ get_pool tertambal; transaksi handler = savepoint). Dijalankan di pohon LAMA (ma
      kontrol: LAMA memotong); jurnal ND seimbang (Σ debit == Σ kredit == header, Law 4); GET detail + daftar + ringkasan ND 200 (skema float).
   H2 tagihan ber-sen (1 x 1.000,50) -> create_bill_v2 + post: GET outstanding-summary/summary + daftar tagihan + open-bills vendor:
      BARU memuat ,50 PERSIS == Σ compute_ap_outstanding (LAMA terpotong = kontrol), tanpa galat skema.
+  H0 (syarat MASTER) sebelum H1/H2: teks JSON outstanding-summary, summary, daftar tagihan, ringkasan ND, open-bills LAMA == BARU byte-identik.
   JEPRET sebelum/sesudah proses: net 0."""
 import asyncio, inspect, json, os, sys
 from datetime import timedelta
@@ -83,6 +84,22 @@ async def rekam():
     out = {}
     tx = c.transaction(); await tx.start()
     try:
+        # H0 (syarat MASTER): data hari ini (nol sen) -> teks JSON respons LAMA == BARU byte-identik (nilai bulat tetap int, bukan 50000.0)
+        out["H0"] = {}
+        for nama, fn, isi in (("outstanding_summary", BR.get_outstanding_summary, {}), ("bills_summary", BR.get_bills_summary, {"period": "current_year"}),
+                              ("bills_list", BR.list_bills, {"limit": 100}), ("nd_summary", VR.get_vendor_credits_summary, {}),
+                              ("open_bills", BPR.get_vendor_open_bills, {"vendor_id": str(v["id"])})):
+            try:
+                x = await fn(**{**{n: (req(uid, "GET") if n == "request" else (isi[n] if n in isi else (p.default.default if isinstance(p.default, QP) else p.default)))
+                                   for n, p in inspect.signature(fn).parameters.items() if n == "request" or n in isi or p.default is not inspect._empty}})
+                if hasattr(x, "model_dump_json"):
+                    teks = x.model_dump_json()
+                else:
+                    from fastapi.encoders import jsonable_encoder
+                    teks = json.dumps(jsonable_encoder(x), sort_keys=True)
+                out["H0"][nama] = teks
+            except Exception as e:  # noqa: BLE001
+                out["H0"][nama] = f"GALAT {type(e).__name__}: {str(e)[:160]}"
         # H1 ND diskon dokumen 10%
         h = await VR.create_vendor_credit(req(uid), CreateVendorCreditRequest(
             vendor_id=str(v["id"]), vendor_name=v["name"], vendor_credit_date=hari, reason="other", discount_percent=10,
@@ -142,6 +159,9 @@ async def jepret():
 
 def banding():
     L, B = json.load(open("/out/r-lama.json")), json.load(open(f"/out/r-{os.environ.get('PEMBANDING', 'baru')}.json"))
+    for k in L["H0"]:
+        cek(L["H0"][k] == B["H0"][k] and not L["H0"][k].startswith("GALAT"), f"(H0) JSON {k} LAMA == BARU byte-identik (data nol sen; bulat tetap int)",
+            "" if L["H0"][k] == B["H0"][k] else f"{L['H0'][k][:150]} / {B['H0'][k][:150]}")
     h1l, h1 = L["H1"], B["H1"]
     cek(D(h1l["row"]["discount_amount"]) == D("999") and D(h1l["row"]["total_amount"]) == D("9000"), "(H1 kontrol) LAMA memotong diskon -> 999 / total 9.000", h1l["row"])
     cek(D(h1["row"]["discount_amount"]) == D("999.90") and D(h1["row"]["total_amount"]) == D("8999.10") and D(h1["create_total"]) == D("8999.10"),
