@@ -2293,7 +2293,7 @@ class BillsService:
                 )
                 SELECT
                     -- Total outstanding
-                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL) as total_count  -- V457: tagihan saja,
+                    COUNT(*) FILTER (WHERE bill_id IS NOT NULL) as total_count,  -- V457: tagihan saja (HOTFIX 25 Okt: koma dulu tertelan komentar -> 500)
                     COALESCE(SUM(outstanding), 0) as total_outstanding,
                     COUNT(DISTINCT (SELECT vendor_id FROM bills WHERE id = ap.bill_id)) as vendor_count,
 
