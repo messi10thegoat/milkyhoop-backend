@@ -5,13 +5,13 @@ CRUD endpoints for managing vendors with search and pagination.
 Integrates with bills module for purchase invoice management.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
-from ..services.fitur_parkir import fitur_belum_tersedia_dengan
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from pydantic import BaseModel
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Optional, Literal
 from uuid import UUID
+import json
 import logging
 import asyncpg
 
@@ -2008,192 +2008,167 @@ async def get_vendor_activity(
 
 
 # =============================================================================
-# MERGE VENDORS (Iron Laws Compliant)
+# MERGE VENDORS -- GABUNG-VENDOR (25 Okt 2026, putusan MASTER (a) tanpa migrasi; pola NetSuite/QBO = customers.merge)
 # =============================================================================
-# VENDOR-IDEM (25 Okt 2026, putusan MASTER): DIPARKIR 409 sampai unit GABUNG-VENDOR (pola NetSuite/QBO tanpa migrasi). Badan rute di bawah membaca/
-# menulis kolom yang TAK ADA (vendors.merged_into_id/deleted_at/deleted_by) dan tabel yang TAK ADA (master_data_audit_log) -> dulu 500 di SETIAP
-# panggilan, padahal FE MergeVendorSheet memanggilnya. Penolakan jujur menggantikan 500 diam.
-@router.post("/merge", response_model=MergeVendorResponse, dependencies=[Depends(fitur_belum_tersedia_dengan(
-    "Gabung vendor sedang diperbaiki dan belum bisa dipakai. Sementara ini, nonaktifkan vendor yang dobel."))])
-async def merge_vendors(
-    request: Request,
-    body: MergeVendorRequest,
-):
-    """
-    Merge two vendors by transferring all records from source to target.
+# Sumber DINONAKTIFKAN (is_active=false + catatan), SEMUA transaksi/dokumen pindah ke tujuan (vendor_id; vendor_name ikut nama tujuan bila
+# kolomnya ada), jejak = audit_logs VENDOR_MERGED + vendor_activities di kedua vendor. NOL jurnal ditulis/diubah: GL tetap; saldo hutang
+# per vendor (compute_ap_outstanding, diturunkan dari bills/vendor_credits/bill_payments_v2.vendor_id) BERPINDAH utuh ke tujuan.
+# Dulu: badan rute membaca/menulis kolom yang TAK ADA (vendors.merged_into_id/deleted_at/deleted_by) + tabel TAK ADA (master_data_audit_log)
+# -> 500 di setiap panggilan (diparkir 409 di VENDOR-IDEM 5c9c4395).
+# Penolak (tak dilemahkan, pesan terbaca): (1) jurnal saldo awal LAMA (VENDOR_OPENING_BALANCE, source_id = vendor sumber) bersaldo -- jurnal
+# immutable, tak bisa ikut pindah; (2) sumber DAN tujuan sama-sama punya tagihan pembuka saldo awal aktif (uq_bill_saldo_awal_vendor).
+GABUNG_TABEL = (  # (tabel, kolom vendor, ada tenant_id, ada vendor_name) -- diukur information_schema 25 Okt 2026
+    ("bills", "vendor_id", True, True),
+    ("bill_payments_v2", "vendor_id", True, True),
+    ("vendor_credits", "vendor_id", True, True),
+    ("vendor_deposits", "vendor_id", True, False),
+    ("purchase_orders", "vendor_id", True, True),
+    ("goods_receipts", "vendor_id", True, False),
+    ("expenses", "vendor_id", True, True),
+    ("recurring_bills", "vendor_id", True, False),
+    ("withholding_tax_records", "vendor_id", True, False),
+    ("cheques", "vendor_id", True, False),
+    ("fixed_assets", "vendor_id", True, False),
+    ("production_subcontracts", "vendor_id", True, False),
+    ("accounts_payable", "supplier_id", True, False),
+    ("asset_maintenance", "vendor_id", False, False),  # tanpa tenant_id: dibatasi id vendor sumber (sudah divalidasi milik tenant)
+    ("bom_operations", "vendor_id", False, False),
+)
 
-    Iron Laws Compliance:
-    - Law 2: Does NOT modify journal_entries
-    - Law 6: Maintains audit trail via merged_into_id
-    - Law 12: Logs to master_data_audit_log
-    """
+
+def _gabung_ids(body: MergeVendorRequest):
+    try:
+        sumber, tujuan = UUID(str(body.source_vendor_id).strip()), UUID(str(body.target_vendor_id).strip())
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Vendor tidak ditemukan.")
+    if sumber == tujuan:
+        raise HTTPException(status_code=400, detail="Vendor sumber dan tujuan tidak boleh sama.")
+    return sumber, tujuan
+
+
+async def _gabung_rencana(conn, tenant_id: str, sumber, tujuan) -> dict:
+    """SATU penentu gabung vendor (pratinjau DAN eksekusi; eksekusi memanggilnya DI DALAM kunci). NOL tulisan.
+    -> {pihak, cacah per tabel, blocks}. Vendor tak ada / tenant lain -> 404 (pesan sama)."""
+    baris = await conn.fetch("SELECT id, name, code, is_active, notes FROM vendors WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+                             [sumber, tujuan], tenant_id)
+    peta = {r["id"]: r for r in baris}
+    if len(peta) != 2:
+        raise HTTPException(status_code=404, detail="Vendor tidak ditemukan.")
+    blok = []
+    for vid, peran in ((sumber, "sumber"), (tujuan, "tujuan")):
+        if not peta[vid]["is_active"]:
+            blok.append({"code": "VENDOR_NONAKTIF", "message": f"Vendor {peran} ({peta[vid]['name']}) sudah nonaktif."})
+    cacah = {}
+    for tabel, kolom, ber_tenant, _ in GABUNG_TABEL:
+        if ber_tenant:
+            cacah[tabel] = await conn.fetchval(f"SELECT count(*) FROM {tabel} WHERE tenant_id = $1 AND {kolom} = $2", tenant_id, sumber)  # nosec B608 -- tabel/kolom literal GABUNG_TABEL
+        else:
+            cacah[tabel] = await conn.fetchval(f"SELECT count(*) FROM {tabel} WHERE {kolom} = $1", sumber)  # nosec B608
+    ob_lama = await conn.fetchval(
+        """SELECT COALESCE(SUM(jl.credit), 0) - COALESCE(SUM(jl.debit), 0) FROM journal_entries je
+           JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts coa ON coa.id = jl.account_id
+           WHERE je.tenant_id = $1 AND je.source_type = 'VENDOR_OPENING_BALANCE' AND je.source_id = $2 AND je.status = 'POSTED'
+             AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL AND coa.account_type = 'PAYABLE'""", tenant_id, sumber)
+    if ob_lama:
+        blok.append({"code": "SALDO_AWAL_LAMA_TAK_BISA_PINDAH",
+                     "message": f"Vendor sumber ({peta[sumber]['name']}) punya saldo awal hutang cara lama (jurnal langsung) yang tidak bisa "
+                                "dipindah. Penggabungan belum bisa dilakukan."})
+    pembuka = await conn.fetchval(
+        """SELECT count(DISTINCT vendor_id) FROM bills WHERE tenant_id = $1 AND vendor_id = ANY($2::uuid[]) AND is_opening_balance
+             AND status_v2 <> 'void'""", tenant_id, [sumber, tujuan])
+    if pembuka == 2:
+        blok.append({"code": "SALDO_AWAL_GANDA",
+                     "message": "Kedua vendor sama-sama punya tagihan saldo awal. Batalkan salah satunya dulu, lalu gabungkan."})
+    return {"peta": peta, "cacah": cacah, "blocks": blok}
+
+
+def _pihak(r) -> dict:
+    return {"id": str(r["id"]), "name": r["name"], "code": r["code"]}
+
+
+@router.post("/merge/preview")
+async def preview_merge_vendors(request: Request, body: MergeVendorRequest):
+    """Pratinjau gabung vendor: penentu YANG SAMA dengan POST /merge, transaksi READ ONLY tanpa kunci, NOL tulisan. 200 walau diblok."""
     try:
         ctx = get_user_context(request)
+        sumber, tujuan = _gabung_ids(body)
         pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True):
+            r = await _gabung_rencana(conn, ctx["tenant_id"], sumber, tujuan)
+        return {"success": True, "data": {
+            "ok": not r["blocks"], "source": _pihak(r["peta"][sumber]), "target": _pihak(r["peta"][tujuan]),
+            "records_to_move": r["cacah"], "blocks": r["blocks"], "irreversible": True}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing vendor merge: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penggabungan vendor.")
 
-        source_id = UUID(body.source_vendor_id)
-        target_id = UUID(body.target_vendor_id)
 
-        if source_id == target_id:
-            raise HTTPException(
-                status_code=400, detail="Source and target vendor cannot be the same"
-            )
-
+@router.post("/merge", response_model=MergeVendorResponse)
+async def merge_vendors(request: Request, body: MergeVendorRequest, response: Response = None):
+    """Gabungkan vendor sumber ke vendor tujuan (TAK BISA DIBATALKAN). Kontrak FE tetap: {source_vendor_id, target_vendor_id} ->
+    {success, message, data:{source, target, summary}}. Idem VENDOR_MERGE (ulang ber-kunci = jawaban pertama). Kunci KEDUA vendor (urut) +
+    VENDOR_OPENING keduanya; penentu _gabung_rencana diulang DI DALAM kunci; blok -> 409 dengan pesan blok pertama."""
+    try:
+        ctx = get_user_context(request)
+        if not ctx.get("user_id"):
+            raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        sumber, tujuan = _gabung_ids(body)
+        pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Law 13: Advisory lock for merge
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"VENDOR_MERGE:{target_id}",
-                )
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "VENDOR_MERGE", sumber,
+                                                             lambda: body.model_dump(mode="json"), response)
+                if lama is not None:
+                    return lama
+                await _kunci_vendor(conn, ctx["tenant_id"], sumber, tujuan, saldo_awal=True)
+                r = await _gabung_rencana(conn, ctx["tenant_id"], sumber, tujuan)
+                if r["blocks"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=409, detail={"code": b["code"], "message": b["message"]})
+                ps, pt = r["peta"][sumber], r["peta"][tujuan]
 
-                # Validate source vendor
-                source_vendor = await conn.fetchrow(
-                    "SELECT id, name, is_active, merged_into_id, notes FROM vendors WHERE id = $1 AND tenant_id = $2",
-                    source_id,
-                    ctx["tenant_id"],
-                )
-                if not source_vendor:
-                    raise HTTPException(
-                        status_code=404, detail="Source vendor not found"
-                    )
-                if source_vendor["merged_into_id"]:
-                    raise HTTPException(
-                        status_code=400, detail="Source vendor was already merged"
-                    )
+                pindah = {}
+                for tabel, kolom, ber_tenant, ber_nama in GABUNG_TABEL:
+                    nama = ", vendor_name = $4" if ber_nama else ""
+                    if ber_tenant:
+                        hasil = await conn.execute(
+                            f"UPDATE {tabel} SET {kolom} = $1{nama} WHERE tenant_id = $2 AND {kolom} = $3",  # nosec B608 -- literal GABUNG_TABEL
+                            tujuan, ctx["tenant_id"], sumber, *([pt["name"]] if ber_nama else []))
+                    else:
+                        hasil = await conn.execute(f"UPDATE {tabel} SET {kolom} = $1 WHERE {kolom} = $2", tujuan, sumber)  # nosec B608
+                    pindah[tabel] = int(hasil.split()[-1])
+                if pindah != r["cacah"]:  # tak mungkin di dalam kunci; bila terjadi, jangan setengah jadi
+                    raise HTTPException(status_code=409, detail="Data vendor berubah saat digabung; muat ulang pratinjau.")
 
-                # Validate target vendor
-                target_vendor = await conn.fetchrow(
-                    "SELECT id, name, is_active FROM vendors WHERE id = $1 AND tenant_id = $2",
-                    target_id,
-                    ctx["tenant_id"],
-                )
-                if not target_vendor:
-                    raise HTTPException(
-                        status_code=404, detail="Target vendor not found"
-                    )
-                if not target_vendor["is_active"]:
-                    raise HTTPException(
-                        status_code=400, detail="Target vendor must be active"
-                    )
-
-                summary = {}
-
-                # Transfer bills
-                result = await conn.execute(
-                    "UPDATE bills SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
-                    target_id,
-                    source_id,
-                    target_vendor["name"],
-                    ctx["tenant_id"],
-                )
-                summary["bills"] = int(result.split()[-1])
-
-                # Transfer bill_payments_v2
-                result = await conn.execute(
-                    "UPDATE bill_payments_v2 SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
-                    target_id,
-                    source_id,
-                    target_vendor["name"],
-                    ctx["tenant_id"],
-                )
-                summary["payments"] = int(result.split()[-1])
-
-                # Transfer purchase_orders
-                result = await conn.execute(
-                    "UPDATE purchase_orders SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
-                    target_id,
-                    source_id,
-                    target_vendor["name"],
-                    ctx["tenant_id"],
-                )
-                summary["purchase_orders"] = int(result.split()[-1])
-
-                # Transfer expenses
-                result = await conn.execute(
-                    "UPDATE expenses SET vendor_id = $1, vendor_name = $3, updated_at = NOW() WHERE vendor_id = $2 AND tenant_id = $4",
-                    target_id,
-                    source_id,
-                    target_vendor["name"],
-                    ctx["tenant_id"],
-                )
-                summary["expenses"] = int(result.split()[-1])
-
-                # Transfer vendor_credits
-                result = await conn.execute(
-                    "UPDATE vendor_credits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    [source_id],
-                )
-                summary["vendor_credits"] = int(result.split()[-1])
-
-                # Transfer vendor_deposits
-                result = await conn.execute(
-                    "UPDATE vendor_deposits SET vendor_id = $1 WHERE tenant_id = $2 AND vendor_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    [source_id],
-                )
-                summary["vendor_deposits"] = int(result.split()[-1])
-
-                # Transfer accounts_payable
-                result = await conn.execute(
-                    "UPDATE accounts_payable SET supplier_id = $1 WHERE tenant_id = $2 AND supplier_id = ANY($3)",
-                    target_id,
-                    ctx["tenant_id"],
-                    [source_id],
-                )
-                summary["accounts_payable"] = int(result.split()[-1])
-
-                # Soft-delete source vendor
-                merge_note = (
-                    f"[MERGED] into '{target_vendor['name']}' (ID: {target_id})"
-                )
-                existing_notes = source_vendor["notes"] or ""
-                new_notes = f"{existing_notes}\n{merge_note}".strip()
-
-                user_id = ctx.get("user_id")
-                await conn.execute(
-                    "UPDATE vendors SET is_active = false, merged_into_id = $1, notes = $3, updated_at = NOW(), deleted_at = NOW(), deleted_by = $5 WHERE id = $2 AND tenant_id = $4",
-                    target_id,
-                    source_id,
-                    new_notes,
-                    ctx["tenant_id"],
-                    user_id,
-                )
-
-                # Log to audit
-                try:
+                catatan = f"{ps['notes'] or ''}\n[DIGABUNG] ke '{pt['name']}' (ID: {tujuan})".strip()
+                await conn.execute("UPDATE vendors SET is_active = false, notes = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+                                   sumber, ctx["tenant_id"], catatan)
+                user = request.state.user
+                aktor = user.get("fullname") or user.get("username") or user.get("email") or "System"
+                for vid, teks in ((tujuan, f"Vendor {ps['name']} digabung ke vendor ini"), (sumber, f"Digabung ke vendor {pt['name']}")):
                     await conn.execute(
-                        """INSERT INTO master_data_audit_log (tenant_id, entity_type, entity_id, entity_name, action, field_name, new_value, changed_by, notes)
-                        VALUES ($1, 'vendor', $2, $3, 'MERGE', 'merged_into_id', $4, $5, $6)""",
-                        UUID(ctx["tenant_id"]),
-                        source_id,
-                        source_vendor["name"],
-                        str(target_id),
-                        user_id,
-                        f"Merged into {target_vendor['name']}. Transferred: {summary}",
-                    )
-                except Exception as e:
-                    logger.warning(f"Audit log failed: {e}")
+                        """INSERT INTO vendor_activities (vendor_id, tenant_id, type, description, actor_id, actor_name, metadata)
+                           VALUES ($1, $2, 'merged', $3, $4, $5, $6::jsonb)""",
+                        vid, ctx["tenant_id"], teks, ctx["user_id"], aktor,
+                        json.dumps({"source_id": str(sumber), "target_id": str(tujuan), "moved": pindah}))
+                await conn.execute(
+                    """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
+                       VALUES (gen_random_uuid()::text, 'VENDOR_MERGED', 'vendor', $1, $2, $3, 'api:vendors.merge',
+                               jsonb_build_object('target_id', $4::text, 'target_name', $5::text, 'moved', $6::jsonb, 'user_id', $7::text), true, now())""",
+                    str(sumber), ps["name"], ctx["tenant_id"], str(tujuan), pt["name"], json.dumps(pindah), str(ctx["user_id"]))
 
-                total = sum(summary.values())
-                logger.info(
-                    f"Vendor merge: {source_id} -> {target_id}, transferred {total} records"
-                )
-
-                return MergeVendorResponse(
+                total = sum(pindah.values())
+                logger.info(f"Vendor merge: {sumber} -> {tujuan}, pindah {total} baris")
+                resp = MergeVendorResponse(
                     success=True,
-                    message=f"Merged '{source_vendor['name']}' into '{target_vendor['name']}'. {total} records transferred.",
-                    data={
-                        "source": {"id": str(source_id), "name": source_vendor["name"]},
-                        "target": {"id": str(target_id), "name": target_vendor["name"]},
-                        "summary": summary,
-                    },
+                    message=f"Vendor '{ps['name']}' digabung ke '{pt['name']}'. {total} catatan dipindah.",
+                    data={"source": _pihak(ps), "target": _pihak(pt), "summary": pindah},
                 )
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "VENDOR_MERGE", resp, sumber) if kp else resp
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Merge error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to merge: {str(e)}")
+        raise HTTPException(status_code=500, detail="Gagal menggabungkan vendor.")

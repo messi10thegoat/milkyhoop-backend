@@ -1,6 +1,6 @@
 """VENDOR-IDEM (25 Okt 2026): buat/status/hapus vendor -- idem X-Idempotency-Key (ulang ber-kunci sesudah sukses = jawaban pertama,
 bukan 400 "sudah ada"/404/aktivitas ganda) + kunci (buat: nama/kode sebelum cek ganda; status/hapus: VENDOR; hapus: + VENDOR_OPENING).
-Gabung vendor TIDAK di unit ini: rute itu membaca/menulis kolom yang tak ada (merged_into_id/deleted_at/deleted_by) -> unit terpisah."""
+Gabung vendor: lihat test_gabung_vendor.py (GABUNG-VENDOR 25 Okt)."""
 import ast
 import asyncio
 import inspect
@@ -98,14 +98,8 @@ def test_ulang_berkunci_jawaban_pertama_tanpa_kunci_tanpa_baca(monkeypatch, aksi
     assert log == []
 
 
-def test_gabung_diparkir_409_jujur_sebelum_badan():
-    import pytest as _p
-    from fastapi import HTTPException
+
+def test_gabung_tak_lagi_diparkir_gabung_vendor_25_okt():
+    # GABUNG-VENDOR (25 Okt 2026, putusan MASTER): parkir 409 VENDOR-IDEM dicabut karena rute dibangun ulang (spek baru: test_gabung_vendor.py)
     rute = [r for r in V.router.routes if getattr(r, "path", "") == "/merge" and "POST" in r.methods]
-    assert len(rute) == 1
-    deps = [d.call for d in rute[0].dependant.dependencies]
-    assert len(deps) == 1
-    with _p.raises(HTTPException) as e:
-        asyncio.run(deps[0]())
-    assert e.value.status_code == 409 and e.value.detail["code"] == "FEATURE_NOT_AVAILABLE"
-    assert "Gabung vendor" in e.value.detail["message"]
+    assert len(rute) == 1 and rute[0].dependant.dependencies == []

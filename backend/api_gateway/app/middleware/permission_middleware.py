@@ -820,6 +820,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/[^/]+/opening-balance$", ["POST"], "supplier", "C"),
     (r"^/api/vendors/[^/]+/status$", ["PATCH"], "supplier", "U"),
     (r"^/api/vendors/merge$", ["POST"], "supplier", "C"),
+    (r"^/api/vendors/merge/preview$", ["POST"], "supplier", "C"),  # GABUNG-VENDOR 25 Okt: pratinjau, izin = /merge
     # === READ authorization (STEP 1, 2026-09-20) ===
     # 283 authenticated GET routes mapped to their resource's module (governing rule:
     # a GET inherits the module its own WRITE routes use). Behaviour: a user WITHOUT the

@@ -613,6 +613,7 @@ POST /api/vendor-deposits/{deposit_id}/void
 POST /api/vendor-deposits/{deposit_id}/void/preview
 POST /api/vendors
 POST /api/vendors/merge
+POST /api/vendors/merge/preview
 POST /api/vendors/{vendor_id}/opening-balance
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
