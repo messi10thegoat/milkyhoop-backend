@@ -89,8 +89,14 @@ def test_inti_hapus_404_dan_409_kode_stabil(alasan):
 
 
 def test_rute_hapus_tunggal_membungkus_inti_di_transaksi():
-    src = " ".join(inspect.getsource(Q.delete_quote).split())
-    assert "async with conn.transaction(): data = await hapus_penawaran_core(conn, ctx, quote_id)" in src
+    # QA-AGEN (25 Okt 2026): idem QUOTE_DELETE kini juga di dalam transaksi itu, jadi cocok-teks-persis diganti AST (spek SAMA:
+    # hapus_penawaran_core dipanggil DI DALAM `async with conn.transaction()`; rute tak menulis DELETE sendiri).
+    import ast, textwrap
+    src = textwrap.dedent(inspect.getsource(Q.delete_quote))
+    di_tx = [n for w in ast.walk(ast.parse(src)) if isinstance(w, ast.AsyncWith)
+             and any(ast.unparse(i.context_expr) == "conn.transaction()" for i in w.items)
+             for n in ast.walk(w) if isinstance(n, ast.Call) and ast.unparse(n.func) == "hapus_penawaran_core"]
+    assert len(di_tx) == 1
     assert 'message="Penawaran dihapus"' in src and "DELETE FROM" not in src
 
 

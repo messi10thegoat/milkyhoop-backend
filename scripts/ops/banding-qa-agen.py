@@ -6,6 +6,19 @@ lama, baru = baca(sys.argv[1]), baca(sys.argv[2])
 gagal = collections.Counter(); contoh = {}
 def g(k, r):
     gagal[k] += 1; contoh.setdefault(k, f'{r["q"]}/{r["kasus"]}')
+WAKTU = tuple(json.load(open(sys.argv[3]))) if len(sys.argv) > 3 else ()  # HANYA kolom terbukti beda di LAMA vs LAMA (nondet-qa-agen.py)
+print("kolom waktu dimasker (terbukti LAMA vs LAMA):", WAKTU)
+
+
+def normal(snap):
+    q = dict(snap["q"]) if snap["q"] else None
+    if q:
+        for k in WAKTU:
+            if k in q:
+                q[k] = q[k] is not None
+    return {**snap, "q": q}
+
+
 def pesan(galat):
     d = galat[1]
     return d.get("message") if isinstance(d, dict) else d
@@ -14,7 +27,7 @@ hit = collections.Counter()
 for a, b in zip(lama, baru):
     assert (a["q"], a["kasus"]) == (b["q"], b["kasus"])
     if a["respons"] != b["respons"]: g("respons_beda", b)
-    if a["sesudah"] != b["sesudah"]: g("keadaan_beda", b)
+    if normal(a["sesudah"]) != normal(b["sesudah"]): g("keadaan_beda", b)
     if not b["pratinjau_tanpa_tulis"]: g("pratinjau_menulis", b)
     pv, rs = b["pratinjau"], b["respons"]
     if "galat" in pv:
