@@ -30,7 +30,7 @@ def _badan(fn) -> str:
 def test_urutan_idem_kunci_forupdate_cek(mod, nama, prefiks, kunci):
     s = _badan(getattr(mod, nama))
     i_tx, i_idem = s.index("conn.transaction()"), s.index(f'"{prefiks}"')
-    i_kunci, i_fu = s.index(kunci), s.index("FOR UPDATE")
+    i_kunci, i_fu = s.index(kunci), s.index('FOR UPDATE",')  # ujung string SQL (komentar juga menyebut FOR UPDATE)
     i_cek = s.index('["status"] != "draft"')
     assert i_tx < i_idem < i_kunci < i_fu < i_cek, nama
     assert "assert_if_match_row" not in s  # dulu di koneksi lain, di luar transaksi
@@ -60,7 +60,8 @@ def test_faktur_pajak_idem_dan_kunci_dipegang_selama_panggilan(mod, nama, prefik
 
 def test_kolom_hantu_tax_invoice_id_tak_dibaca_dari_credit_notes():
     for src in (_badan(CN.create_tax_invoice_from_cn), Path(TI.__file__).read_text()):
-        assert "tax_invoice_id FROM credit_notes" not in src and "total_amount, tax_invoice_id " not in src
+        # SELECT lama yang membaca kolom hantu; alias tautan nyata "AS tax_invoice_id FROM credit_notes" boleh
+        assert "status, tax_invoice_id FROM credit_notes" not in src and "total_amount, tax_invoice_id " not in src
     assert "tax_invoice_sources" in _badan(CN.create_tax_invoice_from_cn)
 
 

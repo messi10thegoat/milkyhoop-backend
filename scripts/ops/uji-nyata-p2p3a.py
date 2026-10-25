@@ -234,8 +234,13 @@ def banding():
         cek(k.get(f"{n}_akhir") == "void", f"({n}-K) pembersihan void lewat aplikasi", str(k.get(f"{n}_bersih")))
     cek(not k["sisa_manual"], "(K) sisa_manual kosong", str(k["sisa_manual"]))
     s, e = k["sebelum"], k["sesudah"]
-    cek(s["gl"] == e["gl"] and s["ap"] == e["ap"] and s["ar"] == e["ar"], "(K) NET uang 0: GL per akun + AP + AR sebelum == sesudah",
-        "" if s["gl"] == e["gl"] else "GL beda")
+    # GL dibanding PER AKUN dengan akun absen = 0: akun yang PERTAMA KALI tersentuh lalu bersih (mis. 5-10300 Retur Pembelian, ND
+    # pertama di kaos: posting + void) muncul sebagai "0.00" -- bukan beda uang (ronde 1 25 Okt FAIL palsu karena dict dibanding mentah).
+    from decimal import Decimal
+    ga, gb = json.loads(s["gl"][0]), json.loads(e["gl"][0])
+    beda = {k: (ga.get(k), gb.get(k)) for k in set(ga) | set(gb) if Decimal(ga.get(k) or "0") != Decimal(gb.get(k) or "0")}
+    cek(not beda and s["ap"] == e["ap"] and s["ar"] == e["ar"], "(K) NET uang 0: GL per akun (absen = 0) + AP + AR sebelum == sesudah",
+        str(beda)[:300])
     print(f"DELTA KONK: ND {s['nd']} -> {e['nd']} (total/void) · NK {s['nk']} -> {e['nk']} · jurnal {s['jurnal'][0]} -> {e['jurnal'][0]}", flush=True)
 
 
