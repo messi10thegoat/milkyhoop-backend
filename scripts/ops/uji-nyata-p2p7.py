@@ -142,7 +142,8 @@ async def rekam():
             "WHERE date_trunc('year', b.issue_date) = date_trunc('year', tanggal_bisnis($1))", T))
         try:
             ob = await panggil(BPR.get_vendor_open_bills, uid, vendor_id=str(v["id"]))
-            out["H2"]["open_bills"] = [it["remaining_amount"] for it in ob["data"]["bills"] if it["bill_number"] == nomor] if isinstance(ob.get("data"), dict) else ob
+            daftar = ob.get("bills") if isinstance(ob.get("bills"), list) else (ob.get("data") or {}).get("bills")
+            out["H2"]["open_bills"] = [it["remaining_amount"] for it in (daftar or []) if it["bill_number"] == nomor] if daftar is not None else ob
         except Exception as e:  # noqa: BLE001
             out["H2"]["open_bills"] = f"GALAT {type(e).__name__}: {str(e)[:160]}"
     finally:
@@ -178,8 +179,11 @@ def banding():
     cek(D(h2["outsum_total"]) == D(h2["ap_total_db"]), "(H2) BARU outstanding-summary == Σ compute_ap_outstanding PERSIS", f"{h2['outsum_total']} / {h2['ap_total_db']}")
     cek(D(h2["summary_total_remaining"]) == D(h2["summary_total_remaining_db"]), "(H2) BARU /bills/summary total_remaining == Σ DB tahun berjalan",
         f"{h2['summary_total_remaining']} / {h2['summary_total_remaining_db']}")
+    cek(isinstance(h2l["open_bills"], str) and h2l["open_bills"].startswith("GALAT HTTPException: 500"),
+        "(H2 kontrol) LAMA open-bills 500 pada tagihan ber-sen (skema int: int_from_float di log; cacat lama yang diperbaiki item 7)",
+        str(h2l["open_bills"])[:160])
     cek(isinstance(h2["open_bills"], list) and h2["open_bills"] and D(h2["open_bills"][0]) == D("1000.50"), "(H2) BARU open-bills vendor sisa 1.000,50",
-        f"{h2['open_bills']} (LAMA {h2l['open_bills']})")
+        f"{str(h2['open_bills'])[:160]}")
     if os.path.exists("/out/j-sesudah.json"):
         s, e = json.load(open("/out/j-sebelum.json")), json.load(open("/out/j-sesudah.json"))
         for k in SQL_JEPRET:

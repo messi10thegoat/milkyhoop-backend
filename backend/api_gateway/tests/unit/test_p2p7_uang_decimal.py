@@ -25,7 +25,9 @@ D = Decimal
 def _int_dipanggil(fn) -> list:
     src = inspect.getsource(fn)
     pohon = ast.parse(src if not src.startswith(" ") else "if 1:\n" + src)
-    return [ast.unparse(c) for c in ast.walk(pohon) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "int"]
+    return [ast.unparse(c) for c in ast.walk(pohon) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "int"
+            and "count" not in ast.unparse(c)  # cacah (count) bukan uang
+            and ast.unparse(c) != "int(aksi_row[f'{k}_{m}'])"]  # get_summary: int() HANYA bila m == "count" (value -> float)
 
 
 def test_baris_nd_sama_dengan_nk_tanpa_potong():
@@ -33,7 +35,7 @@ def test_baris_nd_sama_dengan_nk_tanpa_potong():
     nd, nk = VC.calculate_item_totals(dict(it)), CN.calculate_item_totals(dict(it))
     for k in ("subtotal", "discount_amount", "tax_amount", "total"):
         assert nd[k] == nk[k], k
-    assert nd["discount_amount"] == D("499.95") and nd["tax_amount"] == D("1044.89") and nd["total"] == D("10543.94")
+    assert nd["discount_amount"] == D("499.95") and nd["tax_amount"] == D("1044.90") and nd["total"] == D("10543.95")
 
 
 class _Conn:
@@ -83,13 +85,23 @@ def test_skema_respons_uang_float():
                        (SBP.OpenBillItem, ("total_amount", "paid_amount", "remaining_amount")),
                        (SB.BillListItem, ("amount", "amount_paid", "amount_due"))):
         for m in medan:
-            assert cls.model_fields[m].annotation == Union[int, float], (cls.__name__, m)
-    # bulat tetap JSON int (FE/stub teks tak berubah), ber-sen float
-    d = SB.BillListItem.model_fields
-    assert set(d) >= {"amount"}
+            assert "_uang_json" in str(cls.model_fields[m].metadata), (cls.__name__, m, cls.model_fields[m].metadata)
+    # bulat tetap JSON int (FE/stub teks tak berubah), ber-sen float -- lewat model NYATA
+    from pydantic import TypeAdapter
+    from app.schemas.uang_json import UangJson
+    ta = TypeAdapter(UangJson)
+    assert ta.dump_json(ta.validate_python(D("50000.00"))) == b"50000" and ta.dump_json(ta.validate_python(D("999.90"))) == b"999.9"
+    assert ta.dump_json(ta.validate_python(50000)) == b"50000" and ta.dump_json(ta.validate_python(12.5)) == b"12.5"
+    j = SBP.OpenBillItem.model_validate({**{k: v for k, v in {"id": "x", "bill_number": "B", "bill_date": "", "due_date": ""}.items()},
+                                         "total_amount": D("50000.00"), "paid_amount": D("0.00"), "remaining_amount": D("1000.50")}).model_dump_json()
+    assert '"total_amount":50000' in j and '"paid_amount":0' in j and '"remaining_amount":1000.5' in j, j
+
+
+def test_kontrol_union_polos_mengubah_json():
+    """Kontrol: Union[int, float] polos MEMANG mengubah 50000 -> 50000.0 (alasan UangJson ada)."""
     from pydantic import TypeAdapter
     ta = TypeAdapter(Union[int, float])
-    assert ta.dump_json(ta.validate_python(D("50000.00"))) == b"50000" and ta.dump_json(ta.validate_python(D("999.90"))) == b"999.9"
+    assert ta.dump_json(ta.validate_python(D("50000.00"))) == b"50000.0"
 
 
 def test_kontrol_pemindai_int_bisa_gagal():

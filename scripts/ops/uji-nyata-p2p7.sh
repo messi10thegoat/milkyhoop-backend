@@ -16,8 +16,8 @@ jalan "$UTAMA" REKAM lama || rc=1
 if [ "${MERAH:-0}" = 1 ]; then
   cp -a "$AKAR/backend" "$S/backend"
   F="$S/backend/api_gateway/app/services/bills_service.py"
-  [ "$(grep -c 'return float(_q2(Decimal(str(v if v is not None else 0))))' "$F")" = 1 ] || { echo "sabotase: titik tak unik"; exit 2; }
-  sed -i 's/return float(_q2(Decimal(str(v if v is not None else 0))))/return int(v or 0)/' "$F"; echo "SABOTASE bills_service._uang = int ($(grep -c 'return int(v or 0)' "$F"))"
+  [ "$(grep -c 'return int(d) if d == d.to_integral_value() else float(d)' "$F")" = 1 ] || { echo "sabotase: titik tak unik"; exit 2; }
+  sed -i 's/return int(d) if d == d.to_integral_value() else float(d)/return int(v or 0)/' "$F"; echo "SABOTASE bills_service._uang = int ($(grep -c 'return int(v or 0)' "$F"))"
   jalan "$S" REKAM merah || rc=1
   jalan "$AKAR" JEPRET sesudah || rc=1
   out=$(PEMBANDING=merah jalan "$AKAR" BANDING x); r=$?; echo "$out" | grep -E "^FAIL|RINGKAS"

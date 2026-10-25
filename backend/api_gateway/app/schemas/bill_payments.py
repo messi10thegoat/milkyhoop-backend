@@ -19,7 +19,8 @@ This mirrors ReceivePayments for the payable side.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Union, Any, Dict, Optional, List, Literal
+from typing import Any, Dict, Optional, List, Literal
+from .uang_json import UangJson  # item 7: bulat -> int (JSON sama), ber-sen -> float
 from datetime import date
 
 
@@ -105,7 +106,7 @@ class CreateBillPaymentRequest(BaseModel):
     reference_number: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
     pph_tax_code_id: Optional[str] = None
-    pph_amount: Optional[Union[int, float]] = 0  # item 7
+    pph_amount: Optional[UangJson] = 0  # item 7
     tags: List[str] = Field(default_factory=list)
     allocations: List[BillAllocationInput] = Field(default_factory=list)
     save_as_draft: bool = Field(
@@ -289,7 +290,7 @@ class BillPaymentDetail(BaseModel):
 
     # Journal-only flag (Law 29)
     pph_tax_code_id: Optional[str] = None
-    pph_amount: Optional[Union[int, float]] = 0  # item 7
+    pph_amount: Optional[UangJson] = 0  # item 7
     is_journal_only: Optional[bool] = None
 
 
@@ -347,9 +348,9 @@ class OpenBillItem(BaseModel):
     bill_number: str
     bill_date: str
     due_date: str
-    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    paid_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    remaining_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    total_amount: UangJson  # item 7
+    paid_amount: UangJson  # item 7
+    remaining_amount: UangJson  # item 7
     is_overdue: bool = False
     overdue_days: int = 0
 

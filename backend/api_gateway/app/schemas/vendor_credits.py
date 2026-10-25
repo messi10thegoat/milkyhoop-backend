@@ -10,7 +10,8 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Union, Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any, Literal
+from .uang_json import UangJson  # item 7: bulat -> int (JSON sama), ber-sen -> float
 from decimal import Decimal
 from datetime import date, datetime
 from uuid import UUID
@@ -136,14 +137,14 @@ class VendorCreditItemResponse(BaseModel):
     description: str
     quantity: float
     unit: Optional[str] = None
-    unit_price: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    unit_price: UangJson  # item 7
     discount_percent: float = 0
-    discount_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    discount_amount: UangJson = 0  # item 7
     tax_code: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    subtotal: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    total: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    tax_amount: UangJson = 0  # item 7
+    subtotal: UangJson  # item 7
+    total: UangJson  # item 7
     batch_no: Optional[str] = None
     exp_date: Optional[str] = None
     line_number: int = 1
@@ -185,10 +186,10 @@ class VendorCreditListItem(BaseModel):
     vendor_id: Optional[str] = None
     vendor_name: str
     vendor_credit_date: str
-    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    amount_applied: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    amount_refunded: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    remaining_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    total_amount: UangJson  # item 7
+    amount_applied: UangJson = 0  # item 7
+    amount_refunded: UangJson = 0  # item 7
+    remaining_amount: UangJson = 0  # item 7
     status: str
     reason: str
     ref_no: Optional[str] = None
@@ -218,15 +219,15 @@ class VendorCreditDetail(BaseModel):
     original_bill_number: Optional[str] = None
 
     # Amounts
-    subtotal: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    subtotal: UangJson  # item 7
     discount_percent: float = 0
-    discount_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    discount_amount: UangJson = 0  # item 7
     tax_rate: float = 0
-    tax_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    amount_applied: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    amount_refunded: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
-    remaining_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    tax_amount: UangJson = 0  # item 7
+    total_amount: UangJson  # item 7
+    amount_applied: UangJson = 0  # item 7
+    amount_refunded: UangJson = 0  # item 7
+    remaining_amount: UangJson = 0  # item 7
 
     # Status & dates
     status: str
