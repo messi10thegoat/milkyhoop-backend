@@ -286,8 +286,17 @@ class StubBE:
                           "tax_rate": float(b.get("tax_rate") or 0), "tax_amount": t, "line_total": jumlah + t, "dpp": jumlah})
         dv = float(isi.get("discount_value") or 0)
         diskon = round(sub * dv / 100) if isi.get("discount_type") == "percentage" else round(dv)
-        return {"subtotal": sub, "discount_amount": diskon, "tax_amount": pajak, "total_amount": sub - diskon + pajak,
-                "dp_amount": 0, "dp_percent": 0, "items": baris}
+        total = sub - diskon + pajak
+        # DP = services/default_dokumen.hitung_dp (LIVE): nominal manual menang; persen -> nominal dari total (HALF_UP).
+        # Dulu stub selalu 0 -> eval 25 Okt PNW-003: model (benar) menolak karena "pratinjau belum menerapkan DP 50%".
+        dp_a, dp_p = isi.get("dp_amount"), isi.get("dp_percent")
+        if dp_a is not None:
+            dp = {"dp_percent": dp_p, "dp_amount": round(float(dp_a)), "dp_amount_source": "manual"}
+        elif dp_p is not None:
+            dp = {"dp_percent": float(dp_p), "dp_amount": int(total * float(dp_p) / 100 + 0.5), "dp_amount_source": "percent"}
+        else:
+            dp = {"dp_percent": None, "dp_amount": None, "dp_amount_source": None}
+        return {"subtotal": sub, "discount_amount": diskon, "tax_amount": pajak, "total_amount": total, **dp, "items": baris}
 
     def _buat_penawaran(self, isi):
         for k in ("quote_date", "customer_id", "customer_name", "items"):

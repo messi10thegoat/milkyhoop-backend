@@ -112,3 +112,13 @@ async def test_stub_aksi_penawaran_terima_kirim_tolak_hapus():
     a1 = await be.kirim("POST", f"/api/quotes/{q1}/decline", badan=b, header={"X-Idempotency-Key": "k2"})
     a2 = await be.kirim("POST", f"/api/quotes/{q1}/decline", badan=b, header={"X-Idempotency-Key": "k2"})
     assert a1.status == 200 and a2.replay and next(x for x in be.penawaran if x["id"] == q1)["status"] == "declined"
+
+
+async def test_stub_calculate_dp_cermin_hitung_dp():
+    import json
+    be = StubBE()
+    isi = {**QT, "dp_percent": 50}
+    j = await be.kirim("POST", "/api/quotes/calculate", badan=json.dumps(isi).encode())
+    assert j.isi["data"]["dp_amount"] == 75000 and j.isi["data"]["dp_amount_source"] == "percent"
+    j2 = await be.kirim("POST", "/api/quotes/calculate", badan=json.dumps({**QT, "dp_amount": 20000, "dp_percent": 50}).encode())
+    assert j2.isi["data"]["dp_amount"] == 20000 and j2.isi["data"]["dp_amount_source"] == "manual"
