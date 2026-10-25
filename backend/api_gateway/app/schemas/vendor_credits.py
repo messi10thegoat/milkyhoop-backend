@@ -10,7 +10,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any, Literal
+from typing import Union, Optional, List, Dict, Any, Literal
 from decimal import Decimal
 from datetime import date, datetime
 from uuid import UUID
@@ -136,14 +136,14 @@ class VendorCreditItemResponse(BaseModel):
     description: str
     quantity: float
     unit: Optional[str] = None
-    unit_price: int
+    unit_price: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
     tax_code: Optional[str] = None
     tax_rate: float = 0
-    tax_amount: int = 0
-    subtotal: int
-    total: int
+    tax_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    subtotal: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    total: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
     batch_no: Optional[str] = None
     exp_date: Optional[str] = None
     line_number: int = 1
@@ -185,10 +185,10 @@ class VendorCreditListItem(BaseModel):
     vendor_id: Optional[str] = None
     vendor_name: str
     vendor_credit_date: str
-    total_amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_applied: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_refunded: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    remaining_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
     status: str
     reason: str
     ref_no: Optional[str] = None
@@ -218,15 +218,15 @@ class VendorCreditDetail(BaseModel):
     original_bill_number: Optional[str] = None
 
     # Amounts
-    subtotal: int
+    subtotal: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
     discount_percent: float = 0
-    discount_amount: int = 0
+    discount_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
     tax_rate: float = 0
-    tax_amount: int = 0
-    total_amount: int
-    amount_applied: int = 0
-    amount_refunded: int = 0
-    remaining_amount: int = 0
+    tax_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_applied: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_refunded: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    remaining_amount: Union[int, float] = 0  # item 7: bulat -> int (JSON sama), ber-sen -> float
 
     # Status & dates
     status: str

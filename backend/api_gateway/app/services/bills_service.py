@@ -23,6 +23,7 @@ from .jatuh_tempo import hari_terlambat
 from .pihak_helpers import segarkan_cache_hutang_tagihan
 from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 from decimal import Decimal, ROUND_HALF_UP
+from .sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP
 from .tax_factor import resolve_dpp_factor
 
 _Dec = Decimal
@@ -380,6 +381,13 @@ async def _idem_simpan(conn, idem, kp, sidik, prefix: str, hasil: dict, doc_id):
     from . import idem_buat
     return await idem_buat.simpan(conn, idem["ctx"], kp, sidik, prefix, hasil, doc_id)
 
+
+def _uang(v):
+    """Item 7 (Law 9): nominal tampilan = Decimal 0.01 HALF_UP (dulu int() memotong sen). Bulat -> int (JSON "50000" SAMA seperti dulu),
+    ber-sen -> float ("999.9")."""
+    d = _q2(Decimal(str(v if v is not None else 0)))
+    return int(d) if d == d.to_integral_value() else float(d)
+
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
 
@@ -600,9 +608,9 @@ class BillsService:
                             "name": row["vendor_name"],
                             "initials": initials,
                         },
-                        "amount": int(row["amount"]),
-                        "amount_paid": int(row["amount_paid"]),
-                        "amount_due": int(row["amount_due"]),
+                        "amount": _uang(row["amount"]),
+                        "amount_paid": _uang(row["amount_paid"]),
+                        "amount_due": _uang(row["amount_due"]),
                         "status": row["status"],
                         "issue_date": row["issue_date"].isoformat(),
                         "due_date": row["due_date"].isoformat(),
@@ -1659,7 +1667,7 @@ class BillsService:
                 # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
                 await segarkan_cache_hutang_tagihan(conn, tenant_id, bill_id)
                 _cache = await conn.fetchrow("SELECT amount_paid, status FROM bills WHERE id = $1", bill_id)
-                new_paid, new_status = int(_cache["amount_paid"] or 0), _cache["status"]
+                new_paid, new_status = Decimal(str(_cache["amount_paid"] or 0)), _cache["status"]
 
                 logger.info(
                     f"Bill payment recorded: bill={bill_id}, amount={payment_amount}, "
@@ -1676,7 +1684,7 @@ class BillsService:
                         "amount": payment_amount,
                         "journal_id": str(journal_id),
                         "bill_status": new_status,
-                        "amount_due": int(bill["amount"]) - new_paid,
+                        "amount_due": _uang(Decimal(str(bill["amount"])) - new_paid),
                         "bank_transaction_id": str(bank_transaction_id)
                         if bank_transaction_id
                         else None,
@@ -2208,13 +2216,13 @@ class BillsService:
                 + ("" if id_cari is None else " AND b.id = ANY($4::uuid[])"),
                 tenant_id, today, await ambang_segera(conn, tenant_id), *([] if id_cari is None else [id_cari]))
 
-            total_amount = int(row["total_amount"])
-            total_remaining = int(row["total_remaining"])
+            total_amount = _uang(row["total_amount"])
+            total_remaining = _uang(row["total_remaining"])
 
             def calc_percentage(remaining):
                 if total_remaining == 0:
                     return 0
-                return round((remaining / total_remaining) * 100, 1)
+                return round((float(remaining) / total_remaining) * 100, 1)
 
             return {
                 "success": True,
@@ -2226,7 +2234,7 @@ class BillsService:
                     "total_count": row["total_count"],
                     "vendor_count": row["vendor_count"],
                     "overdue_count": overdue_row["overdue_count"],
-                    "total_overdue": int(overdue_row["total_overdue"]),
+                    "total_overdue": _uang(overdue_row["total_overdue"]),
                     **{f"{k}_{m}": (int(aksi_row[f"{k}_{m}"]) if m == "count" else float(aksi_row[f"{k}_{m}"]))
                        for k in TD.AKSI_TAGIHAN + TD.SARING_UMUR for m in ("count", "value")},
                     # USANG (alias segera_tempo, KONTRAK-dashboard-pengingat §7): dipertahankan sampai FE T1 terverifikasi
@@ -2237,22 +2245,22 @@ class BillsService:
                     "breakdown": {
                         "paid": {
                             "count": row["paid_count"],
-                            "amount": int(row["paid_remaining"]),
+                            "amount": _uang(row["paid_remaining"]),
                             "percentage": calc_percentage(row["paid_remaining"]),
                         },
                         "partial": {
                             "count": row["partial_count"],
-                            "amount": int(row["partial_remaining"]),
+                            "amount": _uang(row["partial_remaining"]),
                             "percentage": calc_percentage(row["partial_remaining"]),
                         },
                         "unpaid": {
                             "count": row["unpaid_count"],
-                            "amount": int(row["unpaid_remaining"]),
+                            "amount": _uang(row["unpaid_remaining"]),
                             "percentage": calc_percentage(row["unpaid_remaining"]),
                         },
                         "overdue": {
                             "count": row["overdue_count"],
-                            "amount": int(row["overdue_remaining"]),
+                            "amount": _uang(row["overdue_remaining"]),
                             "percentage": calc_percentage(row["overdue_remaining"]),
                         },
                     },
@@ -2366,10 +2374,10 @@ class BillsService:
                 for r in by_vendor_rows
             ]
 
-            total_outstanding = int(row["total_outstanding"])
-            overdue_amount = int(row["overdue_amount"])
-            unpaid_amount = int(row["unpaid_amount"])
-            partial_amount = int(row["partial_amount"])
+            total_outstanding = _uang(row["total_outstanding"])
+            overdue_amount = _uang(row["overdue_amount"])
+            unpaid_amount = _uang(row["unpaid_amount"])
+            partial_amount = _uang(row["partial_amount"])
 
             def calc_percentage(amount):
                 if total_outstanding == 0:
@@ -2397,8 +2405,8 @@ class BillsService:
                     # Urgency metrics for alerts
                     "urgency": {
                         "overdue_oldest_days": row["overdue_oldest_days"],
-                        "overdue_largest": int(row["overdue_largest"]),
-                        "due_within_7_days": int(row["due_within_7_days_amount"]),
+                        "overdue_largest": _uang(row["overdue_largest"]),
+                        "due_within_7_days": _uang(row["due_within_7_days_amount"]),
                         "due_within_7_days_count": row["due_within_7_days_count"],
                     },
                     # Fix A: per-vendor breakdown for deterministic AP rollup intent

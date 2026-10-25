@@ -87,14 +87,15 @@ def test_vendor_tak_ada_tulis_400_sama_pratinjau_blok():
 
 
 def test_hitungan_penyusun_sama_dengan_rumus_lama():
-    """Rumus lama (salinan teks dari create sebelum P2P-3b): int() per baris lalu diskon/pajak dokumen int(). Item 7 (Decimal HALF_UP)
-    mengubahnya NANTI di satu tempat untuk create + pratinjau sekaligus."""
+    """Rumus create (salinan teks): hitung per baris lalu diskon/pajak dokumen. Item 7 (25 Okt, izin pemilik): int() -> 0.01 HALF_UP (q2)
+    di SATU tempat untuk create + pratinjau sekaligus."""
     from decimal import Decimal
+    from app.services.sales_doc_calc import q2
     b = _body()
     s = asyncio.run(VC._susun_nd(_Conn(True), {"tenant_id": "t"}, b, NDR.Blok(False)))
     it = [VC.calculate_item_totals(i.model_dump()) for i in b.items]
     sub = sum(i["subtotal"] for i in it)
-    disk = int(sub * Decimal(str(b.discount_percent)) / 100)
+    disk = q2(sub * Decimal(str(b.discount_percent)) / 100)
     assert (s["subtotal"], s["discount_amount"], s["tax_amount"], s["total_amount"]) == (sub, disk, sum(i["tax_amount"] for i in it),
                                                                                           sub - disk + sum(i["tax_amount"] for i in it))
 

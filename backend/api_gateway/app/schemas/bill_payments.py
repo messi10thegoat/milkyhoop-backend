@@ -19,7 +19,7 @@ This mirrors ReceivePayments for the payable side.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Any, Dict, Optional, List, Literal
+from typing import Union, Any, Dict, Optional, List, Literal
 from datetime import date
 
 
@@ -105,7 +105,7 @@ class CreateBillPaymentRequest(BaseModel):
     reference_number: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
     pph_tax_code_id: Optional[str] = None
-    pph_amount: Optional[int] = 0
+    pph_amount: Optional[Union[int, float]] = 0  # item 7
     tags: List[str] = Field(default_factory=list)
     allocations: List[BillAllocationInput] = Field(default_factory=list)
     save_as_draft: bool = Field(
@@ -289,7 +289,7 @@ class BillPaymentDetail(BaseModel):
 
     # Journal-only flag (Law 29)
     pph_tax_code_id: Optional[str] = None
-    pph_amount: Optional[int] = 0
+    pph_amount: Optional[Union[int, float]] = 0  # item 7
     is_journal_only: Optional[bool] = None
 
 
@@ -347,9 +347,9 @@ class OpenBillItem(BaseModel):
     bill_number: str
     bill_date: str
     due_date: str
-    total_amount: int
-    paid_amount: int
-    remaining_amount: int
+    total_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    paid_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    remaining_amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
     is_overdue: bool = False
     overdue_days: int = 0
 

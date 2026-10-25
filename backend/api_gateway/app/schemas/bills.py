@@ -5,7 +5,7 @@ This module defines request and response models for the /api/bills endpoints.
 """
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, List, Literal, Dict, Any
+from typing import Union, Optional, List, Literal, Dict, Any
 from uuid import UUID
 from datetime import date, datetime
 from decimal import Decimal
@@ -198,9 +198,9 @@ class BillListItem(BaseModel):
     id: UUID
     invoice_number: str
     vendor: VendorInfo
-    amount: int
-    amount_paid: int
-    amount_due: int
+    amount: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_paid: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
+    amount_due: Union[int, float]  # item 7: bulat -> int (JSON sama), ber-sen -> float
     status: str
     issue_date: date
     due_date: date

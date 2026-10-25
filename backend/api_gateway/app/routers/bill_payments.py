@@ -20,6 +20,7 @@ import logging
 import asyncpg
 from datetime import date
 from decimal import Decimal
+from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP
 
 from ..schemas.bill_payments import (
     CreateBillPaymentRequest,
@@ -141,7 +142,16 @@ async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
     ber-jurnal-dibalik masih "bersisa" 525.000/1.120.000 dan bisa dibayar. 0 = tagihan tidak aktif."""
     from ..services.tagihan_daftar import sisa_tagihan_jurnal
     v = await sisa_tagihan_jurnal(conn, tenant_id, bill_id if isinstance(bill_id, UUID) else UUID(str(bill_id)))
-    return int(v) if v is not None else 0
+    # item 7: tanpa int() (dulu sisa 274,50 -> 274); bulat -> eksponen 0 (teks "Sisa tagihan: 50000" & JSON int tetap seperti dulu)
+    d = Decimal(str(v)) if v is not None else Decimal("0")
+    return d.quantize(Decimal(1)) if d == d.to_integral_value() else d
+
+
+def _uang(v):
+    """Item 7 (Law 9): nominal tampilan = Decimal 0.01 HALF_UP (dulu int() memotong sen). Bulat -> int (JSON "50000" SAMA seperti dulu),
+    ber-sen -> float ("999.9")."""
+    d = _q2(Decimal(str(v if v is not None else 0)))
+    return int(d) if d == d.to_integral_value() else float(d)
 
 
 async def generate_payment_number(conn, tenant_id: str) -> str:
@@ -1031,7 +1041,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                 pph_tax_code_id=str(payment["pph_tax_code_id"])
                 if payment.get("pph_tax_code_id")
                 else None,
-                pph_amount=int(payment["pph_amount"] or 0),
+                pph_amount=_uang(payment["pph_amount"]),
             )
 
             return BillPaymentDetailResponse(success=True, data=detail)
@@ -1142,7 +1152,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                         payload.bank_fee_account_id,
                         payload.currency_code,
                         payload.exchange_rate,
-                        int(
+                        _q2(  # item 7: base = total x kurs, 0.01 HALF_UP (dulu int() memotong)
                             Decimal(str(payload.total_amount))
                             * Decimal(str(payload.exchange_rate))
                         ),
@@ -1646,9 +1656,8 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                     bill_date=r["bill_date"].isoformat() if r["bill_date"] else "",
                     due_date=r["due_date"].isoformat() if r["due_date"] else "",
                     total_amount=r["total_amount"] or 0,
-                    paid_amount=(r["total_amount"] or 0)
-                    - int(r["journal_remaining"] or 0),
-                    remaining_amount=int(r["journal_remaining"] or 0),
+                    paid_amount=_uang(Decimal(str(r["total_amount"] or 0)) - Decimal(str(r["journal_remaining"] or 0))),
+                    remaining_amount=_uang(r["journal_remaining"]),
                     is_overdue=r["is_overdue"] or False,
                     overdue_days=r["overdue_days"] or 0,
                 )
@@ -1885,15 +1894,15 @@ async def get_payment_journal_entries(request: Request, payment_id: str):
                         "account_id": str(line["account_id"]),
                         "account_code": line["account_code"],
                         "account_name": line["account_name"],
-                        "debit": int(line["debit"] or 0),
-                        "credit": int(line["credit"] or 0),
+                        "debit": _uang(line["debit"]),
+                        "credit": _uang(line["credit"]),
                         "memo": line["memo"] or "",
                     }
                     for line in lines
                 ]
 
-                journal_debit = int(journal["total_debit"] or 0)
-                journal_credit = int(journal["total_credit"] or 0)
+                journal_debit = _uang(journal["total_debit"])
+                journal_credit = _uang(journal["total_credit"])
                 total_debit += journal_debit
                 total_credit += journal_credit
 

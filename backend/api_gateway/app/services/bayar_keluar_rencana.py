@@ -81,11 +81,13 @@ async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
         bl.galat("PERIODE_TERTUTUP", 403, tg.periode_tertutup(p["period_name"], p["status"]))
 
 
-async def sisa_tagihan(conn, tid: str, bill_id) -> int:
+async def sisa_tagihan(conn, tid: str, bill_id) -> Decimal:
     """== routers/bill_payments.get_bill_remaining_from_journal (compute_ap_rincian V440/V441; 0 = tidak aktif)."""
     from .tagihan_daftar import sisa_tagihan_jurnal
     v = await sisa_tagihan_jurnal(conn, tid, _uuid(bill_id))
-    return int(v) if v is not None else 0
+    # item 7: tanpa int() (dulu sisa 274,50 -> 274); bulat -> eksponen 0 (teks "Sisa tagihan: 50000" & JSON int tetap seperti dulu)
+    d = Decimal(str(v)) if v is not None else Decimal("0")
+    return d.quantize(Decimal(1)) if d == d.to_integral_value() else d
 
 
 # ------------------------------------------------------------------ jurnal /bill-payments (SATU sumber baris)

@@ -31,6 +31,7 @@ import logging
 import asyncpg
 from datetime import date
 from decimal import Decimal
+from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP (simetri NK)
 
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
@@ -121,11 +122,20 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
-async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> int:
+async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> Decimal:
     """Sisa hutang tagihan dari JURNAL -- compute_ap_rincian (V440/V441), SATU sumber dgn daftar/detail Faktur Pembelian.
     U3a (22 Okt 2026): dulu SQL sendiri yang mengurangkan SELURUH debit AP nota debit ke tiap tagihan bertaut. 0 = tagihan tak aktif."""
     v = await ND.sisa_tagihan_jurnal(conn, tenant_id, bill_id)
-    return int(v) if v is not None else 0
+    # item 7: tanpa int() (dulu sisa 274,50 -> 274); bulat -> eksponen 0 (teks "Sisa tagihan: 50000" & JSON int tetap seperti dulu)
+    d = Decimal(str(v)) if v is not None else Decimal("0")
+    return d.quantize(Decimal(1)) if d == d.to_integral_value() else d
+
+
+def _uang(v):
+    """Item 7 (Law 9): nominal tampilan = Decimal 0.01 HALF_UP (dulu int() memotong sen). Bulat -> int (JSON "50000" SAMA seperti dulu),
+    ber-sen -> float ("999.9")."""
+    d = _q2(Decimal(str(v if v is not None else 0)))
+    return int(d) if d == d.to_integral_value() else float(d)
 
 def calculate_item_totals(item: dict) -> dict:
     """Calculate item totals with discount and tax."""
@@ -152,10 +162,11 @@ def calculate_item_totals(item: dict) -> dict:
 
     return {
         **item,
-        "subtotal": int(subtotal),
-        "discount_amount": int(discount),
-        "tax_amount": int(tax_amount),
-        "total": int(total),
+        # item 7 (Law 9): 0.01 HALF_UP == credit_notes.calculate_item_totals (dulu int() memotong)
+        "subtotal": _q2(subtotal),
+        "discount_amount": _q2(Decimal(str(discount))),
+        "tax_amount": _q2(tax_amount),
+        "total": _q2(total),
     }
 
 
@@ -355,10 +366,10 @@ async def get_vendor_credits_summary(request: Request, search: Optional[str] = Q
                     "posted_count": row["posted_count"] or 0,
                     "partial_count": row["partial_count"] or 0,
                     "applied_count": row["applied_count"] or 0,
-                    "total_value": int(row["total_value"] or 0),
-                    "total_applied": int(_total_terpakai),  # U3c: Σ terpakai turunan jurnal (== Σ medan baris; kembar NK)
-                    "total_refunded": int(row["total_refunded"] or 0),
-                    "available_balance": int(row["available_balance"] or 0),
+                    "total_value": _uang(row["total_value"]),
+                    "total_applied": _uang(_total_terpakai),  # U3c: Σ terpakai turunan jurnal (== Σ medan baris; kembar NK)
+                    "total_refunded": _uang(row["total_refunded"]),
+                    "available_balance": _uang(row["available_balance"]),
                     f"{NDD.AKSI_BELUM_TERPAKAI}_count": aksi_row["n"] or 0,
                     f"{NDD.AKSI_BELUM_TERPAKAI}_value": float(aksi_row["v"] or 0),
                 },
@@ -611,18 +622,14 @@ async def _susun_nd(conn, ctx: dict, body: CreateVendorCreditRequest, bl) -> dic
 
     # Apply overall discount
     if body.discount_percent > 0:
-        overall_discount = int(
-            subtotal * Decimal(str(body.discount_percent)) / 100
-        )
+        overall_discount = _q2(subtotal * Decimal(str(body.discount_percent)) / 100)
     else:
         overall_discount = body.discount_amount
 
     # Apply overall tax if specified
     after_discount = subtotal - overall_discount
     if body.tax_rate > 0:
-        overall_tax = int(
-            after_discount * Decimal(str(body.tax_rate)) / 100
-        )
+        overall_tax = _q2(after_discount * Decimal(str(body.tax_rate)) / 100)
     else:
         overall_tax = total_tax
 
@@ -743,7 +750,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                     "data": {
                         "id": str(vc_id),
                         "vendor_credit_number": vc_number,
-                        "total_amount": total_amount,
+                        "total_amount": _uang(total_amount),
                         "status": "draft",
                     },
                 }, vc_id)
@@ -892,16 +899,14 @@ async def update_vendor_credit(
                     tax_rate = update_data.get("tax_rate", 0)
 
                     if discount_percent > 0:
-                        overall_discount = int(
-                            subtotal * Decimal(str(discount_percent)) / 100
-                        )
+                        overall_discount = _q2(subtotal * Decimal(str(discount_percent)) / 100)  # item 7
                     else:
                         overall_discount = discount_amount
 
                     after_discount = subtotal - overall_discount
 
                     if tax_rate > 0:
-                        overall_tax = int(after_discount * Decimal(str(tax_rate)) / 100)
+                        overall_tax = _q2(after_discount * Decimal(str(tax_rate)) / 100)  # item 7
                     else:
                         overall_tax = total_tax
 
