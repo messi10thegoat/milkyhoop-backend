@@ -64,6 +64,10 @@ class Tool:
     # `dokumen` null; kartu tetap lahir. Tidak dikirim ke model.
     ringkasan_dari: Optional[str] = None
     ringkas_dokumen: Optional[Callable[[dict], dict]] = None
+    # Objek langkah di transkrip ("Membaca penawaran · QUO-2610-0040"): fn(masukan, jejak) -> teks pendek atau None.
+    # jejak None saat mulai; sesudah tool = {"isi": respons BE, "dokumen": ringkasan kartu}. Nomor dokumen HANYA dari
+    # jejak (data server), bukan dari masukan model. Hanya dipancarkan hidup; tidak masuk audit/tampilan.
+    objek: Optional[Callable[[dict, Optional[dict]], Optional[str]]] = None
 
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)

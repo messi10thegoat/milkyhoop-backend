@@ -127,24 +127,40 @@ def ringkas_penawaran(d: dict) -> dict:
             "berlaku_sampai": d.get("expiry_date"), "status": d.get("status")}
 
 
-# Semua WRITE atas penawaran yang sudah ada membawa ringkasan dokumen (tiket MASTER 25 Okt).
-_DOK = {"ringkasan_dari": "detail_penawaran", "ringkas_dokumen": ringkas_penawaran}
+def _objek_kata(kunci: str):
+    """Objek langkah = kata kunci pencarian/nama dari masukan (bukan nomor dokumen)."""
+    return lambda m, j: f"“{m[kunci]}”" if isinstance(m.get(kunci), str) and m[kunci].strip() else None
+
+
+def objek_nomor_penawaran(m: dict, j) -> str | None:
+    """Objek langkah = nomor penawaran dari DATA SERVER (ringkasan kartu atau respons detail); None saat mulai."""
+    if not j:
+        return None
+    if (j.get("dokumen") or {}).get("nomor"):
+        return j["dokumen"]["nomor"]
+    isi = j.get("isi")
+    data = isi.get("data", isi) if isinstance(isi, dict) else None
+    return data.get("quote_number") if isinstance(data, dict) else None
+
+
+# Semua WRITE atas penawaran yang sudah ada membawa ringkasan dokumen (tiket MASTER 25 Okt) + objek nomor.
+_DOK = {"ringkasan_dari": "detail_penawaran", "ringkas_dokumen": ringkas_penawaran, "objek": objek_nomor_penawaran}
 
 TOOLS = [
     # ---------------- BACA
     Tool("cari_pelanggan", Kelas.READ, "Cari pelanggan menurut nama/kode. Pakai sebelum membuat pelanggan baru.",
-         _obj({"q": S("Kata kunci"), "limit": I()}, ["q"]), "GET", "/api/customers/autocomplete"),
+         _obj({"q": S("Kata kunci"), "limit": I()}, ["q"]), "GET", "/api/customers/autocomplete", objek=_objek_kata("q")),
     Tool("cari_barang", Kelas.READ, "Cari barang/jasa menurut nama atau barcode; hasil memuat harga jual dan pajak bawaan.",
-         _obj({"search": S("Kata kunci"), "limit": I()}, ["search"]), "GET", "/api/items"),
+         _obj({"search": S("Kata kunci"), "limit": I()}, ["search"]), "GET", "/api/items", objek=_objek_kata("search")),
     Tool("opsi_pajak", Kelas.READ, "Daftar kode pajak yang sah (id, kode, nama, tarif, bawaan). direction=output untuk penjualan, input untuk pembelian.",
          _obj({"direction": {"type": "string", "enum": ["output", "input"]}}), "GET", "/api/tax-codes/dropdown"),
     Tool("bawaan_penawaran", Kelas.READ, "Bawaan penawaran usaha ini: masa berlaku, syarat, teks pembuka/penutup.",
          _obj({}), "GET", f"{_Q}/defaults"),
     Tool("daftar_penawaran", Kelas.READ, "Daftar penawaran. aksi: perlu_dikirim | tunggu_jawaban | segera_habis | lewat_masa | perlu_dipesan.",
          _obj({"search": S(), "status": S(), "aksi": {"type": "string", "enum": ["perlu_dikirim", "tunggu_jawaban", "segera_habis", "lewat_masa", "perlu_dipesan"]},
-               "customer_id": ID, "limit": I()}), "GET", _Q),
+               "customer_id": ID, "limit": I()}), "GET", _Q, objek=_objek_kata("search")),
     Tool("detail_penawaran", Kelas.READ, "Detail satu penawaran: baris, total, status, dan `aksi` (kunci tindak lanjut dari server: perlu_dikirim | tunggu_jawaban | segera_habis | lewat_masa | perlu_dipesan, atau kosong).",
-         SKEMA_ID, "GET", f"{_Q}/{{id}}"),
+         SKEMA_ID, "GET", f"{_Q}/{{id}}", objek=objek_nomor_penawaran),
     Tool("ringkasan_penawaran", Kelas.READ, "Ringkasan jumlah dan nilai penawaran per status.", _obj({}), "GET", f"{_Q}/summary"),
     Tool("penawaran_segera_kedaluwarsa", Kelas.READ, "Penawaran yang akan kedaluwarsa dalam `days` hari (1-30).",
          _obj({"days": I("Jumlah hari ke depan, 1-30")}), "GET", f"{_Q}/expiring"),
@@ -201,11 +217,11 @@ TOOLS = [
          halaman=f"{_PEN}/{{id}}", judul_kartu="Hapus draf penawaran", **_DOK),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru",
-         halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan",
+         halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan", objek=_objek_kata("name"),
          tak_didukung=((r"saldo\s+(piutang\s+)?awal|opening\s+balance", "Saldo awal piutang TIDAK ikut dicatat. Isi di halaman Pelanggan setelah pelanggan tersimpan."),)),
     Tool("buat_barang", Kelas.WRITE, "Usulkan barang/jasa baru (tanpa stok awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_BARANG, "POST", "/api/items", pratinjau="pratinjau_barang_baru",
-         halaman="/persediaan/barang", judul_kartu="Buat barang",
+         halaman="/persediaan/barang", judul_kartu="Buat barang", objek=_objek_kata("name"),
          tak_didukung=((r"stok\s+awal|opening\s+stock", "Stok awal TIDAK ikut dicatat. Isi di halaman Barang & Jasa setelah barang tersimpan."),)),
 
     # ---------------- NAV (izin aksi diperiksa, rute tidak dipanggil)

@@ -214,6 +214,22 @@ def _sama(a: Any, b: Any) -> bool:
 _MEDAN_BARIS = ("description", "quantity", "unit_price", "discount_percent", "tax_rate", "tax_id", "unit", "item_id")
 
 
+MAKS_OBJEK = 40  # karakter objek langkah (pagar MASTER)
+
+
+def _dengan_objek(langkah: dict, t: Optional[Tool], masukan: dict, jejak: Optional[dict]) -> dict:
+    """Tambah `objek` (teks pendek, satu baris, <= MAKS_OBJEK) bila Tool.objek memberi; galat pemeta = tanpa objek."""
+    if t is None or t.objek is None:
+        return langkah
+    try:
+        ob = t.objek(masukan or {}, jejak)
+    except Exception:  # noqa: BLE001 -- objek hanya hiasan transkrip
+        return langkah
+    if not isinstance(ob, str) or not (ob := " ".join(ob.split())):
+        return langkah
+    return {**langkah, "objek": ob if len(ob) <= MAKS_OBJEK else ob[:MAKS_OBJEK - 1] + "…"}
+
+
 def buang_medan_tak_berubah(payload: dict, sekarang: dict) -> dict:
     """PATCH hanya medan yang berubah. `items`: dibuang bila setiap baris (dicocokkan lewat `id`, atau urutan bila
     tanpa id) sama pada medan yang dikirim dan jumlah baris sama; bila ada yang beda, `items` dikirim utuh."""
@@ -697,10 +713,12 @@ class Putaran:
                 langkah = {"jenis": "langkah", "id": c.id, "nama": c.nama, "status": "mulai",
                            "label": aliran.label_langkah(c.nama, t_.kelas.value if t_ else "")}
                 if c.nama not in aliran.TANPA_LANGKAH:
-                    aliran.pancar(langkah)
-                isi, salah, write_dipakai = await self._jalankan(sesi, c, peta, pelaksana, peristiwa, write_dipakai)
+                    aliran.pancar(_dengan_objek(langkah, t_, c.masukan, None))
+                jejak: dict = {}
+                isi, salah, write_dipakai = await self._jalankan(sesi, c, peta, pelaksana, peristiwa, write_dipakai, jejak)
                 if c.nama not in aliran.TANPA_LANGKAH:
-                    aliran.pancar({**langkah, "status": "galat" if salah else "selesai"})
+                    akhir = {**langkah, "status": "galat" if salah else "selesai"}
+                    aliran.pancar(akhir if salah else _dengan_objek(akhir, t_, c.masukan, jejak))
                 menulis_di_giliran = menulis_di_giliran or write_dipakai
                 blok = {"type": "tool_result", "tool_use_id": c.id, "content": isi}
                 if salah:
@@ -768,7 +786,9 @@ class Putaran:
         hasil, a.antre_dibaca = a.antre_dibaca, []
         return hasil
 
-    async def _jalankan(self, sesi, c, peta, pelaksana, peristiwa, write_dipakai):
+    async def _jalankan(self, sesi, c, peta, pelaksana, peristiwa, write_dipakai, jejak: Optional[dict] = None):
+        """jejak (opsional) diisi respons BE / ringkasan dokumen untuk objek langkah (Tool.objek)."""
+        jejak = {} if jejak is None else jejak
         if c.nama == TOOL_HITUNG_TANGGAL["name"]:
             try:
                 dari = date.fromisoformat(c.masukan["dari"]) if c.masukan.get("dari") else sesi.hari_ini
@@ -826,6 +846,7 @@ class Putaran:
             else:
                 jb = await pelaksana.kirim(t.metode, jalur, badan=badan_kanonik(sisa))
             sesi.sumber_angka.append(jb.isi)
+            jejak["isi"] = jb.isi
             return _ringkas({"status": jb.status, "isi": jb.isi}), jb.status >= 400, write_dipakai
 
         # WRITE: usulkan saja.
@@ -854,6 +875,7 @@ class Putaran:
                              "catatan": "Pratinjau menolak; tidak ada kartu. Jelaskan alasannya ke pengguna."}), True, True
 
         dokumen = await self._dokumen_kartu(t, c.masukan, pelaksana, dok_sekarang)
+        jejak.update(isi=jbp.isi, dokumen=dokumen)
         lama = sesi.kartu_menunggu()
         if lama is not None:
             lama.status = StatusKartu.BASI
