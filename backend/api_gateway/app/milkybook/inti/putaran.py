@@ -497,12 +497,14 @@ class Putaran:
                      "kartu_id": kartu_id}, selesai]
         masukan = buang_null({**_uk.normalkan_angka(t.skema, payload), **t.param_dari_jalur(k.jalur)})  # id dari kartu lama
         jalur, sisa = t.jalur_konkret(masukan)
+        dok_sekarang = None
         if t.pembanding:
             pb = self.registri.ambil(t.pembanding)
             jb_now = await pelaksana.kirim("GET", pb.jalur_konkret(masukan)[0])
             sekarang = jb_now.isi.get("data", jb_now.isi) if isinstance(jb_now.isi, dict) else {}
             if jb_now.status < 400 and isinstance(sekarang, dict):
                 sisa = buang_medan_tak_berubah(sisa, sekarang)
+                dok_sekarang = sekarang if t.pembanding == t.ringkasan_dari else None
         pr = self.registri.ambil(t.pratinjau)
         jbp = await pelaksana.kirim(pr.metode, pr.jalur_konkret(masukan)[0], badan=badan_kanonik(sisa))
         if jbp.status >= 400 or _ada_blok(jbp.isi) or not sisa:
@@ -510,11 +512,12 @@ class Putaran:
                      "blocks": _uk.blok_pratinjau(jbp.status, jbp.isi) if sisa else [],
                      "pesan": "Isian baru ditolak server; kartu lama tetap menunggu." if sisa else
                               "Tidak ada perubahan dibanding dokumen sekarang."}, selesai]
+        dokumen = await self._dokumen_kartu(t, masukan, pelaksana, dok_sekarang)
         k.status = StatusKartu.BASI
         await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_basi",
                                           tool=k.tool, kartu_id=k.kartu_id, payload_hash=k.payload_hash, hasil="ubah_di_kartu"))
         baru = Kartu(sesi_id=sesi.sesi_id, tool=k.tool, metode=k.metode, jalur=jalur, payload=sisa, pratinjau=jbp.isi,
-                     judul=k.judul, tool_use_id=None)
+                     judul=k.judul, tool_use_id=None, dokumen=dokumen)
         sesi.kartu[baru.kartu_id] = baru
         await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_lahir", tool=k.tool, kelas="WRITE",
                                           payload_hash=baru.payload_hash, kunci_idempotensi=baru.kunci, kartu_id=baru.kartu_id,
@@ -833,12 +836,14 @@ class Putaran:
             pr_jalur, _ = pr.jalur_konkret(c.masukan)
         except ValueError as ex:
             return f"Masukan tidak sah untuk pratinjau: {ex}", True, write_dipakai
+        dok_sekarang = None
         if t.pembanding:
             pb = self.registri.ambil(t.pembanding)
             jb_now = await pelaksana.kirim("GET", pb.jalur_konkret(c.masukan)[0])
             sekarang = jb_now.isi.get("data", jb_now.isi) if isinstance(jb_now.isi, dict) else {}
             if jb_now.status < 400 and isinstance(sekarang, dict):
                 sisa = buang_medan_tak_berubah(sisa, sekarang)
+                dok_sekarang = sekarang if t.pembanding == t.ringkasan_dari else None
                 if not sisa:
                     return ("Tidak ada perubahan: semua medan yang diusulkan sama dengan isi dokumen sekarang. "
                             "Tanyakan ke pengguna apa yang ingin diubah."), True, write_dipakai
@@ -848,6 +853,7 @@ class Putaran:
             return _ringkas({"status": jbp.status, "pratinjau": jbp.isi,
                              "catatan": "Pratinjau menolak; tidak ada kartu. Jelaskan alasannya ke pengguna."}), True, True
 
+        dokumen = await self._dokumen_kartu(t, c.masukan, pelaksana, dok_sekarang)
         lama = sesi.kartu_menunggu()
         if lama is not None:
             lama.status = StatusKartu.BASI
@@ -855,7 +861,7 @@ class Putaran:
             await self.audit.tulis(BarisAudit(sesi.tenant_id, sesi.user_id, sesi.sesi_id, "kartu_basi",
                                               tool=lama.tool, kartu_id=lama.kartu_id, payload_hash=lama.payload_hash))
         k = Kartu(sesi_id=sesi.sesi_id, tool=t.nama, metode=t.metode, jalur=jalur, payload=sisa,
-                  pratinjau=jbp.isi, judul=t.judul_kartu or t.nama, tool_use_id=c.id)
+                  pratinjau=jbp.isi, judul=t.judul_kartu or t.nama, tool_use_id=c.id, dokumen=dokumen)
         tak_dicatat = _cek_tak_didukung(t, sesi)
         sesi.kartu[k.kartu_id] = k
         ev_kartu = {"jenis": "kartu", **k.untuk_klien(), "ubah": _uk.daftar_medan(t.skema, k.payload, t.param_jalur())}
@@ -870,6 +876,22 @@ class Putaran:
             hasil["tidak_dicatat"] = tak_dicatat
             hasil["wajib_disebut"] = "Sebutkan ke pengguna di jawaban ini bahwa bagian berikut TIDAK dicatat dan di mana mengisinya."
         return _ringkas(hasil), False, True
+
+    async def _dokumen_kartu(self, t: Tool, masukan: dict, pelaksana: Pelaksana,
+                             sekarang: Optional[dict] = None) -> Optional[dict]:
+        """Ringkasan dokumen untuk kartu dari server (registri.Tool.ringkasan_dari). `sekarang` = isi GET pembanding
+        yang sama (satu GET saja). None bila tool tak punya ringkasan atau baca gagal: kartu tetap lahir."""
+        if not t.ringkasan_dari:
+            return None
+        try:
+            if sekarang is None:
+                jb = await pelaksana.kirim("GET", self.registri.ambil(t.ringkasan_dari).jalur_konkret(masukan)[0])
+                if jb.status >= 400 or not isinstance(jb.isi, dict):
+                    return None
+                sekarang = jb.isi.get("data", jb.isi)
+            return t.ringkas_dokumen(sekarang) if isinstance(sekarang, dict) else None
+        except Exception:  # noqa: BLE001 -- ringkasan tak boleh menggagalkan kartu
+            return None
 
     def _catat_usage(self, sesi: Sesi, hasil: HasilModel, meter: bool = True) -> None:
         for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):

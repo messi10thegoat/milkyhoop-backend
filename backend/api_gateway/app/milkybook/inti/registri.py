@@ -59,6 +59,11 @@ class Tool:
     # (mis. saldo awal / stok awal yang tak bisa dibawa tool ini). Jaring pengaman: model sempat diam soal ini
     # (eval 24 Okt PNW-059, 1 dari 2 run walau aturan prompt ada). Bukan penentu maksud; hanya menambah peringatan.
     tak_didukung: Tuple[Tuple[str, str], ...] = ()
+    # WRITE atas dokumen yang sudah ada: tool READ (GET) yang dibaca inti saat kartu lahir + pemeta isinya ke ringkasan
+    # dokumen di kartu (tiket MASTER 25 Okt: pelanggan, total, jumlah baris, berlaku sampai dari server). Baca gagal =
+    # `dokumen` null; kartu tetap lahir. Tidak dikirim ke model.
+    ringkasan_dari: Optional[str] = None
+    ringkas_dokumen: Optional[Callable[[dict], dict]] = None
 
     def param_jalur(self) -> List[str]:
         return _PARAM_JALUR.findall(self.jalur)
@@ -119,6 +124,12 @@ class Paket:
                 raise ValueError(f"{t.nama}: WRITE wajib punya pratinjau (rancangan §2.3)")
             if t.kelas in (Kelas.WRITE, Kelas.NAV) and not t.halaman:
                 raise ValueError(f"{t.nama}: WRITE/NAV wajib punya halaman (jalur turun-kelas)")
+            if t.ringkasan_dari or t.ringkas_dokumen:
+                rd = next((x for x in self.tools if x.nama == t.ringkasan_dari), None)
+                if t.kelas != Kelas.WRITE or t.ringkas_dokumen is None or rd is None:
+                    raise ValueError(f"{t.nama}: ringkasan dokumen = WRITE + ringkas_dokumen + tool READ sepaket")
+                if rd.kelas != Kelas.READ or rd.metode != "GET" or not set(rd.param_jalur()) <= set(t.param_jalur()):
+                    raise ValueError(f"{t.nama}: ringkasan_dari '{rd.nama}' harus READ GET dengan parameter jalur dari WRITE")
 
 
 def periksa_skema_strict(skema: dict, nama: str) -> None:

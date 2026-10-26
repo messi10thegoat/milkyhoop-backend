@@ -52,6 +52,8 @@ class Kartu:
     dibuat: float = field(default_factory=time.time)
     hasil: Any = None
     tool_use_id: Optional[str] = None
+    # Ringkasan dokumen dari server saat kartu lahir (registri.Tool.ringkasan_dari); None = tak ada / baca gagal.
+    dokumen: Optional[dict] = None
 
     def __post_init__(self):
         self.badan: bytes = badan_kanonik(self.payload)
@@ -66,4 +68,5 @@ class Kartu:
             "payload_hash": self.payload_hash,
             "pratinjau": self.pratinjau,
             "status": self.status.value,
+            "dokumen": self.dokumen,
         }

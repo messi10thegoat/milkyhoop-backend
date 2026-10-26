@@ -92,14 +92,15 @@ def sesi_dari_dict(d: dict) -> Sesi:
 def _kartu_ke_dict(k: Kartu) -> dict:
     return {"sesi_id": k.sesi_id, "tool": k.tool, "metode": k.metode, "jalur": k.jalur, "payload": k.payload,
             "pratinjau": k.pratinjau, "judul": k.judul, "kartu_id": k.kartu_id, "kunci": k.kunci,
-            "status": k.status.value, "dibuat": k.dibuat, "hasil": k.hasil, "tool_use_id": k.tool_use_id}
+            "status": k.status.value, "dibuat": k.dibuat, "hasil": k.hasil, "tool_use_id": k.tool_use_id,
+            "dokumen": k.dokumen}
 
 
 def _kartu_dari_dict(d: dict) -> Kartu:
     k = Kartu(sesi_id=d["sesi_id"], tool=d["tool"], metode=d["metode"], jalur=d["jalur"], payload=d["payload"],
               pratinjau=d.get("pratinjau"), judul=d.get("judul", ""), kartu_id=d["kartu_id"], kunci=d["kunci"],
               status=StatusKartu(d["status"]), dibuat=d.get("dibuat", time.time()), hasil=d.get("hasil"),
-              tool_use_id=d.get("tool_use_id"))
+              tool_use_id=d.get("tool_use_id"), dokumen=d.get("dokumen"))
     return k  # badan + payload_hash dihitung ulang deterministik dari payload (__post_init__)
 
 

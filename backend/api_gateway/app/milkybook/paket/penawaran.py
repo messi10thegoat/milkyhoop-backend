@@ -117,6 +117,19 @@ SKEMA_BARANG = _obj({
 _Q = "/api/quotes"
 _PEN = "/penjualan/penawaran"
 
+
+def ringkas_penawaran(d: dict) -> dict:
+    """Ringkasan dokumen di kartu tulis (kontrak FE 26 Okt): medan QuoteDetail dari GET /api/quotes/{id}, apa adanya
+    (total = total_amount server, tanpa hitung ulang). Keadaan SEBELUM aksi."""
+    baris = d.get("items")
+    return {"nomor": d.get("quote_number"), "pelanggan": d.get("customer_name"), "total": d.get("total_amount"),
+            "jumlah_baris": len(baris) if isinstance(baris, list) else None,
+            "berlaku_sampai": d.get("expiry_date"), "status": d.get("status")}
+
+
+# Semua WRITE atas penawaran yang sudah ada membawa ringkasan dokumen (tiket MASTER 25 Okt).
+_DOK = {"ringkasan_dari": "detail_penawaran", "ringkas_dokumen": ringkas_penawaran}
+
 TOOLS = [
     # ---------------- BACA
     Tool("cari_pelanggan", Kelas.READ, "Cari pelanggan menurut nama/kode. Pakai sebelum membuat pelanggan baru.",
@@ -164,28 +177,28 @@ TOOLS = [
          halaman=f"{_PEN}/baru", judul_kartu="Buat penawaran"),
     Tool("ubah_penawaran", Kelas.WRITE, "Usulkan perubahan penawaran. Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_UBAH, "PATCH", f"{_Q}/{{id}}", pratinjau="pratinjau_ubah_penawaran",
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Ubah penawaran", pembanding="detail_penawaran"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Ubah penawaran", **_DOK, pembanding="detail_penawaran"),
     Tool("batalkan_penawaran", Kelas.WRITE, "Usulkan pembatalan penawaran. Kartu Tinjau; batal sesudah Setuju.",
          SKEMA_BATAL, "POST", f"{_Q}/{{id}}/void", pratinjau="pratinjau_batal_penawaran",
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Batalkan penawaran"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Batalkan penawaran", **_DOK),
     Tool("jadikan_pesanan", Kelas.WRITE, "Usulkan penawaran dijadikan pesanan penjualan. Kartu Tinjau; terjadi sesudah Setuju.",
          SKEMA_JADI_PESANAN, "POST", f"{_Q}/{{id}}/to-order", pratinjau="pratinjau_jadi_pesanan",
          # idempoten alami: kunci QUOTE + FOR UPDATE, ulang = SO yang sama (quotes.py _konversi_penawaran :2160)
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Jadikan pesanan", **_DOK),
     Tool("kirim_penawaran", Kelas.WRITE, "Usulkan menandai penawaran TERKIRIM ke pelanggan (Milkybook tidak mengirim surel/WA). "
          "Kartu Tinjau; terjadi sesudah Setuju.",
          SKEMA_KIRIM, "POST", f"{_Q}/{{id}}/send", pratinjau="pratinjau_kirim_penawaran",  # idem QUOTE_SEND (cce7facc)
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Tandai terkirim"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Tandai terkirim", **_DOK),
     Tool("terima_penawaran", Kelas.WRITE, "Usulkan mencatat penawaran DITERIMA pelanggan. Kartu Tinjau; terjadi sesudah Setuju.",
          SKEMA_ID, "POST", f"{_Q}/{{id}}/accept", pratinjau="pratinjau_terima_penawaran",  # idem QUOTE_ACCEPT
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat diterima"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat diterima", **_DOK),
     Tool("tolak_penawaran", Kelas.WRITE, "Usulkan mencatat penawaran DITOLAK pelanggan (alasan wajib). Kartu Tinjau; terjadi sesudah Setuju.",
          SKEMA_TOLAK, "POST", f"{_Q}/{{id}}/decline", pratinjau="pratinjau_tolak_penawaran",  # idem QUOTE_DECLINE
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat ditolak"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Catat ditolak", **_DOK),
     Tool("hapus_penawaran", Kelas.WRITE, "Usulkan HAPUS draf penawaran yang belum pernah terkirim (tidak bisa dibatalkan). "
          "Penawaran yang sudah terkirim: batalkan, bukan hapus. Kartu Tinjau; terhapus sesudah Setuju.",
          SKEMA_ID, "DELETE", f"{_Q}/{{id}}", pratinjau="pratinjau_hapus_penawaran",  # idem QUOTE_DELETE
-         halaman=f"{_PEN}/{{id}}", judul_kartu="Hapus draf penawaran"),
+         halaman=f"{_PEN}/{{id}}", judul_kartu="Hapus draf penawaran", **_DOK),
     Tool("buat_pelanggan", Kelas.WRITE, "Usulkan pelanggan baru (tanpa saldo awal). Kartu Tinjau; tersimpan sesudah Setuju.",
          SKEMA_PELANGGAN, "POST", "/api/customers", pratinjau="pratinjau_pelanggan_baru",
          halaman="/kontak/pelanggan", judul_kartu="Buat pelanggan",
