@@ -566,6 +566,7 @@ class BillsService:
                 SELECT
                     b.id,
                     b.invoice_number,
+                    b.ref_no,
                     b.vendor_id,
                     b.vendor_name,
                     b.amount,
@@ -607,6 +608,7 @@ class BillsService:
                     {
                         "id": str(row["id"]),
                         "invoice_number": row["invoice_number"],
+                        "ref_no": row["ref_no"],
                         "vendor": {
                             "id": str(row["vendor_id"]) if row["vendor_id"] else None,
                             "name": row["vendor_name"],

@@ -198,6 +198,7 @@ class BillListItem(BaseModel):
 
     id: UUID
     invoice_number: str
+    ref_no: Optional[str] = None  # no. faktur vendor (sub-baris daftar, 28 Okt 2026)
     vendor: VendorInfo
     amount: UangJson  # item 7
     amount_paid: UangJson  # item 7

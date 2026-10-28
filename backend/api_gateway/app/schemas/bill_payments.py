@@ -187,6 +187,7 @@ class BillPaymentListItem(BaseModel):
 
     id: str
     payment_number: str
+    reference_number: Optional[str] = None  # no. referensi (sub-baris daftar, 28 Okt 2026)
     vendor_id: Optional[str] = None
     vendor_name: str
     payment_date: str

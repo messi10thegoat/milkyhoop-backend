@@ -669,6 +669,7 @@ async def list_bill_payments(
                 items.append(BillPaymentListItem(
                     id=str(r["id"]),
                     payment_number=r["payment_number"] or "",
+                    reference_number=r["reference_number"],
                     vendor_id=str(r["vendor_id"]) if r["vendor_id"] else None,
                     vendor_name=r["vendor_name"] or "",
                     payment_date=r["payment_date"].isoformat()
