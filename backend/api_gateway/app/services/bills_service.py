@@ -476,7 +476,7 @@ class BillsService:
 
             # Pill aksi (partisi; predikat == TD.aksi_tagihan per baris)
             ambang = await ambang_segera(conn, tenant_id)  # SATU definisi "segera" (N hari tenant, V450, bawaan 7)
-            if aksi in TD.AKSI_TAGIHAN or aksi in TD.AKSI_USANG or aksi in TD.SARING_UMUR:  # + saring umur_* (T2 §5, bukan pill)
+            if aksi in TD.AKSI_TAGIHAN or aksi in TD.AKSI_USANG or aksi in TD.SARING_UMUR or aksi in TD.SARING_PAYUNG:  # + saring umur_*/terbuka (bukan pill)
                 _c, _p = TD.sql_aksi_berparam(aksi, param_idx, hari_ini, ambang)
                 conditions.append(_c)
                 params.extend(_p)
@@ -2209,8 +2209,8 @@ class BillsService:
                     f"COUNT(*) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}) AS {k}_count, "
                     f"COALESCE(SUM({_nilai}) FILTER (WHERE {TD.sql_aksi(k, '$2', '$3')}), 0) AS {k}_value"
                     for k in TD.AKSI_TAGIHAN + TD.SARING_UMUR)  # + saring umur_* (T2 §5; nilai = sisa jurnal, draf tak pernah cocok)
-                + f", COUNT(*) FILTER (WHERE {TD.sql_terbuka()}) AS terbuka_count,"
-                  f" COALESCE(SUM(apr.outstanding) FILTER (WHERE {TD.sql_terbuka()}), 0) AS terbuka_value"
+                + f", COUNT(*) FILTER (WHERE {TD.sql_aksi('terbuka', '$2', '$3')}) AS terbuka_count,"
+                  f" COALESCE(SUM(apr.outstanding) FILTER (WHERE {TD.sql_aksi('terbuka', '$2', '$3')}), 0) AS terbuka_value"
                 + f" FROM bills b {TD.join_rincian()} WHERE b.tenant_id = $1"
                 + ("" if id_cari is None else " AND b.id = ANY($4::uuid[])"),
                 tenant_id, today, await ambang_segera(conn, tenant_id), *([] if id_cari is None else [id_cari]))

@@ -139,6 +139,9 @@ TERBUKA = ("unpaid", "partial", "overdue")
 # efektif (jatuh_tempo.kelas_umur / sql_umur -- SATU rumus dgn faktur & dashboard aging). Kunci SARING ?aksi= + /summary {k}_count/_value
 # (nilai = sisa jurnal), BUKAN pill: partisi AKSI_TAGIHAN dan nilai `aksi` baris tak berubah. Σ umur_* == tagihan_terbuka.
 SARING_UMUR = UMUR_KUNCI
+# SARING payung (28 Okt 2026, kartu "Belum lunas" FPB): ?aksi=terbuka = SEMUA tagihan terbuka (sql_terbuka) -- himpunan SAMA dgn
+# /summary tagihan_terbuka_count/_value. Bukan pill: partisi AKSI_TAGIHAN dan nilai `aksi` baris tak berubah.
+SARING_PAYUNG = ("terbuka",)
 POSISI_TAGIHAN = ("Draf", "Batal", "Lunas", "Sebagian", "Belum lunas")  # == kata posisi_faktur Penjualan
 
 
@@ -161,6 +164,8 @@ def sql_aksi(aksi: str, p_hari: str, p_ambang: str, a: str = "b") -> str:
     eff = sql_jt_efektif(a)
     if aksi in SARING_UMUR:
         return f"({sql_terbuka(a)} AND {sql_umur(aksi, eff, p_hari)})"
+    if aksi in SARING_PAYUNG:
+        return sql_terbuka(a)
     return {
         "perlu_diposting": _sql_draft(a),
         "lewat_jatuh_tempo": f"({sql_terbuka(a)} AND {eff} < {p_hari}::date)",
@@ -175,7 +180,7 @@ def sql_aksi_berparam(aksi: str, mulai: int, hari_ini: date, ambang: Optional[in
     if aksi == "segera_tempo" and ambang is None:
         raise ValueError("segera_tempo butuh ambang (pengingat.ambang_segera)")
     pakai = (hari_ini,) if aksi in SARING_UMUR else {"perlu_diposting": (), "lewat_jatuh_tempo": (hari_ini,),
-                                                     "segera_tempo": (hari_ini, ambang)}[aksi]
+                                                     "segera_tempo": (hari_ini, ambang), "terbuka": ()}[aksi]
     return sql_aksi(aksi, f"${mulai}", f"${mulai + 1}"), list(pakai)
 
 
