@@ -883,9 +883,22 @@ async def update_purchase_order(
 # =============================================================================
 
 
+async def hapus_po_draf_core(conn, ctx: dict, po_id) -> dict:
+    """Inti DELETE /purchase-orders/{id} (Draf saja), di transaksi PEMANGGIL: rute tunggal DAN hapus massal (B1b-1). Isi = isi rute lama
+    (dipindah dari handler): app.user_id (V230 trg_log_deletion) -> kunci PO -> 404 -> penentu rencana_hapus -> DELETE. -> {id, po_number}."""
+    await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"] or ""))
+    po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
+    if not po:
+        raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+    _tolak(PR.rencana_hapus(po)["blocks"])  # = /delete/preview
+    await conn.execute("DELETE FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
+    logger.info(f"Purchase order deleted: {po_id}")
+    return {"id": str(po_id), "po_number": po["po_number"]}
+
+
 @router.delete("/{po_id}", response_model=PurchaseOrderResponse)
 async def delete_purchase_order(request: Request, po_id: UUID, response: Response = None):
-    """Hapus pesanan pembelian berstatus Draf. Yang sudah terkirim dibatalkan (cancel), bukan dihapus."""
+    """Hapus pesanan pembelian berstatus Draf. Yang sudah terkirim dibatalkan (cancel), bukan dihapus. Isi + aturan: hapus_po_draf_core."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -894,22 +907,10 @@ async def delete_purchase_order(request: Request, po_id: UUID, response: Respons
             # V230: trigger trg_log_deletion membaca app.user_id yang HANYA hidup di dalam transaksi -> SET dan DELETE satu transaksi.
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-                await conn.execute("SELECT set_config('app.user_id', $1, true)", str(ctx["user_id"] or ""))
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_DELETE", po_id, {}, response)
                 if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
                     return _lama
-                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
-                if not po:
-                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                _tolak(PR.rencana_hapus(po)["blocks"])  # = /delete/preview
-                await conn.execute("DELETE FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, ctx["tenant_id"])
-
-                logger.info(f"Purchase order deleted: {po_id}")
-                _resp = {
-                    "success": True,
-                    "message": "Pesanan pembelian dihapus.",
-                    "data": {"id": str(po_id), "po_number": po["po_number"]},
-                }
+                _resp = {"success": True, "message": "Pesanan pembelian dihapus.", "data": await hapus_po_draf_core(conn, ctx, po_id)}
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_DELETE", _resp, po_id) if _kp else _resp
 
     except HTTPException:
@@ -924,9 +925,29 @@ async def delete_purchase_order(request: Request, po_id: UUID, response: Respons
 # =============================================================================
 
 
+async def kirim_po_core(conn, ctx: dict, po_id) -> dict:
+    """Inti POST /{id}/send (Draf -> Terkirim), di transaksi PEMANGGIL: rute tunggal DAN kirim massal (B1b-1). Kunci PO; status dibaca
+    di dalam lock (penentu rencana_kirim). ctx["user_id"] wajib (pemanggil memeriksa). -> {id, po_number, status}."""
+    po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
+    if not po:
+        raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+    _tolak(PR.rencana_kirim(po)["blocks"])  # = /send/preview
+    await conn.execute(
+        """
+        UPDATE purchase_orders
+        SET status = 'sent', sent_at = NOW(), sent_by = $2, updated_at = NOW()
+        WHERE id = $1
+    """,
+        po_id,
+        ctx["user_id"],
+    )
+    logger.info(f"Purchase order sent: {po_id}")
+    return {"id": str(po_id), "po_number": po["po_number"], "status": "sent"}
+
+
 @router.post("/{po_id}/send", response_model=PurchaseOrderResponse)
 async def send_purchase_order(request: Request, po_id: UUID, response: Response = None):
-    """Tandai pesanan pembelian terkirim ke vendor (Draf -> Terkirim). Kunci PO; status dibaca di dalam lock."""
+    """Tandai pesanan pembelian terkirim ke vendor (Draf -> Terkirim). Isi + aturan: kirim_po_core."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -940,26 +961,7 @@ async def send_purchase_order(request: Request, po_id: UUID, response: Response 
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_SEND", po_id, {}, response)
                 if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
                     return _lama
-                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
-                if not po:
-                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                _tolak(PR.rencana_kirim(po)["blocks"])  # = /send/preview
-                await conn.execute(
-                    """
-                    UPDATE purchase_orders
-                    SET status = 'sent', sent_at = NOW(), sent_by = $2, updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    po_id,
-                    ctx["user_id"],
-                )
-
-                logger.info(f"Purchase order sent: {po_id}")
-                _resp = {
-                    "success": True,
-                    "message": "Pesanan pembelian ditandai terkirim.",
-                    "data": {"id": str(po_id), "po_number": po["po_number"], "status": "sent"},
-                }
+                _resp = {"success": True, "message": "Pesanan pembelian ditandai terkirim.", "data": await kirim_po_core(conn, ctx, po_id)}
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_SEND", _resp, po_id) if _kp else _resp
 
     except HTTPException:
@@ -1287,11 +1289,33 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 # =============================================================================
 
 
+async def batal_po_core(conn, ctx: dict, po_id, alasan: str) -> dict:
+    """Inti POST /{id}/cancel, di transaksi PEMANGGIL: rute tunggal DAN batal massal (B1b-1). Hanya bila belum ada barang diterima dan
+    belum ada tagihan (diukur dari BARIS, bukan kolom cache; penentu rencana_batal di dalam lock). -> {id, status}."""
+    po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
+    if not po:
+        raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
+    _tolak((await PR.rencana_batal(conn, ctx["tenant_id"], po, alasan))["blocks"])  # = /cancel/preview
+    await conn.execute(
+        """
+        UPDATE purchase_orders
+        SET status = 'cancelled', cancelled_at = NOW(),
+            cancelled_by = $2, cancelled_reason = $3, updated_at = NOW()
+        WHERE id = $1
+    """,
+        po_id,
+        ctx["user_id"],
+        alasan,
+    )
+    logger.info(f"Purchase order cancelled: {po_id}")
+    return {"id": str(po_id), "status": "cancelled"}
+
+
 @router.post("/{po_id}/cancel", response_model=PurchaseOrderResponse)
 async def cancel_purchase_order(
     request: Request, po_id: UUID, body: CancelPurchaseOrderRequest, response: Response = None
 ):
-    """Batalkan pesanan pembelian. Hanya bila belum ada barang diterima dan belum ada tagihan (diukur dari BARIS, bukan kolom cache)."""
+    """Batalkan pesanan pembelian. Isi + aturan: batal_po_core."""
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -1305,29 +1329,7 @@ async def cancel_purchase_order(
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_CANCEL", po_id, lambda: body.model_dump(mode="json"), response)
                 if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
                     return _lama
-                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
-                if not po:
-                    raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-                _tolak((await PR.rencana_batal(conn, ctx["tenant_id"], po, body.reason))["blocks"])  # = /cancel/preview
-
-                await conn.execute(
-                    """
-                    UPDATE purchase_orders
-                    SET status = 'cancelled', cancelled_at = NOW(),
-                        cancelled_by = $2, cancelled_reason = $3, updated_at = NOW()
-                    WHERE id = $1
-                """,
-                    po_id,
-                    ctx["user_id"],
-                    body.reason,
-                )
-
-                logger.info(f"Purchase order cancelled: {po_id}")
-                _resp = {
-                    "success": True,
-                    "message": "Pesanan pembelian dibatalkan.",
-                    "data": {"id": str(po_id), "status": "cancelled"},
-                }
+                _resp = {"success": True, "message": "Pesanan pembelian dibatalkan.", "data": await batal_po_core(conn, ctx, po_id, body.reason)}
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_CANCEL", _resp, po_id) if _kp else _resp
 
     except HTTPException:

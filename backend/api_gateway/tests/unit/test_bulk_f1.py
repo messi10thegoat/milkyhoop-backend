@@ -208,7 +208,7 @@ def test_daftar_putih_hanya_export_dan_rute_bulk_hanya_export():
 def test_infra_bulk_tak_mengimpor_atau_memanggil_modul_uang():
     terlarang_impor = ("receive_payments", "customer_deposits", "credit_notes", "sales_invoices", "journal", "posting",
                        "bank_sync", "so_pelunasan", "bill_payments")
-    for berkas in ("routers/bulk.py", "routers/bulk_so.py", "routers/bulk_quote.py", "routers/bulk_proforma.py", "routers/bulk_dokumen.py", "services/bulk.py"):
+    for berkas in ("routers/bulk.py", "routers/bulk_so.py", "routers/bulk_quote.py", "routers/bulk_proforma.py", "routers/bulk_dokumen.py", "routers/bulk_po.py", "services/bulk.py"):
         pohon = ast.parse((APP / berkas).read_text(encoding="utf-8"))
         impor = [n for n in ast.walk(pohon) if isinstance(n, (ast.Import, ast.ImportFrom))]
         nama = " ".join((getattr(n, "module", None) or "") + " " + " ".join(a.name for a in n.names) for n in impor)

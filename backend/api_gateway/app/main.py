@@ -564,6 +564,9 @@ app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"]
 from .routers import bulk_proforma as bulk_proforma_router  # noqa: E402  (U1b F4: Proforma BATAL draf massal; terbit massal tak ada)
 
 app.include_router(bulk_proforma_router.router, prefix="/api/proformas", tags=["bulk"])
+from .routers import bulk_po as bulk_po_router  # noqa: E402  (B1b-1 28 Okt: PO Kirim + Hapus draf + Batal massal; SEBELUM router PO)
+
+app.include_router(bulk_po_router.router, prefix="/api/purchase-orders", tags=["bulk"])
 from .routers import bulk_dokumen as bulk_dokumen_router  # noqa: E402  (U1b F5: PDF ZIP + tautan bagikan massal)
 
 for _m, _r in bulk_dokumen_router.ROUTERS.items():

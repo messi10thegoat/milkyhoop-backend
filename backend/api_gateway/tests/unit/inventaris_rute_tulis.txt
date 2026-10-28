@@ -694,6 +694,12 @@ POST /api/goods-receipts/bulk/export
 POST /api/goods-receipts/bulk/pdf
 POST /api/purchase-orders/bulk/export
 POST /api/purchase-orders/bulk/pdf
+POST /api/purchase-orders/bulk/send
+POST /api/purchase-orders/bulk/send/preview
+POST /api/purchase-orders/bulk/delete
+POST /api/purchase-orders/bulk/delete/preview
+POST /api/purchase-orders/bulk/cancel
+POST /api/purchase-orders/bulk/cancel/preview
 POST /api/vendor-credits/bulk/export
 POST /api/vendor-credits/bulk/pdf
 POST /api/vendor-deposits/bulk/export

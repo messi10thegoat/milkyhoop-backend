@@ -75,6 +75,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/credit-notes/bulk/(share|share/preview)$", ["POST"], "credit_note", "E"),
     # B1a Pembelian (28 Okt): ekspor CSV + PDF massal = BACA (izin R modul == GET /documents/<kind>/{id}/pdf); TANPA bagikan massal
     (r"^/api/purchase-orders/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),
+    # B1b-1 (28 Okt): PO aksi massal = izin aksi tunggalnya (/{id}/send P, /{id}/cancel V, DELETE /{id} D), pratinjau = tulisnya
+    (r"^/api/purchase-orders/bulk/(send|send/preview)$", ["POST"], "purchase_order", "P"),
+    (r"^/api/purchase-orders/bulk/(cancel|cancel/preview)$", ["POST"], "purchase_order", "V"),
+    (r"^/api/purchase-orders/bulk/(delete|delete/preview)$", ["POST"], "purchase_order", "D"),
     (r"^/api/goods-receipts/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),  # izin GRN = modul purchase_order (== PDF GRN)
     (r"^/api/bills/bulk/(export|pdf)$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/bill-payments/bulk/(export|pdf)$", ["POST"], "send_payment", "R"),

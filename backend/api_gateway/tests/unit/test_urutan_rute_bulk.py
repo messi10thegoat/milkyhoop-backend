@@ -20,6 +20,8 @@ for _m in MODUL:
 MODUL_BELI = ["purchase-orders", "goods-receipts", "bills", "bill-payments", "vendor-deposits", "vendor-credits"]
 for _m in MODUL_BELI:
     AKSI[_m] = ["export", "pdf"]
+# B1b-1 (28 Okt 2026): PO kirim + hapus draf + batal massal (POST /{po_id}/send|cancel|delete/preview menelan bila lebih dulu)
+AKSI["purchase-orders"] += ["send", "send/preview", "delete", "delete/preview", "cancel", "cancel/preview"]
 MODUL = MODUL + MODUL_BELI
 
 
@@ -46,7 +48,7 @@ def test_semua_rute_bulk_dimenangkan_router_bulk_bukan_rute_id():
             if r is None or not mod.rsplit(".", 1)[-1].startswith("bulk"):
                 salah.append((path, getattr(r, "path", None), mod))
     assert not salah, f"rute bulk dikalahkan rute lain: {salah}"
-    assert sum(len(AKSI[m]) for m in MODUL) == 54  # kontrol positif: semua jalur terhitung (42 Penjualan + 12 Pembelian)
+    assert sum(len(AKSI[m]) for m in MODUL) == 60  # kontrol positif: semua jalur terhitung (42 Penjualan + 12 Pembelian B1a + 6 PO B1b-1)
 
 
 def test_kontrol_penjaga_bisa_merah_rute_id_memang_menelan_bulk_bila_lebih_dulu():
@@ -56,3 +58,32 @@ def test_kontrol_penjaga_bisa_merah_rute_id_memang_menelan_bulk_bila_lebih_dulu(
     assert r is not None and r.path == "/api/sales-orders/{order_id}/confirm"
     r2 = pemenang("/api/proformas/ABC/cancel")
     assert r2 is not None and r2.path == "/api/proformas/{proforma_id}/cancel"
+
+
+def test_kontrol_rute_po_tunggal_memang_menelan_bulk_po_bila_lebih_dulu():
+    """B1b-1 SABOTASE di dalam tes: app kecil dengan router PO DIDAFTARKAN LEBIH DULU daripada bulk_po -> rute {po_id} menang untuk
+    /bulk/send, /bulk/cancel, /bulk/send|cancel|delete/preview (penjaga di atas pasti merah bila main.py membalik urutan). Urutan
+    main.py yang benar (bulk_po dulu) -> bulk menang."""
+    from fastapi import FastAPI
+    from app.routers import bulk_po, purchase_orders
+
+    def menang(a, path):
+        scope = {"type": "http", "method": "POST", "path": path, "root_path": "", "headers": []}
+        for r in a.routes:
+            if r.matches(scope)[0] == Match.FULL:
+                return r
+        return None
+
+    salah = FastAPI()
+    salah.include_router(purchase_orders.router, prefix="/api/purchase-orders")
+    salah.include_router(bulk_po.router, prefix="/api/purchase-orders")
+    benar = FastAPI()
+    benar.include_router(bulk_po.router, prefix="/api/purchase-orders")
+    benar.include_router(purchase_orders.router, prefix="/api/purchase-orders")
+    ditelan = ["send", "cancel", "send/preview", "cancel/preview", "delete/preview"]
+    for a in ditelan:
+        r = menang(salah, f"/api/purchase-orders/bulk/{a}")
+        assert r is not None and "{po_id}" in r.path, (a, getattr(r, "path", None))
+    for a in AKSI["purchase-orders"][2:]:
+        r = menang(benar, f"/api/purchase-orders/bulk/{a}")
+        assert r is not None and r.endpoint.__module__.endswith("bulk_po"), a
