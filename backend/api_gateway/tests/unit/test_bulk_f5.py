@@ -19,6 +19,7 @@ from app.routers import bulk_dokumen as BD
 from app.routers import dokumen as D
 from app.services import bulk as B
 from app.services.bulk_export import SPEC
+from app.services.bulk_export_beli import SPEC_BELI
 
 T = "t1"
 U = uuid.UUID("0bccdb25-fdf0-4e99-9024-b9a20846f76c")
@@ -140,10 +141,12 @@ def test_infra_rahasia_tak_disimpan_di_tabel_idempotensi(monkeypatch):
 
 # ---------------- rute ----------------
 def test_rute_per_modul_dan_daftar_putih():
-    assert set(BD.ROUTERS) == set(SPEC) == set(BD.MODUL_KIND) and len(BD.ROUTERS) == 8
+    assert set(BD.ROUTERS) == set(SPEC) | set(SPEC_BELI) == set(BD.MODUL_KIND) and len(BD.ROUTERS) == 14  # B1a: + 6 Pembelian (pdf saja)
+    assert BD.MODUL_BAGIKAN == set(SPEC)
     for modul, r in BD.ROUTERS.items():
         jalur = sorted((x.path, tuple(sorted(x.methods))) for x in r.routes)
-        assert jalur == [("/bulk/pdf", ("POST",)), ("/bulk/share", ("POST",)), ("/bulk/share/preview", ("POST",))], modul
+        harap = [("/bulk/pdf", ("POST",)), ("/bulk/share", ("POST",)), ("/bulk/share/preview", ("POST",))] if modul in SPEC else [("/bulk/pdf", ("POST",))]
+        assert jalur == harap, modul
     assert {"pdf", "share"} <= B.AKSI_DIIZINKAN
     assert BD.MODUL_KIND["customer-deposits"] == BD.MODUL_KIND["receive-payments"] == "receipt" and BD.MODUL_KIND["deliveries"] == "delivery"
 

@@ -686,3 +686,15 @@ POST /api/deliveries/bulk/export
 POST /api/deliveries/bulk/pdf
 POST /api/deliveries/bulk/share
 POST /api/deliveries/bulk/share/preview
+POST /api/bill-payments/bulk/export
+POST /api/bill-payments/bulk/pdf
+POST /api/bills/bulk/export
+POST /api/bills/bulk/pdf
+POST /api/goods-receipts/bulk/export
+POST /api/goods-receipts/bulk/pdf
+POST /api/purchase-orders/bulk/export
+POST /api/purchase-orders/bulk/pdf
+POST /api/vendor-credits/bulk/export
+POST /api/vendor-credits/bulk/pdf
+POST /api/vendor-deposits/bulk/export
+POST /api/vendor-deposits/bulk/pdf

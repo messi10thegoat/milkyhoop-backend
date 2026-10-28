@@ -16,6 +16,11 @@ AKSI = {"sales-orders": ["export", "pdf", "share", "share/preview", "confirm", "
         "proformas": ["export", "pdf", "share", "share/preview", "cancel", "cancel/preview"]}
 for _m in MODUL:
     AKSI.setdefault(_m, ["export", "pdf", "share", "share/preview"])
+# B1a (28 Okt 2026): Pembelian = ekspor + PDF massal saja (tanpa bagikan)
+MODUL_BELI = ["purchase-orders", "goods-receipts", "bills", "bill-payments", "vendor-deposits", "vendor-credits"]
+for _m in MODUL_BELI:
+    AKSI[_m] = ["export", "pdf"]
+MODUL = MODUL + MODUL_BELI
 
 
 def pemenang(path: str, metode: str = "POST"):
@@ -41,7 +46,7 @@ def test_semua_rute_bulk_dimenangkan_router_bulk_bukan_rute_id():
             if r is None or not mod.rsplit(".", 1)[-1].startswith("bulk"):
                 salah.append((path, getattr(r, "path", None), mod))
     assert not salah, f"rute bulk dikalahkan rute lain: {salah}"
-    assert sum(len(AKSI[m]) for m in MODUL) == 42  # kontrol positif: semua jalur terhitung
+    assert sum(len(AKSI[m]) for m in MODUL) == 54  # kontrol positif: semua jalur terhitung (42 Penjualan + 12 Pembelian)
 
 
 def test_kontrol_penjaga_bisa_merah_rute_id_memang_menelan_bulk_bila_lebih_dulu():

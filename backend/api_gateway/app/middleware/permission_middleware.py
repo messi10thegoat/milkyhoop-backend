@@ -73,6 +73,13 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/deliveries/bulk/(share|share/preview)$", ["POST"], "sales_invoice", "E"),
     (r"^/api/credit-notes/bulk/pdf$", ["POST"], "credit_note", "R"),
     (r"^/api/credit-notes/bulk/(share|share/preview)$", ["POST"], "credit_note", "E"),
+    # B1a Pembelian (28 Okt): ekspor CSV + PDF massal = BACA (izin R modul == GET /documents/<kind>/{id}/pdf); TANPA bagikan massal
+    (r"^/api/purchase-orders/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),
+    (r"^/api/goods-receipts/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),  # izin GRN = modul purchase_order (== PDF GRN)
+    (r"^/api/bills/bulk/(export|pdf)$", ["POST"], "purchase_invoice", "R"),
+    (r"^/api/bill-payments/bulk/(export|pdf)$", ["POST"], "send_payment", "R"),
+    (r"^/api/vendor-deposits/bulk/(export|pdf)$", ["POST"], "vendor_deposit", "R"),
+    (r"^/api/vendor-credits/bulk/(export|pdf)$", ["POST"], "debit_note", "R"),
     # L1 lampiran SO (24 Sep 2026) -- eksplisit, di atas pola umum SO. Tanpa
     # baris ini POST .../attachments jatuh ke `^/api/sales-orders` POST = "C":
     # menambah lampiran ke SO yang SUDAH ADA = mengubahnya ("U").

@@ -8,7 +8,9 @@ POST /api/{modul}/bulk/share/preview  body {ids, channel?}      -> per item bole
 POST /api/{modul}/bulk/share          body {ids, channel?} + X-Idempotency-Key (WAJIB) -> tiap item transaksi sendiri, idempotensi per item,
    batas 50, hasil per item. URL tautan (rahasia: token hanya di-hash di DB) dikembalikan HANYA pada respons pertama dan TIDAK disimpan di
    tabel idempotensi; replay mengembalikan share_id tanpa url. Izin = izin share tunggal (E modul). Penawaran draf ikut ditandai terkirim
-   (aturan share tunggal). TANPA surel/WA dari server -- hanya tautan."""
+   (aturan share tunggal). TANPA surel/WA dari server -- hanya tautan.
+B1a (28 Okt 2026, MASTER GO): 6 modul PEMBELIAN mendapat /bulk/pdf SAJA (renderer dokumen.JENIS_CETAK yang sama dengan PDF tunggal).
+Bagikan massal Pembelian TIDAK ADA: document_shares.kind dijaga CHECK (V379) == dokumen.JENIS; menambah kind = migrasi + tiket tersendiri."""
 import io
 import logging
 import re
@@ -24,6 +26,7 @@ from pydantic import BaseModel, Field
 from ..services import bulk
 from ..services import idem_buat
 from ..services.bulk_export import SPEC
+from ..services.bulk_export_beli import SPEC_BELI
 from ..utils.tanggal_tenant import tanggal_dokumen
 from . import dokumen as D
 
@@ -31,8 +34,14 @@ logger = logging.getLogger(__name__)
 
 MODUL_KIND = {"sales-orders": "rekap", "quotes": "quotation", "proformas": "proforma", "sales-invoices": "invoice",
               "customer-deposits": "receipt", "receive-payments": "receipt", "deliveries": "delivery",
-              "credit-notes": "credit_note"}
-assert set(MODUL_KIND) == set(SPEC)
+              "credit-notes": "credit_note",
+              # B1a Pembelian: cetak saja
+              "purchase-orders": "purchase_order", "goods-receipts": "goods_receipt", "bills": "bill", "bill-payments": "payment_out",
+              "vendor-deposits": "vendor_deposit", "vendor-credits": "debit_note"}
+MODUL_BAGIKAN = frozenset(SPEC)  # bagikan massal = Penjualan saja (kind harus lolos CHECK document_shares)
+assert set(MODUL_KIND) == set(SPEC) | set(SPEC_BELI)
+assert set(MODUL_KIND.values()) <= set(D.JENIS_CETAK)
+assert {MODUL_KIND[m] for m in MODUL_BAGIKAN} <= set(D.JENIS)
 for _a in ("pdf", "share"):
     assert _a in bulk.AKSI_DIIZINKAN  # setiap aksi di berkas ini harus ada di daftar putih
 
@@ -133,7 +142,7 @@ def buat_zip(berkas: list, ringkasan: str) -> bytes:
 
 
 def buat_router(modul: str) -> APIRouter:
-    spec, kind = SPEC[modul], MODUL_KIND[modul]
+    spec, kind = (SPEC.get(modul) or SPEC_BELI[modul]), MODUL_KIND[modul]
     router = APIRouter()
 
     @router.post("/bulk/pdf")
@@ -167,6 +176,9 @@ def buat_router(modul: str) -> APIRouter:
             "Content-Disposition": f'attachment; filename="{spec.berkas}-{hari.isoformat()}.zip"', "Cache-Control": "no-store",
             "X-Bulk-Total": str(len(ids)), "X-Bulk-Ditemukan": str(len(berkas)), "X-Bulk-Dilewati": str(len(lewat))})
 
+    if modul not in MODUL_BAGIKAN:
+        return router
+
     @router.post("/bulk/share/preview")
     async def bulk_share_preview(request: Request, body: BulkShareRequest):
         ctx = D._ctx(request)
@@ -199,8 +211,14 @@ _NOMOR_SQL = {
     "receive-payments": "SELECT id, payment_number AS nomor FROM receive_payments WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
     "deliveries": "SELECT id, fulfillment_number AS nomor FROM invoice_fulfillments WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
     "credit-notes": "SELECT id, credit_note_number AS nomor FROM credit_notes WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "purchase-orders": "SELECT id, po_number AS nomor FROM purchase_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "goods-receipts": "SELECT id, receipt_number AS nomor FROM goods_receipts WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "bills": "SELECT id, invoice_number AS nomor FROM bills WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "bill-payments": "SELECT id, payment_number AS nomor FROM bill_payments_v2 WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "vendor-deposits": "SELECT id, deposit_number AS nomor FROM vendor_deposits WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    "vendor-credits": "SELECT id, credit_number AS nomor FROM vendor_credits WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
 }
-assert set(_NOMOR_SQL) == set(SPEC)
+assert set(_NOMOR_SQL) == set(MODUL_KIND)
 
 
 async def _nomor(pool, modul: str, tenant_id: str, ids) -> dict:
@@ -208,4 +226,4 @@ async def _nomor(pool, modul: str, tenant_id: str, ids) -> dict:
         return {str(r["id"]): r["nomor"] for r in await conn.fetch(_NOMOR_SQL[modul], tenant_id, ids)}
 
 
-ROUTERS = {modul: buat_router(modul) for modul in SPEC}
+ROUTERS = {modul: buat_router(modul) for modul in MODUL_KIND}
