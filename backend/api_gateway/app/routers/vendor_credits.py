@@ -24,8 +24,8 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, Response
-from pydantic import BaseModel
-from typing import Optional, Literal
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
 from uuid import UUID
 import logging
 import asyncpg
@@ -38,10 +38,12 @@ from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sis
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
 from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.tax_factor import resolve_dpp_factor  # ND-BUAT pagar DPP: resolver YANG SAMA dengan faktur pembelian
 from ..schemas.vendor_credits import (
     UnapplyVendorCreditRequest,
     CreateVendorCreditRequest,
     UpdateVendorCreditRequest,
+    VendorCreditItemCreate,
     ApplyVendorCreditRequest,
     ReceiveRefundRequest,
     VoidVendorCreditRequest,
@@ -605,6 +607,27 @@ async def get_vendor_credit_history(request: Request, vendor_credit_id: UUID, li
 # =============================================================================
 
 
+PESAN_DISKON_BARIS = "Diskon per baris belum didukung di nota debit."
+
+
+async def _pagar_nd(conn, tid: str, body, bl) -> None:
+    """ND-BUAT (29 Okt 2026, MASTER; tiket ND-PAJAK): pagar SEMENTARA di penyusun TUNGGAL (create + /preview + dari-FPB) sampai kalkulator ND
+    kembar NK (faktor DPP per kode, diskon dokumen sebelum PPN, diskon baris mengurangi total) dibangun bersama migrasi vendor_credit_items:
+    (a) tarif > 0 (kepala + baris) yang kode PPN masukan-nya ber-faktor DPP != 1 di tenant ini (resolve_dpp_factor, SAMA dengan faktur
+    pembelian; tak ada tarif yang dipatok) -> ND_PAJAK_DPP_BELUM_DIDUKUNG (kalkulator ND memajaki DPP penuh = PPN Masukan dibalik terlalu besar);
+    (b) diskon baris -> ND_DISKON_BARIS_BELUM_DIDUKUNG (penyusun menjumlah subtotal KOTOR: diskon baris tak mengurangi total). Ukuran cacat saat
+    pagar dipasang: 0 ND berpajak / 0 baris ND berdiskon di seluruh sistem (diukur baca-saja 29 Okt)."""
+    tarif = {Decimal(str(body.tax_rate or 0))} | {Decimal(str(i.tax_rate or 0)) for i in body.items}
+    for r in sorted(t for t in tarif if t > 0):
+        fak = await bl.coba("ND_PAJAK_DPP_BELUM_DIDUKUNG", resolve_dpp_factor(conn, tid, None, r, "input"))
+        if fak and int(fak[0]) != int(fak[1]):
+            bl.galat("ND_PAJAK_DPP_BELUM_DIDUKUNG", 400, {
+                "code": "ND_PAJAK_DPP_BELUM_DIDUKUNG",
+                "message": f"PPN {r.normalize():f}% (DPP {int(fak[0])}/{int(fak[1])}) belum didukung di nota debit."})
+    if any(Decimal(str(i.discount_percent or 0)) > 0 or Decimal(str(i.discount_amount or 0)) > 0 for i in body.items):
+        bl.galat("ND_DISKON_BARIS_BELUM_DIDUKUNG", 400, {"code": "ND_DISKON_BARIS_BELUM_DIDUKUNG", "message": PESAN_DISKON_BARIS})
+
+
 async def _susun_nd(conn, ctx: dict, body: CreateVendorCreditRequest, bl) -> dict:
     """P2P-3b: penyusun ND BERSAMA create_vendor_credit (bl = NDR.Blok(False) -> galat pertama dilempar persis seperti dulu) dan
     POST /vendor-credits/preview (NDR.Blok(True) -> blok dikumpulkan). Urutan == kode lama: vendor milik tenant · hitung baris (calculate_item_totals)
@@ -612,6 +635,7 @@ async def _susun_nd(conn, ctx: dict, body: CreateVendorCreditRequest, bl) -> dic
     if body.vendor_id and not await conn.fetchval(
             "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", UUID(body.vendor_id), ctx["tenant_id"]):
         bl.galat("VENDOR_TIDAK_DITEMUKAN", 400, "Vendor tidak ditemukan.")
+    await _pagar_nd(conn, ctx["tenant_id"], body, bl)
 
     # Calculate items and totals
     calculated_items = [
@@ -762,52 +786,201 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
         raise HTTPException(status_code=500, detail="Gagal membuat nota debit.")
 
 
+class VendorCreditFromBillLine(BaseModel):
+    original_bill_item_id: str
+    quantity: Decimal = Field(..., ge=0)
+
+
+class VendorCreditPreviewRequest(BaseModel):
+    """Badan /vendor-credits/preview (ND-BUAT 29 Okt, kembar CreditNotePreviewRequest). Dua bentuk: (1) `items` diisi = sama persis dengan
+    POST /vendor-credits; (2) `items` ABSEN + `original_bill_id` = "dari faktur pembelian": server mengisi baris dari bill_items (harga, qty,
+    barang), vendor dari tagihan, diskon dokumen tagihan pro-rata, tarif PPN tagihan; `lines` memilih baris & qty (absen = semua baris penuh)."""
+    vendor_id: Optional[str] = None
+    vendor_name: Optional[str] = None
+    vendor_credit_date: Optional[date] = None
+    original_bill_id: Optional[str] = None
+    reason: Literal["return", "pricing_error", "discount", "damaged", "other"]
+    reason_detail: Optional[str] = Field(None, max_length=500)
+    ref_no: Optional[str] = Field(None, max_length=100)
+    notes: Optional[str] = None
+    items: Optional[List[VendorCreditItemCreate]] = None
+    lines: Optional[List[VendorCreditFromBillLine]] = None
+    discount_percent: float = Field(0, ge=0, le=100)
+    discount_amount: Decimal = Field(Decimal("0"), ge=0)
+    tax_rate: float = Field(0, ge=0, le=100)
+
+
+def _b(code: str, message: str, **x) -> dict:
+    return {"code": code, "message": message, **x}
+
+
+async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -> dict:
+    """Bentuk (2): baris ND dari baris FAKTUR PEMBELIAN asal, NOL hitung di FE, nol tulis. Cermin rakit_dari_faktur (NK) + BillCalculator mode
+    kepala: harga & qty dari bill_items; diskon dokumen tagihan (invoice + tunai, aturan _dpp_header_discount) dibagi pro-rata neto baris terpilih
+    -> diskon dokumen ND (SEBELUM PPN kepala, sama dengan tagihan); PPN = tarif kepala tagihan. Yang belum bisa dicerminkan PERSIS DIBLOK
+    (bukan angka salah): PPN per baris + diskon dokumen, harga termasuk PPN, DPP manual; faktor DPP != 1 + diskon baris ditolak _pagar_nd.
+    Tautan per baris (original_bill_item_id) belum ada kolomnya (tiket ND-PAJAK) -> sisa per baris belum dilacak (catatan).
+    -> {blocks, notes, lines, create (badan POST /vendor-credits | None), tagihan {id, nomor, amount}, penuh (semua baris qty penuh)}."""
+    from ..services.bills_service import BillCalculator, _dpp_header_discount
+    blocks, notes = [], []
+    kosong = {"blocks": blocks, "notes": notes, "lines": [], "create": None, "tagihan": None, "penuh": False}
+    try:
+        bid = UUID(str(body.original_bill_id))
+    except (ValueError, TypeError):
+        blocks.append(_b("ND_TAGIHAN_TAK_ADA", "Faktur pembelian tidak ditemukan."))
+        return kosong
+    bill = await conn.fetchrow(
+        """SELECT id, invoice_number, vendor_id, vendor_name, status_v2, tax_rate, tax_code_id, tax_inclusive, dpp_manual,
+                  invoice_discount_total, cash_discount_total, amount
+           FROM bills WHERE id = $1 AND tenant_id = $2""", bid, tid)
+    if not bill:
+        blocks.append(_b("ND_TAGIHAN_TAK_ADA", "Faktur pembelian tidak ditemukan."))
+        return kosong
+    nomor = bill["invoice_number"]
+    kosong["tagihan"] = {"id": str(bill["id"]), "invoice_number": nomor, "amount": float(bill["amount"] or 0)}
+    if (bill["status_v2"] or "") in ("draft", "void"):
+        blocks.append(_b("ND_TAGIHAN_TAK_AKTIF", f"Faktur pembelian {nomor} belum diposting atau sudah batal."))
+    if body.vendor_id and bill["vendor_id"] and str(bill["vendor_id"]) != str(body.vendor_id):
+        blocks.append(_b("ND_TAGIHAN_VENDOR_LAIN", f"Faktur pembelian {nomor} milik vendor lain."))
+    if bill["tax_inclusive"]:
+        blocks.append(_b("ND_PAJAK_INKLUSIF_BELUM_DIDUKUNG", "Faktur pembelian harga termasuk PPN belum didukung di nota debit."))
+    if bill["dpp_manual"] is not None:
+        blocks.append(_b("ND_DPP_MANUAL_BELUM_DIDUKUNG", "Faktur pembelian dengan DPP manual belum didukung di nota debit."))
+    rows = await conn.fetch(
+        """SELECT id, product_id, product_code, product_name, description, quantity, unit, unit_price, discount_percent, discount_amount,
+                  tax_rate, tax_code_id
+           FROM bill_items WHERE bill_id = $1 ORDER BY line_number""", bid)
+    per_baris = any(Decimal(str(r["tax_rate"] or 0)) > 0 for r in rows)
+    diskon_dok_tagihan = _dpp_header_discount(bill["invoice_discount_total"], bill["cash_discount_total"])
+    if per_baris and diskon_dok_tagihan > 0:
+        blocks.append(_b("ND_DISKON_DOKUMEN_BER_PPN_BELUM",
+                         f"Faktur pembelian {nomor} berdiskon dokumen dengan PPN per baris belum didukung di nota debit."))
+    lama = [r["credit_number"] for r in await conn.fetch(
+        """SELECT credit_number FROM vendor_credits WHERE tenant_id = $1 AND original_bill_id = $2 AND status <> 'void' ORDER BY 1""",
+        tid, bid)]
+    notes.append(_b("ND_SISA_BARIS_BELUM_DILACAK", "Jumlah yang sudah dinotadebitkan per baris belum dilacak; periksa nota debit lain atas "
+                    "faktur ini." + (" Sudah ada: " + ", ".join(lama) + "." if lama else "")))
+    pilih = None
+    if body.lines is not None:
+        pilih = {}
+        milik = {str(r["id"]) for r in rows}
+        for ln in body.lines:
+            k = str(ln.original_bill_item_id).lower()
+            if k not in milik:
+                blocks.append(_b("ND_BARIS_BUKAN_TAGIHAN", f"Baris {ln.original_bill_item_id} bukan baris faktur pembelian {nomor}.",
+                                 original_bill_item_id=ln.original_bill_item_id))
+                continue
+            pilih[k] = pilih.get(k, Decimal("0")) + ln.quantity
+    lines, items = [], []
+    net_semua, net_pilih, penuh = Decimal("0"), Decimal("0"), True
+    for r in rows:
+        qty = Decimal(str(r["quantity"]))
+        q = pilih.get(str(r["id"]), Decimal("0")) if pilih is not None else qty
+        pct = Decimal(str(r["discount_percent"] or 0))
+        lines.append({"original_bill_item_id": str(r["id"]), "description": r["description"] or r["product_name"], "unit": r["unit"],
+                      "billed": float(qty), "quantity": float(q)})
+        net_semua += Decimal(str(BillCalculator.calculate_item_total(qty, r["unit_price"], pct)["total"]))
+        if q != qty:
+            penuh = False
+        if q <= 0:
+            continue
+        if q > qty:
+            blocks.append(_b("ND_QTY_MELEBIHI_TAGIHAN", f"Qty {r['description'] or r['product_name'] or '-'} melebihi qty faktur pembelian "
+                             f"({qty.normalize():f}).", original_bill_item_id=str(r["id"])))
+        net_pilih += Decimal(str(BillCalculator.calculate_item_total(q, r["unit_price"], pct)["total"]))
+        items.append({"item_id": str(r["product_id"]) if r["product_id"] else None, "item_code": r["product_code"],
+                      "description": r["description"] or r["product_name"] or "-", "quantity": q, "unit": r["unit"],
+                      "unit_price": Decimal(str(r["unit_price"])), "discount_percent": float(pct),
+                      "discount_amount": Decimal("0") if pct > 0 else Decimal(str(r["discount_amount"] or 0)),
+                      "tax_rate": float(r["tax_rate"] or 0) if per_baris else 0})
+    if not items and not blocks:
+        blocks.append(_b("ND_TAK_ADA_BARIS", "Tidak ada baris yang dinotadebitkan."))
+    diskon_dok = _q2(diskon_dok_tagihan * net_pilih / net_semua) if diskon_dok_tagihan > 0 and net_semua > 0 else Decimal("0")
+    if penuh:
+        diskon_dok = _q2(diskon_dok_tagihan)  # ND penuh = diskon dokumen tagihan PENUH (tanpa selisih pembulatan pro-rata)
+    create = None
+    if items:
+        create = {"vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None, "vendor_name": bill["vendor_name"] or "-",
+                  "vendor_credit_date": body.vendor_credit_date, "original_bill_id": str(bill["id"]), "reason": body.reason,
+                  "reason_detail": body.reason_detail, "ref_no": body.ref_no, "notes": body.notes, "items": items,
+                  "discount_percent": 0, "discount_amount": diskon_dok, "tax_rate": 0 if per_baris else float(bill["tax_rate"] or 0)}
+    return {**kosong, "lines": lines, "create": create, "penuh": penuh and bool(items)}
+
+
 @router.post("/preview")
-async def preview_create_vendor_credit(request: Request, body: CreateVendorCreditRequest):
+async def preview_create_vendor_credit(request: Request, body: VendorCreditPreviewRequest):
     """P2P-3b PRATINJAU buat nota debit (kembar /credit-notes/preview AS-G7b): penyusun _susun_nd (SAMA dgn create) + penentu posting
     NDR.rencana_posting atas ND MAYA (id acak, status draf) -> jurnal/HPP/stok/sisa tagihan yang AKAN lahir saat diposting. Transaksi READ ONLY,
     tanpa kunci/penomoran/tulis; nomor ND = perkiraan, nomor jurnal null. 200 walau diblok. Tulis = POST /vendor-credits (`payload`, lahir DRAF)
-    lalu POST /vendor-credits/{id}/post."""
+    lalu POST /vendor-credits/{id}/post.
+    ND-BUAT (29 Okt): bentuk (2) "dari faktur pembelian" (items absen + original_bill_id [+ lines]) -> rakit_dari_tagihan lalu penyusun YANG SAMA;
+    tambahan respons (aditif): lines, notes; ND yang mencakup SELURUH tagihan wajib berjumlah == tagihan (beda = blok ND_TOTAL_BEDA_TAGIHAN)."""
     import uuid as _uuid
+    from pydantic import ValidationError
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])  # sama dengan /post
+        dari_tagihan = body.items is None and bool(body.original_bill_id)
         async with pool.acquire() as conn:
             tr = conn.transaction(readonly=True)  # DB menolak tulisan apa pun
             await tr.start()
             try:
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
                 tid = ctx["tenant_id"]
+                tgl = body.vendor_credit_date or await tanggal_dokumen(conn, tid)
+                rakit = None
+                if dari_tagihan:
+                    rakit = await rakit_dari_tagihan(conn, tid, body.model_copy(update={"vendor_credit_date": tgl}))
+                    badan = CreateVendorCreditRequest(**rakit["create"]) if rakit["create"] is not None else None
+                else:
+                    try:
+                        badan = CreateVendorCreditRequest(**{**body.model_dump(exclude={"lines"}, exclude_none=False),
+                                                             "vendor_credit_date": tgl})
+                    except ValidationError as e:
+                        raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False))
                 bl = NDR.Blok(True)
-                s = await _susun_nd(conn, ctx, body, bl)
+                if rakit is not None:
+                    bl.daftar += [{"code": b["code"], "message": b["message"], "status": 400} for b in rakit["blocks"]]
+                s = await _susun_nd(conn, ctx, badan, bl) if badan is not None else None
+                if s is not None and rakit is not None and rakit["penuh"] and not bl.daftar:
+                    jumlah_tagihan = Decimal(str(rakit["tagihan"]["amount"]))
+                    if _q2(s["total_amount"]) != _q2(jumlah_tagihan):  # MASTER (a): ND penuh == tagihan PERSIS, selisih = blok, bukan catatan
+                        bl.galat("ND_TOTAL_BEDA_TAGIHAN", 400, {"code": "ND_TOTAL_BEDA_TAGIHAN", "message": (
+                            f"Nota debit penuh {_q2(s['total_amount']):,.2f} tidak sama dengan faktur pembelian {_q2(jumlah_tagihan):,.2f}; "
+                            "belum didukung.")})
                 nomor, r = None, {}
-                if not bl.daftar:
+                if s is not None and not bl.daftar:
                     nomor = await NDR.perkiraan_nomor_nd(conn, tid)
                     # ND MAYA: id acak yang tak ada di mana pun (= ND belum ditulis); medan == baris yang AKAN ditulis create
-                    vc = {"id": _uuid.uuid4(), "status": "draft", "credit_number": nomor, "vendor_name": body.vendor_name,
-                          "original_bill_id": UUID(body.original_bill_id) if body.original_bill_id else None,
+                    vc = {"id": _uuid.uuid4(), "status": "draft", "credit_number": nomor, "vendor_name": badan.vendor_name,
+                          "original_bill_id": UUID(badan.original_bill_id) if badan.original_bill_id else None,
                           "original_bill_number": s["original_bill_number"], "subtotal": s["subtotal"], "tax_amount": s["tax_amount"],
-                          "total_amount": s["total_amount"], "reason": body.reason, "credit_date": body.vendor_credit_date}
+                          "total_amount": s["total_amount"], "reason": badan.reason, "credit_date": badan.vendor_credit_date}
                     baris = [{"item_id": UUID(it["item_id"]) if it.get("item_id") else None, "quantity": it["quantity"]} for it in s["items"]]
                     r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True, items=baris)
                     bl.daftar += r["blocks"].daftar
             finally:
                 await tr.rollback()  # SELALU: pratinjau tak pernah menulis
         ok = not bl.daftar
-        return {"success": True, "data": {
+        s = s or {"items": [], "subtotal": None, "discount_amount": None, "tax_amount": None, "total_amount": None, "original_bill_number": None}
+        f = (lambda v: float(v) if v is not None else None)
+        data = {
             "action": "create", "can_proceed": ok, "blocks": bl.respons(),
             "vendor_credit_number_preview": nomor if ok else None, "vendor_credit_number_estimated": ok and nomor is not None,
             "items": [{k: (float(v) if isinstance(v, Decimal) else v) for k, v in it.items()
                        if k in ("item_id", "item_code", "description", "quantity", "unit", "unit_price", "discount_percent",
                                 "discount_amount", "tax_rate", "tax_amount", "subtotal", "total")} for it in s["items"]],
-            "subtotal": float(s["subtotal"]), "discount_amount": float(s["discount_amount"]), "tax_amount": float(s["tax_amount"]),
-            "total_amount": float(s["total_amount"]), "original_bill_number": s["original_bill_number"],
+            "subtotal": f(s["subtotal"]), "discount_amount": f(s["discount_amount"]), "tax_amount": f(s["tax_amount"]),
+            "total_amount": f(s["total_amount"]), "original_bill_number": s["original_bill_number"],
             "journals": r.get("journals", []) if ok else [], "stock": r.get("stock", []) if ok else [],
             "bills": r.get("bills", []) if ok else [], "bank_transactions": [],
-            "payload": body.model_dump(mode="json"), "preview": True}}
+            "payload": (badan.model_dump(mode="json") if (rakit is None or ok) else None) if badan is not None else None, "preview": True}
+        if rakit is not None:  # ND-BUAT: tambahan aditif bentuk (2)
+            data["lines"], data["notes"] = rakit["lines"], rakit["notes"]
+        return {"success": True, "data": data}
     except HTTPException:
         raise
     except Exception as e:
@@ -876,6 +1049,12 @@ async def update_vendor_credit(
                         "message": "Tidak ada perubahan.",
                         "data": {"id": str(vendor_credit_id)},
                     })
+
+                # ND-BUAT pagar (penentu SAMA dengan create/preview): tarif ber-faktor DPP != 1 / diskon baris DITOLAK sebelum tulis apa pun
+                if ("items" in update_data and update_data["items"]) or update_data.get("tax_rate"):
+                    from types import SimpleNamespace
+                    await _pagar_nd(conn, ctx["tenant_id"], SimpleNamespace(tax_rate=update_data.get("tax_rate") or 0, items=body.items or []),
+                                    NDR.Blok(False))
 
                 # Handle items if provided
                 if "items" in update_data and update_data["items"]:

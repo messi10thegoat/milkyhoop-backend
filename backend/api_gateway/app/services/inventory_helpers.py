@@ -239,6 +239,16 @@ async def record_inventory_outbound(
                 "POS_SALE": "SALES_RECEIPT_COGS",
             }.get(source_type, f"{source_type}_COGS")
 
+            # ND-BUAT (29 Okt 2026): SATU jurnal HPP per PANGGILAN (= per baris dokumen). Dulu nomornya selalu "COGS-{nomor}" -> dokumen
+            # dengan >= 2 baris barang dilacak bertabrakan di uq_je_tenant_number -> posting 500 (nota debit 2 baris; terukur harness ND-BUAT,
+            # 0 jurnal HPP ND pernah terposting di produksi). Nomor ke-2 dst diberi akhiran -2, -3 ... dihitung dari jurnal HPP sumber YANG SAMA
+            # di transaksi pemanggil (penulis memegang kunci dokumennya) -> nomor pertama TETAP "COGS-{nomor}" seperti dulu.
+            ke = await conn.fetchval(
+                "SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3",
+                tenant_id, journal_source_type, source_id,
+            ) or 0
+            nomor_jurnal = f"COGS-{source_number}" if not ke else f"COGS-{source_number}-{ke + 1}"
+
             await conn.execute(
                 """
                 INSERT INTO journal_entries (
@@ -249,7 +259,7 @@ async def record_inventory_outbound(
                 """,
                 journal_id,
                 tenant_id,
-                f"COGS-{source_number}",
+                nomor_jurnal,
                 movement_date,
                 f"HPP {source_number}",
                 journal_source_type,

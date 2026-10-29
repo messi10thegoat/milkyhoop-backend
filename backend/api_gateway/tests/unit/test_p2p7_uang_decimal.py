@@ -42,6 +42,10 @@ class _Conn:
     async def fetchval(self, q, *a):
         return 1
 
+    async def fetch(self, q, *a):  # ND-BUAT: pagar DPP membaca faktor kode PPN tenant (resolve_dpp_factor); 11% = DPP penuh
+        assert "FROM tax_codes" in q
+        return [{"dpp_factor_num": 1, "dpp_factor_den": 1}]
+
 
 def test_susun_nd_diskon_pajak_dokumen_half_up():
     b = CreateVendorCreditRequest(vendor_id=str(uuid.uuid4()), vendor_name="V", vendor_credit_date="2026-10-25", reason="other",

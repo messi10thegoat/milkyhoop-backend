@@ -27,7 +27,8 @@ def _src(fn) -> str:
 def test_rute_pratinjau_read_only_tanpa_tulis():
     s = _src(VC.preview_create_vendor_credit)
     assert "conn.transaction(readonly=True)" in s and "await tr.rollback()" in s
-    assert "_susun_nd(conn, ctx, body, bl)" in s and "NDR.perkiraan_nomor_nd(conn, tid)" in s
+    # ND-BUAT (29 Okt): badan rute = VendorCreditPreviewRequest (superset, + bentuk dari-FPB); penyusun menerima `badan` (bentuk 1 = body apa adanya)
+    assert "_susun_nd(conn, ctx, badan, bl)" in s and "NDR.perkiraan_nomor_nd(conn, tid)" in s
     assert "NDR.rencana_posting(conn, ctx, vc, pratinjau=True, items=baris)" in s
     assert not TULIS.search(s) and not TULIS.search(_src(VC._susun_nd))
     panggil = {(c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", None))
@@ -69,10 +70,16 @@ class _Conn:
         assert "FROM vendors" in q
         return 1 if self.vendor_ada else None
 
+    async def fetch(self, q, *a):  # ND-BUAT: pagar DPP membaca faktor kode PPN tenant (resolve_dpp_factor); 11% = DPP penuh
+        assert "FROM tax_codes" in q
+        return [{"dpp_factor_num": 1, "dpp_factor_den": 1}]
+
 
 def _body(**k):
     d = {"vendor_id": str(uuid.uuid4()), "vendor_name": "V", "vendor_credit_date": "2026-10-25", "reason": "pricing_error",
-         "items": [{"description": "x", "quantity": 3, "unit_price": 3333, "discount_percent": 5, "tax_rate": 11}], "discount_percent": 10}
+         "items": [{"description": "x", "quantity": 3, "unit_price": 3333, "tax_rate": 11}], "discount_percent": 10}
+    # ND-BUAT (29 Okt, putusan MASTER): diskon PER BARIS kini DIBLOK (ND_DISKON_BARIS_BELUM_DIDUKUNG; penyusun tak mengurangkannya dari total,
+    # tiket ND-PAJAK) -> badan dasar tanpa diskon baris; pagarnya dikunci test_nd_buat. Diskon DOKUMEN 10% tetap diuji di sini.
     d.update(k)
     return CreateVendorCreditRequest(**d)
 

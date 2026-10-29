@@ -11,7 +11,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
-from .uang_json import UangJson  # item 7: bulat -> int (JSON sama), ber-sen -> float
+from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; UangMasuk = permintaan Decimal (ND-BUAT)
 from decimal import Decimal
 from datetime import date, datetime
 from uuid import UUID
@@ -28,9 +28,9 @@ class VendorCreditItemCreate(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=20)
-    unit_price: int = Field(..., ge=0, description="Price per unit in IDR")
+    unit_price: UangMasuk = Field(..., description="Harga satuan (Rp, 2 desimal; bulat tetap diterima)")  # ND-BUAT: dulu int
     discount_percent: float = Field(0, ge=0, le=100)
-    discount_amount: int = Field(0, ge=0)
+    discount_amount: UangMasuk = Decimal("0")  # ND-BUAT: dulu int
     tax_code: Optional[str] = Field(None, max_length=20)
     tax_rate: float = Field(0, ge=0, le=100)
     original_bill_item_id: Optional[str] = Field(None, description="Original bill item UUID")
@@ -61,7 +61,7 @@ class CreateVendorCreditRequest(BaseModel):
     notes: Optional[str] = None
     items: List[VendorCreditItemCreate] = Field(..., min_length=1)
     discount_percent: float = Field(0, ge=0, le=100, description="Overall discount percent")
-    discount_amount: int = Field(0, ge=0, description="Overall discount amount")
+    discount_amount: UangMasuk = Field(Decimal("0"), description="Diskon dokumen (Rp, 2 desimal)")  # ND-BUAT: dulu int
     tax_rate: float = Field(0, ge=0, le=100, description="Overall tax rate")
 
     @field_validator('vendor_name')
@@ -84,7 +84,7 @@ class UpdateVendorCreditRequest(BaseModel):
     notes: Optional[str] = None
     items: Optional[List[VendorCreditItemCreate]] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    discount_amount: Optional[UangMasuk] = None  # ND-BUAT: dulu int
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
 
 
