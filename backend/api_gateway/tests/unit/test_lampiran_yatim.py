@@ -277,7 +277,7 @@ async def _hapus_tagihan(conn):
     return await svc.delete_bill(TENANT, uuid.uuid4(), "u1")
 
 
-_BILL_DRAF = {"id": 1, "amount_paid": 0, "status": "draft", "status_v2": "draft",
+_BILL_DRAF = {"id": 1, "invoice_number": "PB-UJI", "amount_paid": 0, "status": "draft", "status_v2": "draft",  # B1b-2: SELECT inti + nomor
               "accounting_status": "draft", "operational_status": "draft"}
 
 
@@ -334,13 +334,45 @@ def _dalam_tx(fn):
     return hasil
 
 
+# B1b-2 (29 Okt): lepas_berkas_milik tagihan dipindah ke inti hapus_draf_tagihan_core (rute tunggal + hapus massal). Inti TAK membuka
+# transaksi sendiri: setiap panggilan lepas_berkas_milik di inti = "di dalam transaksi" HANYA bila setiap panggilan inti di jalur ini berada
+# di dalam `async with ...transaction()`.
+INTI_JALUR = {("services/bills_service.py", "delete_bill"): "hapus_draf_tagihan_core"}
+
+
 @pytest.mark.parametrize("berkas,nama", JALUR)
 def test_jalur_hapus_urutan_kompensasi(berkas, nama):
     t = ast.parse((APP / berkas).read_text())
     (fn,) = [n for n in ast.walk(t) if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == nama]
     h = _dalam_tx(fn)
+    inti = INTI_JALUR.get((berkas, nama))
+    if inti:
+        (fi,) = [n for n in ast.walk(t) if isinstance(n, ast.AsyncFunctionDef) and n.name == inti]
+        hi = _dalam_tx(fi)
+        assert "hapus_objek_sesudah_commit" not in hi and not any(  # inti tak menghapus objek dan tak membuka transaksi sendiri
+            isinstance(x, ast.AsyncWith) for x in ast.walk(fi)), (inti, hi)
+        di_tx = [_dalam_tx_panggilan(fn, inti)]
+        h["lepas_berkas_milik"] = [d for d in di_tx[0] for _ in hi.get("lepas_berkas_milik", [])]
     assert h.get("lepas_berkas_milik") and all(h["lepas_berkas_milik"]), (berkas, h)
     assert h.get("hapus_objek_sesudah_commit") == [False], (berkas, h)
+
+
+def _dalam_tx_panggilan(fn, nama_panggil):
+    """[True bila di dalam `async with ...transaction()`] untuk setiap panggilan `nama_panggil` di fn."""
+    hasil = []
+
+    def jalan(node, dalam):
+        for anak in ast.iter_child_nodes(node):
+            d = dalam
+            if isinstance(anak, ast.AsyncWith) and any(
+                    isinstance(i.context_expr, ast.Call) and isinstance(i.context_expr.func, ast.Attribute)
+                    and i.context_expr.func.attr == "transaction" for i in anak.items):
+                d = True
+            if isinstance(anak, ast.Call) and getattr(anak.func, "id", getattr(anak.func, "attr", None)) == nama_panggil:
+                hasil.append(dalam)
+            jalan(anak, d)
+    jalan(fn, False)
+    return hasil
 
 
 def test_penjaga_ast_bisa_merah():

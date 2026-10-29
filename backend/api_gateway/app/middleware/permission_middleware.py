@@ -79,6 +79,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase-orders/bulk/(send|send/preview)$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/bulk/(cancel|cancel/preview)$", ["POST"], "purchase_order", "V"),
     (r"^/api/purchase-orders/bulk/(delete|delete/preview)$", ["POST"], "purchase_order", "D"),
+    # B1b-2 (29 Okt): hapus draf massal Pembelian = izin DELETE /{id} tunggal modulnya (D); pratinjau = tulisnya
+    (r"^/api/bills/bulk/(delete|delete/preview)$", ["POST"], "purchase_invoice", "D"),
+    (r"^/api/bill-payments/bulk/(delete|delete/preview)$", ["POST"], "send_payment", "D"),
+    (r"^/api/vendor-deposits/bulk/(delete|delete/preview)$", ["POST"], "vendor_deposit", "D"),
+    (r"^/api/vendor-credits/bulk/(delete|delete/preview)$", ["POST"], "debit_note", "D"),
     (r"^/api/goods-receipts/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),  # izin GRN = modul purchase_order (== PDF GRN)
     (r"^/api/bills/bulk/(export|pdf)$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/bill-payments/bulk/(export|pdf)$", ["POST"], "send_payment", "R"),

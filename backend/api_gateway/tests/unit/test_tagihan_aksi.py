@@ -14,7 +14,9 @@ def test_tulis_memakai_penentu_satu():
     post = inspect.getsource(BS.BillsService.post_bill)
     assert "TA.blok_posting(" in post and "resolve_account_id_by_role(" not in post
     assert "TA.hitung_debit(" in inspect.getsource(BS.BillsService._emit_bill_debit_lines)
-    assert "TA.blok_hapus(" in inspect.getsource(BS.BillsService.delete_bill)
+    # B1b-2 (29 Okt): penentu hapus dipanggil inti hapus_draf_tagihan_core (rute tunggal + hapus massal)
+    assert "hapus_draf_tagihan_core(" in inspect.getsource(BS.BillsService.delete_bill)
+    assert "TA.blok_hapus(" in inspect.getsource(BS.hapus_draf_tagihan_core)
     void = inspect.getsource(BS.BillsService.void_bill)
     assert "TA.blok_void(" in void and "Cannot void bill with payments" not in void
     # putusan pemilik 22 Okt: UM vendor dilepas otomatis lewat layanan BACKEND2, di transaksi void, SESUDAH blok

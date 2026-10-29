@@ -39,14 +39,28 @@ def _fn_ast(nama):
     return next(n for n in kelas.body if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
 
 
+# B1b-2 (29 Okt): isi hapus draf dipindah ke inti modul hapus_draf_tagihan_core (dipakai juga hapus massal). Kunci domain (FOR UPDATE)
+# kini di DALAM inti -> untuk delete_bill "kunci" = baris PANGGILAN inti (idem harus mendahuluinya) DAN inti wajib memuat SQL FOR UPDATE.
+INTI = {"delete_bill": "hapus_draf_tagihan_core"}
+
+
+def _kunci_sql(fn, doc=None):
+    return [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n is not doc
+            and ("pg_advisory_xact_lock" in n.value or "FOR UPDATE" in n.value)]
+
+
 @pytest.mark.parametrize("nama", list(AKSI))
 def test_idem_sebelum_kunci_domain_dan_simpan_di_jalur_sukses(nama):
     f, awal = _svc(nama), AKSI[nama]
     fn = _fn_ast(nama)
     doc = fn.body[0].value if isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) else None
     # baris SQL kunci NYATA (konstanta string, bukan docstring/komentar) vs baris panggilan _idem_mulai
-    kunci = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n is not doc
-             and ("pg_advisory_xact_lock" in n.value or "FOR UPDATE" in n.value)]
+    kunci = _kunci_sql(fn, doc)
+    if nama in INTI:  # kunci domain di inti: baris panggilan inti = titik kunci; inti sendiri wajib mengunci (konstanta SQL, bukan docstring)
+        kunci += [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == INTI[nama]]
+        inti = next(n for n in ast.parse(SVC).body if isinstance(n, ast.AsyncFunctionDef) and n.name == INTI[nama])
+        doc_inti = inti.body[0].value if isinstance(inti.body[0], ast.Expr) and isinstance(inti.body[0].value, ast.Constant) else None
+        assert _kunci_sql(inti, doc_inti), INTI[nama]
     idem = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_idem_mulai"]
     tx = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "transaction"]
     assert len(idem) == 1 and kunci and min(tx) < idem[0] < min(kunci), (nama, tx, idem, kunci)

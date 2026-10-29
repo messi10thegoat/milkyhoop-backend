@@ -23,6 +23,13 @@ def _badan(fn) -> str:
     n = ast.parse(src).body[0]
     if isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant):
         src = src.replace(ast.get_source_segment(src, n.body[0]), "", 1)
+    # B1b-2 (29 Okt): isi DELETE ND dipindah ke inti hapus_draf_nd_core (+ penentu rencana_hapus_nd), juga dipakai hapus massal. Badan diukur
+    # dalam URUTAN EKSEKUSI: inti disisipkan di titik panggilannya, penentu di titik panggilannya di dalam inti -> semua urutan lama tetap diuji.
+    # Pola = TITIK PANGGIL saja (bukan baris `def` fungsinya sendiri -> rekursi tanpa ujung), dan fungsi tak pernah disisipkan ke dirinya.
+    for panggil, sisip in (("await hapus_draf_nd_core(conn, ctx, vendor_credit_id)", getattr(VC, "hapus_draf_nd_core", None)),
+                           ("_blok = rencana_hapus_nd(vc)", getattr(VC, "rencana_hapus_nd", None))):
+        if sisip is not None and sisip is not fn and panggil in src:
+            src = src.replace(panggil, _badan(sisip), 1)
     return src
 
 

@@ -506,6 +506,12 @@ app.include_router(employees.router, prefix="/api/employees", tags=["employees"]
 app.include_router(invoices.router, prefix="/api/invoices", tags=["invoices"])
 
 # Bills router (Faktur Pembelian CRUD + Payments)
+# B1b-2 (29 Okt): hapus DRAF massal Pembelian -- WAJIB SEBELUM router bills/bill-payments/vendor-*: POST /{id}/delete/preview menelan
+# /bulk/delete/preview (dikunci test_urutan_rute_bulk + sabotase).
+from .routers import bulk_hapus_beli as bulk_hapus_beli_router  # noqa: E402
+
+for _m, _r in bulk_hapus_beli_router.ROUTERS.items():
+    app.include_router(_r, prefix=f"/api/{_m}", tags=["bulk"])
 app.include_router(bills.router, prefix="/api/bills", tags=["bills"])
 app.include_router(
     bill_payments.router, prefix="/api/bill-payments", tags=["bill-payments"]

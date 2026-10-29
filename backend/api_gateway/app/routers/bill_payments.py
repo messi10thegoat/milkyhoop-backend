@@ -1262,6 +1262,25 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
         raise HTTPException(status_code=500, detail="Gagal membuat pembayaran.")
 
 
+async def hapus_draf_bayar_core(conn, ctx: dict, payment_id: str) -> dict:
+    """Inti DELETE /bill-payments/{id} (draf saja), di transaksi PEMANGGIL: rute tunggal DAN hapus massal (B1b-2). Isi = isi lama (dipindah apa
+    adanya): kunci BILL_PAYMENT:{id} (SAMA dengan posting draf) -> penentu BKR.rencana_hapus_draf_bayar (404/400 teks lama, FOR UPDATE) ->
+    hapus alokasi + pembayaran. -> {id, payment_number}."""
+    # Law 13: kunci SAMA dengan posting draf -> hapus & posting draf yang sama terserialkan (dulu tanpa kunci)
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BILL_PAYMENT:{payment_id}")
+    r = await BKR.rencana_hapus_draf_bayar(conn, ctx["tenant_id"], payment_id)
+    payment = r["payment"]
+
+    await conn.execute(
+        "DELETE FROM bill_payment_allocations WHERE payment_id = $1::uuid",
+        payment_id,
+    )
+    await conn.execute(
+        "DELETE FROM bill_payments_v2 WHERE id = $1::uuid", payment_id
+    )
+    return {"id": payment_id, "payment_number": payment["payment_number"]}
+
+
 @router.delete("/{payment_id}", response_model=BillPaymentResponse)
 async def delete_bill_payment(request: Request, payment_id: str, response: Response = None):
     try:
@@ -1275,22 +1294,11 @@ async def delete_bill_payment(request: Request, payment_id: str, response: Respo
                 kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BP_DELETE", payment_id, {}, response)
                 if lama is not None:
                     return lama
-                # Law 13: kunci SAMA dengan posting draf -> hapus & posting draf yang sama terserialkan (dulu tanpa kunci)
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BILL_PAYMENT:{payment_id}")
-                r = await BKR.rencana_hapus_draf_bayar(conn, ctx["tenant_id"], payment_id)
-                payment = r["payment"]
-
-                await conn.execute(
-                    "DELETE FROM bill_payment_allocations WHERE payment_id = $1::uuid",
-                    payment_id,
-                )
-                await conn.execute(
-                    "DELETE FROM bill_payments_v2 WHERE id = $1::uuid", payment_id
-                )
+                h = await hapus_draf_bayar_core(conn, ctx, payment_id)  # isi + aturan (juga hapus massal B1b-2)
 
                 resp = BillPaymentResponse(
                     success=True,
-                    message=f"Pembayaran {payment['payment_number']} dihapus.",
+                    message=f"Pembayaran {h['payment_number']} dihapus.",
                     data={"id": payment_id},
                 )
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_DELETE", resp, payment_id)

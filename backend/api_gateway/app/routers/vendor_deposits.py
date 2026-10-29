@@ -453,10 +453,29 @@ async def update_vendor_deposit(
             return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_UPDATE", resp, deposit_id) if kp else resp
 
 
+async def hapus_draf_umv_core(conn, ctx: dict, deposit_id) -> dict:
+    """Inti DELETE /vendor-deposits/{id} (draf saja), di transaksi PEMANGGIL: rute tunggal DAN hapus massal (B1b-2). Isi = isi lama (dipindah
+    apa adanya): kunci VENDOR_DEPOSIT (urutan SAMA dengan posting) + FOR UPDATE -> 404 -> penentu R.rencana_hapus (= /delete/preview) ->
+    DELETE bersyarat draf + tenant. -> {id, deposit_number}."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
+    existing = await conn.fetchrow(
+        "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        deposit_id,
+        ctx["tenant_id"],
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+
+    _tolak((await R.rencana_hapus(conn, ctx, existing))["blocks"])  # = /delete/preview
+
+    await conn.execute("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", deposit_id, ctx["tenant_id"])
+    return {"id": str(deposit_id), "deposit_number": existing["deposit_number"]}
+
+
 @router.delete("/{deposit_id}")
 async def delete_vendor_deposit(request: Request, deposit_id: UUID, response: Response = None):
     """Delete vendor deposit (draft only). AS-GP4: idem UMV_DELETE (ulang = 200 replay, bukan 404) + kunci VENDOR_DEPOSIT + FOR UPDATE
-    (urutan SAMA dengan posting)."""
+    (urutan SAMA dengan posting). Isi + aturan: hapus_draf_umv_core (juga hapus massal B1b-2)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -469,18 +488,7 @@ async def delete_vendor_deposit(request: Request, deposit_id: UUID, response: Re
             kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, _kunci_idem(request), "UMV_DELETE", deposit_id, {}, response)
             if lama is not None:
                 return lama
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_DEPOSIT:{deposit_id}")
-            existing = await conn.fetchrow(
-                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                deposit_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
-
-            _tolak((await R.rencana_hapus(conn, ctx, existing))["blocks"])  # = /delete/preview
-
-            await conn.execute("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", deposit_id, ctx["tenant_id"])
+            await hapus_draf_umv_core(conn, ctx, deposit_id)
             resp = {"message": "Vendor deposit deleted"}
             return await idem_buat.simpan(conn, ctx, kp, sidik, "UMV_DELETE", resp, deposit_id) if kp else resp
 

@@ -175,7 +175,12 @@ def test_hapus_galat_lama_dan_kunci():
 def test_penulis_idem_lalu_kunci_lalu_penentu_lalu_simpan(mulai, akhir, penentu, awalan):
     f = _fn(BP, mulai, akhir)
     i_idem = f.index(f'idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "{awalan}"')
-    assert i_idem < f.index("pg_advisory_xact_lock") < f.index(penentu)
+    if awalan == "BP_DELETE":  # B1b-2 (29 Okt): kunci + penentu + DELETE dipindah ke inti hapus_draf_bayar_core (juga hapus massal)
+        inti = _fn(BP, "async def hapus_draf_bayar_core(", '@router.delete("/{payment_id}"')
+        assert i_idem < f.index("hapus_draf_bayar_core(conn, ctx, payment_id)")
+        assert inti.index("pg_advisory_xact_lock") < inti.index(penentu) < inti.index("DELETE FROM bill_payments_v2")
+    else:
+        assert i_idem < f.index("pg_advisory_xact_lock") < f.index(penentu)
     assert f.count(f'idem_buat.simpan(conn, ctx, kp, sidik, "{awalan}"') >= 1
     assert "return BillPaymentResponse(" not in f  # setiap jawaban sukses lewat simpan (replay = bentuk sama)
     assert "response: Response = None" in f

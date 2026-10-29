@@ -22,6 +22,7 @@ from .pengingat import ambang_segera  # SATU pembaca N hari "segera jatuh tempo"
 from .jatuh_tempo import hari_terlambat
 from .pihak_helpers import segarkan_cache_hutang_tagihan
 from .lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
+from fastapi import HTTPException  # B1b-2: inti hapus draf menolak dengan {code, message}
 from decimal import Decimal, ROUND_HALF_UP
 from .sales_doc_calc import q2 as _q2
 from . import teks_galat as tg  # 6a  # item 7: 0.01 HALF_UP
@@ -391,6 +392,56 @@ def _uang(v):
 
 
 PESAN_TAGIHAN_TAK_ADA = "Faktur pembelian tidak ditemukan."  # 6a: SATU teks; routers/bills memakainya untuk memilih 404
+
+
+async def hapus_draf_tagihan_core(conn, tenant_id: str, bill_id, user_id=None) -> tuple:
+    """Inti DELETE /bills/{id} (draf saja), di transaksi PEMANGGIL: rute tunggal (BillsService.delete_bill) DAN hapus massal (B1b-2). Isi =
+    isi lama (dipindah apa adanya): FOR UPDATE -> penentu tagihan_aksi.blok_hapus (= /delete/preview) -> app.user_id (V230) -> lepas lampiran
+    -> PO tertaut -> DELETE -> pulihkan qty tertagih PO. Tolak = HTTPException {code, message} (pesan lama). -> ({id, invoice_number},
+    path objek lampiran yang WAJIB dihapus pemanggil SESUDAH commit)."""
+    bill = await conn.fetchrow(
+        """
+        SELECT id, invoice_number, amount_paid, status, status_v2,
+               accounting_status, operational_status
+        FROM bills
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+        """,
+        bill_id,
+        tenant_id,
+    )
+    if not bill:
+        raise HTTPException(status_code=404, detail={"code": "TAGIHAN_TAK_ADA", "message": PESAN_TAGIHAN_TAK_ADA})
+    # Blok (penentu SATU dgn POST /bills/{id}/delete/preview; tagihan_aksi.blok_hapus, teks lama): pertama -> pesan.
+    _bloks = TA.blok_hapus(bill, await TA.ref_hapus(conn, bill_id))
+    if _bloks:
+        raise HTTPException(status_code=400, detail={"code": _bloks[0]["code"], "message": _bloks[0]["message"]})
+    # Delete bill — bill_items + bill_attachments cascade.
+    # V230: `app.user_id` untuk trigger `trg_log_deletion` (pemanggil memegang transaksi -> GUC hidup).
+    try:
+        await conn.execute(
+            "SELECT set_config('app.user_id', $1, true)",
+            str(user_id or ""),
+        )
+        # #30: bill_attachments CASCADE menghapus BARIS tapi objeknya
+        # tertinggal -> kumpulkan path di sini, hapus objek SESUDAH commit.
+        berkas = await lepas_berkas_milik(conn, "bills", bill_id)
+        # G5 (22 Okt 2026, PEMBELIAN-SERAGAM; kait BACKEND2 services/po_daftar): PO tertaut dibaca SEBELUM hapus
+        # (bill_items ikut terhapus CASCADE), lalu qty tertagih PO dipulihkan di transaksi yang SAMA.
+        from . import po_daftar as _pd
+        _po_ids = await _pd.po_terkait_bill(conn, tenant_id, bill_id)
+        await conn.execute(
+            "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
+            bill_id,
+            tenant_id,
+        )
+        if _po_ids:
+            await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
+    except asyncpg.ForeignKeyViolationError as fk_err:
+        raise HTTPException(status_code=400, detail={"code": "ADA_REFERENSI_FK", "message": (
+            "Faktur draft tidak dapat dihapus karena masih "
+            f"memiliki referensi terkait: {fk_err.detail or str(fk_err)}")})
+    return {"id": str(bill_id), "invoice_number": bill["invoice_number"]}, berkas
 
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
@@ -1338,11 +1389,7 @@ class BillsService:
     ) -> Dict[str, Any]:
         """
         Hard-delete a draft bill. Only allowed if doc_status='draft' AND
-        no payments/allocations/dependent records exist.
-
-        Uses derive_doc_status() (status_helpers) as authoritative source —
-        the legacy `status` column defaults to 'unpaid' and is unreliable
-        for draft detection. Per Iron Law, status_v2 is the lifecycle SoT.
+        no payments/allocations/dependent records exist. Isi + aturan: hapus_draf_tagihan_core (juga dipakai hapus massal B1b-2).
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -1354,59 +1401,12 @@ class BillsService:
                 _kp, _sidik, _lama = await _idem_mulai(conn, idem, "BILL_DELETE", bill_id)  # AS-GP2: hapus ulang = respons asli (bukan 404)
                 if _lama is not None:
                     return _lama
-
-                bill = await conn.fetchrow(
-                    """
-                    SELECT id, amount_paid, status, status_v2,
-                           accounting_status, operational_status
-                    FROM bills
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                    """,
-                    bill_id,
-                    tenant_id,
-                )
-
-                if not bill:
-                    return {"success": False, "message": PESAN_TAGIHAN_TAK_ADA}
-
-                # Blok (penentu SATU dgn POST /bills/{id}/delete/preview; tagihan_aksi.blok_hapus, teks lama): pertama -> pesan.
-                _bloks = TA.blok_hapus(bill, await TA.ref_hapus(conn, bill_id))
-                if _bloks:
-                    return {"success": False, "message": _bloks[0]["message"]}
-
-                # Delete bill — bill_items + bill_attachments cascade.
-                # V230: `app.user_id` untuk trigger `trg_log_deletion`. Blok
-                # ini SUDAH berada di dalam transaksi, jadi GUC-nya hidup.
                 try:
-                    await conn.execute(
-                        "SELECT set_config('app.user_id', $1, true)",
-                        str(user_id or ""),
-                    )
-                    # #30: bill_attachments CASCADE menghapus BARIS tapi objeknya
-                    # tertinggal -> kumpulkan path di sini, hapus objek SESUDAH commit.
-                    berkas = await lepas_berkas_milik(conn, "bills", bill_id)
-                    # G5 (22 Okt 2026, PEMBELIAN-SERAGAM; kait BACKEND2 services/po_daftar): PO tertaut dibaca SEBELUM hapus
-                    # (bill_items ikut terhapus CASCADE), lalu qty tertagih PO dipulihkan di transaksi yang SAMA.
-                    from . import po_daftar as _pd
-                    _po_ids = await _pd.po_terkait_bill(conn, tenant_id, bill_id)
-                    await conn.execute(
-                        "DELETE FROM bills WHERE id = $1 AND tenant_id = $2",
-                        bill_id,
-                        tenant_id,
-                    )
-                    if _po_ids:
-                        await _pd.pulihkan_tagih(conn, tenant_id, _po_ids)
-                    _hasil = await _idem_simpan(conn, idem, _kp, _sidik, "BILL_DELETE",
-                                                {"success": True, "message": "Faktur pembelian dihapus."}, bill_id)
-                except asyncpg.ForeignKeyViolationError as fk_err:
-                    return {
-                        "success": False,
-                        "message": (
-                            "Faktur draft tidak dapat dihapus karena masih "
-                            f"memiliki referensi terkait: {fk_err.detail or str(fk_err)}"
-                        ),
-                    }
+                    _, berkas = await hapus_draf_tagihan_core(conn, tenant_id, bill_id, user_id)
+                except HTTPException as e:  # bentuk lama: {"success": False, "message"} (router memilih 404/400 dari teksnya)
+                    return {"success": False, "message": e.detail["message"]}
+                _hasil = await _idem_simpan(conn, idem, _kp, _sidik, "BILL_DELETE",
+                                            {"success": True, "message": "Faktur pembelian dihapus."}, bill_id)
 
         # Transaksi sudah COMMIT di sini (jalur gagal di atas sudah return lebih dulu).
         await hapus_objek_sesudah_commit(berkas, f"hapus draf tagihan {bill_id}")

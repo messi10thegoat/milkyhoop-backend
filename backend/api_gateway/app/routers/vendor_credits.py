@@ -1014,6 +1014,43 @@ async def update_vendor_credit(
 # =============================================================================
 
 
+def rencana_hapus_nd(vc) -> list:
+    """Penentu hapus ND (B1b-2; SATU sumber untuk DELETE tunggal + pratinjau/tulis massal): hanya Draf. -> blok [{code, message, status}]."""
+    if vc["status"] != "draft":
+        return [{"code": "ND_BUKAN_DRAF", "status": 400,
+                 "message": "Hanya nota debit berstatus Draf yang bisa dihapus. Nota debit terbit dibatalkan, bukan dihapus."}]
+    return []
+
+
+async def hapus_draf_nd_core(conn, ctx: dict, vendor_credit_id) -> dict:
+    """Inti DELETE /vendor-credits/{id} (draf saja), di transaksi PEMANGGIL: rute tunggal DAN hapus massal (B1b-2). Isi = isi lama (dipindah
+    apa adanya): kunci posting yang SAMA (VENDOR_CREDIT:) + FOR UPDATE -> 404 -> penentu rencana_hapus_nd -> DELETE bersyarat draf + tenant
+    (berubah di sela = 409). -> {id, vendor_credit_number}."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT:{vendor_credit_id}")
+    vc = await conn.fetchrow(
+        "SELECT id, status, credit_number FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        vendor_credit_id,
+        ctx["tenant_id"],
+    )
+
+    if not vc:
+        raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
+
+    _blok = rencana_hapus_nd(vc)
+    if _blok:
+        raise HTTPException(status_code=_blok[0]["status"], detail=_blok[0]["message"])
+
+    # Delete (cascade will delete items) -- bersyarat: status berubah di sela = 409, bukan menghapus dokumen terbit
+    if not await conn.fetchval(
+        "DELETE FROM vendor_credits WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
+        vendor_credit_id, ctx["tenant_id"],
+    ):
+        raise HTTPException(status_code=409, detail="Nota debit sudah berubah status. Muat ulang halaman.")
+
+    logger.info(f"Vendor credit deleted: {vendor_credit_id}")
+    return {"id": str(vendor_credit_id), "vendor_credit_number": vc["credit_number"]}
+
+
 @router.delete("/{vendor_credit_id}", response_model=VendorCreditResponse)
 async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, response: Response = None):
     """
@@ -1022,6 +1059,7 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, respons
     Only draft vendor credits can be deleted. Use void for posted vendor credits.
     P2P-3a (25 Okt): satu transaksi -- idem VC_DELETE pertama, kunci posting yang SAMA (VENDOR_CREDIT:) + FOR UPDATE, DELETE bersyarat
     status draf + tenant (dulu tanpa transaksi: hapus||posting bisa menghapus ND yang baru diposting; DELETE tanpa tenant).
+    Isi + aturan: hapus_draf_nd_core (juga hapus massal B1b-2).
     """
     try:
         ctx = get_user_context(request)
@@ -1033,38 +1071,10 @@ async def delete_vendor_credit(request: Request, vendor_credit_id: UUID, respons
                 _kp, _sd, _lama = await _ib.mulai_aksi(conn, ctx, _ib.kunci_dari(request), "VC_DELETE", vendor_credit_id, {}, response)
                 if _lama is not None:
                     return _lama
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_CREDIT:{vendor_credit_id}")
-                vc = await conn.fetchrow(
-                    "SELECT id, status, credit_number FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                    vendor_credit_id,
-                    ctx["tenant_id"],
-                )
-
-                if not vc:
-                    raise HTTPException(status_code=404, detail="Nota debit tidak ditemukan.")
-
-                if vc["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Hanya nota debit berstatus Draf yang bisa dihapus. Nota debit terbit dibatalkan, bukan dihapus.",
-                    )
-
-                # Delete (cascade will delete items) -- bersyarat: status berubah di sela = 409, bukan menghapus dokumen terbit
-                if not await conn.fetchval(
-                    "DELETE FROM vendor_credits WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id",
-                    vendor_credit_id, ctx["tenant_id"],
-                ):
-                    raise HTTPException(status_code=409, detail="Nota debit sudah berubah status. Muat ulang halaman.")
-
-                logger.info(f"Vendor credit deleted: {vendor_credit_id}")
-
                 resp = {
                     "success": True,
                     "message": "Nota debit dihapus.",
-                    "data": {
-                        "id": str(vendor_credit_id),
-                        "vendor_credit_number": vc["credit_number"],
-                    },
+                    "data": await hapus_draf_nd_core(conn, ctx, vendor_credit_id),
                 }
                 return (await _ib.simpan(conn, ctx, _kp, _sd, "VC_DELETE", resp, vendor_credit_id)) if _kp else resp
 

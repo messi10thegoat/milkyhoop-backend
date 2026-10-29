@@ -27,9 +27,13 @@ def test_patch_kunci_urutan_sama_dengan_posting_dan_update_bersyarat_draf():
 
 
 def test_hapus_kunci_sama_dan_idem():
-    d = inspect.getsource(RV.delete_vendor_deposit)
-    assert 'f"VENDOR_DEPOSIT:{deposit_id}"' in d and "FOR UPDATE" in d and '"UMV_DELETE"' in d
-    assert d.index("idem_buat.mulai_aksi(") < d.index("pg_advisory_xact_lock")
+    """B1b-2 (29 Okt): kunci + FOR UPDATE + DELETE dipindah ke inti hapus_draf_umv_core (juga hapus massal). Handler: idem SEBELUM panggilan
+    inti; inti (KODE, tanpa docstring): kunci SAMA dengan posting lalu FOR UPDATE."""
+    d = _tubuh(RV.delete_vendor_deposit)
+    inti = _tubuh(RV.hapus_draf_umv_core)
+    assert 'f"VENDOR_DEPOSIT:{deposit_id}"' in inti and "FOR UPDATE" in inti and '"UMV_DELETE"' in d
+    assert d.index("idem_buat.mulai_aksi(") < d.index("hapus_draf_umv_core(conn, ctx, deposit_id)")
+    assert inti.index("pg_advisory_xact_lock") < inti.index("FOR UPDATE")
 
 
 def test_pratinjau_ubah_penentu_sama_read_only():

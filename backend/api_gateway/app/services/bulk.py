@@ -146,6 +146,7 @@ async def jalankan_per_item(pool, ctx: dict, aksi: str, modul: str, ids: List[UU
     hasil = []
     for i in ids:
         item = {"id": str(i), "number": (nomor or {}).get(str(i)), "status": "ok", "http": 200, "code": None, "message": None, "replay": False, "result": None}
+        sesudah = None
         try:
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -157,9 +158,17 @@ async def jalankan_per_item(pool, ctx: dict, aksi: str, modul: str, ids: List[UU
                         # RAHASIA (mis. URL tautan bagikan; di DB hanya hash-nya): dikembalikan ke pemanggil TETAPI tak disimpan di tabel
                         # idempotensi -> replay mengembalikan hasil tanpa rahasia (F5).
                         rahasia = resp.pop("_rahasia", None) if isinstance(resp, dict) else None
+                        # SESUDAH COMMIT (B1b-2, mis. hapus objek lampiran tagihan): fungsi async tanpa argumen; dijalankan HANYA bila transaksi
+                        # item commit, tak disimpan di tabel idempotensi, galatnya dicatat dan tak mengubah hasil item.
+                        sesudah = resp.pop("_sesudah_commit", None) if isinstance(resp, dict) else None
                         item["result"] = await _ib.simpan(conn, ctx, kp, sd, kode_aksi, resp, i)
                         if rahasia:
                             item["result"] = {**item["result"], **rahasia}
+            if sesudah is not None:
+                try:
+                    await sesudah()
+                except Exception:
+                    logger.error("bulk %s item %s: langkah sesudah commit gagal", kode_aksi, i, exc_info=True)
         except HTTPException as e:
             kode, pesan = _pesan(e)
             item.update(status="rejected" if 400 <= e.status_code < 500 else "error", http=e.status_code, code=kode,

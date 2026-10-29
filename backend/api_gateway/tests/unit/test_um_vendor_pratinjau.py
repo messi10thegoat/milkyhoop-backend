@@ -236,7 +236,10 @@ def test_tulis_memakai_penentu_bersama():
     assert "R.rencana_lepas(" in lep and "kunci=True" in lep
     assert "R.rencana_kembali(" in src["refund_vendor_deposit"] and 'rk["akun_kas"]' in src["refund_vendor_deposit"]
     assert "R.rencana_batal(" in src["void_vendor_deposit"] and "VD_VOIDED" in src["void_vendor_deposit"]
-    assert "R.rencana_hapus(" in src["delete_vendor_deposit"] and "status = 'draft'" in src["delete_vendor_deposit"]
+    # B1b-2 (29 Okt): penentu + DELETE bersyarat dipindah ke inti hapus_draf_umv_core (rute tunggal + hapus massal)
+    inti = inspect.getsource(VD.hapus_draf_umv_core)
+    assert "hapus_draf_umv_core(conn, ctx, deposit_id)" in src["delete_vendor_deposit"]
+    assert "R.rencana_hapus(" in inti and "status = 'draft'" in inti
     assert inspect.getsource(VD.post_vendor_deposit).count("_posting_inti(conn, ctx, deposit_id)") == 1
 
 
