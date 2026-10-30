@@ -5,7 +5,8 @@
 {# Kwitansi A5 MELINTANG (P3 SO-dokumen, 1 Okt 2026; gaya: kwitansi.css sesudah invoice.css). Medan konteks SAMA dengan
    versi A4 lama (pemuat muat_pdf_kwitansi_penerimaan / muat_pdf_kwitansi_uang_muka / jurnal penerapan) -- hanya tata
    letak yang berubah: dua kolom supaya muat 148 mm. Varian jurnal (Bukti Penerapan Uang Muka / Bukti Nota Kredit,
-   hide_method) TIDAK distempel DITERIMA: tak ada uang baru diterima. #}
+   hide_method) TIDAK distempel DITERIMA: tak ada uang baru diterima. Bukti Kas Keluar (hide_stamp, BKK 30 Okt 2026) tanpa stempel:
+   stempel kosong TIDAK lagi jatuh ke 'DITERIMA' untuk dokumen keluar; kwitansi penerimaan tak mengirim hide_stamp -> tetap DITERIMA. #}
 {% include "_partials/tanda_batal.html" %}
 <div class="invoice">
 
@@ -84,7 +85,7 @@
 
     <table class="kw-kaki"><tr>
         <td>
-            {% if not batal and not receipt.get('hide_method') and (receipt.status or 'posted')|lower not in ('draft',) %}
+            {% if not batal and not receipt.get('hide_method') and not receipt.get('hide_stamp') and (receipt.status or 'posted')|lower not in ('draft',) %}
             <div class="kw-stempel kw-stempel-diterima">
                 <div class="kw-stempel-teks">{{ receipt.get('stamp_label') or 'DITERIMA' }}</div>
                 <div class="kw-stempel-kecil">{{ receipt.receipt_date | date_id | upper }}</div>

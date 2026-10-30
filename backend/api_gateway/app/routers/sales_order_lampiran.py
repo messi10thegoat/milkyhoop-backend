@@ -144,6 +144,9 @@ JENIS_KELUARGA = {
     "delivery": ("deliveries", None),
     "sales_invoice": ("sales-invoices", None),
     "credit_note": ("credit-notes", None),   # LAMPIRAN-NK-QUOTE 15 Okt: rute lampiran NK ada
+    # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026): keluarga FPB <-> PK (routers/lampiran_dokumen.SQL_KELUARGA_BELI); rute unduh modul sudah ada
+    "bill": ("bills", None),
+    "payment_out": ("bill-payments", None),
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})

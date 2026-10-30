@@ -105,7 +105,8 @@ def test_vd_konteks_arah_keluar_dan_saldo_dari_jurnal(sisa_jurnal):
     c = _ConnVD(vd)
     m = _jalan(CV.muat_pdf_vendor_deposit(c, {"tenant_id": TID}, vd["id"]))
     r = m["receipt_data"]
-    assert r["title"] == "Bukti Pembayaran Uang Muka" and r["party_label"] == "Dibayarkan Kepada" and r["stamp_label"] == "DIBAYAR"
+    assert r["title"] == "Bukti Kas Keluar" and r["subtitle"] == "Uang muka pembelian ke pemasok" and r["party_label"] == "Dibayarkan Kepada"
+    assert r["hide_stamp"] is True and "stamp_label" not in r
     assert r["payer_name"] == "PT Kain Jaya" and r["receipt_number"] == "VD-2610-0001" and r["receipt_date"] == "2026-10-25"
     assert r["purpose_ref"] == "PO-2610-0003" and r["source_ref"] == "TRF-77"
     assert r["method"] == "Transfer Bank" and r["bank_name"] == "BCA Operasional"
@@ -208,15 +209,17 @@ def _rd(**k):
 
 def test_render_vd_arah_keluar():
     h = _ps().render_receipt(_rd(), TENANT).html
-    for teks in ("Bukti Pembayaran Uang Muka", "Dibayarkan Kepada", "Jumlah Dibayar", "Untuk Pesanan Pembelian", "PO-2610-0003",
-                 "Referensi", "TRF-77", "Saldo Uang Muka", "No. Uang Muka", "Pembayar,", "DIBAYAR"):
+    for teks in ("Bukti Kas Keluar", "Uang muka pembelian ke pemasok", "Dibayarkan Kepada", "Jumlah Dibayar", "Untuk Pesanan Pembelian",
+                 "PO-2610-0003", "Referensi", "TRF-77", "Saldo Uang Muka", "No. Uang Muka", "Pembayar,"):
         assert teks in h, teks
-    for teks in ("DITERIMA", "Telah Terima Dari", "Jumlah Diterima", "Penerima,"):
+    for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Bukti Pembayaran Uang Muka", "Telah Terima Dari", "Jumlah Diterima",
+                 "Penerima,"):
         assert teks not in h, teks
 
 
 def test_render_vd_draf_tanpa_stempel_batal_bertanda():
-    assert "DIBAYAR" not in _ps().render_receipt(_rd(status="draft", remaining=None), TENANT).html
+    hd = _ps().render_receipt(_rd(status="draft", remaining=None), TENANT).html
+    assert "DIBAYAR" not in hd and "DITERIMA" not in hd and "kw-stempel-diterima" not in hd
     h = _ps().render_receipt(_rd(status="void", remaining=None, voided_at=datetime(2026, 10, 25, 3, tzinfo=timezone.utc)), TENANT).html
     assert "DIBATALKAN" in h and "kw-stempel-diterima" not in h
 

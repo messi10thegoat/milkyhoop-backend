@@ -109,6 +109,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/lampiran/delivery/[^/]+$", ["GET"], "sales_invoice", "R"),
     (r"^/api/lampiran/credit_note/[^/]+$", ["GET"], "credit_note", "R"),
     (r"^/api/lampiran/quote/[^/]+$", ["GET"], "quote", "R"),
+    # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026): keluarga FPB <-> PK
+    (r"^/api/lampiran/bill/[^/]+$", ["GET"], "purchase_invoice", "R"),
+    (r"^/api/lampiran/payment_out/[^/]+$", ["GET"], "send_payment", "R"),
     # LAMPIRAN-NK-QUOTE (15 Okt 2026): lampiran nota kredit & penawaran -- pola SO (tambah lampiran ke dokumen ada = U)
     (r"^/api/credit-notes/[^/]+/attachments$", ["POST"], "credit_note", "U"),
     (r"^/api/credit-notes/[^/]+/attachments$", ["GET"], "credit_note", "R"),

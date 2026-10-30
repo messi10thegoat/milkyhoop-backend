@@ -1,4 +1,4 @@
-"""Cetak Bukti Pembayaran ke pemasok (P2P cetak, 25 Okt 2026): pemuat konteks /api/documents/payment_out/{id}/(html|pdf).
+"""Cetak Bukti Kas Keluar (dulu "Bukti Pembayaran") ke pemasok (P2P cetak, 25 Okt 2026): pemuat konteks /api/documents/payment_out/{id}/(html|pdf).
 
 Simetri kwitansi penerimaan (receive_payments.muat_pdf_kwitansi_penerimaan): templat kwitansi.html yang SAMA dengan
 label keluar. Jumlah = total_amount tersimpan (kas keluar yang dijurnal); faktur = alokasi pembayaran ini; sisa hanya
@@ -15,14 +15,14 @@ from .rekap_pesanan import muat_kop
 PESAN_TAK_ADA = "Pembayaran tidak ditemukan."
 
 LABEL = {
-    "title": "Bukti Pembayaran",
-    "subtitle": "Pembayaran Pemasok",
+    "title": "Bukti Kas Keluar",
+    "subtitle": "Pemberitahuan pembayaran ke pemasok",
     "party_label": "Dibayarkan Kepada",
     "amount_label": "Jumlah Dibayar",
     "number_label": "No. Pembayaran",
     "remaining_label": "Sisa Faktur",
     "signature_label": "Dibayar oleh,",
-    "stamp_label": "DIBAYAR",
+    "hide_stamp": True,  # BKK (30 Okt 2026): pola remittance advice / payment voucher -- tanpa stempel; batal tetap DIBATALKAN
 }
 
 

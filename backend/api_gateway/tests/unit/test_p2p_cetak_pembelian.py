@@ -126,7 +126,8 @@ def _muat_bayar(pay, alokasi, tid="t1"):
 
 def test_pemuat_bayar_label_keluar_faktur_dan_sisa_satu_faktur():
     d = _muat_bayar(_pay(), [{"invoice_number": "PI-2610-0001", "remaining_after": 0}])["receipt_data"]
-    assert d["title"] == "Bukti Pembayaran" and d["stamp_label"] == "DIBAYAR" and d["party_label"] == "Dibayarkan Kepada"
+    assert d["title"] == "Bukti Kas Keluar" and d["subtitle"] == "Pemberitahuan pembayaran ke pemasok"
+    assert d["hide_stamp"] is True and "stamp_label" not in d and d["party_label"] == "Dibayarkan Kepada"
     assert d["purpose_ref"] == "PI-2610-0001" and d["remaining"] == Decimal("0") and isinstance(d["amount"], Decimal)
     d2 = _muat_bayar(_pay(), [{"invoice_number": "PI-1", "remaining_after": 5}, {"invoice_number": "PI-2", "remaining_after": 0}])
     assert d2["receipt_data"]["purpose_ref"] == "PI-1, PI-2" and d2["receipt_data"]["remaining"] is None
@@ -136,18 +137,25 @@ def test_render_bayar_keluar_dan_kwitansi_penerimaan_tetap():
     ps = get_pdf_service()
     d = _muat_bayar(_pay(), [{"invoice_number": "PI-2610-0001", "remaining_after": 0}])
     r = ps.render_payment_out(d["receipt_data"], TENANT)
-    for teks in ("Bukti Pembayaran", "Pembayaran Pemasok", "Dibayarkan Kepada", "CV Benang Jaya", "Jumlah Dibayar",
-                 "Rp 1.110.000", "PI-2610-0001", "No. Pembayaran", "PAY-2610-0004", "DIBAYAR", "Dibayar oleh,"):
+    for teks in ("Bukti Kas Keluar", "Pemberitahuan pembayaran ke pemasok", "Dibayarkan Kepada", "CV Benang Jaya", "Jumlah Dibayar",
+                 "Rp 1.110.000", "PI-2610-0001", "No. Pembayaran", "PAY-2610-0004", "Dibayar oleh,"):
         assert teks in r.html, teks
-    assert "DITERIMA" not in r.html and "Telah Terima Dari" not in r.html
-    assert "DIBAYAR" not in ps.render_payment_out(_muat_bayar(_pay(status="draft"), [])["receipt_data"], TENANT).html
+    # BKK (30 Okt 2026): TANPA stempel -- bukan DIBAYAR, dan stempel kosong TAK jatuh ke DITERIMA
+    for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Telah Terima Dari", "Bukti Pembayaran"):
+        assert teks not in r.html, teks
+    h_draf = ps.render_payment_out(_muat_bayar(_pay(status="draft"), [])["receipt_data"], TENANT).html
+    assert "kw-stempel-diterima" not in h_draf and "DIBAYAR" not in h_draf and "DITERIMA" not in h_draf
     h_void = ps.render_payment_out(_muat_bayar(_pay(status="voided", voided_at=datetime(2026, 10, 23, tzinfo=timezone.utc),
                                                     void_reason="dobel"), [])["receipt_data"], TENANT).html
     assert "DIBATALKAN" in h_void and "dobel" in h_void
     # kwitansi penerimaan (tanpa stamp_label) TAK bergeser
     terima = ps.render_receipt({"status": "posted", "receipt_number": "RCV-1", "receipt_date": "2026-10-01",
                                 "payer_name": "X", "amount": 1000, "method": "Tunai"}, TENANT).html
-    assert "DITERIMA" in terima and "DIBAYAR" not in terima
+    assert "DITERIMA" in terima and "DIBAYAR" not in terima and "kw-stempel-diterima" in terima
+    # kontrol: hide_stamp hanya dibaca bila dikirim -- kwitansi penerimaan berstempel kosong tetap DITERIMA
+    terima2 = ps.render_receipt({"status": "posted", "receipt_number": "RCV-2", "receipt_date": "2026-10-01", "payer_name": "Y",
+                                 "amount": 1000, "method": "Tunai", "stamp_label": ""}, TENANT).html
+    assert "DITERIMA" in terima2 and "kw-stempel-diterima" in terima2
 
 
 # ── nota debit ──────────────────────────────────────────────────────────────────────────────────────────────────

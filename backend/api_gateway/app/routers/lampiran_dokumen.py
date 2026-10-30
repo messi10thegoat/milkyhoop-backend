@@ -2,8 +2,9 @@
 
 GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_payment | customer_deposit | proforma | delivery | credit_note
                                         | quote (LAMPIRAN-NK-QUOTE 15 Okt)
+                                        | bill | payment_out (LAMPIRAN-PEMBELIAN F1, 30 Okt 2026: keluarga FPB <-> PK, lihat JENIS_PEMBELIAN)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
-     {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen", "sales_order": {"id", "nomor"} | null}
+     {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen" | "keluarga_pembelian", "sales_order": {"id", "nomor"} | null}
 
 Penentu (SATU predikat keluarga, services di routers/sales_order_lampiran):
   1. Dokumen harus ADA di tabel PEMILIK jenisnya, tenant JWT (penerimaan = receive_payments; id bill_payments_v2 -> 404; entity_type
@@ -65,6 +66,65 @@ SQL_CALON_SO = {
 }
 
 
+# LAMPIRAN-PEMBELIAN F1 (30 Okt 2026, putusan MASTER (ii)): jenis Pembelian -> (tabel pemilik, kolom nomor). Keluarga SATU langkah, cermin
+# faktur <-> penerimaan Penjualan: FPB -> PK yang mengalokasikannya (bill_payment_allocations); PK -> FPB yang dialokasikannya.
+# entity_type 'payment' dipakai BERSAMA penerimaan: grup payment_out HANYA id yang ADA di bill_payments_v2 tenant ini (JOIN pemilik),
+# jadi lampiran milik receive_payments tak pernah ikut (dan sebaliknya: receive_payment hanya receive_payments).
+# FPB punya DUA sumber (== GET /api/bills/{id}/attachments): bill_attachments (unggah lama, MinIO -> 's3'; tanpa tenant_id -> pagar lewat
+# JOIN bills) + document_attachments entity_type 'bill'. Tenant eksplisit di setiap tabel (gateway BYPASSRLS).
+JENIS_PEMBELIAN = {
+    "bill": ("bills", "invoice_number"),
+    "payment_out": ("bill_payments_v2", "payment_number"),
+}
+SQL_KELUARGA_BELI = """
+WITH fb0 AS (
+    SELECT b0x.id FROM bills b0x WHERE b0x.tenant_id = $2 AND b0x.id = $1 AND $3 = 'bill'
+), pk0 AS (
+    SELECT p0x.id FROM bill_payments_v2 p0x WHERE p0x.tenant_id = $2 AND p0x.id = $1 AND $3 = 'payment_out'
+), fb AS (
+    SELECT bx.id FROM bills bx
+    WHERE bx.tenant_id = $2
+      AND (bx.id IN (SELECT id FROM fb0)
+           OR bx.id IN (SELECT a0x.bill_id FROM bill_payment_allocations a0x WHERE a0x.payment_id IN (SELECT id FROM pk0)))
+), pk AS (
+    SELECT px.id FROM bill_payments_v2 px
+    WHERE px.tenant_id = $2
+      AND (px.id IN (SELECT id FROM pk0)
+           OR px.id IN (SELECT a1x.payment_id FROM bill_payment_allocations a1x WHERE a1x.bill_id IN (SELECT id FROM fb0)))
+), meta AS (
+    SELECT 'bill'::text AS jenis, 'bill'::text AS et, b.id, b.invoice_number::text AS nomor, b.issue_date::date AS tanggal,
+           COALESCE(b.status_v2, b.status)::text AS status
+    FROM bills b WHERE b.tenant_id = $2 AND b.id IN (SELECT id FROM fb)
+    UNION ALL
+    SELECT 'payment_out', 'payment', p.id, p.payment_number, p.payment_date::date, p.status
+    FROM bill_payments_v2 p WHERE p.tenant_id = $2 AND p.id IN (SELECT id FROM pk)
+)
+SELECT m.jenis, m.id AS dok_id, m.nomor, m.tanggal, m.status,
+       d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,
+       d.file_type AS mime, d.file_size AS ukuran, d.storage_type, d.uploaded_at,
+       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''),
+                NULLIF(trim(u.name), ''), u.email) AS pengunggah,
+       'hub'::text AS sumber
+FROM meta m
+JOIN document_attachments da ON da.entity_type = m.et AND da.entity_id = m.id AND da.tenant_id = $2
+JOIN documents d ON d.id = da.document_id AND d.tenant_id = $2 AND d.deleted_at IS NULL
+LEFT JOIN "User" u ON u.id = d.uploaded_by::text
+LEFT JOIN user_profiles up ON up.user_id = u.id
+UNION ALL
+SELECT m.jenis, m.id, m.nomor, m.tanggal, m.status,
+       ba.id, ba.filename, ba.mime_type, ba.file_size, 's3', ba.uploaded_at,
+       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''),
+                NULLIF(trim(u.name), ''), u.email),
+       'tagihan_lama'
+FROM meta m
+JOIN bills bb ON bb.id = m.id AND bb.tenant_id = $2
+JOIN bill_attachments ba ON ba.bill_id = bb.id
+LEFT JOIN "User" u ON u.id = ba.uploaded_by::text
+LEFT JOIN user_profiles up ON up.user_id = u.id
+WHERE m.jenis = 'bill'
+"""
+
+
 def _uuid(v: str) -> UUID:
     try:
         return UUID(str(v))
@@ -85,7 +145,7 @@ async def tentukan(conn, tenant_id: str, jenis: str, dok_id) -> dict:
 
 @router.get("/{jenis}/{dok_id}")
 async def lampiran_dokumen(request: Request, jenis: str, dok_id: str):
-    if jenis not in JENIS_DOKUMEN:
+    if jenis not in JENIS_DOKUMEN and jenis not in JENIS_PEMBELIAN:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal.")
     did = _uuid(dok_id)
     tenant_id = request.state.user["tenant_id"]
@@ -93,16 +153,25 @@ async def lampiran_dokumen(request: Request, jenis: str, dok_id: str):
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-            t = await tentukan(conn, tenant_id, jenis, did)
-            if len(t["so"]) == 1:
-                so_id = t["so"][0]
-                rows = await SL.baris_keluarga(conn, tenant_id, so_id)
-                so_nomor = await conn.fetchval("SELECT order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
-                                               so_id, tenant_id)
-                sumber = {"mode": "keluarga_so", "sales_order": {"id": str(so_id), "nomor": so_nomor}}
+            if jenis in JENIS_PEMBELIAN:
+                tabel, kol = JENIS_PEMBELIAN[jenis]
+                nomor = await conn.fetchrow(f"SELECT {kol} AS nomor FROM {tabel} WHERE id = $1 AND tenant_id = $2", did, tenant_id)
+                if not nomor:
+                    raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan.")
+                rows = await conn.fetch(SQL_KELUARGA_BELI, did, tenant_id, jenis)
+                t = {"nomor": nomor["nomor"]}
+                sumber = {"mode": "keluarga_pembelian", "sales_order": None}
             else:
-                rows = await SL.baris_keluarga(conn, tenant_id, None, {jenis: [did]})
-                sumber = {"mode": "dokumen", "sales_order": None}
+                t = await tentukan(conn, tenant_id, jenis, did)
+                if len(t["so"]) == 1:
+                    so_id = t["so"][0]
+                    rows = await SL.baris_keluarga(conn, tenant_id, so_id)
+                    so_nomor = await conn.fetchval("SELECT order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                                   so_id, tenant_id)
+                    sumber = {"mode": "keluarga_so", "sales_order": {"id": str(so_id), "nomor": so_nomor}}
+                else:
+                    rows = await SL.baris_keluarga(conn, tenant_id, None, {jenis: [did]})
+                    sumber = {"mode": "dokumen", "sales_order": None}
     out = await SL.susun_dengan_izin(request, rows)
     out["sumber"] = {"jenis": jenis, "id": str(did), "nomor": t["nomor"], **sumber}
     return out

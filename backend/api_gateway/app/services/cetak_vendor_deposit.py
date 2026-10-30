@@ -1,6 +1,6 @@
 """PDF UANG MUKA PEMBELIAN (25 Okt 2026, audit simetri Pembelian WORKSPACE): pemuat konteks /documents/vendor_deposit/{id}/html|pdf.
 Kembaran kwitansi uang muka pelanggan (customer_deposits.muat_pdf_kwitansi_uang_muka): templat SAMA (kwitansi.html, A5 melintang), label arah
-KELUAR -- "Bukti Pembayaran Uang Muka", dibayarkan kepada vendor, stempel DIBAYAR. Acuan isi: NetSuite Vendor Prepayment (vendor, jumlah,
+KELUAR -- "Bukti Kas Keluar" (BKK 30 Okt; dulu "Bukti Pembayaran Uang Muka" + stempel DIBAYAR), dibayarkan kepada vendor, TANPA stempel. Acuan isi: NetSuite Vendor Prepayment (vendor, jumlah,
 PO, metode/rekening, memo).
 
 Angka: jumlah = nilai TERSIMPAN dokumen; saldo uang muka = TURUNAN JURNAL (uang_muka_vendor_daftar.fakta_vd, Law 1/16), bukan kolom cache
@@ -13,8 +13,8 @@ from . import uang_muka_vendor_daftar as UMD
 from .rekap_pesanan import muat_kop
 
 TEKS = {
-    "title": "Bukti Pembayaran Uang Muka",
-    "subtitle": "Uang Muka Pembelian",
+    "title": "Bukti Kas Keluar",
+    "subtitle": "Uang muka pembelian ke pemasok",
     "party_label": "Dibayarkan Kepada",
     "amount_label": "Jumlah Dibayar",
     "number_label": "No. Uang Muka",
@@ -22,7 +22,7 @@ TEKS = {
     "source_label": "Referensi",
     "remaining_label": "Saldo Uang Muka",
     "signature_label": "Pembayar,",
-    "stamp_label": "DIBAYAR",
+    "hide_stamp": True,  # BKK (30 Okt 2026): tanpa stempel (pola payment voucher); batal tetap DIBATALKAN
 }
 
 
