@@ -64,6 +64,7 @@ DELETE /api/price-lists/{price_list_id}
 DELETE /api/price-lists/{price_list_id}/items/{item_id}
 DELETE /api/product-djp-mapping/{mapping_id}
 DELETE /api/production/{order_id}
+DELETE /api/purchase-orders/{doc_id}/attachments/{attachment_id}
 DELETE /api/purchase-orders/{po_id}
 POST /api/deliveries/{doc_id}/attachments
 POST /api/deliveries/{delivery_id}/void
@@ -121,6 +122,7 @@ DELETE /api/team-members/{member_id}
 DELETE /api/tenant/profile/logo
 DELETE /api/units/conversions/{conversion_id}
 DELETE /api/units/{unit_id}
+DELETE /api/vendor-credits/{doc_id}/attachments/{attachment_id}
 DELETE /api/vendor-credits/{vendor_credit_id}
 DELETE /api/vendor-deposits/{deposit_id}
 DELETE /api/vendors/{vendor_id}
@@ -459,6 +461,7 @@ POST /api/proformas/{proforma_id}/issue/preview
 POST /api/proformas/{proforma_id}/update/preview
 POST /api/purchase-orders
 POST /api/purchase-orders/calculate
+POST /api/purchase-orders/{doc_id}/attachments
 POST /api/purchase-orders/{po_id}/cancel
 POST /api/purchase-orders/{po_id}/cancel/preview
 POST /api/purchase-orders/{po_id}/close
@@ -590,6 +593,7 @@ POST /api/v3/chat/message/stream
 POST /api/v3/chat/message/upload
 POST /api/vendor-credits
 POST /api/vendor-credits/preview
+POST /api/vendor-credits/{doc_id}/attachments
 POST /api/vendor-credits/{vendor_credit_id}/apply
 POST /api/vendor-credits/{vendor_credit_id}/apply/preview
 POST /api/vendor-credits/{vendor_credit_id}/create-tax-invoice

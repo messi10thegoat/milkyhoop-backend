@@ -144,9 +144,11 @@ JENIS_KELUARGA = {
     "delivery": ("deliveries", None),
     "sales_invoice": ("sales-invoices", None),
     "credit_note": ("credit-notes", None),   # LAMPIRAN-NK-QUOTE 15 Okt: rute lampiran NK ada
-    # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026): keluarga FPB <-> PK (routers/lampiran_dokumen.SQL_KELUARGA_BELI); rute unduh modul sudah ada
+    # LAMPIRAN-PEMBELIAN F1/F2a (30 Okt 2026): keluarga Pembelian (routers/lampiran_dokumen.SQL_KELUARGA_BELI); urutan = PO, FPB, PK, ND
+    "purchase_order": ("purchase-orders", None),   # F2a: rute pabrik lampiran_induk
     "bill": ("bills", None),
     "payment_out": ("bill-payments", None),
+    "vendor_credit": ("vendor-credits", None),     # F2a: rute pabrik lampiran_induk
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})

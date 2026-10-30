@@ -566,6 +566,9 @@ from .routers import bulk_quote as bulk_quote_router  # noqa: E402  (U1b F3: Pen
 # LAMPIRAN-NK-QUOTE: rute /{id}/attachments* DIDAFTARKAN SEBELUM router penawaran/NK (jalur literal menang lebih dulu)
 app.include_router(lampiran_induk.router_penawaran, prefix="/api/quotes", tags=["quotes"])
 app.include_router(lampiran_induk.router_nota_kredit, prefix="/api/credit-notes", tags=["credit-notes"])
+# LAMPIRAN-PEMBELIAN F2a: lampiran PO + Nota Debit, juga SEBELUM router modulnya
+app.include_router(lampiran_induk.router_pesanan_pembelian, prefix="/api/purchase-orders", tags=["purchase-orders"])
+app.include_router(lampiran_induk.router_nota_debit, prefix="/api/vendor-credits", tags=["vendor-credits"])
 app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"])
 from .routers import bulk_proforma as bulk_proforma_router  # noqa: E402  (U1b F4: Proforma BATAL draf massal; terbit massal tak ada)
 

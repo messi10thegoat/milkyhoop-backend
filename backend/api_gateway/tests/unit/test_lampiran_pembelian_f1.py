@@ -58,11 +58,14 @@ def test_url_grup_pembelian_ke_rute_unduh_yang_ada(jenis, modul, akhir):
 
 def test_jenis_penjualan_tak_berubah_dan_pembelian_terpisah():
     assert set(LD.JENIS_DOKUMEN) == set(LD.SQL_CALON_SO)
-    assert set(LD.JENIS_PEMBELIAN) == {"bill", "payment_out"} and not (set(LD.JENIS_PEMBELIAN) & set(LD.JENIS_DOKUMEN))
-    assert LD.JENIS_PEMBELIAN == {"bill": ("bills", "invoice_number"), "payment_out": ("bill_payments_v2", "payment_number")}
+    # F2a (30 Okt 2026): + purchase_order / vendor_credit -- daftar PERSIS (bukan "memuat"), tetap terpisah dari jenis Penjualan
+    assert set(LD.JENIS_PEMBELIAN) == {"purchase_order", "bill", "payment_out", "vendor_credit"}
+    assert not (set(LD.JENIS_PEMBELIAN) & set(LD.JENIS_DOKUMEN))
+    assert LD.JENIS_PEMBELIAN == {"purchase_order": ("purchase_orders", "po_number"), "bill": ("bills", "invoice_number"),
+                                  "payment_out": ("bill_payments_v2", "payment_number"), "vendor_credit": ("vendor_credits", "credit_number")}
 
 
-_CTE = {"fb0", "pk0", "fb", "pk", "meta"}
+_CTE = {"fb0", "pk0", "po0", "nd0", "fb", "pk", "po", "nd", "meta"}   # F2a: + po0/nd0/po/nd
 _GLOBAL = {'"User"', "user_profiles"}
 
 
@@ -71,7 +74,7 @@ def test_sql_keluarga_beli_tiap_tabel_berpemilik_dipaku_tenant():
     salah = [f"{t} {a}" for t, a in tabel if t not in _CTE | _GLOBAL | {"bill_payment_allocations", "bill_attachments"}
              and not re.search(rf"\b{a}\.tenant_id\s*=\s*\$2", SQL)]
     assert salah == [] and {t for t, _ in tabel} >= {"bills", "bill_payments_v2", "document_attachments", "documents",
-                                                     "bill_payment_allocations", "bill_attachments"}
+                                                     "bill_payment_allocations", "bill_attachments", "purchase_orders", "vendor_credits"}
 
 
 def test_tabel_tanpa_tenant_hanya_lewat_id_tersaring():

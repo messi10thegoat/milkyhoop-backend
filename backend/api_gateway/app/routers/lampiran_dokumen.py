@@ -2,7 +2,8 @@
 
 GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_payment | customer_deposit | proforma | delivery | credit_note
                                         | quote (LAMPIRAN-NK-QUOTE 15 Okt)
-                                        | bill | payment_out (LAMPIRAN-PEMBELIAN F1, 30 Okt 2026: keluarga FPB <-> PK, lihat JENIS_PEMBELIAN)
+                                        | purchase_order | bill | payment_out | vendor_credit (LAMPIRAN-PEMBELIAN F1/F2a, 30 Okt 2026: keluarga
+                                          Pembelian, lihat JENIS_PEMBELIAN)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
      {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen" | "keluarga_pembelian", "sales_order": {"id", "nomor"} | null}
 
@@ -67,25 +68,43 @@ SQL_CALON_SO = {
 
 
 # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026, putusan MASTER (ii)): jenis Pembelian -> (tabel pemilik, kolom nomor). Keluarga SATU langkah, cermin
-# faktur <-> penerimaan Penjualan: FPB -> PK yang mengalokasikannya (bill_payment_allocations); PK -> FPB yang dialokasikannya.
+# faktur <-> penerimaan Penjualan: FPB -> PK yang mengalokasikannya (bill_payment_allocations) + PO-nya + ND tertaut; PK -> FPB yang
+# dialokasikannya; PO -> FPB ber-purchase_order_id; ND -> FPB asal (F2a). entity_type 'vendor_credit' TAK dipakai NK (NK = 'credit_note').
 # entity_type 'payment' dipakai BERSAMA penerimaan: grup payment_out HANYA id yang ADA di bill_payments_v2 tenant ini (JOIN pemilik),
 # jadi lampiran milik receive_payments tak pernah ikut (dan sebaliknya: receive_payment hanya receive_payments).
 # FPB punya DUA sumber (== GET /api/bills/{id}/attachments): bill_attachments (unggah lama, MinIO -> 's3'; tanpa tenant_id -> pagar lewat
 # JOIN bills) + document_attachments entity_type 'bill'. Tenant eksplisit di setiap tabel (gateway BYPASSRLS).
+# F2a (30 Okt 2026): + PO (FPB ber-purchase_order_id) dan Nota Debit (FPB asal original_bill_id); satu langkah dari benih.
 JENIS_PEMBELIAN = {
+    "purchase_order": ("purchase_orders", "po_number"),
     "bill": ("bills", "invoice_number"),
     "payment_out": ("bill_payments_v2", "payment_number"),
+    "vendor_credit": ("vendor_credits", "credit_number"),
 }
 SQL_KELUARGA_BELI = """
 WITH fb0 AS (
     SELECT b0x.id FROM bills b0x WHERE b0x.tenant_id = $2 AND b0x.id = $1 AND $3 = 'bill'
 ), pk0 AS (
     SELECT p0x.id FROM bill_payments_v2 p0x WHERE p0x.tenant_id = $2 AND p0x.id = $1 AND $3 = 'payment_out'
+), po0 AS (
+    SELECT o0x.id FROM purchase_orders o0x WHERE o0x.tenant_id = $2 AND o0x.id = $1 AND $3 = 'purchase_order'
+), nd0 AS (
+    SELECT n0x.id, n0x.original_bill_id FROM vendor_credits n0x WHERE n0x.tenant_id = $2 AND n0x.id = $1 AND $3 = 'vendor_credit'
 ), fb AS (
     SELECT bx.id FROM bills bx
     WHERE bx.tenant_id = $2
       AND (bx.id IN (SELECT id FROM fb0)
-           OR bx.id IN (SELECT a0x.bill_id FROM bill_payment_allocations a0x WHERE a0x.payment_id IN (SELECT id FROM pk0)))
+           OR bx.id IN (SELECT a0x.bill_id FROM bill_payment_allocations a0x WHERE a0x.payment_id IN (SELECT id FROM pk0))
+           OR bx.purchase_order_id IN (SELECT id FROM po0)
+           OR bx.id IN (SELECT original_bill_id FROM nd0))
+), po AS (
+    SELECT ox.id FROM purchase_orders ox
+    WHERE ox.tenant_id = $2
+      AND (ox.id IN (SELECT id FROM po0)
+           OR ox.id IN (SELECT b1x.purchase_order_id FROM bills b1x WHERE b1x.tenant_id = $2 AND b1x.id IN (SELECT id FROM fb0)))
+), nd AS (
+    SELECT vx.id FROM vendor_credits vx
+    WHERE vx.tenant_id = $2 AND (vx.id IN (SELECT id FROM nd0) OR vx.original_bill_id IN (SELECT id FROM fb0))
 ), pk AS (
     SELECT px.id FROM bill_payments_v2 px
     WHERE px.tenant_id = $2
@@ -98,6 +117,12 @@ WITH fb0 AS (
     UNION ALL
     SELECT 'payment_out', 'payment', p.id, p.payment_number, p.payment_date::date, p.status
     FROM bill_payments_v2 p WHERE p.tenant_id = $2 AND p.id IN (SELECT id FROM pk)
+    UNION ALL
+    SELECT 'purchase_order', 'purchase_order', o.id, o.po_number, o.po_date::date, o.status
+    FROM purchase_orders o WHERE o.tenant_id = $2 AND o.id IN (SELECT id FROM po)
+    UNION ALL
+    SELECT 'vendor_credit', 'vendor_credit', v.id, v.credit_number, v.credit_date::date, v.status
+    FROM vendor_credits v WHERE v.tenant_id = $2 AND v.id IN (SELECT id FROM nd)
 )
 SELECT m.jenis, m.id AS dok_id, m.nomor, m.tanggal, m.status,
        d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,

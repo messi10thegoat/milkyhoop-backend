@@ -112,6 +112,17 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026): keluarga FPB <-> PK
     (r"^/api/lampiran/bill/[^/]+$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/lampiran/payment_out/[^/]+$", ["GET"], "send_payment", "R"),
+    # LAMPIRAN-PEMBELIAN F2a (30 Okt 2026): keluarga PO / Nota Debit + rute pabrik lampiran keduanya (pola NK: tambah lampiran = U)
+    (r"^/api/lampiran/purchase_order/[^/]+$", ["GET"], "purchase_order", "R"),
+    (r"^/api/lampiran/vendor_credit/[^/]+$", ["GET"], "debit_note", "R"),
+    (r"^/api/purchase-orders/[^/]+/attachments$", ["POST"], "purchase_order", "U"),
+    (r"^/api/purchase-orders/[^/]+/attachments$", ["GET"], "purchase_order", "R"),
+    (r"^/api/purchase-orders/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_order", "R"),
+    (r"^/api/purchase-orders/[^/]+/attachments/[^/]+$", ["DELETE"], "purchase_order", "D"),
+    (r"^/api/vendor-credits/[^/]+/attachments$", ["POST"], "debit_note", "U"),
+    (r"^/api/vendor-credits/[^/]+/attachments$", ["GET"], "debit_note", "R"),
+    (r"^/api/vendor-credits/[^/]+/attachments/[^/]+/download$", ["GET"], "debit_note", "R"),
+    (r"^/api/vendor-credits/[^/]+/attachments/[^/]+$", ["DELETE"], "debit_note", "D"),
     # LAMPIRAN-NK-QUOTE (15 Okt 2026): lampiran nota kredit & penawaran -- pola SO (tambah lampiran ke dokumen ada = U)
     (r"^/api/credit-notes/[^/]+/attachments$", ["POST"], "credit_note", "U"),
     (r"^/api/credit-notes/[^/]+/attachments$", ["GET"], "credit_note", "R"),

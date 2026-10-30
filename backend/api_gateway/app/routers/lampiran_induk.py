@@ -279,3 +279,9 @@ SPEC_NOTA_KREDIT = SpecLampiran("credit_note", "credit-notes", "credit_notes", "
 SPEC_PENAWARAN = SpecLampiran("quote", "quotes", "quotes", "quote_number", "Penawaran", "quotes")
 router_nota_kredit = buat_router(SPEC_NOTA_KREDIT)
 router_penawaran = buat_router(SPEC_PENAWARAN)
+# LAMPIRAN-PEMBELIAN F2a (30 Okt 2026): PO + Nota Debit lewat pabrik yang SAMA (chk_da_entity sudah memuat purchase_order & vendor_credit)
+SPEC_PESANAN_PEMBELIAN = SpecLampiran("purchase_order", "purchase-orders", "purchase_orders", "po_number", "Pesanan pembelian",
+                                      "purchase_orders")
+SPEC_NOTA_DEBIT = SpecLampiran("vendor_credit", "vendor-credits", "vendor_credits", "credit_number", "Nota debit", "vendor_credits")
+router_pesanan_pembelian = buat_router(SPEC_PESANAN_PEMBELIAN)
+router_nota_debit = buat_router(SPEC_NOTA_DEBIT)
