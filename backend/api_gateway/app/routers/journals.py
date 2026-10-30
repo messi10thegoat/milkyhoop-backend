@@ -1032,3 +1032,35 @@ async def reclassify_bill_inventory_endpoint(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "data": res}
+
+# =============================================================================
+# RECLASS-COGS-CLASS (30 Okt 2026; aturan + koreksi riwayat disetujui LANGSUNG pemilik) -- kembar reclassify-bill-inventory: reklas
+# KELAS beban pembelian (COGS_SALES <-> COGS_SERVICE) dgn calon DITURUNKAN server (services/reklas_kelas_beban: penentu
+# tagihan_aksi.hitung_debit vs posisi jurnal efektif). Jalur terpisah dari Jurnal Manual karena pagar_akun_modul menolak HPP; nominal
+# BUKAN input klien. dry_run = pratinjau baris persis; idempoten (409 SUDAH_DIREKLAS). Pembalik = rute INI dgn reverse_journal_id
+# (/journals/{id}/reverse menolak akun HPP -- pagar Gate 5 -- jadi jalur umum tak bisa membaliknya; yang dibalik di sini hanya jurnal berpenanda).
+# =============================================================================
+class ReclassifyBillCogsClassRequest(_RBIBaseModel):
+    dry_run: bool = True
+    reason: str = ""
+    reverse_journal_id: Optional[str] = None   # isi -> balik jurnal reklas berpenanda itu (dry_run diabaikan)
+
+
+@router.post("/reclassify-bill-cogs-class", response_model=dict)
+async def reclassify_bill_cogs_class_endpoint(request: Request, body: ReclassifyBillCogsClassRequest):
+    """OWNER-only (sama dgn reclassify-bill-inventory). Bawaan dry_run=True: tulis hanya bila klien mengirim dry_run=false."""
+    from ..services import reklas_kelas_beban as RKB
+    from ..services.policy_engine_client import get_policy_engine
+    ctx = get_user_context(request)
+    uctx = await get_policy_engine().get_user_context(
+        user_id=str(ctx["user_id"]), tenant_id=ctx["tenant_id"], subscription_role=request.state.user.get("role", "USER"))
+    if getattr(uctx, "business_role_code", None) != "OWNER":
+        raise HTTPException(status_code=403, detail="Hanya OWNER yang boleh reklasifikasi.")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx["tenant_id"])
+        if body.reverse_journal_id:
+            res = await RKB.balik(conn, ctx["tenant_id"], ctx["user_id"], body.reverse_journal_id, body.reason)
+        else:
+            res = await RKB.jalankan(conn, ctx["tenant_id"], ctx["user_id"], dry_run=body.dry_run, alasan=body.reason)
+    return {"success": True, "data": res}

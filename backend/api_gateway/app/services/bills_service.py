@@ -2805,36 +2805,11 @@ class BillsService:
                     )
 
                     # ----------------------------------------------------------
-                    # Defect #D2 fix: PER-LINE debit resolution by item type.
-                    # OLD behavior debited the ENTIRE subtotal to a single
-                    # INVENTORY_MERCHANDISE line regardless of item type → the
-                    # service / non-tracked portion was mis-booked as inventory
-                    # asset with NO inventory_ledger row → GL(1-10600) > ledger
-                    # drift by construction (WAC-guard FAIL).
-                    #
-                    # NEW behavior (Law 1/4/16/25/27):
-                    #   - Goods (item_type='goods' AND track_inventory): debit
-                    #     the product's inventory CoA (resolve_inventory_accounts
-                    #     → product inventory_account_id → INVENTORY_MERCHANDISE
-                    #     role default). The inventory_ledger inbound row is
-                    #     written by the existing loop below (unchanged).
-                    #   - Service / non-tracked: debit the product's configured
-                    #     COGS/expense CoA (resolve_inventory_accounts cogs leg →
-                    #     product cogs_account_id → COGS_SALES role default). NO
-                    #     ledger row.
-                    #   - Free-text / no-product lines: FPB-DEBIT-SATU (30 Okt 2026, aturan
-                    #     disetujui LANGSUNG pemilik) -> TA.akun_beban_default (COGS_SALES),
-                    #     penentu SAMA dengan jalur draf->posting (TA.hitung_debit). Dulu ->
-                    #     INVENTORY_MERCHANDISE = Persediaan tanpa baris stok.
-                    # Subcontract bills keep the single WIP_SUBCONTRACT debit
-                    # (cost is WIP, not per-line inventory/expense) → unchanged.
-                    #
-                    # Debits are AGGREGATED per resolved account so a goods-only
-                    # bill produces ONE inventory line for the full subtotal
-                    # (byte-identical to legacy structure & amount = PARITY).
-                    # Any rounding residual between Σ(line totals) and the
-                    # header-derived subtotal is absorbed into the first
-                    # (inventory/default) line to keep Σdebits == Cr AP (Law 4).
+                    # Debit PER-BARIS: penentu SATU TA.hitung_debit (sama dgn jalur draf->posting; FPB-DEBIT-PENUH 30 Okt 2026).
+                    # Riwayat: Defect #D2 (semua subtotal ke Persediaan) -> salinan per-jenis di sini yang menyimpang dari
+                    # hitung_debit (non-stok -> COGS_SERVICE, tanpa produk -> Persediaan, purchase_account_id diabaikan).
+                    # Barang stok tetap ke Persediaan produk; baris inventory_ledger ditulis loop di bawah (tak berubah).
+                    # Tagihan subkontrak tetap SATU debit WIP_SUBCONTRACT.
                     # ----------------------------------------------------------
                     line_num_v2 = 1
                     if is_subcontract_bill:
@@ -2853,102 +2828,11 @@ class BillsService:
                         )
                         line_num_v2 += 1
                     else:
-                        # Per-line classification. bill_items.total = post-
-                        # discount, pre-tax net for the line (Decimal, Law 25).
-                        from .inventory_helpers import resolve_inventory_accounts
-
-                        debit_rows = await conn.fetch(
-                            """
-                            SELECT bi.product_id, COALESCE(bi.total, 0) AS net,
-                                   p.item_type, p.track_inventory
-                            FROM bill_items bi
-                            LEFT JOIN products p ON p.id = bi.product_id
-                            WHERE bi.bill_id = $1
-                            ORDER BY bi.line_number
-                            """,
-                            bill_id,
-                        )
-
-                        # Accumulate net debit per resolved account_id.
-                        # default_acct = INVENTORY_MERCHANDISE (debit_acct_id) —
-                        # used for free-text lines AND as the residual sink so
-                        # goods-only bills stay byte-identical.
-                        acct_totals: dict = {}
-                        acct_is_inventory: dict = {}
-                        order: list = []
-
-                        def _accumulate(acct_id, amount, is_inv):
-                            if acct_id not in acct_totals:
-                                acct_totals[acct_id] = Decimal("0")
-                                acct_is_inventory[acct_id] = is_inv
-                                order.append(acct_id)
-                            acct_totals[acct_id] += amount
-
-                        for dr in debit_rows:
-                            net_dec = Decimal(str(dr["net"] or 0))
-                            pid = dr["product_id"]
-                            is_goods = (
-                                dr["item_type"] == "goods"
-                                and dr["track_inventory"]
-                            )
-                            if pid is None:
-                                # Baris tanpa produk -> penentu SAMA dgn jalur draf->posting (FPB-DEBIT-SATU).
-                                _accumulate(await TA.akun_beban_default(conn, tenant_id, None), net_dec, False)
-                                continue
-                            accts = await resolve_inventory_accounts(
-                                conn, tenant_id, pid
-                            )
-                            if is_goods:
-                                _accumulate(
-                                    accts["inventory_account_id"], net_dec, True
-                                )
-                            else:
-                                # Service / non-tracked. V183: PREFER the
-                                # COGS_SERVICE role (5-10110 Beban Pokok Jasa)
-                                # so service purchases classify distinctly.
-                                # GRACEFUL FALLBACK (Law 27, no hardcode): if
-                                # the tenant has no COGS_SERVICE mapping
-                                # (existing tenants pre-V183), fall back to the
-                                # product cogs_account_id / COGS_SALES path —
-                                # byte-identical to D2. Resolved via a direct
-                                # account_roles lookup (non-raising; None when
-                                # unmapped) rather than resolve_account_id_by_role
-                                # which aborts posting on unmapped roles.
-                                svc_acct = await conn.fetchval(
-                                    "SELECT account_id FROM account_roles "
-                                    "WHERE tenant_id = $1 "
-                                    "AND role_key = $2",
-                                    tenant_id,
-                                    AccountRole.COGS_SERVICE,
-                                )
-                                _accumulate(
-                                    svc_acct or accts["cogs_account_id"],
-                                    net_dec,
-                                    False,
-                                )
-
-                        # Reconcile rounding residual into the inventory/default
-                        # line so Σdebits == subtotal_dec exactly (Law 4).
-                        summed = sum(acct_totals.values(), Decimal("0"))
-                        residual = subtotal_dec - summed
-                        if residual != Decimal("0"):
-                            sink = (
-                                debit_acct_id
-                                if debit_acct_id in acct_totals
-                                else (order[0] if order else debit_acct_id)
-                            )
-                            _accumulate(sink, residual, True)
-
-                        # Emit one journal line per distinct account.
-                        for acct_id in order:
-                            amt = acct_totals[acct_id]
-                            if amt == Decimal("0"):
-                                continue
-                            memo = (
-                                f"Pembelian - {vendor_name}"
-                                if acct_is_inventory.get(acct_id)
-                                else f"Pembelian jasa/beban - {vendor_name}"
-                            )
+                        # FPB-DEBIT-PENUH (30 Okt 2026, aturan disetujui LANGSUNG pemilik): penentu SATU dgn jalur draf->posting --
+                        # TA.hitung_debit (barang stok -> Persediaan produk; purchase_account_id produk; jasa -> COGS_SERVICE; non-stok &
+                        # tanpa produk -> COGS_SALES; residu -> sink default). Dulu salinan di sini: non-stok -> COGS_SERVICE (5-10110) dan
+                        # purchase_account_id diabaikan. Memo == TA.memo_debit (sama dgn posting draf).
+                        for acct_id, amt, is_inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id):
                             await conn.execute(
                                 """
                                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
@@ -2959,7 +2843,7 @@ class BillsService:
                                 line_num_v2,
                                 acct_id,
                                 amt,
-                                memo,
+                                TA.memo_debit(acct_id, is_inv, vendor_name, None),
                             )
                             line_num_v2 += 1
 

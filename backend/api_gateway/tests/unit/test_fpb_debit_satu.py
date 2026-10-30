@@ -51,17 +51,14 @@ def test_jalur_draf_baris_tanpa_produk_ke_cogs_sales():
     assert out == [(AKUN["COGS_SALES"], Decimal("30021"), False)]
 
 
-def _cabang_tanpa_produk():
-    src = textwrap.dedent(inspect.getsource(BS.BillsService.create_bill_v2))
-    i = src.index("if pid is None:")
-    return src[i:src.index("continue", i)]
-
-
 def test_jalur_buat_langsung_baris_tanpa_produk_lewat_penentu_satu():
-    cab = _cabang_tanpa_produk()
-    assert "TA.akun_beban_default(conn, tenant_id, None)" in cab
-    assert "debit_acct_id" not in cab   # bukan lagi INVENTORY_MERCHANDISE (Persediaan)
-    assert ", net_dec, False)" in cab   # memo beban, bukan "Pembelian" persediaan
+    # FPB-DEBIT-PENUH (30 Okt 2026): jalur buat-langsung kini memanggil TA.hitung_debit SELURUHNYA (tak ada lagi cabang `pid is None`
+    # sendiri); baris tanpa produk di hitung_debit -> akun_beban_default(item_type None) -> COGS_SALES (bukan Persediaan, is_inv False).
+    src = textwrap.dedent(inspect.getsource(BS.BillsService.create_bill_v2))
+    assert "await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id)" in src
+    assert "_accumulate(debit_acct_id, net_dec, True)" not in src   # cabang lama Persediaan tak kembali
+    rows = [{"id": uuid4(), "product_id": None, "net": Decimal("7"), "item_type": None, "track_inventory": None, "purchase_account_id": None}]
+    assert asyncio.run(TA.hitung_debit(_K(rows=rows), "t", uuid4(), Decimal("7"), uuid4())) == [(AKUN["COGS_SALES"], Decimal("7"), False)]
 
 
 def test_hitung_debit_memakai_penentu_yang_sama():

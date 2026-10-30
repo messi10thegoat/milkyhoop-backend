@@ -372,6 +372,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # reclassify_bill_inventory_endpoint). Pola ini hanya lapis pertama
     # (menulis jurnal = C); staf ber-izin journal C tetap ditolak handler.
     (r"^/api/journals/reclassify-bill-inventory$", ["POST"], "journal", "C"),
+    (r"^/api/journals/reclassify-bill-cogs-class$", ["POST"], "journal", "C"),  # RECLASS-COGS-CLASS 30 Okt 2026 (+ OWNER di handler)
     (r"^/api/journals/[^/]+$", ["GET"], "journal", "R"),
     (r"^/api/journals/[^/]+/post$", ["POST"], "journal", "P"),
     (r"^/api/journals/[^/]+/reverse$", ["POST"], "journal", "V"),

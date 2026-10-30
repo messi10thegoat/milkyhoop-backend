@@ -394,6 +394,7 @@ POST /api/items/{item_id}/duplicate
 POST /api/items/{item_id}/stock-adjustment
 POST /api/items/{item_id}/stock-transfer
 POST /api/journals
+POST /api/journals/reclassify-bill-cogs-class
 POST /api/journals/reclassify-bill-inventory
 POST /api/journals/{journal_id}/post
 POST /api/journals/{journal_id}/reverse
