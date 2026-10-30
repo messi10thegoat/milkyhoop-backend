@@ -2822,9 +2822,10 @@ class BillsService:
                     #     COGS/expense CoA (resolve_inventory_accounts cogs leg →
                     #     product cogs_account_id → COGS_SALES role default). NO
                     #     ledger row.
-                    #   - Free-text / no-product lines: fall back to the bill's
-                    #     default debit account (INVENTORY_MERCHANDISE) — same as
-                    #     legacy behavior for un-itemised cost.
+                    #   - Free-text / no-product lines: FPB-DEBIT-SATU (30 Okt 2026, aturan
+                    #     disetujui LANGSUNG pemilik) -> TA.akun_beban_default (COGS_SALES),
+                    #     penentu SAMA dengan jalur draf->posting (TA.hitung_debit). Dulu ->
+                    #     INVENTORY_MERCHANDISE = Persediaan tanpa baris stok.
                     # Subcontract bills keep the single WIP_SUBCONTRACT debit
                     # (cost is WIP, not per-line inventory/expense) → unchanged.
                     #
@@ -2891,8 +2892,8 @@ class BillsService:
                                 and dr["track_inventory"]
                             )
                             if pid is None:
-                                # Free-text line → legacy default (inventory).
-                                _accumulate(debit_acct_id, net_dec, True)
+                                # Baris tanpa produk -> penentu SAMA dgn jalur draf->posting (FPB-DEBIT-SATU).
+                                _accumulate(await TA.akun_beban_default(conn, tenant_id, None), net_dec, False)
                                 continue
                             accts = await resolve_inventory_accounts(
                                 conn, tenant_id, pid

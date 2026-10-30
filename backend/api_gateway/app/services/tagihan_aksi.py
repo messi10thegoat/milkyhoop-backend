@@ -146,13 +146,27 @@ async def tagihan_pembuka(conn, tid: str, bill_id) -> bool:
     return bool(await conn.fetchval("SELECT is_opening_balance FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tid))
 
 
+async def akun_beban_default(conn, tid: str, item_type) -> object:
+    """Akun debit baris tagihan yang BUKAN barang stok & tanpa purchase_account_id produk: jasa -> COGS_SERVICE, lainnya (termasuk baris
+    TANPA produk) -> COGS_SALES. SATU penentu untuk jalur draf->posting (hitung_debit) DAN buat-langsung-posted (bills_service.create_bill_v2;
+    FPB-DEBIT-SATU 30 Okt 2026, aturan disetujui LANGSUNG pemilik: dulu baris tanpa produk di jalur itu -> Persediaan). Peran tak terpetakan
+    -> HTTPException 422 ACCOUNT_DEFAULT_UNMAPPED."""
+    from fastapi import HTTPException
+    from .role_resolver import AccountRole
+    role = AccountRole.COGS_SERVICE if item_type == "service" else AccountRole.COGS_SALES
+    acct = await conn.fetchval("SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = $2", tid, role)
+    if not acct:
+        raise HTTPException(status_code=422, detail={
+            "code": "ACCOUNT_DEFAULT_UNMAPPED", "message": "Akun default pembelian belum diatur. Atur di Pengaturan -> Akun Default."})
+    return acct
+
+
 async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None) -> list:
     """Baris debit tagihan PER-BARIS (diangkat APA ADANYA dari BillsService._emit_bill_debit_lines; SATU fungsi untuk posting & pratinjau):
     goods+track -> Persediaan; service -> COGS_SERVICE; lainnya -> products.purchase_account_id bila ada, else COGS_SALES. Peran tak
-    terpetakan -> HTTPException 422 ACCOUNT_DEFAULT_UNMAPPED. Residu -> sink default (Law 4). -> [(account_id, jumlah, is_inv)] urut, tanpa nol."""
-    from fastapi import HTTPException
+    terpetakan -> HTTPException 422 ACCOUNT_DEFAULT_UNMAPPED (akun_beban_default). Residu -> sink default (Law 4). -> [(account_id, jumlah, is_inv)]
+    urut, tanpa nol."""
     from .inventory_helpers import resolve_inventory_accounts
-    from .role_resolver import AccountRole
     if await tagihan_pembuka(conn, tid, bill_id):  # SALDO-AWAL-VENDOR-A: default_inv_acct_id = Modal Saldo Awal (blok_posting)
         return [(default_inv_acct_id, subtotal_dec, SALDO_AWAL)] if subtotal_dec != NOL else []
     rows = await conn.fetch(
@@ -184,12 +198,7 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
         if ov:
             _acc(ov, net, False)
             continue
-        role = AccountRole.COGS_SERVICE if dr["item_type"] == "service" else AccountRole.COGS_SALES
-        acct = await conn.fetchval("SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = $2", tid, role)
-        if not acct:
-            raise HTTPException(status_code=422, detail={
-                "code": "ACCOUNT_DEFAULT_UNMAPPED", "message": "Akun default pembelian belum diatur. Atur di Pengaturan -> Akun Default."})
-        _acc(acct, net, False)
+        _acc(await akun_beban_default(conn, tid, dr["item_type"]), net, False)
     residu = subtotal_dec - sum(tot.values(), NOL)
     if residu != NOL:
         if rencana_grn_ and default_inv_acct_id not in tot:
