@@ -308,7 +308,8 @@ async def ref_hapus(conn, bill_id) -> Optional[str]:
 
 # ---------------------------------------------------------------- VOID
 async def blok_void(conn, tid: str, bill) -> list:
-    """Aturan void_bill. Pembayaran posted (jurnal BP efektif) -> blok sebut nomor + nominal; ND aktif diterapkan -> blok (putusan pemilik)."""
+    """Aturan void_bill. Pembayaran posted (jurnal BP efektif) -> blok sebut nomor + nominal; ND aktif diterapkan -> blok (putusan pemilik);
+    ND tertaut original_bill_id bukan draf/void -> blok yang sama (F2)."""
     if bill["status"] == "void" or (bill.get("status_v2") or "") == "void":
         return [blok("SUDAH_BATAL", "Faktur pembelian sudah dibatalkan.")]
     bloks = []
@@ -332,12 +333,21 @@ async def blok_void(conn, tid: str, bill) -> list:
         rinci = ", ".join(f"{r['payment_number']} {_rp(r['jumlah'])}" for r in bayar)
         bloks.append(blok("ADA_PEMBAYARAN", f"Faktur pembelian {bill['invoice_number']} sudah dibayar ({rinci}). "
                                             "Batalkan pembayaran itu dulu, lalu batalkan fakturnya."))
+    # F2 (30 Okt 2026, cermin SI VOID_HAS_CREDIT_NOTES): ND TERTAUT lewat original_bill_id (ND dari FPB; tanpa baris aplikasi) dan bukan
+    # draf/void ikut memblok -- jurnalnya tetap mendebit hutang tagihan ini (compute_ap_outstanding cabang 4), void tagihan = hutang minus.
     nd = await conn.fetch(
-        """SELECT vc.credit_number FROM vendor_credit_applications vca JOIN vendor_credits vc ON vc.id = vca.vendor_credit_id AND vc.tenant_id = $2
-           WHERE vca.tenant_id = $2 AND vca.bill_id = $1 AND vca.status = 'active' ORDER BY vc.credit_number""", bill["id"], tid)
+        """SELECT credit_number, bool_or(tertaut) AS tertaut FROM (
+               SELECT vc.credit_number, false AS tertaut FROM vendor_credit_applications vca
+               JOIN vendor_credits vc ON vc.id = vca.vendor_credit_id AND vc.tenant_id = $2
+               WHERE vca.tenant_id = $2 AND vca.bill_id = $1 AND vca.status = 'active'
+               UNION ALL
+               SELECT vc.credit_number, true FROM vendor_credits vc
+               WHERE vc.tenant_id = $2 AND vc.original_bill_id = $1 AND vc.status NOT IN ('draft', 'void')
+           ) x GROUP BY credit_number ORDER BY credit_number""", bill["id"], tid)
     if nd:
+        langkah = "Batalkan nota debit itu dulu" if any(r["tertaut"] for r in nd) else "Lepas nota debit itu dulu"
         bloks.append(blok("ADA_NOTA_DEBIT", f"Faktur pembelian {bill['invoice_number']} punya nota debit terkait ("
-                                            + ", ".join(r["credit_number"] for r in nd) + "). Lepas nota debit itu dulu, lalu batalkan fakturnya."))
+                                            + ", ".join(r["credit_number"] for r in nd) + f"). {langkah}, lalu batalkan fakturnya."))
     # SA-KOREKSI (25 Okt 2026, aturan DIKONFIRMASI LANGSUNG pemilik): tagihan PEMBUKA saldo awal yang sudah dipotong uang muka -> DITOLAK (bukan
     # dilepas otomatis seperti tagihan biasa, putusan 22 Okt). Koreksi saldo awal = void pembuka bersih lalu buat baru.
     if await tagihan_pembuka(conn, tid, bill["id"]):
