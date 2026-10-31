@@ -32,7 +32,8 @@ class DBO(DBQ):
         return await super().fetchrow(sql, *a)
 
     def ongkir_ditulis(self, tabel="quotes"):
-        return [a for (s, a) in self.tulis if s.startswith(f"UPDATE {tabel} SET shipping_amount")]
+        # DB palsu #34 menyimpan 40 karakter pertama SQL ("UPDATE sales_invoices SET shipping_amoun")
+        return [a for (s, a) in self.tulis if f"UPDATE {tabel} SET shipping_amount".startswith(s) and len(s) >= 30]
 
 
 def _baris(qty, harga):
