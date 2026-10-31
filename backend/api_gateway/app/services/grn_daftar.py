@@ -100,27 +100,50 @@ def dok_goods_receipt(r) -> dict:
             "batal": batal, "status": "batal" if batal else "terbit"}
 
 
-async def kelompok_grn(conn, tenant_id: str, gr) -> list:
-    """Bundel berjangkar GRN (kamus FE pembelian): po (PO asal) · grn (ITU SENDIRI) · faktur (tagihan bertaut AKTIF; dokumen SAMA dgn bundel
-    tagihan = TD.dok_tagihan)."""
+async def kelompok_grn_banyak(conn, tenant_id: str, grs: list) -> dict:
+    """{gr_id (str): [kelompok]} -- pembentuk SATU bundel berjangkar GRN (kamus FE pembelian) untuk DETAIL (kelompok_grn) dan kolom Dok DAFTAR
+    (L5b, 31 Okt 2026): po (PO asal) · grn (ITU SENDIRI) · faktur (tagihan bertaut AKTIF; dokumen SAMA dgn bundel tagihan = TD.dok_tagihan).
+    DUA kueri batch berapa pun barisnya (PO by id[] + tagihan bertaut aktif by gr_id[]) -- bukan N+1. `grs` = baris SQL_HEADER (sudah bertenant)."""
     from . import tagihan_daftar as TD
     from .po_daftar import dok_purchase_order
-    kel = []
-    po = await conn.fetchrow("SELECT id, po_number, po_date, total_amount, status, sent_at FROM purchase_orders WHERE tenant_id = $1 AND id = $2",
-                             tenant_id, gr["purchase_order_id"])
-    if po:
-        kel.append({"key": "po", "label": "Pesanan Pembelian", "docs": [dok_purchase_order(po)]})
-    kel.append({"key": "grn", "label": "Penerimaan Barang", "docs": [dok_goods_receipt(gr)]})
-    bills = await conn.fetch(
-        f"""SELECT DISTINCT b.id, b.invoice_number, b.issue_date, b.amount, {TD.sql_keadaan_dok()} AS keadaan
-            FROM bills b {TD.join_rincian()}
-            WHERE b.tenant_id = $1 AND b.id IN (
-                SELECT bi.bill_id FROM goods_receipt_bill_links l JOIN goods_receipt_items i ON i.id = l.goods_receipt_item_id
-                JOIN bill_items bi ON bi.id = l.bill_item_id WHERE i.goods_receipt_id = $2 AND l.status = 'active')
-            ORDER BY b.issue_date, b.invoice_number""", tenant_id, gr["id"])
-    if bills:
-        kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [TD.dok_tagihan(b, b["keadaan"]) for b in bills]})
-    return kel
+    if not grs:
+        return {}
+    po_ids = sorted({g["purchase_order_id"] for g in grs if g["purchase_order_id"] is not None}, key=str)
+    pos = {r["id"]: r for r in await conn.fetch(
+        "SELECT id, po_number, po_date, total_amount, status, sent_at FROM purchase_orders WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        tenant_id, po_ids)}
+    tagihan = {}
+    for b in await conn.fetch(
+            f"""SELECT DISTINCT i.goods_receipt_id AS gr_id, b.id, b.invoice_number, b.issue_date, b.amount, {TD.sql_keadaan_dok()} AS keadaan
+                FROM goods_receipt_items i
+                JOIN goods_receipt_bill_links l ON l.goods_receipt_item_id = i.id AND l.status = 'active'
+                JOIN bill_items bi ON bi.id = l.bill_item_id
+                JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1 {TD.join_rincian()}
+                WHERE i.goods_receipt_id = ANY($2::uuid[])
+                ORDER BY b.issue_date, b.invoice_number""", tenant_id, [g["id"] for g in grs]):
+        tagihan.setdefault(b["gr_id"], []).append(b)
+    hasil = {}
+    for g in grs:
+        kel = []
+        po = pos.get(g["purchase_order_id"])
+        if po:
+            kel.append({"key": "po", "label": "Pesanan Pembelian", "docs": [dok_purchase_order(po)]})
+        kel.append({"key": "grn", "label": "Penerimaan Barang", "docs": [dok_goods_receipt(g)]})
+        bills = tagihan.get(g["id"], [])
+        if bills:
+            kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [TD.dok_tagihan(b, b["keadaan"]) for b in bills]})
+        hasil[str(g["id"])] = kel
+    return hasil
+
+
+async def kelompok_grn(conn, tenant_id: str, gr) -> list:
+    """Bundel detail satu GRN = kelompok_grn_banyak atas SATU baris (satu definisi dengan kolom Dok daftar)."""
+    return (await kelompok_grn_banyak(conn, tenant_id, [gr]))[str(gr["id"])]
+
+
+def documents_baris(kelompok: list) -> list:
+    """documents[{type}] baris daftar = dokumen bundel TANPA rekap (pola kolom Dok. Pengiriman/Pesanan); doc_count = panjangnya."""
+    return [{"type": d["kind"]} for g in kelompok if g["key"] != "rekap" for d in g["docs"]]
 
 
 # ---------------------------------------------------------------- riwayat

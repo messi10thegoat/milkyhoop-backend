@@ -88,7 +88,15 @@ async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID
             syarat += f" AND {GD.sql_aksi(ak)}"  # predikat SAMA dengan /summary
         total = await conn.fetchval(f"SELECT count(*) FROM ({SQL_HEADER}{syarat}) x", *par)
         rows = await conn.fetch(f"{SQL_HEADER}{syarat} ORDER BY g.receipt_date DESC, g.created_at DESC LIMIT {int(limit)} OFFSET {int(offset)}", *par)
-    return {"success": True, "data": {"items": [_bentuk(r) for r in rows], "total": int(total), "limit": limit, "offset": offset}}
+        # L5b (31 Okt 2026, aditif): documents[]/doc_count per baris = bundel detail TANPA rekap, pembentuk batch SATU (2 kueri, bukan N+1)
+        kel = await GD.kelompok_grn_banyak(conn, ctx["tenant_id"], rows)
+    items = []
+    for r in rows:
+        it = _bentuk(r)
+        it["documents"] = GD.documents_baris(kel.get(str(r["id"]), []))
+        it["doc_count"] = len(it["documents"])
+        items.append(it)
+    return {"success": True, "data": {"items": items, "total": int(total), "limit": limit, "offset": offset}}
 
 
 @router.get("/summary")

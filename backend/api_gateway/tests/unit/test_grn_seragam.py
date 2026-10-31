@@ -61,8 +61,10 @@ def test_detail_bills_dan_pratinjau_akun_sebelum_sesudah():
 
 
 def test_bundel_po_grn_faktur_dan_riwayat():
-    k = inspect.getsource(GD.kelompok_grn)
+    # L5b (31 Okt 2026): pembentuk pindah ke kelompok_grn_banyak (SATU definisi detail + daftar); kelompok_grn mendelegasikan
+    k = inspect.getsource(GD.kelompok_grn_banyak)
     assert '"key": "po"' in k and '"key": "grn"' in k and '"key": "faktur"' in k and "TD.dok_tagihan" in k
+    assert "kelompok_grn_banyak(conn, tenant_id, [gr])" in inspect.getsource(GD.kelompok_grn)
     r = inspect.getsource(GD.riwayat_grn)
     assert "GRN_DITERIMA" in r and "GRN_DIBATALKAN" in r and "GRN_DITAGIH" in r and "_selesaikan" in r
 
