@@ -6,6 +6,7 @@ Urutan aktivasi + mundur: FE docs/asisten-rancangan §11.12 (runbook).
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import date
 from functools import lru_cache
 
@@ -92,7 +93,25 @@ class _PenyimpananMalas:
         return getattr(_penyimpanan(), nama)
 
 
+async def _flag_v2(tenant_id: str) -> bool:
+    from ..services.db_pool import get_db_pool
+    from ..services.tenant_features import fitur_aktif
+    from .v2.router import FLAG
+    async with (await get_db_pool()).acquire() as conn:
+        return FLAG in await fitur_aktif(conn, tenant_id)
+
+
+@asynccontextmanager
+async def _koneksi():
+    from ..services.db_pool import get_db_pool
+    async with (await get_db_pool()).acquire() as conn:
+        yield conn
+
+
 def milkybook_router():
     from .inti.router import buat_router
-    return buat_router(_putaran, _PenyimpananMalas(), app_fn=_app, izin_fn_untuk=_izin_untuk,
-                       flag_fn=_flag, hari_ini_fn=_hari_ini)
+    from .v2.router import buat_router_v2
+    r = buat_router(_putaran, _PenyimpananMalas(), app_fn=_app, izin_fn_untuk=_izin_untuk,
+                    flag_fn=_flag, hari_ini_fn=_hari_ini)
+    r.include_router(buat_router_v2(flag_fn=_flag_v2, conn_fn=_koneksi), prefix="/v2")  # flag milkybook_v2 (31 Okt)
+    return r

@@ -36,6 +36,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/milkybook/sesi/[^/]+/berhenti$", ["POST"], "quote", "R"),  # tombol stop (izin = pesan)
     (r"^/api/milkybook/sesi$", ["GET"], "quote", "R"),  # daftar percakapan
     (r"^/api/milkybook/sesi/[^/]+$", ["PATCH"], "quote", "R"),  # ganti nama / arsip percakapan
+    (r"^/api/milkybook/v2/pelanggan$", ["GET"], "customer", "R"),  # v2 cari pelanggan berfakta (flag milkybook_v2)
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     (r"^/api/quotes/[^/]+/edit/preview$", ["POST"], "quote", "U"),  # pratinjau ubah penawaran (13 Okt), izin = PATCH
     (r"^/api/quotes/[^/]+/delete/preview$", ["POST"], "quote", "D"),  # QA-AGEN 25 Okt: pratinjau hapus satu penawaran, izin = DELETE
