@@ -88,6 +88,10 @@ class CreateQuoteRequest(BaseModel):
     subject: Optional[str] = Field(None, max_length=255, description="Quote subject/title")
     discount_type: Literal['fixed', 'percentage'] = Field('fixed', description="Discount type")
     discount_value: float = Field(0, ge=0, description="Discount value")
+    # V467 (31 Okt 2026): ongkir = baris sendiri, pola V290 SO/faktur. Kode pajak ongkir EKSPLISIT;
+    # None = ikut kode pajak barang (BUKAN tanpa pajak); tanpa PPN = kode NONE tenant.
+    shipping_amount: int = Field(0, ge=0, description="Ongkos kirim")
+    shipping_tax_code_id: Optional[str] = None
     notes: Optional[str] = Field(None, description="Notes to customer")
     terms: Optional[str] = Field(None, description="Terms and conditions")
     footer: Optional[str] = Field(None, description="Footer text")
@@ -147,6 +151,8 @@ class UpdateQuoteRequest(BaseModel):
     subject: Optional[str] = Field(None, max_length=255)
     discount_type: Optional[Literal['fixed', 'percentage']] = None
     discount_value: Optional[float] = Field(None, ge=0)
+    shipping_amount: Optional[int] = Field(None, ge=0)  # V467
+    shipping_tax_code_id: Optional[str] = None  # V467: kirim kunci + null = kembali ikut barang
     notes: Optional[str] = None
     terms: Optional[str] = None
     footer: Optional[str] = None
@@ -317,6 +323,11 @@ class QuoteDetail(BaseModel):
     discount_amount: int
     tax_amount: int
     total_amount: int
+    # V467: ongkir (tax_amount header SUDAH termasuk PPN ongkir, sama dengan SO)
+    shipping_amount: int = 0
+    shipping_tax_code_id: Optional[str] = None
+    shipping_tax_amount: int = 0
+    shipping_tax_code_id_effective: Optional[str] = None
     # FIX_P2_QUOTEDP 2026-06-16 — down-payment (NO-LEDGER, display only)
     dp_amount: Optional[int] = None
     dp_percent: Optional[float] = None

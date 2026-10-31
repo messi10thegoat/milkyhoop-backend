@@ -19,7 +19,7 @@ from ..services.sales_doc_calc import (
     LineAmountError, harga_json as _harga_json,
     compute_document, line_net, q2 as _q2, DocumentDiscountError,
 )
-from ..services.tax_factor import attach_dpp_factors, turunkan_tarif_baris
+from ..services.tax_factor import attach_dpp_factors, effective_shipping_code, resolve_shipping_tax, turunkan_tarif_baris
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from decimal import Decimal, ROUND_HALF_UP
 import asyncpg
@@ -76,15 +76,19 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fixed_amount=None) -> dict:
+async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fixed_amount=None,
+                      shipping_amount=0, shipping_tax_code_id=None) -> dict:
     """3h -- SATU jalan hitung Penawaran: create, update, dan konversi (3g) semuanya lewat
     kalkulator bersama (sama dengan Faktur/SO). Arti kolom Penawaran dipertahankan:
     subtotal = SIGMA neto baris (sesudah diskon baris), line_total = neto baris + PPN baris.
     percentage -> persen atas neto; fixed -> nilainya (atau `fixed_amount` bila diberikan).
     #39: tarif baris diturunkan SERVER dari kode pajak (sama dengan SO #34) -- di sini, jadi
-    create, PATCH (termasuk hitung-ulang baris tersimpan), dan konversi ikut semuanya."""
+    create, PATCH (termasuk hitung-ulang baris tersimpan), dan konversi ikut semuanya.
+    V467: ongkir lewat resolve_shipping_tax YANG SAMA dengan SO/faktur (kode eksplisit; None = ikut barang);
+    ongkir TIDAK menerima alokasi diskon dokumen. Ongkir 0 = hasil identik dengan sebelum V467."""
     await turunkan_tarif_baris(conn, tenant_id, lines, "tax_id")
     await attach_dpp_factors(conn, tenant_id, lines, "tax_id")
+    _ship = await resolve_shipping_tax(conn, tenant_id, shipping_tax_code_id, lines, shipping_amount or 0, "tax_id")
     dval = Decimal(str(discount_value or 0))
     amt, pct = Decimal("0"), Decimal("0")
     if dval > 0 and discount_type == "percentage":
@@ -92,7 +96,8 @@ async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fix
     elif dval > 0:
         amt = dval if fixed_amount is None else fixed_amount
     try:
-        doc = compute_document(lines, doc_discount_amount=amt, doc_discount_percent=pct)
+        doc = compute_document(lines, doc_discount_amount=amt, doc_discount_percent=pct,
+                               shipping_amount=shipping_amount or 0, shipping_tax=_ship)
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except LineAmountError as e:
@@ -100,6 +105,44 @@ async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fix
     for ln in doc["items"]:
         ln["line_total"] = ln["total"]
     return doc
+
+
+def _ada_ongkir(shipping_amount, shipping_tax_code_id) -> bool:
+    return bool(shipping_amount) or bool(shipping_tax_code_id)
+
+
+async def _tulis_ongkir(conn, quote_id, doc: dict, shipping_tax_code_id) -> None:
+    """V467: kolom ongkir ditulis TERPISAH dari INSERT/UPDATE utama dan hanya bila ongkir dipakai (atau pernah
+    dipakai): penawaran tanpa ongkir tak menyentuh kolom baru sama sekali."""
+    await conn.execute(
+        """UPDATE quotes SET shipping_amount = $2, shipping_tax_code_id = $3, shipping_tax_rate = $4,
+               shipping_tax_amount = $5, shipping_dpp = $6 WHERE id = $1""",
+        quote_id, doc["shipping_amount"],
+        uuid_module.UUID(str(shipping_tax_code_id)) if shipping_tax_code_id else None,
+        doc["shipping_tax_rate"], doc["shipping_tax_amount"], doc["shipping_dpp"],
+    )
+
+
+async def _salin_ongkir_konversi(conn, tabel: str, doc_id, doc: dict, quote) -> None:
+    """V467: dokumen hasil konversi (SO/faktur) menerima ongkir + pilihan kode pajak ongkir Penawaran APA ADANYA
+    (kolom V290 yang sama dengan create SO/faktur). Tanpa ongkir di Penawaran -> tidak ada yang ditulis."""
+    _ongkir, _kode = _ongkir_tersimpan(quote)
+    if not _ada_ongkir(_ongkir, _kode):
+        return
+    tabel = {"sales_orders": "sales_orders", "sales_invoices": "sales_invoices"}[tabel]
+    await conn.execute(
+        f"""UPDATE {tabel} SET shipping_amount = $2, shipping_tax_code_id = $3, shipping_tax_rate = $4,
+               shipping_tax_amount = $5, shipping_dpp = $6 WHERE id = $1""",
+        doc_id, doc["shipping_amount"], uuid_module.UUID(_kode) if _kode else None,
+        doc["shipping_tax_rate"], doc["shipping_tax_amount"], doc["shipping_dpp"],
+    )
+
+
+def _ongkir_tersimpan(quote) -> tuple:
+    """(ongkir, kode eksplisit) dari baris quotes; aman sebelum V467 (kolom belum ada -> 0/None)."""
+    g = quote.get if hasattr(quote, "get") else (lambda k, d=None: d)
+    kode = g("shipping_tax_code_id")
+    return Decimal(str(g("shipping_amount") or 0)), (str(kode) if kode else None)
 
 
 def _quote_line(r) -> dict:
@@ -155,8 +198,12 @@ async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
 
     Diskon dokumen Penawaran: 'percentage' -> persen yang sama atas neto baris yang dikonversi;
     'fixed' -> nilainya, dibagi pro rata neto baris bila hanya sebagian baris dikonversi
-    (Penawaran berstatus 'converted' sesudahnya, jadi sisanya tak pernah ditagih)."""
+    (Penawaran berstatus 'converted' sesudahnya, jadi sisanya tak pernah ditagih).
+
+    V467: ongkir Penawaran dibawa UTUH beserta pilihan kode pajaknya apa adanya (NONE tetap NONE, None tetap
+    ikut barang) -- juga pada konversi sebagian baris (sesudahnya Penawaran 'converted', ongkir tak ditagih dua kali)."""
     sel = [_quote_line(r) for r in items]
+    _ongkir, _kode_ongkir = _ongkir_tersimpan(quote)
     dtype, dval = quote["discount_type"], Decimal(str(quote["discount_value"] or 0))
     fixed = None
     if dval > 0 and dtype != "percentage":
@@ -165,7 +212,8 @@ async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
             net_all = sum((line_net(_quote_line(r))["net"] for r in all_rows), Decimal("0"))
             net_sel = sum((line_net(ln)["net"] for ln in sel), Decimal("0"))
             fixed = dval if net_all == 0 else _q2(dval * net_sel / net_all)
-    return await _quote_calc(conn, tenant_id, sel, dtype, dval, fixed_amount=fixed)
+    return await _quote_calc(conn, tenant_id, sel, dtype, dval, fixed_amount=fixed,
+                             shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir)
 
 
 def resolve_dp(
@@ -589,6 +637,12 @@ async def get_quote_detail(request: Request, quote_id: str):
                     discount_amount=quote["discount_amount"],
                     tax_amount=quote["tax_amount"],
                     total_amount=quote["total_amount"],
+                    # V467: ongkir; pilihan eksplisit vs kode efektif = dua kunci (pola SO GET)
+                    shipping_amount=int(_ongkir_tersimpan(quote)[0]),
+                    shipping_tax_code_id=_ongkir_tersimpan(quote)[1],
+                    shipping_tax_amount=int(quote.get("shipping_tax_amount") or 0),
+                    shipping_tax_code_id_effective=effective_shipping_code(
+                        _ongkir_tersimpan(quote)[1], [dict(i) for i in items], "tax_id", _ongkir_tersimpan(quote)[0]),
                     # FIX_P2_QUOTEDP 2026-06-16 — down-payment (NO-LEDGER, display only)
                     dp_amount=int(quote["dp_amount"]) if quote["dp_amount"] is not None else None,
                     dp_percent=float(quote["dp_percent"]) if quote["dp_percent"] is not None else None,
@@ -716,6 +770,7 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                 _doc = await _quote_calc(
                     conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
                     body.discount_type, body.discount_value,
+                    shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id,
                 )
                 # #39: tenant non-PKP tak boleh menawarkan PPN (sama dengan SO #34 / faktur).
                 await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
@@ -797,6 +852,8 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                     Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
                     Decimal(str(dp["dp_percent"])) if dp["dp_percent"] is not None else None,
                 )
+                if _ada_ongkir(body.shipping_amount, body.shipping_tax_code_id):
+                    await _tulis_ongkir(conn, quote_id, _doc, body.shipping_tax_code_id)  # V467
 
                 # 6 Okt 2026: isian SURAT (up., pembuka/penutup, catatan khusus, S&K, penanda tangan) -- SNAPSHOT dari
                 # bawaan (default_penawaran) untuk medan yang tak dikirim; sumber per medan (services/penawaran_surat).
@@ -869,7 +926,8 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
     pool = await get_pool()
     async with pool.acquire() as conn:
         _doc = await _quote_calc(conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
-                                 body.discount_type, body.discount_value)
+                                 body.discount_type, body.discount_value,
+                                 shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id)
         from ..services.pkp_guard import tolak_ppn_bila_non_pkp as _non_pkp
         await _non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
     dp = resolve_dp(_doc["total_amount"], body.dp_amount, body.dp_percent)
@@ -877,6 +935,10 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
     return {"success": True, "data": {
         "subtotal": f(_doc["net_subtotal"]), "discount_amount": f(_doc["doc_discount"]),
         "tax_amount": f(_doc["tax_amount"]), "total_amount": f(_doc["total_amount"]),
+        # V467: ongkir (pola SO /calculate: eksplisit vs efektif = dua kunci, dua arti)
+        "shipping_amount": f(_doc["shipping_amount"]), "shipping_tax_amount": f(_doc["shipping_tax_amount"]),
+        "shipping_dpp": f(_doc["shipping_dpp"]), "shipping_tax_code_id": body.shipping_tax_code_id or None,
+        "shipping_tax_code_id_effective": _doc["shipping_tax_code_id_effective"],
         "dp_amount": f(dp["dp_amount"]), "dp_percent": f(dp["dp_percent"]),
         "items": [{"line_number": i + 1, "description": ln.get("description"), "quantity": f(ln.get("quantity")),
                    "unit_price": f(ln.get("unit_price")), "discount_percent": f(ln.get("discount_percent") or 0),
@@ -1056,6 +1118,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
     from ..services import penawaran_surat as _surat
     update_data = body.model_dump(
         exclude_unset=True, exclude={"items", "dp_amount", "dp_percent", "signer_user_id",
+                                     "shipping_amount", "shipping_tax_code_id",  # V467: lewat blok hitung ulang
                                      *_surat.MEDAN, *(m + "_source" for m in _surat.MEDAN)}
     )
 
@@ -1069,9 +1132,11 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
 
     # 3h: hitung ulang bila BARIS atau DISKON berubah. Dulu suntingan diskon-saja
     # menulis discount_type/value tapi membiarkan discount_amount/tax/total basi.
+    _ubah_ongkir = {"shipping_amount", "shipping_tax_code_id"} & body.model_fields_set  # V467
     _recalc = body.items is not None or bool(
         {"discount_type", "discount_value"} & body.model_fields_set
-    )
+    ) or bool(_ubah_ongkir)
+    _tulis_ongkir_nanti = None
     if _recalc:
         if body.items is not None:
             _lines = [item.model_dump() for item in body.items]
@@ -1106,7 +1171,16 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
                 else float(current["discount_value"])
             )
 
-        _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value)
+        # V467: ongkir tersimpan dipakai ulang kecuali dikirim (kunci shipping_tax_code_id + null = kembali ikut barang).
+        _lama_ongkir, _lama_kode = _ongkir_tersimpan(await conn.fetchrow(
+            "SELECT * FROM quotes WHERE id = $1", uuid_module.UUID(quote_id)))
+        _ongkir = body.shipping_amount if "shipping_amount" in _ubah_ongkir and body.shipping_amount is not None \
+            else _lama_ongkir
+        _kode_ongkir = body.shipping_tax_code_id if "shipping_tax_code_id" in _ubah_ongkir else _lama_kode
+        _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value,
+                                 shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir)
+        if _ada_ongkir(_ongkir, _kode_ongkir) or _ada_ongkir(_lama_ongkir, _lama_kode):
+            _tulis_ongkir_nanti = (_doc, _kode_ongkir)
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #39
         calculated_items = _doc["items"]
         totals = {
@@ -1207,6 +1281,8 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
             WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
         """
         await conn.execute(update_query, *params)
+    if _tulis_ongkir_nanti:
+        await _tulis_ongkir(conn, uuid_module.UUID(quote_id), *_tulis_ongkir_nanti)
 
     # 6 Okt 2026: isian surat (snapshot + sumber); bawaan dibaca HANYA bila ada `_source:'default'` tanpa nilai
     _perlu = any(getattr(body, m + "_source") == "default" and m not in body.model_fields_set for m in _surat.MEDAN)
@@ -1218,7 +1294,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
         _bwn = await _bawaan_pnw(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), _cid)
     _ubah_surat = await _surat.terapkan(conn, ctx["tenant_id"], uuid_module.UUID(quote_id), body, _bwn, buat=False)
 
-    _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set())
+    _ubah = sorted(set(update_data) | set(_ubah_surat) | ({"items"} if body.items is not None else set()) | _ubah_ongkir
                    | {f for f in ("dp_amount", "dp_percent") if getattr(body, f) is not None})
     _sesudah = await _potret_penawaran(conn, ctx["tenant_id"], quote["id"])
     _beda = beda_penawaran(_sebelum, _sesudah, _ubah)
@@ -1271,7 +1347,7 @@ _KEPALA_DIFF = ("quote_date", "expiry_date", "customer_id", "customer_name", "cu
                 "discount_type", "discount_value", "notes", "terms", "footer", "opening_text", "closing_text",
                 "payment_bank_name", "payment_account_number", "payment_account_holder", "dp_amount", "dp_percent",
                 "attention_name", "attention_title", "signer_user_id", "signer_name", "signer_title", "signer_phone",
-                "signer_email")
+                "signer_email", "shipping_amount", "shipping_tax_code_id")
 _TOTAL_DIFF = ("subtotal", "discount_amount", "tax_amount", "total_amount")
 _BARIS_DIFF = ("item_id", "description", "quantity", "unit", "unit_price", "discount_percent", "tax_id", "tax_rate",
                "line_total", "group_name", "jumlah_baris")
@@ -2041,6 +2117,13 @@ async def duplicate_quote(
                     quote["closing_text"],
                     ctx["user_id"],
                 )
+                if _ada_ongkir(*_ongkir_tersimpan(quote)):  # V467: total yang disalin sudah memuat ongkir -> salin kolomnya
+                    await conn.execute(
+                        """UPDATE quotes q SET shipping_amount = a.shipping_amount, shipping_tax_code_id = a.shipping_tax_code_id,
+                               shipping_tax_rate = a.shipping_tax_rate, shipping_tax_amount = a.shipping_tax_amount,
+                               shipping_dpp = a.shipping_dpp
+                           FROM quotes a WHERE q.id = $1 AND a.id = $2 AND a.tenant_id = q.tenant_id""",
+                        new_id, quote["id"])
                 # 6 Okt 2026: salin isian surat + sumbernya (snapshot dokumen asal, bukan bawaan saat ini)
                 await conn.execute(
                     """UPDATE quotes q SET attention_name = s.attention_name, attention_title = s.attention_title,
@@ -2255,6 +2338,7 @@ async def convert_to_invoice(
                     Decimal(str(quote["discount_value"] or 0)) if quote["discount_type"] == "percentage" else Decimal("0"),
                     _doc["doc_discount"],
                 )
+                await _salin_ongkir_konversi(conn, "sales_invoices", invoice_id, _doc, quote)  # V467
 
                 # Baris faktur = baris kalkulator (kolom sama dengan create Faktur).
                 for line_no, ln in enumerate(_doc["items"], start=1):
@@ -2461,6 +2545,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
         # nominalnya 'manual' (dulu NULL: tak jelas mana yang mengikat; proforma lalu menghitung ulang dari persen).
         "manual" if quote["dp_amount"] is not None else None,
     )
+    await _salin_ongkir_konversi(conn, "sales_orders", so_id, _doc, quote)  # V467
 
     for idx, ln in enumerate(_doc["items"]):
         await conn.execute(
@@ -2743,7 +2828,8 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
             if quote["dp_amount"] is not None
             else None
         ),
-        "shipping_charges": None,
+        # V467: data ongkir sudah ada; BARIS ongkir di templat pdf/quote.html = unit PDF (P4 paket Milkybook v2)
+        "shipping_charges": _ongkir_tersimpan(quote)[0] or None,
         "adjustment": None,
         "adjustment_label": None,
         "opening_text": quote["opening_text"],
