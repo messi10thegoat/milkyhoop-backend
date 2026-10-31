@@ -33,7 +33,8 @@ class DBO(DBQ):
 
     def ongkir_ditulis(self, tabel="quotes"):
         # DB palsu #34 menyimpan 40 karakter pertama SQL ("UPDATE sales_invoices SET shipping_amoun")
-        return [a for (s, a) in self.tulis if f"UPDATE {tabel} SET shipping_amount".startswith(s) and len(s) >= 30]
+        t = f"UPDATE {tabel} SET shipping_amount"
+        return [a for (s, a) in self.tulis if s.startswith(t) or (len(s) >= 30 and t.startswith(s))]
 
 
 def _baris(qty, harga):
