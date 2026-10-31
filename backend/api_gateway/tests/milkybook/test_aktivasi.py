@@ -21,6 +21,9 @@ def test_main_memasang_router_milkybook():
     assert re.search(r'app\.include_router\(milkybook_router\(\), prefix="/api/milkybook"', _src("app/main.py"))
 
 
+IZIN_V2 = {"/api/milkybook/v2/pelanggan": ("customer", "R")}  # data master: izin modulnya sendiri
+
+
 def test_setiap_rute_terpetakan_izin_quote_r_pola_pertama():
     pohon = ast.parse(_src("app/middleware/permission_middleware.py"))
     tabel = next(ast.literal_eval(n.value) for n in pohon.body
@@ -28,7 +31,7 @@ def test_setiap_rute_terpetakan_izin_quote_r_pola_pertama():
     for jalur, metode in _rute():
         konkret = re.sub(r"\{[a-z_]+\}", "00000000-0000-4000-8000-000000000000", jalur)
         pertama = next(((m, a) for p, ms, m, a in tabel if metode in ms and re.match(p, konkret)), None)
-        assert pertama == ("quote", "R"), (jalur, pertama)
+        assert pertama == IZIN_V2.get(jalur, ("quote", "R")), (jalur, pertama)
 
 
 def test_inventaris_rute_tulis_memuat_rute_milkybook():
