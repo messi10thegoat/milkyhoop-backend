@@ -145,6 +145,8 @@ async def main(keluar):
         await c.execute("""INSERT INTO goods_receipt_bill_links (goods_receipt_item_id, bill_item_id, quantity, grni_amount, status, kind)
                            VALUES ($1, $2, 1, 0, 'active', 'terima_dulu'), ($1, $3, 1, 0, 'reversed', 'terima_dulu')""", gi, bi17, bi16)
         await c.execute("UPDATE vendor_deposits SET purchase_order_id = $1 WHERE id = $2 AND tenant_id = $3", q["po"]["id"], q["ump"]["id"], T)
+        # VD-2026-00003 sudah dikembalikan penuh (refund 50.003 = amount) -> ruang 1.000 untuk penerapan fixture (ROLLBACK)
+        await c.execute("UPDATE vendor_deposits SET amount = amount + 1000 WHERE id = $1 AND tenant_id = $2", q["ump"]["id"], T)
         await c.execute("""INSERT INTO vendor_deposit_applications (vendor_deposit_id, bill_id, amount, applied_date, status)
                            VALUES ($1, $2, 1000, CURRENT_DATE, 'active')""", q["ump"]["id"], q["f17"]["id"])
         ids = {}
