@@ -144,8 +144,10 @@ JENIS_KELUARGA = {
     "delivery": ("deliveries", None),
     "sales_invoice": ("sales-invoices", None),
     "credit_note": ("credit-notes", None),   # LAMPIRAN-NK-QUOTE 15 Okt: rute lampiran NK ada
-    # LAMPIRAN-PEMBELIAN F1/F2a (30 Okt 2026): keluarga Pembelian (routers/lampiran_dokumen.SQL_KELUARGA_BELI); urutan = PO, FPB, PK, ND
+    # LAMPIRAN-PEMBELIAN F1/F2a/F2b: keluarga Pembelian (routers/lampiran_dokumen.SQL_KELUARGA_BELI); urutan = PO, UMP, GRN, FPB, PK, ND
     "purchase_order": ("purchase-orders", None),   # F2a: rute pabrik lampiran_induk
+    "vendor_deposit": ("vendor-deposits", None),   # F2b: rute pabrik lampiran_induk (V466)
+    "goods_receipt": ("goods-receipts", None),     # F2b: rute pabrik lampiran_induk (V466)
     "bill": ("bills", None),
     "payment_out": ("bill-payments", None),
     "vendor_credit": ("vendor-credits", None),     # F2a: rute pabrik lampiran_induk

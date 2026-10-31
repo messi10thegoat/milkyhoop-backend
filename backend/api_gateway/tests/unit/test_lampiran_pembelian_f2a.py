@@ -59,7 +59,7 @@ def test_rute_lampiran_keluarga_dan_izin_grup(jenis, modul):
 
 def test_urutan_jenis_pembelian():
     beli = [j for j in SL.URUTAN_JENIS if j in LD.JENIS_PEMBELIAN]
-    assert beli == ["purchase_order", "bill", "payment_out", "vendor_credit"]
+    assert beli == ["purchase_order", "vendor_deposit", "goods_receipt", "bill", "payment_out", "vendor_credit"]   # F2b: + UMP, GRN
 
 
 def test_keluarga_satu_langkah_dari_benih():

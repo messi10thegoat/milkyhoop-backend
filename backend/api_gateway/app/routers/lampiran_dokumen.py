@@ -2,7 +2,7 @@
 
 GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_payment | customer_deposit | proforma | delivery | credit_note
                                         | quote (LAMPIRAN-NK-QUOTE 15 Okt)
-                                        | purchase_order | bill | payment_out | vendor_credit (LAMPIRAN-PEMBELIAN F1/F2a, 30 Okt 2026: keluarga
+                                        | purchase_order | vendor_deposit | goods_receipt | bill | payment_out | vendor_credit (F1/F2a/F2b: keluarga
                                           Pembelian, lihat JENIS_PEMBELIAN)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
      {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen" | "keluarga_pembelian", "sales_order": {"id", "nomor"} | null}
@@ -69,7 +69,9 @@ SQL_CALON_SO = {
 
 # LAMPIRAN-PEMBELIAN F1 (30 Okt 2026, putusan MASTER (ii)): jenis Pembelian -> (tabel pemilik, kolom nomor). Keluarga SATU langkah, cermin
 # faktur <-> penerimaan Penjualan: FPB -> PK yang mengalokasikannya (bill_payment_allocations) + PO-nya + ND tertaut; PK -> FPB yang
-# dialokasikannya; PO -> FPB ber-purchase_order_id; ND -> FPB asal (F2a). entity_type 'vendor_credit' TAK dipakai NK (NK = 'credit_note').
+# dialokasikannya; PO -> FPB ber-purchase_order_id (+ GRN & UMP ber-PO, F2b); ND -> FPB asal (F2a); GRN -> PO-nya + FPB bertaut aktif
+# (goods_receipt_bill_links); UMP -> PO-nya + FPB yang diterapkan aktif (vendor_deposit_applications); FPB juga -> GRN bertaut + UMP diterapkan.
+# entity_type 'vendor_credit' TAK dipakai NK (NK = 'credit_note'); 'vendor_deposit' TAK dipakai UM pelanggan ('customer_deposit').
 # entity_type 'payment' dipakai BERSAMA penerimaan: grup payment_out HANYA id yang ADA di bill_payments_v2 tenant ini (JOIN pemilik),
 # jadi lampiran milik receive_payments tak pernah ikut (dan sebaliknya: receive_payment hanya receive_payments).
 # FPB punya DUA sumber (== GET /api/bills/{id}/attachments): bill_attachments (unggah lama, MinIO -> 's3'; tanpa tenant_id -> pagar lewat
@@ -77,6 +79,8 @@ SQL_CALON_SO = {
 # F2a (30 Okt 2026): + PO (FPB ber-purchase_order_id) dan Nota Debit (FPB asal original_bill_id); satu langkah dari benih.
 JENIS_PEMBELIAN = {
     "purchase_order": ("purchase_orders", "po_number"),
+    "vendor_deposit": ("vendor_deposits", "deposit_number"),   # F2b (V466)
+    "goods_receipt": ("goods_receipts", "receipt_number"),     # F2b (V466)
     "bill": ("bills", "invoice_number"),
     "payment_out": ("bill_payments_v2", "payment_number"),
     "vendor_credit": ("vendor_credits", "credit_number"),
@@ -90,21 +94,48 @@ WITH fb0 AS (
     SELECT o0x.id FROM purchase_orders o0x WHERE o0x.tenant_id = $2 AND o0x.id = $1 AND $3 = 'purchase_order'
 ), nd0 AS (
     SELECT n0x.id, n0x.original_bill_id FROM vendor_credits n0x WHERE n0x.tenant_id = $2 AND n0x.id = $1 AND $3 = 'vendor_credit'
+), gr0 AS (
+    SELECT g0x.id, g0x.purchase_order_id FROM goods_receipts g0x WHERE g0x.tenant_id = $2 AND g0x.id = $1 AND $3 = 'goods_receipt'
+), um0 AS (
+    SELECT u0x.id, u0x.purchase_order_id FROM vendor_deposits u0x WHERE u0x.tenant_id = $2 AND u0x.id = $1 AND $3 = 'vendor_deposit'
 ), fb AS (
     SELECT bx.id FROM bills bx
     WHERE bx.tenant_id = $2
       AND (bx.id IN (SELECT id FROM fb0)
            OR bx.id IN (SELECT a0x.bill_id FROM bill_payment_allocations a0x WHERE a0x.payment_id IN (SELECT id FROM pk0))
            OR bx.purchase_order_id IN (SELECT id FROM po0)
-           OR bx.id IN (SELECT original_bill_id FROM nd0))
+           OR bx.id IN (SELECT original_bill_id FROM nd0)
+           OR bx.id IN (SELECT bi0x.bill_id FROM goods_receipt_bill_links l0x
+                        JOIN goods_receipt_items gi0x ON gi0x.id = l0x.goods_receipt_item_id
+                        JOIN bill_items bi0x ON bi0x.id = l0x.bill_item_id
+                        WHERE l0x.status = 'active' AND gi0x.goods_receipt_id IN (SELECT id FROM gr0))
+           OR bx.id IN (SELECT a2x.bill_id FROM vendor_deposit_applications a2x
+                        WHERE a2x.status = 'active' AND a2x.vendor_deposit_id IN (SELECT id FROM um0)))
 ), po AS (
     SELECT ox.id FROM purchase_orders ox
     WHERE ox.tenant_id = $2
       AND (ox.id IN (SELECT id FROM po0)
-           OR ox.id IN (SELECT b1x.purchase_order_id FROM bills b1x WHERE b1x.tenant_id = $2 AND b1x.id IN (SELECT id FROM fb0)))
+           OR ox.id IN (SELECT b1x.purchase_order_id FROM bills b1x WHERE b1x.tenant_id = $2 AND b1x.id IN (SELECT id FROM fb0))
+           OR ox.id IN (SELECT purchase_order_id FROM gr0) OR ox.id IN (SELECT purchase_order_id FROM um0))
 ), nd AS (
     SELECT vx.id FROM vendor_credits vx
     WHERE vx.tenant_id = $2 AND (vx.id IN (SELECT id FROM nd0) OR vx.original_bill_id IN (SELECT id FROM fb0))
+), gr AS (
+    SELECT gx.id FROM goods_receipts gx
+    WHERE gx.tenant_id = $2
+      AND (gx.id IN (SELECT id FROM gr0)
+           OR gx.purchase_order_id IN (SELECT id FROM po0)
+           OR gx.id IN (SELECT gi1x.goods_receipt_id FROM goods_receipt_bill_links l1x
+                        JOIN goods_receipt_items gi1x ON gi1x.id = l1x.goods_receipt_item_id
+                        JOIN bill_items bi1x ON bi1x.id = l1x.bill_item_id
+                        WHERE l1x.status = 'active' AND bi1x.bill_id IN (SELECT id FROM fb0)))
+), um AS (
+    SELECT ux.id FROM vendor_deposits ux
+    WHERE ux.tenant_id = $2
+      AND (ux.id IN (SELECT id FROM um0)
+           OR ux.purchase_order_id IN (SELECT id FROM po0)
+           OR ux.id IN (SELECT a3x.vendor_deposit_id FROM vendor_deposit_applications a3x
+                        WHERE a3x.status = 'active' AND a3x.bill_id IN (SELECT id FROM fb0)))
 ), pk AS (
     SELECT px.id FROM bill_payments_v2 px
     WHERE px.tenant_id = $2
@@ -123,6 +154,12 @@ WITH fb0 AS (
     UNION ALL
     SELECT 'vendor_credit', 'vendor_credit', v.id, v.credit_number, v.credit_date::date, v.status
     FROM vendor_credits v WHERE v.tenant_id = $2 AND v.id IN (SELECT id FROM nd)
+    UNION ALL
+    SELECT 'goods_receipt', 'goods_receipt', g.id, g.receipt_number, g.receipt_date::date, g.status
+    FROM goods_receipts g WHERE g.tenant_id = $2 AND g.id IN (SELECT id FROM gr)
+    UNION ALL
+    SELECT 'vendor_deposit', 'vendor_deposit', u.id, u.deposit_number, u.deposit_date::date, u.status
+    FROM vendor_deposits u WHERE u.tenant_id = $2 AND u.id IN (SELECT id FROM um)
 )
 SELECT m.jenis, m.id AS dok_id, m.nomor, m.tanggal, m.status,
        d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,

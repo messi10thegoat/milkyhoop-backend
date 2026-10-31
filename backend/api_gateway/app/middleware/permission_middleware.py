@@ -123,6 +123,17 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-credits/[^/]+/attachments$", ["GET"], "debit_note", "R"),
     (r"^/api/vendor-credits/[^/]+/attachments/[^/]+/download$", ["GET"], "debit_note", "R"),
     (r"^/api/vendor-credits/[^/]+/attachments/[^/]+$", ["DELETE"], "debit_note", "D"),
+    # LAMPIRAN-PEMBELIAN F2b (31 Okt 2026): GRN (izin = modul purchase_order, sama dgn rute GRN lain) + Uang Muka Pembelian
+    (r"^/api/lampiran/goods_receipt/[^/]+$", ["GET"], "purchase_order", "R"),
+    (r"^/api/lampiran/vendor_deposit/[^/]+$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/goods-receipts/[^/]+/attachments$", ["POST"], "purchase_order", "U"),
+    (r"^/api/goods-receipts/[^/]+/attachments$", ["GET"], "purchase_order", "R"),
+    (r"^/api/goods-receipts/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_order", "R"),
+    (r"^/api/goods-receipts/[^/]+/attachments/[^/]+$", ["DELETE"], "purchase_order", "D"),
+    (r"^/api/vendor-deposits/[^/]+/attachments$", ["POST"], "vendor_deposit", "U"),
+    (r"^/api/vendor-deposits/[^/]+/attachments$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+/attachments/[^/]+/download$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/vendor-deposits/[^/]+/attachments/[^/]+$", ["DELETE"], "vendor_deposit", "D"),
     # LAMPIRAN-NK-QUOTE (15 Okt 2026): lampiran nota kredit & penawaran -- pola SO (tambah lampiran ke dokumen ada = U)
     (r"^/api/credit-notes/[^/]+/attachments$", ["POST"], "credit_note", "U"),
     (r"^/api/credit-notes/[^/]+/attachments$", ["GET"], "credit_note", "R"),

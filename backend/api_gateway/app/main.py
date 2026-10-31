@@ -569,6 +569,9 @@ app.include_router(lampiran_induk.router_nota_kredit, prefix="/api/credit-notes"
 # LAMPIRAN-PEMBELIAN F2a: lampiran PO + Nota Debit, juga SEBELUM router modulnya
 app.include_router(lampiran_induk.router_pesanan_pembelian, prefix="/api/purchase-orders", tags=["purchase-orders"])
 app.include_router(lampiran_induk.router_nota_debit, prefix="/api/vendor-credits", tags=["vendor-credits"])
+# LAMPIRAN-PEMBELIAN F2b: lampiran Penerimaan Barang + Uang Muka Pembelian, juga SEBELUM router modulnya
+app.include_router(lampiran_induk.router_penerimaan_barang, prefix="/api/goods-receipts", tags=["goods-receipts"])
+app.include_router(lampiran_induk.router_uang_muka_pembelian, prefix="/api/vendor-deposits", tags=["vendor-deposits"])
 app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"])
 from .routers import bulk_proforma as bulk_proforma_router  # noqa: E402  (U1b F4: Proforma BATAL draf massal; terbit massal tak ada)
 

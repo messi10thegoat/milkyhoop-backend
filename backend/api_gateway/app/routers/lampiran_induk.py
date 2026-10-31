@@ -285,3 +285,10 @@ SPEC_PESANAN_PEMBELIAN = SpecLampiran("purchase_order", "purchase-orders", "purc
 SPEC_NOTA_DEBIT = SpecLampiran("vendor_credit", "vendor-credits", "vendor_credits", "credit_number", "Nota debit", "vendor_credits")
 router_pesanan_pembelian = buat_router(SPEC_PESANAN_PEMBELIAN)
 router_nota_debit = buat_router(SPEC_NOTA_DEBIT)
+# LAMPIRAN-PEMBELIAN F2b (31 Okt 2026): Penerimaan Barang + Uang Muka Pembelian (V466 menambah goods_receipt & vendor_deposit ke chk_da_entity)
+SPEC_PENERIMAAN_BARANG = SpecLampiran("goods_receipt", "goods-receipts", "goods_receipts", "receipt_number", "Penerimaan barang",
+                                      "goods_receipts")
+SPEC_UANG_MUKA_PEMBELIAN = SpecLampiran("vendor_deposit", "vendor-deposits", "vendor_deposits", "deposit_number", "Uang muka pembelian",
+                                        "vendor_deposits")
+router_penerimaan_barang = buat_router(SPEC_PENERIMAAN_BARANG)
+router_uang_muka_pembelian = buat_router(SPEC_UANG_MUKA_PEMBELIAN)

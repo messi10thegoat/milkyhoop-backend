@@ -59,22 +59,26 @@ def test_url_grup_pembelian_ke_rute_unduh_yang_ada(jenis, modul, akhir):
 def test_jenis_penjualan_tak_berubah_dan_pembelian_terpisah():
     assert set(LD.JENIS_DOKUMEN) == set(LD.SQL_CALON_SO)
     # F2a (30 Okt 2026): + purchase_order / vendor_credit -- daftar PERSIS (bukan "memuat"), tetap terpisah dari jenis Penjualan
-    assert set(LD.JENIS_PEMBELIAN) == {"purchase_order", "bill", "payment_out", "vendor_credit"}
+    assert set(LD.JENIS_PEMBELIAN) == {"purchase_order", "vendor_deposit", "goods_receipt", "bill", "payment_out", "vendor_credit"}  # F2b
     assert not (set(LD.JENIS_PEMBELIAN) & set(LD.JENIS_DOKUMEN))
-    assert LD.JENIS_PEMBELIAN == {"purchase_order": ("purchase_orders", "po_number"), "bill": ("bills", "invoice_number"),
+    assert LD.JENIS_PEMBELIAN == {"purchase_order": ("purchase_orders", "po_number"), "vendor_deposit": ("vendor_deposits", "deposit_number"),
+                                  "goods_receipt": ("goods_receipts", "receipt_number"), "bill": ("bills", "invoice_number"),
                                   "payment_out": ("bill_payments_v2", "payment_number"), "vendor_credit": ("vendor_credits", "credit_number")}
 
 
-_CTE = {"fb0", "pk0", "po0", "nd0", "fb", "pk", "po", "nd", "meta"}   # F2a: + po0/nd0/po/nd
+_CTE = {"fb0", "pk0", "po0", "nd0", "gr0", "um0", "fb", "pk", "po", "nd", "gr", "um", "meta"}   # F2a: + po0/nd0/po/nd; F2b: + gr0/um0/gr/um
 _GLOBAL = {'"User"', "user_profiles"}
 
 
 def test_sql_keluarga_beli_tiap_tabel_berpemilik_dipaku_tenant():
     tabel = re.findall(r"\b(?:FROM|JOIN)\s+(\"User\"|\w+)\s+(\w+)", SQL)
-    salah = [f"{t} {a}" for t, a in tabel if t not in _CTE | _GLOBAL | {"bill_payment_allocations", "bill_attachments"}
+    # tabel tanpa tenant_id (F2b: + tautan GRN, baris GRN, baris FPB, penerapan UMP) -- dijaga test_lampiran_pembelian_f2b (hanya lewat id tersaring)
+    salah = [f"{t} {a}" for t, a in tabel if t not in _CTE | _GLOBAL | {"bill_payment_allocations", "bill_attachments", "goods_receipt_bill_links",
+                                                                        "goods_receipt_items", "bill_items", "vendor_deposit_applications"}
              and not re.search(rf"\b{a}\.tenant_id\s*=\s*\$2", SQL)]
     assert salah == [] and {t for t, _ in tabel} >= {"bills", "bill_payments_v2", "document_attachments", "documents",
-                                                     "bill_payment_allocations", "bill_attachments", "purchase_orders", "vendor_credits"}
+                                                     "bill_payment_allocations", "bill_attachments", "purchase_orders", "vendor_credits",
+                                                     "goods_receipts", "vendor_deposits"}
 
 
 def test_tabel_tanpa_tenant_hanya_lewat_id_tersaring():

@@ -30,6 +30,7 @@ DELETE /api/consolidation/entities/{entity_id}
 DELETE /api/consolidation/groups/{group_id}
 DELETE /api/cost-centers/{cost_center_id}
 DELETE /api/credit-notes/{doc_id}/attachments/{attachment_id}
+DELETE /api/goods-receipts/{doc_id}/attachments/{attachment_id}
 DELETE /api/quotes/{doc_id}/attachments/{attachment_id}
 POST /api/credit-notes/bulk/export
 POST /api/credit-notes/bulk/pdf
@@ -69,6 +70,7 @@ DELETE /api/purchase-orders/{po_id}
 POST /api/deliveries/{doc_id}/attachments
 POST /api/deliveries/{delivery_id}/void
 POST /api/deliveries/{delivery_id}/void/preview
+POST /api/goods-receipts/{doc_id}/attachments
 POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
@@ -125,6 +127,7 @@ DELETE /api/units/{unit_id}
 DELETE /api/vendor-credits/{doc_id}/attachments/{attachment_id}
 DELETE /api/vendor-credits/{vendor_credit_id}
 DELETE /api/vendor-deposits/{deposit_id}
+DELETE /api/vendor-deposits/{doc_id}/attachments/{attachment_id}
 DELETE /api/vendors/{vendor_id}
 DELETE /api/warehouses/{warehouse_id}
 PATCH /api/accounts/{account_id}
@@ -619,6 +622,7 @@ POST /api/vendor-deposits/{deposit_id}/refund
 POST /api/vendor-deposits/{deposit_id}/refund/preview
 POST /api/vendor-deposits/{deposit_id}/void
 POST /api/vendor-deposits/{deposit_id}/void/preview
+POST /api/vendor-deposits/{doc_id}/attachments
 POST /api/vendors
 POST /api/vendors/merge
 POST /api/vendors/merge/preview
