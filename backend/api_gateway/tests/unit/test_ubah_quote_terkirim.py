@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from app.routers import quotes as Q
 from app.schemas.quotes import UpdateQuoteRequest
 
+from ._jam_beku import bekukan_hari
 from .test_audit_penawaran_diubah import DBT, _audit
 from .test_t39_tarif_penawaran import QUOTE_ID, _req, pasang  # noqa: F401
 
@@ -81,9 +82,9 @@ class DBU(DBT):
 
 @pytest.fixture(autouse=True)
 def hari_ini(monkeypatch):
-    async def _t(conn, tid):
-        return HARI_INI
-    monkeypatch.setattr(Q, "tanggal_dokumen", _t)
+    # dibekukan di SUMBER (utils.tanggal_tenant + semua ikatan), bukan hanya Q.tanggal_dokumen: _perpanjang_penawaran
+    # mengimpor tanggal_dokumen LOKAL -> dulu memakai jam asli; _BARU 2026-10-31 jadi "masa lalu" sejak 1 Nov 2026.
+    bekukan_hari(monkeypatch, HARI_INI)
 
 
 # ---- status: yang boleh dan yang terkunci ----
