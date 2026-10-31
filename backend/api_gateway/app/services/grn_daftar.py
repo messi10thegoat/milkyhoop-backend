@@ -96,7 +96,7 @@ async def tagihan_terkait(conn, tenant_id: str, gr_id) -> list:
 def dok_goods_receipt(r) -> dict:
     batal = r["status"] == "void"
     return {"kind": "goods_receipt", "id": str(r["id"]), "number": r["receipt_number"], "date": r["receipt_date"].isoformat(),
-            "amount": f"{_d(r['amount']):.2f}", "paper": "A4", "sent": {"state": "not_sent", "sent_at": None, "viewed_at": None},
+            "amount": f"{_d(r['amount']):.2f}", "paper": "A4", "sent": {"state": "none", "sent_at": None, "viewed_at": None},  # GRN-SENT-NONE 31 Okt 2026: kontrak bundel
             "batal": batal, "status": "batal" if batal else "terbit"}
 
 
