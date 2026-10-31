@@ -11,6 +11,7 @@ Kembaran uang muka Penjualan (services/uang_muka_daftar); pola acuan: NetSuite V
 """
 from decimal import Decimal
 from typing import Optional
+from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 from . import po_daftar as PD
 from .uang_muka_vendor import SUMBER_JURNAL
@@ -147,7 +148,7 @@ async def kelompok_untuk(conn, tenant_id: str, ids: list) -> dict:
         if fak.get(i):
             kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [PD.dok_bill(b) for b in fak[i]]})
         hasil[i] = kel
-    return hasil
+    return await lapis_kirim(conn, tenant_id, hasil)  # L7: terkirim/dibuka dari tautan bagikan
 
 
 async def akun_baca(conn, tenant_id: str):

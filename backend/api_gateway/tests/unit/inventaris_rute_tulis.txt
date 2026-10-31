@@ -701,12 +701,16 @@ POST /api/bill-payments/bulk/delete
 POST /api/bill-payments/bulk/delete/preview
 POST /api/bills/bulk/export
 POST /api/bills/bulk/pdf
+POST /api/bills/bulk/share
+POST /api/bills/bulk/share/preview
 POST /api/bills/bulk/delete
 POST /api/bills/bulk/delete/preview
 POST /api/goods-receipts/bulk/export
 POST /api/goods-receipts/bulk/pdf
 POST /api/purchase-orders/bulk/export
 POST /api/purchase-orders/bulk/pdf
+POST /api/purchase-orders/bulk/share
+POST /api/purchase-orders/bulk/share/preview
 POST /api/purchase-orders/bulk/send
 POST /api/purchase-orders/bulk/send/preview
 POST /api/purchase-orders/bulk/delete

@@ -14,6 +14,7 @@
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
+from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 from .so_posisi import BULAN
 from . import tagihan_daftar as TD  # dok tagihan: SATU pembentuk dgn bundel tagihan (bills-kontrak)
@@ -243,7 +244,7 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
         if bayar.get(pid):
             kel.append({"key": "bayar", "label": "Pembayaran", "docs": bayar[pid]})
         hasil[pid] = kel
-    return hasil
+    return await lapis_kirim(conn, tenant_id, hasil)  # L7: terkirim/dibuka dari tautan bagikan
 
 
 def documents_baris(kelompok: list) -> list:

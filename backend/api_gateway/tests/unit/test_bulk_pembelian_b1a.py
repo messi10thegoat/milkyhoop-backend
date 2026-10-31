@@ -163,9 +163,12 @@ def test_tanpa_baris_tak_memanggil_pembantu(monkeypatch):
 def test_rute_pembelian_hanya_ekspor_dan_pdf_tanpa_bagikan():
     for m, (kind, _) in MODUL.items():
         assert [(r.path, tuple(r.methods)) for r in RB.ROUTERS[m].routes] == [("/bulk/export", ("POST",))], m
-        assert [(r.path, tuple(r.methods)) for r in BD.ROUTERS[m].routes] == [("/bulk/pdf", ("POST",))], m
+        bagi = m in ("purchase-orders", "bills")  # L7 (31 Okt): bagikan massal PO + Faktur Pembelian (CHECK V468)
+        harap = [("/bulk/pdf", ("POST",))] + ([("/bulk/share/preview", ("POST",)), ("/bulk/share", ("POST",))] if bagi else [])
+        assert [(r.path, tuple(r.methods)) for r in BD.ROUTERS[m].routes] == harap, m
         assert BD.MODUL_KIND[m] == kind and kind in D.JENIS_CETAK, m
-        assert kind not in D.JENIS and m not in BD.MODUL_BAGIKAN, m  # kontrol: bagikan butuh kind lolos CHECK document_shares
+        assert kind not in D.JENIS, m  # bundel Penjualan tak berubah
+        assert (kind in D.JENIS_BAGIKAN) == bagi == (m in BD.MODUL_BAGIKAN), m
     assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel", "pdf", "share"}  # daftar putih TIDAK berubah
 
 
@@ -179,7 +182,10 @@ def test_izin_ekspor_dan_pdf_adalah_baca_modul_sama_dengan_pdf_tunggal(prefiks):
     kind, modul = MODUL[prefiks]
     assert _izin("POST", f"/api/{prefiks}/bulk/export") == (modul, "R") == _izin("POST", f"/api/{prefiks}/bulk/pdf")
     assert _izin("POST", f"/api/{prefiks}/bulk/pdf") == _izin("GET", f"/api/documents/{kind}/X/pdf")
-    assert _izin("POST", f"/api/{prefiks}/bulk/share") != (modul, "E")  # tak ada pola bagikan massal Pembelian
+    if prefiks in ("purchase-orders", "bills"):  # L7: bagikan massal = E modul == share tunggal
+        assert _izin("POST", f"/api/{prefiks}/bulk/share") == (modul, "E") == _izin("POST", f"/api/documents/{kind}/X/share")
+    else:
+        assert _izin("POST", f"/api/{prefiks}/bulk/share") != (modul, "E")  # tak ada pola bagikan massal modul ini
 
 
 # ---------------- (7) handler ----------------

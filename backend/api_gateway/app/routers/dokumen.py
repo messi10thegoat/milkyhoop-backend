@@ -30,7 +30,7 @@ router = APIRouter()
 
 JENIS = ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice", "credit_note")
 # Jenis yang bisa DICETAK (/html, /pdf) = JENIS (bisa juga dibagikan) + dokumen Pembelian (22 Okt 2026, tiket PDF PO).
-# Pembelian BELUM bisa dibagikan: document_shares.kind dijaga CHECK (V379) == JENIS; menambah kind = migrasi tersendiri.
+# JENIS = jenis Penjualan (bundel dokumen_bundel + CHECK V379). Bagikan Pembelian lihat JENIS_BAGIKAN di bawah.
 # Satu jenis per baris, urut abjad (25 Okt 2026, disepakati BACKEND + BACKEND2): cabang paralel hanya menambah blok _render.
 JENIS_CETAK = JENIS + (
     "bill",
@@ -39,6 +39,13 @@ JENIS_CETAK = JENIS + (
     "payment_out",
     "purchase_order",
     "vendor_deposit",
+)
+# Jenis yang bisa DIBAGIKAN (tautan publik /share, /shares, revoke, bagikan massal) = JENIS + Pembelian yang SUDAH dibuka (L7 31 Okt 2026:
+# PO + Faktur Pembelian). document_shares.kind CHECK V468 memuat SEMUA JENIS_CETAK; membuka jenis Pembelian lain = tambah di sini +
+# _DOKUMEN_TABEL + LABEL_JENIS + pola izin (tanpa migrasi).
+JENIS_BAGIKAN = JENIS + (
+    "bill",
+    "purchase_order",
 )
 FONT_SAH = {f"Inter-{b}.ttf" for b in ("Regular", "Medium", "SemiBold", "Bold", "Italic")}
 VERSI_RENDER = "p3-1"  # naikkan bila mesin/aturan render berubah tanpa mengubah HTML
@@ -769,9 +776,13 @@ _DOKUMEN_TABEL = {
     "delivery": ("SELECT fulfillment_number AS nomor, status FROM invoice_fulfillments WHERE id = $1 AND tenant_id = $2", None),
     "invoice": ("SELECT invoice_number AS nomor, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2", "draft"),
     "credit_note": ("SELECT credit_note_number AS nomor, status FROM credit_notes WHERE id = $1 AND tenant_id = $2", "draft"),
+    # L7 Pembelian (31 Okt 2026): draf ditolak (PO dikirim lewat aksi /send-nya sendiri, tak ditandai terkirim oleh tautan); batal lewat tolak_batal
+    "bill": ("SELECT invoice_number AS nomor, status FROM bills WHERE id = $1 AND tenant_id = $2", "draft"),
+    "purchase_order": ("SELECT po_number AS nomor, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2", "draft"),
 }
 LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "Proforma", "receipt": "Kwitansi",
-               "delivery": "Surat Jalan", "invoice": "Faktur", "credit_note": "Nota Kredit"}
+               "delivery": "Surat Jalan", "invoice": "Faktur", "credit_note": "Nota Kredit",
+               "bill": "Faktur Pembelian", "purchase_order": "Pesanan Pembelian"}
 
 
 # Dokumen DIBATALKAN tak boleh dibagikan -- jalur TUNGGAL == jalur MASSAL (W-20261015-BAGIKAN-BATAL, putusan MASTER; pola NetSuite:
@@ -835,7 +846,7 @@ async def _dokumen_ada(conn, tid: str, kind: str, uid: UUID) -> dict:
 async def bagikan_dokumen(request: Request, kind: str, doc_id: str):
     """Buat tautan publik (satu kiriman = satu baris; kanal wa|email|link). Token hanya muncul di respons ini."""
     from ..services import dokumen_bagikan as DB
-    if kind not in JENIS:
+    if kind not in JENIS_BAGIKAN:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     try:
@@ -900,7 +911,7 @@ async def pratinjau_bagikan_dokumen(request: Request, kind: str, doc_id: str):
     QUOTE/FOR UPDATE, tanpa tautan; dulu jalur _bagikan lalu ROLLBACK). 200 selalu untuk dokumen yang ada: boleh=false + code/message
     bila share akan ditolak 409. Izin = rute share."""
     from ..services import dokumen_bagikan as DB
-    if kind not in JENIS:
+    if kind not in JENIS_BAGIKAN:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     try:
@@ -932,7 +943,7 @@ async def pratinjau_bagikan_dokumen(request: Request, kind: str, doc_id: str):
 @router.get("/documents/{kind}/{doc_id}/shares")
 async def daftar_tautan_dokumen(request: Request, kind: str, doc_id: str):
     from ..services import dokumen_bagikan as DB
-    if kind not in JENIS:
+    if kind not in JENIS_BAGIKAN:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     pool = await _pool()
@@ -943,7 +954,7 @@ async def daftar_tautan_dokumen(request: Request, kind: str, doc_id: str):
 @router.post("/documents/{kind}/{doc_id}/shares/{share_id}/revoke")
 async def cabut_tautan_dokumen(request: Request, kind: str, doc_id: str, share_id: str):
     from ..services import dokumen_bagikan as DB
-    if kind not in JENIS:
+    if kind not in JENIS_BAGIKAN:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal")
     ctx = _ctx(request)
     pool = await _pool()

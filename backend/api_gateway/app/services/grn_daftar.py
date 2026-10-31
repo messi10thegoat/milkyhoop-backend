@@ -10,6 +10,7 @@ Medan per GRN (SATU sumber SQL untuk baris daftar, detail, ?aksi=, /summary -- p
   aksi             = belum_ditagih (pill) <=> posted AND tertaut < dasar (mencakup sebagian ditagih) -- predikat SAMA ?aksi= & /summary."""
 from decimal import Decimal
 from typing import Awaitable, Callable, Optional
+from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 NOL = Decimal("0")
 AKSI_BELUM_DITAGIH = "belum_ditagih"
@@ -133,7 +134,7 @@ async def kelompok_grn_banyak(conn, tenant_id: str, grs: list) -> dict:
         if bills:
             kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [TD.dok_tagihan(b, b["keadaan"]) for b in bills]})
         hasil[str(g["id"])] = kel
-    return hasil
+    return await lapis_kirim(conn, tenant_id, hasil)  # L7: terkirim/dibuka dari tautan bagikan
 
 
 async def kelompok_grn(conn, tenant_id: str, gr) -> list:

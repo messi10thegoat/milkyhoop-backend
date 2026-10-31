@@ -14,6 +14,7 @@ Kembaran Python `keadaan_tagihan` / `sisa_tagihan` diuji berpasangan + harness n
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
+from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 from .jatuh_tempo import UMUR_KUNCI, kelas_umur, sql_umur
 
@@ -353,7 +354,7 @@ async def kelompok_tagihan(conn, tenant_id: str, bill_ids: list) -> dict:
         if nd.get(bid):
             kel.append({"key": "nota_debit", "label": "Nota Debit", "docs": nd[bid]})
         hasil[bid] = kel
-    return hasil
+    return await lapis_kirim(conn, tenant_id, hasil)  # L7: terkirim/dibuka dari tautan bagikan
 
 
 def documents_baris(kelompok: list) -> list:

@@ -102,6 +102,20 @@ async def keadaan_kirim(conn, tenant_id: str, pasangan: list) -> dict:
             for r in rows}
 
 
+async def lapis_kirim(conn, tenant_id: str, kelompok_per: dict) -> dict:
+    """L7 (31 Okt 2026): bundel Pembelian {jangkar: [kelompok]} -> `sent` dokumen yang jenisnya bisa dibagikan (dokumen.JENIS_BAGIKAN)
+    ditimpa keadaan tautan (sent|viewed) bila ADA tautan; tanpa tautan `sent` lama tetap (PO: purchase_orders.sent_at -> sent, pola
+    penawaran quotes.sent_at di dokumen_bundel.rampungkan). Himpunan state tetap {none, sent, viewed}. SATU kueri. Mengubah di tempat."""
+    from ..routers.dokumen import JENIS_BAGIKAN
+    dok = [d for kel in kelompok_per.values() for g in kel for d in g["docs"] if d["kind"] in JENIS_BAGIKAN]
+    kirim = await keadaan_kirim(conn, tenant_id, sorted({(d["kind"], d["id"]) for d in dok}))  # unik: PO sama di banyak jangkar
+    for d in dok:
+        k = kirim.get((d["kind"], d["id"]))
+        if k:
+            d["sent"] = dict(k)
+    return kelompok_per
+
+
 def tenant_dari_jwt(authorization: Optional[str]) -> Optional[str]:
     """tenant_id dari token aplikasi SAH (tanda tangan diverifikasi) atau None. Dipakai HANYA untuk memutuskan
     kunjungan internal (tak menghitung "dibuka"); token tak sah = diperlakukan pengunjung luar."""

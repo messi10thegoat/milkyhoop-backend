@@ -142,10 +142,10 @@ def test_infra_rahasia_tak_disimpan_di_tabel_idempotensi(monkeypatch):
 # ---------------- rute ----------------
 def test_rute_per_modul_dan_daftar_putih():
     assert set(BD.ROUTERS) == set(SPEC) | set(SPEC_BELI) == set(BD.MODUL_KIND) and len(BD.ROUTERS) == 14  # B1a: + 6 Pembelian (pdf saja)
-    assert BD.MODUL_BAGIKAN == set(SPEC)
+    assert BD.MODUL_BAGIKAN == set(SPEC) | {"purchase-orders", "bills"}  # L7 (31 Okt): + PO & Faktur Pembelian
     for modul, r in BD.ROUTERS.items():
         jalur = sorted((x.path, tuple(sorted(x.methods))) for x in r.routes)
-        harap = [("/bulk/pdf", ("POST",)), ("/bulk/share", ("POST",)), ("/bulk/share/preview", ("POST",))] if modul in SPEC else [("/bulk/pdf", ("POST",))]
+        harap = [("/bulk/pdf", ("POST",)), ("/bulk/share", ("POST",)), ("/bulk/share/preview", ("POST",))] if modul in BD.MODUL_BAGIKAN else [("/bulk/pdf", ("POST",))]
         assert jalur == harap, modul
     assert {"pdf", "share"} <= B.AKSI_DIIZINKAN
     assert BD.MODUL_KIND["customer-deposits"] == BD.MODUL_KIND["receive-payments"] == "receipt" and BD.MODUL_KIND["deliveries"] == "delivery"

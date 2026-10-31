@@ -32,7 +32,7 @@ def test_rute_cetak_pakai_jenis_cetak_rute_bagikan_tetap_jenis():
         assert "if kind not in JENIS_CETAK:" in badan, nama
     for nama in ("bagikan_dokumen", "pratinjau_bagikan_dokumen"):
         badan = src.split(f"async def {nama}(", 1)[1].split("\n@router", 1)[0]
-        assert "if kind not in JENIS:" in badan and "JENIS_CETAK" not in badan, nama
+        assert "if kind not in JENIS_BAGIKAN:" in badan and "JENIS_CETAK" not in badan, nama  # L7: bagikan = JENIS_BAGIKAN (V468)
 
 
 def test_izin_cetak_po():

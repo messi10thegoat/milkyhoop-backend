@@ -13,6 +13,7 @@ pembayaran voided/draf tak pernah tampil). Kembaran services/penerimaan_daftar (
 """
 from decimal import Decimal
 from typing import Optional
+from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 NOL = Decimal("0")
 TOLERANSI = Decimal("0.005")
@@ -160,7 +161,7 @@ async def kelompok_untuk(conn, tid: str, ids: list) -> dict:
         if nd:
             kel.append({"key": "nota_debit", "label": "Nota Debit", "docs": sorted(nd, key=lambda d: (d["date"] or "", d["number"] or ""))})
         hasil[pid] = kel
-    return hasil
+    return await lapis_kirim(conn, tid, hasil)  # L7: terkirim/dibuka dari tautan bagikan
 
 
 def documents_baris(kelompok: list) -> list:

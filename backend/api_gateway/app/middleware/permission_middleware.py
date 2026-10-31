@@ -75,6 +75,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/credit-notes/bulk/(share|share/preview)$", ["POST"], "credit_note", "E"),
     # B1a Pembelian (28 Okt): ekspor CSV + PDF massal = BACA (izin R modul == GET /documents/<kind>/{id}/pdf); TANPA bagikan massal
     (r"^/api/purchase-orders/bulk/(export|pdf)$", ["POST"], "purchase_order", "R"),
+    # L7 (31 Okt): bagikan massal Pembelian (+pratinjau) = izin share tunggal (E modul), sama dengan Penjualan F5
+    (r"^/api/purchase-orders/bulk/(share|share/preview)$", ["POST"], "purchase_order", "E"),
+    (r"^/api/bills/bulk/(share|share/preview)$", ["POST"], "purchase_invoice", "E"),
     # B1b-1 (28 Okt): PO aksi massal = izin aksi tunggalnya (/{id}/send P, /{id}/cancel V, DELETE /{id} D), pratinjau = tulisnya
     (r"^/api/purchase-orders/bulk/(send|send/preview)$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/bulk/(cancel|cancel/preview)$", ["POST"], "purchase_order", "V"),
@@ -340,6 +343,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/receipt/[^/]+/shares$", ["GET"], "receive_payment", "R"),
     (r"^/api/documents/(delivery|invoice)/[^/]+/shares$", ["GET"], "sales_invoice", "R"),
     (r"^/api/documents/credit_note/[^/]+/shares$", ["GET"], "credit_note", "R"),
+    # L7 Pembelian (31 Okt): eksplisit DI ATAS pola penampung sales_order (tanpanya share PO dijaga izin Penjualan)
+    (r"^/api/documents/purchase_order/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "purchase_order", "E"),
+    (r"^/api/documents/bill/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "purchase_invoice", "E"),
+    (r"^/api/documents/purchase_order/[^/]+/shares$", ["GET"], "purchase_order", "R"),
+    (r"^/api/documents/bill/[^/]+/shares$", ["GET"], "purchase_invoice", "R"),
     # Jenis tak dikenal: handler menolak 404 SEBELUM menulis apa pun; pola penampung ini hanya supaya rute tulis tak
     # pernah jatuh ke default-tertutup tanpa pola (penjaga test_pagar_rute_izin). Jenis sah dipetakan di atas.
     (r"^/api/documents/[^/]+/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),

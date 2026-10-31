@@ -43,7 +43,10 @@ def test_izin_baca_per_jenis(jenis, izin):
     f = PM.PermissionMiddleware(lambda *a: None, False)._find_permission
     for akhir in ("html", "pdf"):
         assert f(f"/api/documents/{jenis}/X/{akhir}", "GET") == (izin, "R")
-    assert f(f"/api/documents/{jenis}/X/share", "POST") != (izin, "E")  # bagikan tak dibuka
+    if jenis == "bill":  # L7 (31 Okt): Faktur Pembelian bisa dibagikan, izin E modulnya sendiri
+        assert f(f"/api/documents/{jenis}/X/share", "POST") == (izin, "E") and jenis in DK.JENIS_BAGIKAN
+    else:
+        assert f(f"/api/documents/{jenis}/X/share", "POST") != (izin, "E") and jenis not in DK.JENIS_BAGIKAN  # bagikan tak dibuka
 
 
 def test_render_mengenal_ketiga_jenis_lewat_pemuat_sendiri():
