@@ -160,10 +160,10 @@ def test_tanpa_baris_tak_memanggil_pembantu(monkeypatch):
 
 
 # ---------------- (5) rute ----------------
-def test_rute_pembelian_hanya_ekspor_dan_pdf_tanpa_bagikan():
+def test_rute_pembelian_ekspor_pdf_dan_bagikan():
     for m, (kind, _) in MODUL.items():
         assert [(r.path, tuple(r.methods)) for r in RB.ROUTERS[m].routes] == [("/bulk/export", ("POST",))], m
-        bagi = m in ("purchase-orders", "bills")  # L7 (31 Okt): bagikan massal PO + Faktur Pembelian (CHECK V468)
+        bagi = True  # L7 (31 Okt) PO + FPB; L7 lanjutan (1 Nov): keenam modul Pembelian bisa dibagikan massal (CHECK V468)
         harap = [("/bulk/pdf", ("POST",))] + ([("/bulk/share/preview", ("POST",)), ("/bulk/share", ("POST",))] if bagi else [])
         assert [(r.path, tuple(r.methods)) for r in BD.ROUTERS[m].routes] == harap, m
         assert BD.MODUL_KIND[m] == kind and kind in D.JENIS_CETAK, m
@@ -182,10 +182,8 @@ def test_izin_ekspor_dan_pdf_adalah_baca_modul_sama_dengan_pdf_tunggal(prefiks):
     kind, modul = MODUL[prefiks]
     assert _izin("POST", f"/api/{prefiks}/bulk/export") == (modul, "R") == _izin("POST", f"/api/{prefiks}/bulk/pdf")
     assert _izin("POST", f"/api/{prefiks}/bulk/pdf") == _izin("GET", f"/api/documents/{kind}/X/pdf")
-    if prefiks in ("purchase-orders", "bills"):  # L7: bagikan massal = E modul == share tunggal
-        assert _izin("POST", f"/api/{prefiks}/bulk/share") == (modul, "E") == _izin("POST", f"/api/documents/{kind}/X/share")
-    else:
-        assert _izin("POST", f"/api/{prefiks}/bulk/share") != (modul, "E")  # tak ada pola bagikan massal modul ini
+    # L7 + lanjutan: bagikan massal = E modul == share tunggal, keenam modul
+    assert _izin("POST", f"/api/{prefiks}/bulk/share") == (modul, "E") == _izin("POST", f"/api/documents/{kind}/X/share")
 
 
 # ---------------- (7) handler ----------------

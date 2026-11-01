@@ -80,6 +80,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # L7 (31 Okt): bagikan massal Pembelian (+pratinjau) = izin share tunggal (E modul), sama dengan Penjualan F5
     (r"^/api/purchase-orders/bulk/(share|share/preview)$", ["POST"], "purchase_order", "E"),
     (r"^/api/bills/bulk/(share|share/preview)$", ["POST"], "purchase_invoice", "E"),
+    # L7 lanjutan (1 Nov): modul izin == PDF tunggal/massal jenis itu (GRN = purchase_order)
+    (r"^/api/goods-receipts/bulk/(share|share/preview)$", ["POST"], "purchase_order", "E"),
+    (r"^/api/bill-payments/bulk/(share|share/preview)$", ["POST"], "send_payment", "E"),
+    (r"^/api/vendor-deposits/bulk/(share|share/preview)$", ["POST"], "vendor_deposit", "E"),
+    (r"^/api/vendor-credits/bulk/(share|share/preview)$", ["POST"], "debit_note", "E"),
     # B1b-1 (28 Okt): PO aksi massal = izin aksi tunggalnya (/{id}/send P, /{id}/cancel V, DELETE /{id} D), pratinjau = tulisnya
     (r"^/api/purchase-orders/bulk/(send|send/preview)$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/bulk/(cancel|cancel/preview)$", ["POST"], "purchase_order", "V"),
@@ -350,6 +355,15 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/documents/bill/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "purchase_invoice", "E"),
     (r"^/api/documents/purchase_order/[^/]+/shares$", ["GET"], "purchase_order", "R"),
     (r"^/api/documents/bill/[^/]+/shares$", ["GET"], "purchase_invoice", "R"),
+    # L7 lanjutan (1 Nov): GRN/PK/UMP/ND -- modul == PDF tunggal jenis itu; GET /shares eksplisit (READ /api/documents terbuka tanpa pola)
+    (r"^/api/documents/goods_receipt/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "purchase_order", "E"),
+    (r"^/api/documents/payment_out/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "send_payment", "E"),
+    (r"^/api/documents/vendor_deposit/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "vendor_deposit", "E"),
+    (r"^/api/documents/debit_note/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "debit_note", "E"),
+    (r"^/api/documents/goods_receipt/[^/]+/shares$", ["GET"], "purchase_order", "R"),
+    (r"^/api/documents/payment_out/[^/]+/shares$", ["GET"], "send_payment", "R"),
+    (r"^/api/documents/vendor_deposit/[^/]+/shares$", ["GET"], "vendor_deposit", "R"),
+    (r"^/api/documents/debit_note/[^/]+/shares$", ["GET"], "debit_note", "R"),
     # Jenis tak dikenal: handler menolak 404 SEBELUM menulis apa pun; pola penampung ini hanya supaya rute tulis tak
     # pernah jatuh ke default-tertutup tanpa pola (penjaga test_pagar_rute_izin). Jenis sah dipetakan di atas.
     (r"^/api/documents/[^/]+/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E"),

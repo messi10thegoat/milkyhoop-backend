@@ -698,6 +698,8 @@ POST /api/deliveries/bulk/share
 POST /api/deliveries/bulk/share/preview
 POST /api/bill-payments/bulk/export
 POST /api/bill-payments/bulk/pdf
+POST /api/bill-payments/bulk/share
+POST /api/bill-payments/bulk/share/preview
 POST /api/bill-payments/bulk/delete
 POST /api/bill-payments/bulk/delete/preview
 POST /api/bills/bulk/export
@@ -708,6 +710,8 @@ POST /api/bills/bulk/delete
 POST /api/bills/bulk/delete/preview
 POST /api/goods-receipts/bulk/export
 POST /api/goods-receipts/bulk/pdf
+POST /api/goods-receipts/bulk/share
+POST /api/goods-receipts/bulk/share/preview
 POST /api/purchase-orders/bulk/export
 POST /api/purchase-orders/bulk/pdf
 POST /api/purchase-orders/bulk/share
@@ -720,9 +724,13 @@ POST /api/purchase-orders/bulk/cancel
 POST /api/purchase-orders/bulk/cancel/preview
 POST /api/vendor-credits/bulk/export
 POST /api/vendor-credits/bulk/pdf
+POST /api/vendor-credits/bulk/share
+POST /api/vendor-credits/bulk/share/preview
 POST /api/vendor-credits/bulk/delete
 POST /api/vendor-credits/bulk/delete/preview
 POST /api/vendor-deposits/bulk/export
 POST /api/vendor-deposits/bulk/pdf
+POST /api/vendor-deposits/bulk/share
+POST /api/vendor-deposits/bulk/share/preview
 POST /api/vendor-deposits/bulk/delete
 POST /api/vendor-deposits/bulk/delete/preview

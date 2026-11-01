@@ -11,7 +11,8 @@ POST /api/{modul}/bulk/share          body {ids, channel?} + X-Idempotency-Key (
    (aturan share tunggal). TANPA surel/WA dari server -- hanya tautan.
 B1a (28 Okt 2026, MASTER GO): 6 modul PEMBELIAN mendapat /bulk/pdf SAJA (renderer dokumen.JENIS_CETAK yang sama dengan PDF tunggal).
 L7 (31 Okt 2026, MASTER GO): bagikan massal Pembelian = PO + Faktur Pembelian (kind di dokumen.JENIS_BAGIKAN; CHECK V468). Kontrak SAMA
-dengan Penjualan; draf/batal ditolak per item (PO draf TIDAK ditandai terkirim). Modul Pembelian lain tetap /bulk/pdf saja."""
+dengan Penjualan; draf/batal ditolak per item (PO draf TIDAK ditandai terkirim).
+L7 lanjutan (1 Nov 2026, MASTER GO): + GRN, Pembayaran Keluar (remittance), Uang Muka Pembelian, Nota Debit -> SEMUA 6 modul Pembelian."""
 import io
 import logging
 import re
@@ -39,7 +40,7 @@ MODUL_KIND = {"sales-orders": "rekap", "quotes": "quotation", "proformas": "prof
               # B1a Pembelian: cetak saja
               "purchase-orders": "purchase_order", "goods-receipts": "goods_receipt", "bills": "bill", "bill-payments": "payment_out",
               "vendor-deposits": "vendor_deposit", "vendor-credits": "debit_note"}
-MODUL_BAGIKAN = frozenset(SPEC) | {"purchase-orders", "bills"}  # L7: + PO & Faktur Pembelian (kind harus di dokumen.JENIS_BAGIKAN)
+MODUL_BAGIKAN = frozenset(SPEC) | frozenset(SPEC_BELI)  # L7 (+ lanjutan 1 Nov): semua modul Pembelian (kind harus di dokumen.JENIS_BAGIKAN)
 assert set(MODUL_KIND) == set(SPEC) | set(SPEC_BELI)
 assert set(MODUL_KIND.values()) <= set(D.JENIS_CETAK)
 assert {MODUL_KIND[m] for m in MODUL_BAGIKAN} <= set(D.JENIS_BAGIKAN)

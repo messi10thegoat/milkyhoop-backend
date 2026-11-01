@@ -2,10 +2,10 @@
 kontrak SAMA dengan Penjualan F5.
 
 Penjaga: (1) CHECK document_shares.kind V468 == SEMUA JENIS_CETAK, rollback == JENIS (V379) + membuang tautan Pembelian; JENIS_BAGIKAN =
-JENIS + (bill, purchase_order) dan semua rute share memakai JENIS_BAGIKAN; (2) penentu per item: draf -> DOKUMEN_DRAF, batal/void ->
-DOKUMEN_BATAL, SQL bertenant; (3) rute massal share hanya PO + bills; (4) izin E/R modul Pembelian eksplisit (BUKAN pola penampung
-sales_order); (5) bundel Pembelian: `sent` dari tautan (sent|viewed) di 5 pembentuk, tanpa tautan tetap (PO sent_at), himpunan
-{none, sent, viewed}."""
+JENIS + semua jenis Pembelian (L7 lanjutan 1 Nov: + GRN/PK/UMP/ND; spek jenis baru di test_bagikan_beli_lanjutan) dan semua rute share
+memakai JENIS_BAGIKAN; (2) penentu per item: draf -> DOKUMEN_DRAF, batal/void -> DOKUMEN_BATAL, SQL bertenant; (3) rute massal share di
+SEMUA modul Pembelian; (4) izin E/R modul Pembelian eksplisit (BUKAN pola penampung sales_order); (5) bundel Pembelian: `sent` dari
+tautan (sent|viewed) di 6 pembentuk, tanpa tautan tetap (PO sent_at), himpunan {none, sent, viewed}."""
 import asyncio
 import inspect
 import re
@@ -25,9 +25,10 @@ MIG = Path(__file__).resolve().parents[3] / "migrations"
 APP = Path(__file__).resolve().parents[2] / "app"
 T = "t1"
 CTX = {"tenant_id": T, "user_id": uuid.UUID("0bccdb25-fdf0-4e99-9024-b9a20846f76c")}
-BUKA = {"purchase-orders": ("purchase_order", "purchase_order"), "bills": ("bill", "purchase_invoice")}
-TUTUP = {"goods-receipts": "goods_receipt", "bill-payments": "payment_out", "vendor-deposits": "vendor_deposit",
-         "vendor-credits": "debit_note"}
+BUKA = {"purchase-orders": ("purchase_order", "purchase_order"), "bills": ("bill", "purchase_invoice"),
+        # L7 lanjutan (1 Nov 2026): keempat modul Pembelian lain dibuka -- modul izin == PDF tunggal jenis itu
+        "goods-receipts": ("goods_receipt", "purchase_order"), "bill-payments": ("payment_out", "send_payment"),
+        "vendor-deposits": ("vendor_deposit", "vendor_deposit"), "vendor-credits": ("debit_note", "debit_note")}
 
 
 def _jalan(c): return asyncio.run(c)
@@ -52,11 +53,10 @@ def test_v468_rollback_kembali_ke_v379_dan_buang_tautan_pembelian():
     assert dibuang == set(D.JENIS_CETAK) - set(D.JENIS)
 
 
-def test_jenis_bagikan_penjualan_plus_po_dan_faktur_pembelian():
-    assert D.JENIS_BAGIKAN == D.JENIS + ("bill", "purchase_order")
+def test_jenis_bagikan_penjualan_plus_semua_pembelian():
+    assert D.JENIS_BAGIKAN == D.JENIS + ("bill", "debit_note", "goods_receipt", "payment_out", "purchase_order", "vendor_deposit")
     assert D.JENIS == ("rekap", "quotation", "proforma", "receipt", "delivery", "invoice", "credit_note")  # bundel Penjualan tak berubah
-    for k in TUTUP.values():
-        assert k in D.JENIS_CETAK and k not in D.JENIS_BAGIKAN
+    assert D.JENIS_BAGIKAN == D.JENIS_CETAK  # L7 lanjutan: tiap jenis yang bisa dicetak kini bisa dibagikan (urutan sama)
 
 
 def test_semua_rute_share_memakai_jenis_bagikan():
@@ -104,14 +104,13 @@ def test_periksa_draf_batal_dan_terbit(kind):
 
 
 # ---------------- (3) rute ----------------
-def test_rute_bagikan_massal_hanya_po_dan_faktur_pembelian():
+def test_rute_bagikan_massal_semua_modul_pembelian():
     assert BD.MODUL_BAGIKAN == set(SPEC) | set(BUKA)
     for m, (kind, _) in BUKA.items():
         jalur = sorted((x.path, tuple(sorted(x.methods))) for x in BD.ROUTERS[m].routes)
         assert jalur == [("/bulk/pdf", ("POST",)), ("/bulk/share", ("POST",)), ("/bulk/share/preview", ("POST",))], m
         assert BD.MODUL_KIND[m] == kind
-    for m in TUTUP:
-        assert [x.path for x in BD.ROUTERS[m].routes] == ["/bulk/pdf"], m
+    assert set(BD.ROUTERS) == set(BD.MODUL_BAGIKAN)  # L7 lanjutan: tak ada lagi modul PDF-saja
 
 
 def test_inventaris_rute_tulis_memuat_rute_baru():
@@ -139,7 +138,7 @@ def test_izin_eksplisit_modul_pembelian(prefiks):
 def test_pola_eksplisit_di_atas_penampung_sales_order():
     src = (APP / "middleware" / "permission_middleware.py").read_text()
     penampung = src.index('(r"^/api/documents/[^/]+/[^/]+/(share|share/preview|shares/[^/]+/revoke)$", ["POST"], "sales_order", "E")')
-    for k in ("purchase_order", "bill"):
+    for k, _ in BUKA.values():
         assert src.index(f'(r"^/api/documents/{k}/[^/]+/(share|share/preview|shares/[^/]+/revoke)$"') < penampung, k
 
 
@@ -172,7 +171,7 @@ def test_lapis_kirim_tautan_menimpa_tanpa_tautan_tetap():
     assert docs["P2"] == {"state": "sent", "sent_at": t.isoformat(), "viewed_at": None}
     assert docs["B1"] == {"state": "viewed", "sent_at": t.isoformat(), "viewed_at": t.isoformat()}
     assert docs["B2"]["state"] == "none" and docs["G1"]["state"] == "none"
-    assert c.args[0] == T and sorted(c.args[1]) == ["bill", "bill", "purchase_order", "purchase_order"]  # GRN belum bisa dibagikan
+    assert c.args[0] == T and sorted(c.args[1]) == ["bill", "bill", "goods_receipt", "purchase_order", "purchase_order"]  # L7 lanjutan: GRN ikut
     for s in docs.values():
         assert s["state"] in {"none", "sent", "viewed"} and set(s) == {"state", "sent_at", "viewed_at"}
         assert all(v is None or isinstance(v, str) for v in (s["sent_at"], s["viewed_at"]))
@@ -180,8 +179,9 @@ def test_lapis_kirim_tautan_menimpa_tanpa_tautan_tetap():
 
 @pytest.mark.parametrize("modul,fungsi", [("po_daftar", "dokumen_po"), ("tagihan_daftar", "kelompok_tagihan"),
                                           ("grn_daftar", "kelompok_grn_banyak"), ("uang_muka_vendor_daftar", "kelompok_untuk"),
-                                          ("pembayaran_keluar_daftar", "kelompok_untuk")])
-def test_lima_pembentuk_bundel_pembelian_berakhir_di_lapis_kirim(modul, fungsi):
+                                          ("pembayaran_keluar_daftar", "kelompok_untuk"),
+                                          ("nota_debit_daftar", "kelompok_nd")])  # L7 lanjutan: + bundel Nota Debit
+def test_enam_pembentuk_bundel_pembelian_berakhir_di_lapis_kirim(modul, fungsi):
     import importlib
     m = importlib.import_module(f"app.services.{modul}")
     src = inspect.getsource(getattr(m, fungsi))

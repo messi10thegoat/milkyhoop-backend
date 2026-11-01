@@ -41,11 +41,15 @@ JENIS_CETAK = JENIS + (
     "vendor_deposit",
 )
 # Jenis yang bisa DIBAGIKAN (tautan publik /share, /shares, revoke, bagikan massal) = JENIS + Pembelian yang SUDAH dibuka (L7 31 Okt 2026:
-# PO + Faktur Pembelian). document_shares.kind CHECK V468 memuat SEMUA JENIS_CETAK; membuka jenis Pembelian lain = tambah di sini +
-# _DOKUMEN_TABEL + LABEL_JENIS + pola izin (tanpa migrasi).
+# PO + Faktur Pembelian; L7 lanjutan 1 Nov 2026: + GRN, Pembayaran Keluar, Uang Muka Pembelian, Nota Debit = SEMUA JENIS_CETAK).
+# document_shares.kind CHECK V468 memuat SEMUA JENIS_CETAK; jenis baru = tambah di sini + _DOKUMEN_TABEL + LABEL_JENIS + pola izin.
 JENIS_BAGIKAN = JENIS + (
     "bill",
+    "debit_note",
+    "goods_receipt",
+    "payment_out",
     "purchase_order",
+    "vendor_deposit",
 )
 FONT_SAH = {f"Inter-{b}.ttf" for b in ("Regular", "Medium", "SemiBold", "Bold", "Italic")}
 VERSI_RENDER = "p3-1"  # naikkan bila mesin/aturan render berubah tanpa mengubah HTML
@@ -779,10 +783,18 @@ _DOKUMEN_TABEL = {
     # L7 Pembelian (31 Okt 2026): draf ditolak (PO dikirim lewat aksi /send-nya sendiri, tak ditandai terkirim oleh tautan); batal lewat tolak_batal
     "bill": ("SELECT invoice_number AS nomor, status FROM bills WHERE id = $1 AND tenant_id = $2", "draft"),
     "purchase_order": ("SELECT po_number AS nomor, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2", "draft"),
+    # L7 lanjutan (1 Nov 2026): GRN tanpa draf (CHECK posted|void); PK void = 'voided' (STATUS_BATAL_BAGIKAN); UMP/ND draf 'draft'
+    "goods_receipt": ("SELECT receipt_number AS nomor, status FROM goods_receipts WHERE id = $1 AND tenant_id = $2", None),
+    "payment_out": ("SELECT payment_number AS nomor, status FROM bill_payments_v2 WHERE id = $1 AND tenant_id = $2", "draft"),
+    "vendor_deposit": ("SELECT deposit_number AS nomor, status FROM vendor_deposits WHERE id = $1 AND tenant_id = $2", "draft"),
+    "debit_note": ("SELECT credit_number AS nomor, status FROM vendor_credits WHERE id = $1 AND tenant_id = $2", "draft"),
 }
 LABEL_JENIS = {"rekap": "Rekap Pesanan", "quotation": "Penawaran", "proforma": "Proforma", "receipt": "Kwitansi",
                "delivery": "Surat Jalan", "invoice": "Faktur", "credit_note": "Nota Kredit",
-               "bill": "Faktur Pembelian", "purchase_order": "Pesanan Pembelian"}
+               "bill": "Faktur Pembelian", "purchase_order": "Pesanan Pembelian",
+               # L7 lanjutan: nama = judul nav/daftar FE (DashboardSidebar, seragam namaLead UMP); judul CETAK PK tetap "Bukti Pembayaran"
+               "goods_receipt": "Penerimaan Barang", "payment_out": "Pembayaran Keluar", "vendor_deposit": "Uang Muka Pembelian",
+               "debit_note": "Nota Debit"}
 
 
 # Dokumen DIBATALKAN tak boleh dibagikan -- jalur TUNGGAL == jalur MASSAL (W-20261015-BAGIKAN-BATAL, putusan MASTER; pola NetSuite:

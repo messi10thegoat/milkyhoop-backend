@@ -34,7 +34,7 @@ def test_jenis_cetak_terdaftar_urut_abjad_dan_bukan_jenis_bagikan():
     assert DK.JENIS_CETAK[:len(DK.JENIS)] == DK.JENIS
     assert list(tambahan) == sorted(tambahan) and len(set(tambahan)) == len(tambahan)
     for j in BARU:
-        assert j in tambahan and j not in DK.JENIS  # bagikan = migrasi document_shares.kind, BELUM
+        assert j in tambahan and j not in DK.JENIS  # bagikan: CHECK V468 + JENIS_BAGIKAN (L7 lanjutan 1 Nov)
 
 
 @pytest.mark.parametrize("jenis,izin", [("bill", "purchase_invoice"), ("payment_out", "send_payment"),
@@ -43,10 +43,8 @@ def test_izin_baca_per_jenis(jenis, izin):
     f = PM.PermissionMiddleware(lambda *a: None, False)._find_permission
     for akhir in ("html", "pdf"):
         assert f(f"/api/documents/{jenis}/X/{akhir}", "GET") == (izin, "R")
-    if jenis == "bill":  # L7 (31 Okt): Faktur Pembelian bisa dibagikan, izin E modulnya sendiri
-        assert f(f"/api/documents/{jenis}/X/share", "POST") == (izin, "E") and jenis in DK.JENIS_BAGIKAN
-    else:
-        assert f(f"/api/documents/{jenis}/X/share", "POST") != (izin, "E") and jenis not in DK.JENIS_BAGIKAN  # bagikan tak dibuka
+    # L7 (31 Okt) FPB; L7 lanjutan (1 Nov): PK + ND juga bisa dibagikan, izin E modulnya sendiri (== modul PDF)
+    assert f(f"/api/documents/{jenis}/X/share", "POST") == (izin, "E") and jenis in DK.JENIS_BAGIKAN
 
 
 def test_render_mengenal_ketiga_jenis_lewat_pemuat_sendiri():

@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
+from .dokumen_bagikan import lapis_kirim  # L7 lanjutan: sent bundel dari tautan bagikan
 from .nota_debit import sql_sisa_nd
 
 AKSI_BELUM_TERPAKAI = "belum_terpakai"
@@ -143,7 +144,7 @@ async def kelompok_nd(conn, tid: str, nota: list) -> dict:
         if r:
             kel.append({"key": "nota_debit", "label": "Nota Debit", "docs": [dok_nota_debit(r)]})
         hasil[vid] = kel
-    return hasil
+    return await lapis_kirim(conn, tid, hasil)  # L7 lanjutan: terkirim/dibuka dari tautan bagikan
 
 
 async def po_asal(conn, tid: str, bill_ids: list) -> dict:
