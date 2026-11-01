@@ -40,6 +40,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/milkybook/v2/barang$", ["GET"], "item", "R"),  # v2 cari barang + harga master + ukuran (flag milkybook_v2)
     (r"^/api/milkybook/v2/percakapan$", ["GET", "POST"], "quote", "R"),  # v2 draf per percakapan (V469): milik pengguna, izin = obrolan
     (r"^/api/milkybook/v2/percakapan/[^/]+$", ["GET", "PUT"], "quote", "R"),
+    (r"^/api/milkybook/v2/tafsir$", ["POST"], "quote", "R"),  # v2 cadangan LLM (P5): baca saja, izin = obrolan
     (r"^/api/milkybook/v2/penawaran$", ["POST"], "quote", "C"),  # buat atomik; master baru dicek izin customer/item C di handler  # v2 cari pelanggan berfakta (flag milkybook_v2)
     (r"^/api/quotes/calculate$", ["POST"], "quote", "R"),  # Penawaran CW pratinjau, nol tulis
     (r"^/api/quotes/[^/]+/edit/preview$", ["POST"], "quote", "U"),  # pratinjau ubah penawaran (13 Okt), izin = PATCH

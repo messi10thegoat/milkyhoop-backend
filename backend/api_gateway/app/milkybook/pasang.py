@@ -113,10 +113,34 @@ async def _koneksi():
         yield conn
 
 
+@lru_cache(maxsize=1)
+def _pemanggil_v2():
+    """Lapisan LLM v2 (P5): HANYA MILKYBOOK_ANTHROPIC_API_KEY (kunci terpisah ber-batas belanja). Tanpa kunci = None
+    (tafsir menjawab tanya balik), TIDAK pernah jatuh ke ANTHROPIC_API_KEY lingkungan (aturan pemilik)."""
+    import os
+
+    from .inti.model import MODEL_BAWAAN, PemanggilAnthropic
+    kunci = os.environ.get("MILKYBOOK_ANTHROPIC_API_KEY") or None
+    if not kunci:
+        return None
+    return PemanggilAnthropic(model=os.environ.get("MILKYBOOK_MODEL", MODEL_BAWAAN), api_key=kunci, max_tokens=4000,
+                              ttl_prefiks=None)
+
+
+def _tafsir_v2():
+    """Dibaca SETIAP panggilan (batas dan effort dari .env tanpa rilis kode)."""
+    import os
+
+    from .inti.konfigurasi import batas_bulan_dari_env
+    from .v2.tafsir import EFFORT_BAWAAN
+    return {"pemanggil": _pemanggil_v2(), "audit": _AuditMalas(), "batas_fn": batas_bulan_dari_env(),
+            "effort": os.environ.get("MILKYBOOK_V2_EFFORT", EFFORT_BAWAAN)}
+
+
 def milkybook_router():
     from .inti.router import buat_router
     from .v2.router import buat_router_v2
     r = buat_router(_putaran, _PenyimpananMalas(), app_fn=_app, izin_fn_untuk=_izin_untuk,
                     flag_fn=_flag, hari_ini_fn=_hari_ini)
-    r.include_router(buat_router_v2(flag_fn=_flag_v2, conn_fn=_koneksi, izin_fn=_izin_v2), prefix="/v2")  # flag milkybook_v2 (31 Okt)
+    r.include_router(buat_router_v2(flag_fn=_flag_v2, conn_fn=_koneksi, izin_fn=_izin_v2, tafsir_fn=_tafsir_v2), prefix="/v2")  # flag milkybook_v2 (31 Okt)
     return r
