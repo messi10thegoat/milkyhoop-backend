@@ -251,7 +251,11 @@ def test_log_ketikan_tak_pernah_dibaca_aplikasi():
     app = pathlib.Path(T.__file__).resolve().parents[2]
     pemakai = [str(f.relative_to(app)) for f in app.rglob("*.py") if "milkybook_v2_tafsir_log" in f.read_text()]
     assert pemakai == ["milkybook/v2/tafsir.py"]
-    assert not re.search(r"SELECT[^;]*milkybook_v2_tafsir_log", pathlib.Path(T.__file__).read_text(), re.I | re.S)
+    sql_tabel = {n: getattr(T, n) for n in dir(T) if n.startswith("SQL") and "milkybook_v2_tafsir_log" in getattr(T, n)}
+    assert sorted(sql_tabel) == ["SQL_BUANG_LOG", "SQL_LOG"]
+    assert T.SQL_BUANG_LOG.startswith("DELETE ") and T.SQL_LOG.startswith("INSERT ")
+    # nama tabel di sumber hanya di dua konstanta itu: tak ada kueri lain yang menyebutnya
+    assert pathlib.Path(T.__file__).read_text().count("milkybook_v2_tafsir_log") == 2
 
 
 def test_migrasi_v470_tanpa_kendali_transaksi():
