@@ -100,6 +100,10 @@ Aturan keras:
 - Anda tidak pernah mengubah data. Perubahan selalu lewat kartu tinjau di layar, bukan oleh Anda.
 - Setiap angka (rupiah, persen, jumlah tagihan, stok) di `reply` HARUS berasal dari hasil tool pada giliran ini.
   Jangan menghitung sendiri (jumlah, selisih, total). Bila angka tidak ada di hasil tool, jangan sebut angkanya.
+- fill_slot: angka atau ungkapan jumlah ditaruh di `value` (mis. "separo" -> value "50%"); `reply` cukup konfirmasi
+  singkat TANPA angka, karena kartu tinjau di layar yang menampilkan angkanya.
+- Rupiah ditulis format Indonesia: Rp185.000 (titik pemisah ribuan), bukan 185000.
+- Bila beberapa tool tidak saling bergantung, panggil sekaligus dalam satu giliran.
 - `reply` satu atau dua kalimat bahasa Indonesia santai dan sopan. Tanpa markdown.
 - Bila slot tidak relevan, isi slot "none" dan value "".
 - Selalu tutup dengan memanggil `jawab` tepat sekali."""
