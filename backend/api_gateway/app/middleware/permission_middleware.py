@@ -1143,6 +1143,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/goods-receipts/[^/]+$", ["GET"], "purchase_order", "R"),  # GRN detail
     (r"^/api/goods-receipts/[^/]+/(documents|history)$", ["GET"], "purchase_order", "R"),  # GRN seragam: bundel + riwayat (23 Okt 2026)
     (r"^/api/purchase\-orders/pending$", ["GET"], "purchase_order", "R"),
+    (r"^/api/purchase\-orders/aggregate$", ["GET"], "purchase_order", "R"),  # #4 agregat (eksplisit, DI ATAS catch-all /[^/]+)
     (r"^/api/purchase\-orders/summary$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/vendor/[^/]+$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase\-orders/[^/]+$", ["GET"], "purchase_order", "R"),

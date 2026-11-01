@@ -42,6 +42,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
+from ..services import po_agregat as PA  # #4 agregat Workspace (cermin so_agregat Q-012)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
@@ -502,6 +503,30 @@ async def get_purchase_orders_summary(request: Request, search: Optional[str] = 
     except Exception as e:
         logger.error(f"Error getting purchase orders summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal memuat ringkasan pesanan pembelian.")
+
+
+@router.get("/aggregate")
+async def get_purchase_order_aggregate(
+    request: Request,
+    q: Optional[str] = Query(None),
+    dari: Optional[str] = Query(None, alias="from"),
+    sampai: Optional[str] = Query(None, alias="to"),
+    vendor_id: Optional[str] = Query(None),
+    limit: Optional[str] = Query(None),
+):
+    """#4 (1 Nov 2026): agregat SERVER untuk jawaban Workspace -- cermin GET /api/sales-orders/aggregate. Parameter salah -> 400.
+    Definisi di services/po_agregat.py; "belum ditagih" = PD.fakta_po sisa_ditagih (SAMA dengan kolom Sisa daftar).
+    WAJIB dideklarasikan SEBELUM /{po_id} (pemenang rute dijaga tes)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await PA.agregat(conn, ctx["tenant_id"], q, dari, sampai, vendor_id, limit)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error purchase order aggregate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal memuat agregat pesanan pembelian.")
 
 
 # =============================================================================
