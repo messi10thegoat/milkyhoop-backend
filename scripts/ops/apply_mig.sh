@@ -12,6 +12,7 @@
 #   juga menolak pelari kedua yang bersamaan.
 # - menolak berkas berisi kendali transaksi (BEGIN;/COMMIT;/ROLLBACK;/START TRANSACTION) -- COMMIT di dalam -1
 #   menutup transaksi luar lebih awal dan memecah atomisitas -- dan CREATE INDEX CONCURRENTLY (tak bisa di transaksi).
+# - pg_dump --lock-wait-timeout = lock_timeout: cadangan di belakang kunci eksklusif juga gagal cepat (kode 6), tak menggantung.
 # - kata sandi dibaca dari env kontainer postgres (POSTGRES_PASSWORD), tak lagi tertulis di skrip.
 # - sasaran bisa diganti lewat env MIG_* HANYA untuk uji di kontainer sekali-pakai (scripts/ops/uji-apply-mig.sh).
 # Kode keluar: 3 nama/berkas ditolak · 4 penanda kode tak ada · 5 sudah tercatat · 6 cadangan gagal · 7 migrasi gagal
@@ -42,7 +43,7 @@ fi
 have=$(psqlc -Atc "select count(*) from schema_migrations where version='$F'")
 [ "$have" = "0" ] || { echo "REFUSE: $F already recorded"; exit 5; }
 TS=$(date -u +%H%M%S); V=${F%%__*}; V=$(echo "$V" | tr 'A-Z' 'a-z'); D=$DB-pre-$V-$TS.dump
-docker exec "$P" sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U postgres -Fc "$0" > "/tmp/$1"' "$DB" "$D" && docker cp "$P:/tmp/$D" "$BK/" \
+docker exec "$P" sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U postgres -Fc --lock-wait-timeout="$2" "$0" > "/tmp/$1"' "$DB" "$D" "$LOCK" && docker cp "$P:/tmp/$D" "$BK/" \
   && docker exec "$P" rm -f "/tmp/$D" || { echo "REFUSE: backup failed"; exit 6; }
 ls -la "$BK/$D" | awk '{print "backup", $5, $9}'
 SUM=$(sha256sum "$SRC" | cut -d' ' -f1)

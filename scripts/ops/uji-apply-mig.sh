@@ -35,13 +35,22 @@ cek "T3 gagal sesudah DDL: rc" "$(jalan V9002__gagal.sql)" 7
 cek "T3 nol catatan" "$(rec V9002__gagal.sql)" 0; cek "T3 DDL ikut batal" "$(ada t_gagal)" 0
 
 printf 'ALTER TABLE t1 ADD COLUMN c int;\n' > "$M/V9003__kunci.sql"
-( q -c "BEGIN; LOCK TABLE t1 IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(25); COMMIT;" > /dev/null 2>&1 & )
-for _i in $(seq 1 20); do [ "$(q -c "select count(*) from pg_locks l join pg_class c on c.oid=l.relation where c.relname='t1' and l.mode='AccessExclusiveLock' and l.granted")" = 1 ] && break; sleep 0.5; done
+tahan() {  # tahan <mode> : transaksi lain memegang kunci t1 selama 25 dtk (ACCESS SHARE = transaksi pengguna yang sedang membaca)
+  ( q -c "BEGIN; LOCK TABLE t1 IN $1 MODE; SELECT pg_sleep(25); COMMIT;" > /dev/null 2>&1 & )
+  for _i in $(seq 1 20); do [ "$(q -c "select count(*) from pg_locks l join pg_class c on c.oid=l.relation where c.relname='t1' and l.mode='$2' and l.granted")" -ge 1 ] && break; sleep 0.5; done
+}
+lepas() { for _i in $(seq 1 40); do [ "$(q -c "select count(*) from pg_stat_activity where query like '%pg_sleep(25)%' and pid <> pg_backend_pid()")" = 0 ] && break; sleep 1; done; }
+tahan "ACCESS SHARE" AccessShareLock
 t0=$(date +%s); r=$(jalan V9003__kunci.sql); dt=$(( $(date +%s) - t0 ))
 cek "T4 kunci ditahan: rc" "$r" 7; cek "T4 nol catatan" "$(rec V9003__kunci.sql)" 0
 cek "T4 gagal cepat (<15 dtk, bukan menunggu 25 dtk)" "$([ $dt -lt 15 ] && echo cepat || echo "lambat ${dt}s")" cepat
 cek "T4 pesan LOCK_TIMEOUT" "$(grep -c '^LOCK_TIMEOUT' "$T/out")" 1
-for _i in $(seq 1 40); do [ "$(q -c "select count(*) from pg_locks l join pg_class c on c.oid=l.relation where c.relname='t1' and l.granted and l.mode='AccessExclusiveLock'")" = 0 ] && break; sleep 1; done
+lepas
+tahan "ACCESS EXCLUSIVE" AccessExclusiveLock
+t0=$(date +%s); r=$(jalan V9003__kunci.sql); dt=$(( $(date +%s) - t0 ))
+cek "T4b kunci eksklusif: cadangan gagal cepat: rc" "$r" 6; cek "T4b nol catatan" "$(rec V9003__kunci.sql)" 0
+cek "T4b gagal cepat (<15 dtk)" "$([ $dt -lt 15 ] && echo cepat || echo "lambat ${dt}s")" cepat
+lepas
 
 printf "CREATE TABLE t_atom (id int);\nINSERT INTO schema_migrations(version, checksum) VALUES ('V9004__atom.sql', 'x');\n" > "$M/V9004__atom.sql"
 cek "T5 catatan + migrasi SATU transaksi (bentrok PK): rc" "$(jalan V9004__atom.sql)" 7
@@ -57,7 +66,7 @@ cek "T7 CONCURRENTLY ditolak: rc" "$(jalan V9007__conc.sql)" 10; cek "T7 nol cat
 
 cek "T8 penanda tak ada: rc" "$(jalan V9001__ok.sql --require-marker x.py 'tak_ada_xyz')" 4
 printf 'SELECT 1;\n' > "$M/V9008__x_ROLLBACK.sql"; cek "T9 berkas ROLLBACK ditolak: rc" "$(jalan V9008__x_ROLLBACK.sql)" 3
-cek "T9b nama tak sah (kutip) ditolak: rc" "$(jalan "V9'__x.sql")" 3
+printf 'SELECT 1;\n' > "$M/V9011__x'y.sql"; cek "T9b nama tak sah (kutip, berkas ADA) ditolak: rc" "$(jalan "V9011__x'y.sql")" 3
 cek "T9c MIG_BY tak sah ditolak: rc" "$(MIG_BY="a'b" jalan V9009__by.sql)" 3
 
 printf 'SELECT pg_sleep(4);\nCREATE TABLE t_lama (id int);\n' > "$M/V9010__lama.sql"

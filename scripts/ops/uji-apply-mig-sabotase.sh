@@ -22,11 +22,12 @@ sab 5 "T10 statement_timeout" 's=s.replace("SET LOCAL statement_timeout = \x27$S
 sab 6 "T9b nama tak sah" 's=s.replace("^V[0-9]+__[A-Za-z0-9_]+\\.sql$","^V.*$")'
 sab 7 "T11 tanpa kata sandi" 's=s.replace("set -uo pipefail\n","set -uo pipefail\nPGE=\"PGPASSWORD=bukanRahasiaUji1\"\n",1)'
 sab 8 "T9 berkas ROLLBACK" 's=s.replace("[[ \"$F\" == *_ROLLBACK.sql ]] && ","false && ")'
+sab 10 "T4b kunci eksklusif" 's=s.replace(" --lock-wait-timeout=\"$2\"","")'
 sab 9 "T3 nol catatan" 's=s.replace("psqlc -q -1 -f","psqlc -q -f")'
 # Lantai keamanan: harness WAJIB menolak sasaran prod (milkydb / kontainer non-uji) SEBELUM menjalankan apply_mig.
 # Sasaran palsu dipakai (milkydb di kontainer sekali-pakai; nama kontainer yang tak ada) -> bila pagar jebol pun tak menyentuh prod.
 for sas in "MIG_DB=ujimig|MIG_DB=milkydb" "MIG_PG=\$C|MIG_PG=milkyhoop-prod-palsu"; do
-  cp "$U" "$W/u.sh"; python3 -c "import sys; p,a,b=sys.argv[1:]; s=open(p).read(); assert s.count(a)==1; open(p,w).write(s.replace(a,b))" "$W/u.sh" "${sas%%|*}" "${sas##*|}" || { echo "SASARAN ${sas} TAK TERPASANG"; exit 3; }
+  cp "$U" "$W/u.sh"; python3 -c "import sys; p,a,b=sys.argv[1:]; s=open(p).read(); assert s.count(a)==1; open(p,\"w\").write(s.replace(a,b))" "$W/u.sh" "${sas%%|*}" "${sas##*|}" || { echo "SASARAN ${sas} TAK TERPASANG"; exit 3; }
   out=$(bash "$W/u.sh" "$A" 2>&1); rc=$?
   if [ $rc -eq 2 ] && echo "$out" | grep -q "^PAGAR" && ! echo "$out" | grep -q "^OK "; then echo "SASARAN ${sas##*|} DITOLAK (benar)"; else echo "SASARAN ${sas##*|} TIDAK DITOLAK -> BAHAYA"; semua=1; fi
 done
