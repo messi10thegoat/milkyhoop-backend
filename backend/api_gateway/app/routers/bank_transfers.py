@@ -28,6 +28,7 @@ from datetime import date
 import uuid as uuid_module
 
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_transfers import (
     CreateBankTransferRequest,
@@ -1050,7 +1051,7 @@ async def void_bank_transfer(
                 if period_row and period_row["status"] != "OPEN":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                        detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS
                     )
 
                 # Create reversal journal
@@ -1075,7 +1076,7 @@ async def void_bank_transfer(
                 if period_hari_ini and period_hari_ini["status"] != "OPEN":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Periode akuntansi sudah {period_hari_ini['status']}",
+                        detail=tg.periode_tertutup(None, period_hari_ini["status"]),  # PERIODE-TEKS
                     )
                 await conn.execute(
                     """
