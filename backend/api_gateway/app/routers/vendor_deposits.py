@@ -11,6 +11,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/hapus + nama event (Law 12)
 from ..services import idem_buat  # P-U3b: idempotensi header X-Idempotency-Key (pola PO / W0)
 from ..services.so_riwayat import catat_riwayat  # P-U3b: riwayat beraktor (lepas penerapan)
@@ -537,7 +538,7 @@ async def _posting_inti(conn, ctx: dict, deposit_id) -> "PostDepositResponse":
     if period_row and period_row["status"] != "OPEN":
         raise HTTPException(
             status_code=400,
-            detail=f"Periode akuntansi sudah {period_row['status']}",
+            detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
         )
 
     # Generate journal number
@@ -765,7 +766,7 @@ async def apply_vendor_deposit(
             if period_row and period_row["status"] != "OPEN":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Periode akuntansi sudah {period_row['status']}",
+                    detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
                 )
 
             # Generate journal
@@ -952,7 +953,7 @@ async def refund_vendor_deposit(
             if period_row and period_row["status"] != "OPEN":
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Periode akuntansi sudah {period_row['status']}",
+                    detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
                 )
 
             # Generate journal
@@ -1176,7 +1177,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
                 if period_row and period_row["status"] != "OPEN":
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Periode akuntansi sudah {period_row['status']}",
+                        detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
                     )
 
                 # Get journal number

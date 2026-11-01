@@ -15,6 +15,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from . import po_daftar as PD
+from . import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from . import uang_muka_vendor as UMV
 from . import uang_muka_vendor_daftar as UMD
 from .role_resolver import AccountRole
@@ -62,10 +63,10 @@ async def _baris(conn, tid: str, akun, debit, kredit) -> dict:
 
 
 async def _periode(conn, tid: str, tgl, bloks: list) -> None:
-    """Law 5. Pesan == jalur tulis lama ("Periode akuntansi sudah {status}")."""
+    """Law 5. Pesan == jalur tulis (PERIODE-TEKS: keduanya tg.periode_tertutup)."""
     r = await conn.fetchrow("SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, tgl)
     if r and r["status"] != "OPEN":
-        bloks.append(blok("PERIODE_TERTUTUP", f"Periode akuntansi sudah {r['status']}"))
+        bloks.append(blok("PERIODE_TERTUTUP", tg.periode_tertutup(None, r["status"])))
 
 
 async def keadaan(conn, tid: str, deposit_id) -> dict:
@@ -246,7 +247,7 @@ async def rencana_lepas(conn, ctx, vd, application_id, hari_ini, kunci: bool = T
             bloks.append(blok("JURNAL_PENERAPAN_SUDAH_DIBALIK", "Jurnal penerapan ini sudah dibalik oleh proses lain.", 409))
     r = await conn.fetchrow("SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, hari_ini)
     if r and r["status"] != "OPEN":
-        bloks.append(blok("PERIODE_TERTUTUP", f"Periode akuntansi sudah {r['status']}.", 409))
+        bloks.append(blok("PERIODE_TERTUTUP", tg.periode_tertutup(None, r["status"]), 409))
     baris_asli = await conn.fetch(
         "SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", a["journal_id"]) if asli else []
     jumlah = _d(a["amount"])
