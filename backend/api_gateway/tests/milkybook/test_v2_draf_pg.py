@@ -10,6 +10,15 @@ from app.milkybook.v2 import draf as D
 
 DSN = os.environ.get("MB2_PG_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="MB2_PG_DSN tak diset (butuh Postgres sekali-pakai)")
+HOST_SEKALI = "mb2-pg-sekali"
+
+
+def _dsn_aman(dsn: str) -> None:
+    """Pagar keras SEBELUM koneksi: hanya kontainer sekali-pakai; milkydb / kontainer produksi = DITOLAK."""
+    from urllib.parse import urlparse
+    u = urlparse(dsn)
+    if u.hostname != HOST_SEKALI or (u.path or "/").lstrip("/") in ("milkydb", "") or "milkyhoop" in (u.hostname or ""):
+        raise RuntimeError(f"DITOLAK: harness draf hanya untuk {HOST_SEKALI}/postgres, bukan {u.hostname}/{u.path}")
 
 A = {"tenant_id": "kaos", "user_id": "u1"}
 B_USER = {"tenant_id": "kaos", "user_id": "u2"}
@@ -20,7 +29,11 @@ DRAF = {"stage": "items", "customer": {"name": "Rocky", "isNew": False}, "lines"
 @pytest.fixture
 async def conn():
     import asyncpg
+    _dsn_aman(DSN)
     c = await asyncpg.connect(DSN)
+    if await c.fetchval("SELECT current_database()") == "milkydb" or await c.fetchval("SELECT to_regclass('journal_entries')"):
+        await c.close()
+        raise RuntimeError("DITOLAK: basis data ini berisi tabel produksi")
     mig = open("../migrations/V469__milkybook_v2_percakapan.sql").read()
     await c.execute("DROP TABLE IF EXISTS milkybook_v2_percakapan")
     await c.execute(mig)
