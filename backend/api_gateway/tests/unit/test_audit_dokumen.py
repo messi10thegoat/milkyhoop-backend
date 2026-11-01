@@ -24,6 +24,7 @@ from app.routers import vendor_deposits as VD
 from app.services import audit_dokumen as AD
 from app.services import bills_service as BS
 from app.services import grn_daftar as GD
+from app.services import nota_debit as ND
 from app.services import so_riwayat as SR
 from app.services import uang_muka_vendor_lepas as UVL
 
@@ -38,9 +39,10 @@ def test_tabel_event_unik_dan_entitas_dikenal_riwayat():
     nama = [e.nama for e in AD.EVENT.values()]
     assert len(nama) == len(set(nama))
     assert all(e.entitas in SR.ENTITAS_AUDIT for e in AD.EVENT.values())
-    lama = {"PO_UPDATED", "PO_RECEIVED", "VD_VOIDED", "VD_UNAPPLIED", "GRN_DIBATALKAN"}
+    # 1 Nov 2026 tiket (a) (OK MASTER): VD_UNAPPLIED -> riwayat=False (riwayat UMP sudah punya kolom UM_DILEPAS beraktor; tanpa ganda)
+    lama = {"PO_UPDATED", "PO_RECEIVED", "VD_VOIDED", "GRN_DIBATALKAN"}
     assert {e.nama for e in AD.EVENT.values() if e.riwayat} == lama  # hanya event lama yang tampil di riwayat
-    assert AD.TANPA_RIWAYAT == frozenset(nama) - lama
+    assert AD.TANPA_RIWAYAT == frozenset(nama) - lama and "VD_UNAPPLIED" in AD.TANPA_RIWAYAT
     assert all(SR.RINGKAS_AUDIT[n] == AD.EVENT[k].ringkas for k, n in ((k, e.nama) for k, e in AD.EVENT.items()) if n in lama)
     assert SR.RINGKAS_AUDIT["PO_UPDATED"] == "Pesanan pembelian diubah" and SR.RINGKAS_AUDIT["PO_RECEIVED"] == "Barang diterima"
 
@@ -82,6 +84,50 @@ def test_catat_dokumen_satu_baris_metadata_aksi_saja(kunci):
     assert a[6] == f"api:{kunci[0]}.{kunci[1]}"
     meta = json.loads(a[7])
     assert meta == {"jenis": kunci[0], "aksi": kunci[1], "ringkas": f"{ev.ringkas} DOK-001", "user_id": str(uid)}
+
+
+def test_catat_dokumen_ke_dan_kunci_hanya_bila_ada():
+    """Terap/lepas/refund: metadata + "ke" (nomor sasaran) + "kunci" (id baris) -- identitas, tanpa nominal; aksi tanpa sasaran: field TIDAK ada."""
+    c, did, uid, kid = _Conn(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    _jalan(AD.catat_dokumen(c, "t1", "vendor_credit", "applied", did, "VC-1", uid, ke="BILL-9", kunci=kid))
+    _jalan(AD.catat_dokumen(c, "t1", "vendor_deposit", "refunded", did, "VD-1", uid, kunci=kid))
+    m1, m2 = (json.loads(x[1][7]) for x in c.exec)
+    assert m1 == {"jenis": "vendor_credit", "aksi": "applied", "ke": "BILL-9", "kunci": str(kid), "ringkas": "Nota debit diterapkan VC-1",
+                  "user_id": str(uid)}
+    assert m2 == {"jenis": "vendor_deposit", "aksi": "refunded", "kunci": str(kid), "ringkas": "Uang muka pembelian dikembalikan vendor VD-1",
+                  "user_id": str(uid)} and "ke" not in m2
+
+
+TERAP = [
+    (ND.terapkan_nota_debit, '"vendor_credit", "applied"', "INSERT INTO vendor_credit_applications", 'ke=bill["invoice_number"], kunci=app_id'),
+    (ND.lepas_nota_debit, '"vendor_credit", "unapplied"', "UPDATE vendor_credit_applications SET status = 'reversed'", 'ke=app["bill_number"], kunci=app["id"]'),
+    (VC.receive_refund, '"vendor_credit", "refunded"', "INSERT INTO vendor_credit_refunds", "kunci=refund_id"),
+    (VD.apply_vendor_deposit, '"vendor_deposit", "applied"', "INSERT INTO vendor_deposit_applications", 'ke=bill["invoice_number"], kunci=app["id"]'),
+    (VD.refund_vendor_deposit, '"vendor_deposit", "refunded"', "INSERT INTO vendor_deposit_refunds", 'kunci=refund["id"]'),
+]
+
+
+@pytest.mark.parametrize("fn,pasangan,ubah,identitas", TERAP, ids=[t[1].replace('"', "").replace(", ", ".") for t in TERAP])
+def test_terap_lepas_refund_sekali_sesudah_tulis_baris_dengan_identitas(fn, pasangan, ubah, identitas):
+    src = inspect.getsource(fn)
+    assert src.count("_ad.catat_dokumen(") == 1 and src.count(pasangan) == 1, fn.__name__
+    i = src.index("_ad.catat_dokumen(")
+    assert i > src.index(ubah) and identitas in src[i:i + 300], fn.__name__
+
+
+def test_lepas_ump_tetap_satu_penulis_nama_dari_tabel():
+    src = inspect.getsource(UVL.lepas_penerapan)
+    assert src.count('_ad.nama("vendor_deposit", "unapplied")') == 1 and "_ad.catat_dokumen(" not in src
+
+
+def test_riwayat_ump_lepas_tanpa_ganda_dari_audit():
+    did = uuid.uuid4()
+    import datetime as _dt
+    t = _dt.datetime(2026, 11, 1, 3, 0, tzinfo=_dt.timezone.utc)
+    rows = [{"id": str(uuid.uuid4()), "createdAt": t, "eventType": ev, "userId": None, "entity_type": "vendor_deposit", "entity_id": did,
+             "entity_number": "VD-1", "metadata": {"ringkas": ev}, "source": "api"} for ev in ("VD_UNAPPLIED", "VD_APPLIED", "VD_REFUNDED", "VD_VOIDED")]
+    ev, _ = _jalan(SR._selesaikan(_ConnRiwayat(rows), "t1", SR._Kumpul(), {"vendor_deposit": [did]}, {"vendor_deposit": True}, 200))
+    assert [e["jenis"] for e in ev] == ["VD_VOIDED"]  # terap/lepas/refund tampil dari kolom beraktor; void (tanpa kolom) dari audit
 
 
 def test_catat_dokumen_tanpa_aktor_tetap_tercatat_userid_null():

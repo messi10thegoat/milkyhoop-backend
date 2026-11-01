@@ -1713,6 +1713,8 @@ async def receive_refund(
                     journal_id,
                     ctx["user_id"],
                 )
+                await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_credit", "refunded", vendor_credit_id, vc["credit_number"],
+                                        ctx["user_id"], kunci=refund_id)  # AUDIT (Law 12)
 
                 # U3a (banksync Rule 1 / Law 31 gerbang 4): uang masuk rekening bank -> bank_transactions di transaksi yang SAMA
                 if body.bank_account_id:

@@ -842,6 +842,8 @@ async def apply_vendor_deposit(
                 journal["id"],
                 ctx.get("user_id"),
             )
+            await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "applied", deposit_id, vd["deposit_number"], ctx.get("user_id"),
+                                    ke=bill["invoice_number"], kunci=app["id"])  # AUDIT (Law 12)
 
             # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
             # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
@@ -1056,6 +1058,8 @@ async def refund_vendor_deposit(
                 data.notes,
                 ctx.get("user_id"),
             )
+            await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "refunded", deposit_id, vd["deposit_number"], ctx.get("user_id"),
+                                    kunci=refund["id"])  # AUDIT (Law 12)
 
             bank_name = None
             if data.bank_account_id:

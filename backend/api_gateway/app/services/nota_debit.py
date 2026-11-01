@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from . import teks_galat as tg
+from . import audit_dokumen as _ad  # AUDIT: jejak terap/lepas ND (Law 12)
 from .tagihan_daftar import sisa_tagihan_jurnal  # satu sumber (compute_ap_rincian); dipakai di modul ini + router
 
 SUMBER_ND = ("VENDOR_CREDIT", "VENDOR_CREDIT_REFUND")
@@ -100,6 +101,8 @@ async def terapkan_nota_debit(conn, ctx: dict, vc_id, bill_id, jumlah, applicati
     if r != "UPDATE 1":
         raise HTTPException(status_code=409, detail={"code": "ND_SUDAH_BERTAUT", "message": "Nota debit ini sudah terkait ke tagihan."})
     await segarkan_cache_hutang_tagihan(conn, tid, bill["id"])
+    await _ad.catat_dokumen(conn, tid, "vendor_credit", "applied", vc_id, vc["credit_number"], ctx["user_id"],
+                            ke=bill["invoice_number"], kunci=app_id)  # AUDIT (Law 12)
     return {"application_id": str(app_id), "bill_id": str(bill["id"]), "bill_number": bill["invoice_number"], "amount": float(total)}
 
 
@@ -113,7 +116,7 @@ async def lepas_nota_debit(conn, ctx: dict, vc_id, alasan: Optional[str]) -> dic
     # U3d: PENENTU SATU dgn POST /{id}/unapply/preview (nota_debit_rencana.rencana_lepas; urutan + pesan == kode lama)
     from .nota_debit_rencana import rencana_lepas
     _r = await rencana_lepas(conn, tid, vc_id, alasan)
-    app = _r["app"]
+    app, vc = _r["app"], _r["vc"]
     await conn.execute(
         """UPDATE vendor_credit_applications SET status = 'reversed', reversed_at = now(), reversed_by = $1, reversal_reason = $2
            WHERE id = $3""", ctx["user_id"], alasan.strip(), app["id"])
@@ -121,6 +124,8 @@ async def lepas_nota_debit(conn, ctx: dict, vc_id, alasan: Optional[str]) -> dic
         """UPDATE vendor_credits SET original_bill_id = NULL, original_bill_number = NULL, updated_at = NOW()
            WHERE id = $1 AND tenant_id = $2 AND original_bill_id = $3""", vc_id, tid, app["bill_id"])
     await segarkan_cache_hutang_tagihan(conn, tid, app["bill_id"])
+    await _ad.catat_dokumen(conn, tid, "vendor_credit", "unapplied", vc_id, vc["credit_number"], ctx["user_id"],
+                            ke=app["bill_number"], kunci=app["id"])  # AUDIT (Law 12)
     return {"application_id": str(app["id"]), "bill_id": str(app["bill_id"])}
 
 
