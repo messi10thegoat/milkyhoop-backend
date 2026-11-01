@@ -2,18 +2,20 @@
 Izin per rute di ROUTE_PERMISSIONS (READ-authz: GET tak terpetakan = tertutup)."""
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from . import buat_penawaran, cari_barang, cari_pelanggan, draf
+from . import buat_penawaran, cari_barang, cari_pelanggan, draf, tafsir
 
 FLAG = "milkybook_v2"
 
 
-def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable) -> APIRouter:
+def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable,
+                   tafsir_fn: Optional[Callable] = None) -> APIRouter:
     """flag_fn(tenant_id) -> awaitable bool; conn_fn() -> async context manager koneksi DB;
-    izin_fn(user, jalur[], metode) -> awaitable {jalur: bool} (peta rute yang sama dengan middleware)."""
+    izin_fn(user, jalur[], metode) -> awaitable {jalur: bool} (peta rute yang sama dengan middleware);
+    tafsir_fn() -> {pemanggil, audit, batas_fn, effort} untuk lapisan LLM (None = tanpa model: tanya balik)."""
     r = APIRouter()
 
     async def _pengguna(request: Request) -> dict:
@@ -72,5 +74,13 @@ def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable) -
         user = await _pengguna(request)
         async with conn_fn() as conn:
             return await draf.simpan(conn, user, percakapan_id, body)
+
+    @r.post("/tafsir")
+    async def tafsir_v2(request: Request, body: tafsir.MintaTafsir):
+        """Cadangan LLM (03 §4): FE memanggil HANYA saat aturan unknown/clarify. Baca saja; keluaran tertutup."""
+        user = await _pengguna(request)
+        dep = tafsir_fn() if tafsir_fn else {"pemanggil": None, "audit": None, "batas_fn": lambda t: None}
+        async with conn_fn() as conn:
+            return await tafsir.tafsir(conn, user, body, **dep)
 
     return r

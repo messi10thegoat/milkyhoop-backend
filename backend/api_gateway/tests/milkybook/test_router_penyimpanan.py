@@ -217,7 +217,8 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
                      ("/sesi/{sesi_id}/berhenti", "POST"), ("/sesi/{sesi_id}/pesan", "POST"),
                      ("/v2/barang", "GET"), ("/v2/pelanggan", "GET"), ("/v2/penawaran", "POST"),
                      ("/v2/percakapan", "GET"), ("/v2/percakapan", "POST"),
-                     ("/v2/percakapan/{percakapan_id}", "GET"), ("/v2/percakapan/{percakapan_id}", "PUT")]
+                     ("/v2/percakapan/{percakapan_id}", "GET"), ("/v2/percakapan/{percakapan_id}", "PUT"),
+                     ("/v2/tafsir", "POST")]
 
 
 # ---------------------------------------------------------------- #9 galat API model ramah (ukur 25 Okt: dulu 500 mentah)
