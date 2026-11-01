@@ -6,7 +6,7 @@ from typing import Callable
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from . import buat_penawaran, cari_barang, cari_pelanggan
+from . import buat_penawaran, cari_barang, cari_pelanggan, draf
 
 FLAG = "milkybook_v2"
 
@@ -46,5 +46,31 @@ def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable) -
         kunci = idem_buat.kunci_dari(request)
         async with conn_fn() as conn:
             return await buat_penawaran.buat(conn, user, body, kunci, izin_fn=izin_fn, response=response)
+
+    @r.get("/percakapan")
+    async def daftar_percakapan_v2(request: Request):
+        """Riwayat/Lanjutkan: percakapan milik pengguna ini, 7 hari, terbaru dulu (ringkasan draf tanpa harga)."""
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            return {"items": await draf.daftar(conn, user)}
+
+    @r.post("/percakapan")
+    async def buat_percakapan_v2(request: Request, body: draf.BuatPercakapan):
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            return await draf.buat(conn, user, body)
+
+    @r.get("/percakapan/{percakapan_id}")
+    async def ambil_percakapan_v2(request: Request, percakapan_id: str):
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            return await draf.ambil(conn, user, percakapan_id)
+
+    @r.put("/percakapan/{percakapan_id}")
+    async def simpan_draf_v2(request: Request, percakapan_id: str, body: draf.SimpanDraf):
+        """Simpan draf aktif + parkir; versi basi = 409 VERSI_BASI (konkurensi optimistis)."""
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            return await draf.simpan(conn, user, percakapan_id, body)
 
     return r
