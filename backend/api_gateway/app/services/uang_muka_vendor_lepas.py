@@ -14,6 +14,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from . import audit_dokumen as _ad  # AUDIT-DOKUMEN: nama event dari SATU tabel
 from . import po_daftar as PD
 from . import uang_muka_vendor as UMV
 from . import uang_muka_vendor_rencana as R
@@ -103,7 +104,7 @@ async def lepas_penerapan(conn, ctx: dict, deposit_id, application_id, alasan: O
             "reversal_journal_id": str(rev_id)}
     if alasan:
         meta["reason"] = alasan
-    await catat_riwayat(conn, tid, "vendor_deposit", deposit_id, vd["deposit_number"], "VD_UNAPPLIED", ctx.get("user_id"),
+    await catat_riwayat(conn, tid, "vendor_deposit", deposit_id, vd["deposit_number"], _ad.nama("vendor_deposit", "unapplied"), ctx.get("user_id"),
                         f"Penerapan uang muka {vd['deposit_number']} ke tagihan {a['bill_number'] or '-'} dilepas" + (f": {alasan}" if alasan else ""),
                         meta=meta, source=sumber)
     return jawab_lepas(vd, a, rev_id, rev_no, await UMV.sisa_jurnal(conn, tid, deposit_id), await R.sisa_tagihan(conn, tid, a["bill_id"]), sudah=False)

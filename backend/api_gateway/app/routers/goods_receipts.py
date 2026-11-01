@@ -11,6 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: nama event dari SATU tabel
 from ..services import grn_daftar as GD
 from ..services import grn_rencana as G
 from ..services import idem_buat
@@ -225,7 +226,7 @@ async def void_goods_receipt(request: Request, gr_id: UUID, body: VoidGoodsRecei
             hasil = await G.void_grn(conn, ctx, gr_id, body.reason, hari)
             gr = await conn.fetchrow(SQL_HEADER + " AND g.id = $2", ctx["tenant_id"], gr_id)
             if not hasil["ulang"]:
-                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", gr["purchase_order_id"], gr["po_number"], "GRN_DIBATALKAN",
+                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", gr["purchase_order_id"], gr["po_number"], _ad.nama("goods_receipt", "voided"),
                                     ctx["user_id"], f"Penerimaan barang {gr['receipt_number']} dibatalkan: {body.reason.strip()}",
                                     meta={"goods_receipt_id": str(gr_id)}, source="api:goods_receipts")
             resp = {"success": True, "message": f"Penerimaan barang {gr['receipt_number']} dibatalkan.",

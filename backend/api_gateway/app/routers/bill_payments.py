@@ -5,6 +5,7 @@ Endpoints for managing vendor payments for purchase invoices (bills).
 """
 
 from fastapi import APIRouter, Body, HTTPException, Request, Query, Response
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
 from ..services import idem_buat  # AS-GP3: idempotensi aksi void/posting/hapus (kunci klien saja)
 from typing import Optional, Literal
 from uuid import UUID
@@ -385,6 +386,8 @@ async def efek_posting_bayar(conn, ctx: dict, *, payment_id, payment_number: str
                 journal_id,
                 ctx["user_id"],
             )
+    # AUDIT-DOKUMEN (Law 12): SATU penulis efek posting -> buat-posted DAN draf->posted sama-sama tercatat
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "payment_out", "posted", payment_id, payment_number, ctx["user_id"])
 
 
 # === Journal Preview (read-only, for DirectAction confirmation card) ===
@@ -1278,6 +1281,7 @@ async def hapus_draf_bayar_core(conn, ctx: dict, payment_id: str) -> dict:
     await conn.execute(
         "DELETE FROM bill_payments_v2 WHERE id = $1::uuid", payment_id
     )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "payment_out", "deleted", payment_id, payment["payment_number"], ctx["user_id"])
     return {"id": payment_id, "payment_number": payment["payment_number"]}
 
 
@@ -1609,6 +1613,8 @@ async def void_bill_payment(
                     payload.void_reason,
                     payment_id,
                 )
+                await _ad.catat_dokumen(conn, ctx["tenant_id"], "payment_out", "voided", payment_id, payment["payment_number"],
+                                        ctx["user_id"])  # AUDIT-DOKUMEN (Law 12)
 
                 logger.info(
                     f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"

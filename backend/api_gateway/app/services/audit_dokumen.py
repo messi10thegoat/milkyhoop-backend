@@ -1,0 +1,67 @@
+"""AUDIT-DOKUMEN (1 Nov 2026, GO MASTER): SATU penentu jejak audit siklus hidup dokumen Pembelian + posting Faktur Penjualan (Law 12).
+
+Dulu jalur tunggal posting/void/hapus FPB, PK, UMP, ND dan kirim/batal/tutup PO tak menulis audit_logs (hanya massal B1 menulis BULK_*);
+grapgrap 18 FPB + 18 PK posted = 0 baris audit Pembelian. Kini tiap aksi menulis SATU baris lewat catat_dokumen di transaksi pemanggil
+(so_riwayat.catat_riwayat: gagal catat = aksi batal, bukan jejak yang hilang diam).
+
+Aturan:
+- EVENT = SATU-SATUNYA sumber nama event Pembelian (uji: tak ada string event Pembelian di luar tabel ini). Event lama (PO_UPDATED,
+  PO_RECEIVED, VD_VOIDED, VD_UNAPPLIED, GRN_DIBATALKAN) ikut di tabel; pemanggil lamanya mengambil nama dari sini (isi baris tak berubah).
+- Metadata baris baru HANYA {jenis, aksi, ringkas, user_id}: siapa (userId), apa (eventType), kapan (createdAt), nomor (entity_number).
+  Tanpa nominal/baris/data pihak (putusan MASTER).
+- riwayat=False: jejak audit saja, TIDAK digabung ke riwayat dokumen (so_riwayat._selesaikan). Kejadian itu sudah tampil dari kolom
+  beraktor (posted_by/sent_by/voided_by/...) -- tanpa ini riwayat FE mendapat baris GANDA dengan jenis yang belum dikenal FE.
+- Hapus FPB / PO / Faktur Penjualan TIDAK di sini: trigger trg_log_deletion (V230) menulis DOCUMENT_DELETED beraktor GUC app.user_id.
+  PK / UMP / ND tak punya trigger itu -> event *_DELETED di sini.
+Di luar cakupan (tiket): apply/unapply/refund ND & UMP; checksum audit_logs (0 baris terisi, klaim Law 12 = Law 34)."""
+from typing import NamedTuple, Optional
+
+
+class Ev(NamedTuple):
+    nama: str  # audit_logs."eventType"
+    entitas: str  # audit_logs.entity_type (cocok so_riwayat.ENTITAS_AUDIT)
+    ringkas: str
+    riwayat: bool  # True = ikut riwayat dokumen (event lama); False = jejak audit saja
+
+
+EVENT = {
+    ("bill", "posted"): Ev("BILL_POSTED", "bills", "Faktur pembelian diposting", False),
+    ("bill", "voided"): Ev("BILL_VOIDED", "bills", "Faktur pembelian dibatalkan (void)", False),
+    ("payment_out", "posted"): Ev("PAYMENT_OUT_POSTED", "bill_payments_v2", "Pembayaran keluar diposting", False),
+    ("payment_out", "voided"): Ev("PAYMENT_OUT_VOIDED", "bill_payments_v2", "Pembayaran keluar dibatalkan (void)", False),
+    ("payment_out", "deleted"): Ev("PAYMENT_OUT_DELETED", "bill_payments_v2", "Draf pembayaran keluar dihapus", False),
+    ("vendor_deposit", "posted"): Ev("VD_POSTED", "vendor_deposit", "Uang muka pembelian diposting", False),
+    ("vendor_deposit", "voided"): Ev("VD_VOIDED", "vendor_deposit", "Uang muka pembelian dibatalkan (void)", True),
+    ("vendor_deposit", "unapplied"): Ev("VD_UNAPPLIED", "vendor_deposit", "Penerapan uang muka pembelian dilepas", True),
+    ("vendor_deposit", "deleted"): Ev("VD_DELETED", "vendor_deposit", "Draf uang muka pembelian dihapus", False),
+    ("vendor_credit", "posted"): Ev("VC_POSTED", "vendor_credits", "Nota debit diposting", False),
+    ("vendor_credit", "voided"): Ev("VC_VOIDED", "vendor_credits", "Nota debit dibatalkan (void)", False),
+    ("vendor_credit", "deleted"): Ev("VC_DELETED", "vendor_credits", "Draf nota debit dihapus", False),
+    ("purchase_order", "updated"): Ev("PO_UPDATED", "purchase_order", "Pesanan pembelian diubah", True),
+    ("purchase_order", "received"): Ev("PO_RECEIVED", "purchase_order", "Barang diterima", True),
+    ("purchase_order", "sent"): Ev("PO_SENT", "purchase_order", "Pesanan pembelian dikirim", False),
+    ("purchase_order", "cancelled"): Ev("PO_CANCELLED", "purchase_order", "Pesanan pembelian dibatalkan", False),
+    ("purchase_order", "closed"): Ev("PO_CLOSED", "purchase_order", "Pesanan pembelian ditutup", False),
+    ("goods_receipt", "voided"): Ev("GRN_DIBATALKAN", "purchase_order", "Penerimaan barang dibatalkan", True),
+    ("sales_invoice", "posted"): Ev("SALES_INVOICE_POSTED", "sales_invoices", "Faktur diposting", False),
+}
+
+# eventType yang TIDAK digabung ke riwayat dokumen (dibaca so_riwayat._selesaikan)
+TANPA_RIWAYAT = frozenset(e.nama for e in EVENT.values() if not e.riwayat)
+# label event yang tampil di riwayat (dibaca so_riwayat.RINGKAS_AUDIT)
+RINGKAS_RIWAYAT = {e.nama: e.ringkas for e in EVENT.values() if e.riwayat}
+
+
+def nama(jenis: str, aksi: str) -> str:
+    """Nama event dari tabel (KeyError = pasangan tak terdaftar -> tambahkan ke EVENT, jangan menulis string di pemanggil)."""
+    return EVENT[(jenis, aksi)].nama
+
+
+async def catat_dokumen(conn, tenant_id: str, jenis: str, aksi: str, doc_id, nomor: Optional[str], user_id,
+                        source: Optional[str] = None) -> None:
+    """Satu baris audit_logs untuk aksi siklus hidup, di transaksi PEMANGGIL sesudah perubahan status (gagal = aksi batal)."""
+    from .so_riwayat import catat_riwayat  # lambat: so_riwayat mengimpor modul ini (TANPA_RIWAYAT, RINGKAS_RIWAYAT)
+    ev = EVENT[(jenis, aksi)]
+    ringkas = f"{ev.ringkas} {nomor}" if nomor else ev.ringkas
+    await catat_riwayat(conn, tenant_id, ev.entitas, doc_id, nomor, ev.nama, user_id, ringkas,
+                        {"jenis": jenis, "aksi": aksi}, source=source or f"api:{jenis}.{aksi}")

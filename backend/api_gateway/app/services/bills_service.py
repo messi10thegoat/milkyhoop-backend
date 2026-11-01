@@ -26,6 +26,7 @@ from fastapi import HTTPException  # B1b-2: inti hapus draf menolak dengan {code
 from decimal import Decimal, ROUND_HALF_UP
 from .sales_doc_calc import q2 as _q2
 from . import teks_galat as tg  # 6a  # item 7: 0.01 HALF_UP
+from . import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void (Law 12)
 from .tax_factor import resolve_dpp_factor
 
 _Dec = Decimal
@@ -1161,6 +1162,7 @@ class BillsService:
                     # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
                     from . import po_daftar as _pd
                     await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
+                    await _ad.catat_dokumen(conn, tenant_id, "bill", "posted", bill_id, invoice_number, user_id)  # AUDIT-DOKUMEN (Law 12)
 
                     # UPDATE INVENTORY for inventory-tracked items
                     # Get default warehouse for tenant
@@ -2059,6 +2061,7 @@ class BillsService:
                     reason,
                     bill_id,
                 )
+                await _ad.catat_dokumen(conn, tenant_id, "bill", "voided", bill_id, bill["invoice_number"], user_id)  # AUDIT-DOKUMEN (Law 12)
 
                 # Clean up document_tax_lines on void
                 await conn.execute(
@@ -2927,6 +2930,7 @@ class BillsService:
                     # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
                     from . import po_daftar as _pd
                     await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
+                    await _ad.catat_dokumen(conn, tenant_id, "bill", "posted", bill_id, invoice_number, user_id)  # AUDIT-DOKUMEN (Law 12)
 
                     # DTL writes for tax report (Law 16, /milkyhoop-tax Rule 3+10)
                     if tax_amount_dec > 0:
@@ -3392,6 +3396,7 @@ class BillsService:
                 # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
                 from . import po_daftar as _pd
                 await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
+                await _ad.catat_dokumen(conn, tenant_id, "bill", "posted", bill_id, bill["invoice_number"], user_id)  # AUDIT-DOKUMEN (Law 12)
 
                 # 9.5 Populate document_tax_lines (Fase 2.2)
                 if bill_tax > 0:

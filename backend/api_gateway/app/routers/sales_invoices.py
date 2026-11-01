@@ -19,6 +19,7 @@ from ..services import teks_galat as tg
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 from ..services.so_riwayat import catat_riwayat, riwayat_faktur
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting faktur (Law 12)
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -3277,6 +3278,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         float(totals["f"]),
         float(totals["r"]),
     )
+    # AUDIT-DOKUMEN (Law 12): SATU titik posting faktur (buat-posted + draf->posted), transaksi pemanggil
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "sales_invoice", "posted", invoice_id, invoice_number, ctx["user_id"])
 
     return {
         "journal_id": str(journal_id),

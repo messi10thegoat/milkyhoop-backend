@@ -23,6 +23,8 @@ import json
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
+from . import audit_dokumen as _AD  # AUDIT-DOKUMEN: nama event Pembelian + jejak audit-saja (TANPA_RIWAYAT)
+
 from .deposit_jenis import label_jenis, label_ringkas, sql_jenis_efektif
 from .nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import zona_tenant
@@ -98,8 +100,6 @@ def label_medan(fields) -> str:
 
 
 RINGKAS_AUDIT = {
-    "PO_UPDATED": "Pesanan pembelian diubah",
-    "PO_RECEIVED": "Barang diterima",
     "SALES_ORDER_UPDATED": "Pesanan diubah",
     "SALES_ORDER_CANCELLED": "Pesanan dibatalkan",
     "SALES_ORDER_CLOSED": "Pesanan ditutup",
@@ -128,6 +128,10 @@ RINGKAS_AUDIT = {
     "PEMINDAHAN_BARANG_DIBATALKAN": "Pemindahan barang dibatalkan",
     "PEMINDAHAN_BARANG_DIHAPUS": "Draf pemindahan barang dihapus",
 }
+
+
+# Event Pembelian yang tampil di riwayat: label dari SATU tabel nama (services/audit_dokumen.EVENT, AUDIT-DOKUMEN 1 Nov 2026)
+RINGKAS_AUDIT.update(_AD.RINGKAS_RIWAYAT)
 
 
 EVENT_KODE_ORDER = ("ORDER_CODE_ISSUED", "ORDER_CODE_OVERRIDDEN", "ORDER_CODE_IMPORTED")
@@ -281,6 +285,8 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
                WHERE a.tenant_id = $1""",
             tenant_id, kueri_ent, kueri_id,
         ):
+            if r["eventType"] in _AD.TANPA_RIWAYAT:  # AUDIT-DOKUMEN: jejak audit saja; kejadiannya tampil dari kolom beraktor (tanpa ganda)
+                continue
             meta = r["metadata"] or {}
             if isinstance(meta, str):
                 meta = json.loads(meta)

@@ -10,6 +10,7 @@ Medan per GRN (SATU sumber SQL untuk baris daftar, detail, ?aksi=, /summary -- p
   aksi             = belum_ditagih (pill) <=> posted AND tertaut < dasar (mencakup sebagian ditagih) -- predikat SAMA ?aksi= & /summary."""
 from decimal import Decimal
 from typing import Awaitable, Callable, Optional
+from . import audit_dokumen as _ad  # AUDIT-DOKUMEN: nama event dari SATU tabel
 from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 NOL = Decimal("0")
@@ -173,7 +174,7 @@ async def riwayat_grn(conn, tenant_id: str, gr_id, boleh: Callable[[str], Awaita
     n = g["receipt_number"]
     k.tambah(g["created_at"], "GRN_DITERIMA", f"Penerimaan barang {n} {_rp(g['amount'])} dicatat", g["created_by"], "goods_receipt", g["id"], n)
     alasan = f": {g['voided_reason']}" if g["voided_reason"] else ""
-    k.tambah(g["voided_at"], "GRN_DIBATALKAN", f"Penerimaan barang {n} dibatalkan{alasan}", g["voided_by"], "goods_receipt", g["id"], n)
+    k.tambah(g["voided_at"], _ad.nama("goods_receipt", "voided"), f"Penerimaan barang {n} dibatalkan{alasan}", g["voided_by"], "goods_receipt", g["id"], n)
     for t in await conn.fetch(
         """SELECT l.id AS kunci, l.kind, l.quantity, l.created_at, l.status, l.reversed_at, b.invoice_number, b.posted_by
            FROM goods_receipt_bill_links l JOIN goods_receipt_items i ON i.id = l.goods_receipt_item_id

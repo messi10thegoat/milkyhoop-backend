@@ -34,6 +34,7 @@ from decimal import Decimal
 from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP (simetri NK)
 
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
 from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
@@ -1225,6 +1226,7 @@ async def hapus_draf_nd_core(conn, ctx: dict, vendor_credit_id) -> dict:
         vendor_credit_id, ctx["tenant_id"],
     ):
         raise HTTPException(status_code=409, detail="Nota debit sudah berubah status. Muat ulang halaman.")
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_credit", "deleted", vendor_credit_id, vc["credit_number"], ctx["user_id"])
 
     logger.info(f"Vendor credit deleted: {vendor_credit_id}")
     return {"id": str(vendor_credit_id), "vendor_credit_number": vc["credit_number"]}
@@ -1481,6 +1483,8 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                     journal_id,
                     ctx["user_id"],
                 )
+                await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_credit", "posted", vendor_credit_id, vc["credit_number"],
+                                        ctx["user_id"])  # AUDIT-DOKUMEN (Law 12)
 
                 logger.info(
                     f"Vendor credit posted: {vendor_credit_id}, journal={journal_id}"
@@ -1895,6 +1899,8 @@ async def void_vendor_credit(
                     ctx["user_id"],
                     body.reason,
                 )
+                await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_credit", "voided", vendor_credit_id, vc["credit_number"],
+                                        ctx["user_id"])  # AUDIT-DOKUMEN (Law 12)
 
                 logger.info(f"Vendor credit voided: {vendor_credit_id}")
 

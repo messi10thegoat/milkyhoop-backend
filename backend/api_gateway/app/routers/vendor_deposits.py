@@ -11,6 +11,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/hapus + nama event (Law 12)
 from ..services import idem_buat  # P-U3b: idempotensi header X-Idempotency-Key (pola PO / W0)
 from ..services.so_riwayat import catat_riwayat  # P-U3b: riwayat beraktor (lepas penerapan)
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
@@ -469,6 +470,7 @@ async def hapus_draf_umv_core(conn, ctx: dict, deposit_id) -> dict:
     _tolak((await R.rencana_hapus(conn, ctx, existing))["blocks"])  # = /delete/preview
 
     await conn.execute("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", deposit_id, ctx["tenant_id"])
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "deleted", deposit_id, existing["deposit_number"], ctx.get("user_id"))
     return {"id": str(deposit_id), "deposit_number": existing["deposit_number"]}
 
 
@@ -637,6 +639,7 @@ async def _posting_inti(conn, ctx: dict, deposit_id) -> "PostDepositResponse":
         deposit_id,
         journal["id"],
     )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "posted", deposit_id, vd["deposit_number"], ctx.get("user_id"))
 
     resp = PostDepositResponse(
         deposit_id=deposit_id,
@@ -1267,7 +1270,7 @@ async def void_vendor_deposit(request: Request, deposit_id: UUID, body: Optional
                 deposit_id,
             )
 
-            await catat_riwayat(conn, ctx["tenant_id"], "vendor_deposit", deposit_id, vd["deposit_number"], "VD_VOIDED", ctx.get("user_id"),
+            await catat_riwayat(conn, ctx["tenant_id"], "vendor_deposit", deposit_id, vd["deposit_number"], _ad.nama("vendor_deposit", "voided"), ctx.get("user_id"),
                                 f"Uang muka pembelian {vd['deposit_number']} dibatalkan: {alasan}", meta={"reason": alasan},
                                 source="api:vendor_deposits.void")
             logger.info(f"Vendor deposit voided: {deposit_id}")

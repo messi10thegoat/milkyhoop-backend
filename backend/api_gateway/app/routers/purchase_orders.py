@@ -47,6 +47,7 @@ from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
+from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
 from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
 from fastapi import Response
 
@@ -889,7 +890,7 @@ async def update_purchase_order(
                 if ubah_uang:
                     await _hitung_ulang_total(conn, po_id)
 
-                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], "PO_UPDATED", ctx["user_id"],
+                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], _ad.nama("purchase_order", "updated"), ctx["user_id"],
                                     f"Pesanan pembelian {po['po_number']} diubah", meta={"fields": sorted(body.model_dump(exclude_unset=True))},
                                     source="api:purchase_orders")
 
@@ -972,6 +973,7 @@ async def kirim_po_core(conn, ctx: dict, po_id) -> dict:
         po_id,
         ctx["user_id"],
     )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "purchase_order", "sent", po_id, po["po_number"], ctx["user_id"])
     logger.info(f"Purchase order sent: {po_id}")
     return {"id": str(po_id), "po_number": po["po_number"], "status": "sent"}
 
@@ -1142,7 +1144,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     new_status,
                 )
 
-                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], "PO_RECEIVED", ctx["user_id"],
+                await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], _ad.nama("purchase_order", "received"), ctx["user_id"],
                                     f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {body.receive_date.isoformat()})",
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
@@ -1323,7 +1325,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
 async def batal_po_core(conn, ctx: dict, po_id, alasan: str) -> dict:
     """Inti POST /{id}/cancel, di transaksi PEMANGGIL: rute tunggal DAN batal massal (B1b-1). Hanya bila belum ada barang diterima dan
     belum ada tagihan (diukur dari BARIS, bukan kolom cache; penentu rencana_batal di dalam lock). -> {id, status}."""
-    po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
+    po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
     if not po:
         raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
     _tolak((await PR.rencana_batal(conn, ctx["tenant_id"], po, alasan))["blocks"])  # = /cancel/preview
@@ -1338,6 +1340,7 @@ async def batal_po_core(conn, ctx: dict, po_id, alasan: str) -> dict:
         ctx["user_id"],
         alasan,
     )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "purchase_order", "cancelled", po_id, po["po_number"], ctx["user_id"])
     logger.info(f"Purchase order cancelled: {po_id}")
     return {"id": str(po_id), "status": "cancelled"}
 
@@ -1391,7 +1394,7 @@ async def close_purchase_order(request: Request, po_id: UUID, response: Response
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "PO_CLOSE", po_id, {}, response)
                 if _lama is not None:  # AS-GP1 (24 Okt): ulang ber-kunci = respons SAMA, tanpa tulis/blok status kedua
                     return _lama
-                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status")
+                po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
                 if not po:
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
                 _tolak((await PR.rencana_tutup(conn, po))["blocks"])  # = /close/preview
@@ -1406,6 +1409,7 @@ async def close_purchase_order(request: Request, po_id: UUID, response: Response
                     ctx["user_id"],
                 )
 
+                await _ad.catat_dokumen(conn, ctx["tenant_id"], "purchase_order", "closed", po_id, po["po_number"], ctx["user_id"])
                 logger.info(f"Purchase order closed: {po_id}")
                 _resp = {
                     "success": True,
