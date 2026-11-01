@@ -1158,6 +1158,9 @@ class BillsService:
                         bill_id,
                         user_id,
                     )
+                    # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
+                    from . import po_daftar as _pd
+                    await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
 
                     # UPDATE INVENTORY for inventory-tracked items
                     # Get default warehouse for tenant
@@ -2921,6 +2924,9 @@ class BillsService:
                         user_id,
                         bill_id,
                     )
+                    # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
+                    from . import po_daftar as _pd
+                    await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
 
                     # DTL writes for tax report (Law 16, /milkyhoop-tax Rule 3+10)
                     if tax_amount_dec > 0:
@@ -3383,6 +3389,9 @@ class BillsService:
                     user_id,
                     bill_id,
                 )
+                # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
+                from . import po_daftar as _pd
+                await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
 
                 # 9.5 Populate document_tax_lines (Fase 2.2)
                 if bill_tax > 0:

@@ -69,7 +69,8 @@ async def neto_tagihan_terposting(conn, tid: str, bill_ids) -> dict:
 
 async def _blok_qty_po(conn, tid: str, bill_id, items: list) -> list:
     """PO_QTY_TERLAMPAUI (aturan D, toleransi 0 -- putusan MASTER/BACKEND2 23 Okt): per baris PO ber-stok, Σ qty dasar baris tagihan LAIN yang
-    terposting non-void + qty dasar tagihan ini <= qty pesanan. Qty tertagih DITURUNKAN dari bill_items (bukan cache poi.quantity_billed).
+    TIDAK void (draf ikut -- 1 Nov 2026 D2: SATU pagar dengan to-bill, po_daftar.PRED_TAGIH["pagar"]) + qty dasar tagihan ini <= qty pesanan.
+    Qty tertagih DITURUNKAN dari bill_items (bukan cache poi.quantity_billed).
     Baris tanpa qty_dasar (satuan beda) sudah diblok SATUAN_TAK_TERKONVERSI oleh grn_tagih."""
     ini = {}
     for i in items:
@@ -82,13 +83,13 @@ async def _blok_qty_po(conn, tid: str, bill_id, items: list) -> list:
             """SELECT poi.id, poi.quantity, poi.unit, po.po_number,
                       COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
                                 WHERE bi.purchase_order_item_id = poi.id AND b.id <> $2
-                                  AND b.status_v2 IS NOT NULL AND b.status_v2 NOT IN ('draft', 'void')), 0) AS tertagih
+                                  AND COALESCE(b.status_v2, b.status) <> 'void'), 0) AS tertagih
                FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id AND po.tenant_id = $1
                WHERE poi.id = ANY($3::uuid[]) ORDER BY po.po_number, poi.id""", tid, bill_id, list(ini)):
         dipesan, tertagih = Decimal(str(r["quantity"] or 0)), Decimal(str(r["tertagih"] or 0))
         if tertagih + ini[r["id"]] > dipesan:
             from .teks_galat import qty as _q
-            out.append(blok("PO_QTY_TERLAMPAUI", f"Jumlah ditagih melebihi pesanan {r['po_number']}: dipesan {_q(dipesan)}, sudah ditagih "
+            out.append(blok("PO_QTY_TERLAMPAUI", f"Jumlah ditagih melebihi pesanan {r['po_number']}: dipesan {_q(dipesan)}, sudah ditagih (termasuk draf) "
                                                  f"{_q(tertagih)}, tagihan ini {_q(ini[r['id']])}. Kurangi jumlah tagihan."))
     return out
 

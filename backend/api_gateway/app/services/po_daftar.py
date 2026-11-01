@@ -9,6 +9,9 @@
                  ?aksi=k, hitungan summary dan `aksi` baris memakai predikat yang sama). `menunggu_barang` (keadaan normal tiap PO terkirim)
                  dan `perlu_ditutup` (Fully Billed = selesai otomatis, pola NetSuite) BUKAN pill; tutup manual = aksi di detail.
   amount_received/amount_billed = TURUNAN dari baris (qty_diterima x total / qty, 2dp HALF_UP), bukan kolom cache PO.
+  DITAGIH (1 Nov 2026, putusan MASTER, cermin SO "faktur draf = belum difaktur" 25 Sep): amount_billed/sisa_ditagih/aksi/status dari bill
+                 POSTED saja; porsi bill DRAF terpisah (draft_bill_amount). PAGAR (to-bill, posting, ubah/batal PO) tetap SEMUA bill non-void
+                 (cache purchase_order_items.quantity_billed). Dua angka, dua tujuan -- satu predikat per tujuan (PRED_TAGIH).
   documents      = bundel (dokumen_po) tanpa rekap -- SATU definisi dgn /purchase-orders/{id}/documents.
 """
 from datetime import date
@@ -26,7 +29,21 @@ STATUS_SUDAH_TERIMA = ("received", "partial_billed", "billed", "closed")
 STATUS_BISA_TAGIH = ("partial_received", "received", "partial_billed")
 # PO tanpa sisa ditagih (22 Okt 2026, temuan nyata kaos PO-2610-0001; pola NetSuite: baris PO yang DITUTUP tak bisa ditagih):
 # dibatalkan ATAU selesai -> sisa_ditagih = 0 di baris/detail (fakta_po) dan with_totals sum_sisa (sql_sisa_ditagih). SATU definisi.
-STATUS_TANPA_SISA_TAGIH = ("cancelled", "closed")
+# 1 Nov 2026 (D3, cermin SO: SO draf tak "berjalan" -> belum difaktur 0, so_aksi.fakta `jalan`): + draft. Himpunan ini juga dipakai
+# summary.pending_amount dan agregat (po_agregat.AKTIF_TIDAK).
+STATUS_TANPA_SISA_TAGIH = ("draft", "cancelled", "closed")
+# Predikat bill per tujuan (alias bills = b). POSTED = angka tampil; DRAF = porsi draf terpisah; PAGAR = batas qty (non-void, draf ikut).
+PRED_TAGIH = {
+    "posted": "COALESCE(b.status_v2, b.status) NOT IN ('draft', 'void')",
+    "draf": "COALESCE(b.status_v2, b.status) = 'draft'",
+    "pagar": "COALESCE(b.status_v2, b.status) <> 'void'",
+}
+
+
+def sql_qty_tagih(jenis: str, i: str = "i", tenant: str = "$2") -> str:
+    """Σ qty bill_items bertaut ke baris PO `i` pada bill tenant `tenant` dengan predikat PRED_TAGIH[jenis]. SATU sumber."""
+    return (f"COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id "
+            f"WHERE bi.purchase_order_item_id = {i}.id AND b.tenant_id = {tenant} AND {PRED_TAGIH[jenis]}), 0)")
 AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih")  # urutan desak
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}
@@ -85,13 +102,17 @@ def jumlah_turunan(baris: list) -> dict:
 
 
 # ---- SQL (alias po = purchase_orders, ag = LATERAL agregat; $1 = tenant) --------------------------------------------------------------
-SQL_AGREGAT = """
+SQL_AGREGAT = f"""
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0)), 0) AS sisa_terima,
-               COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - COALESCE(i.quantity_billed, 0), 0)), 0) AS belum_ditagih,
+               COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - q.posted, 0)), 0) AS belum_ditagih,
                COALESCE(SUM(ROUND(COALESCE(i.quantity_received, 0) * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_received,
-               COALESCE(SUM(ROUND(COALESCE(i.quantity_billed, 0) * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_billed
-        FROM purchase_order_items i WHERE i.po_id = po.id
+               COALESCE(SUM(ROUND(q.posted * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_billed,
+               COALESCE(SUM(ROUND(q.draf * i.total / NULLIF(i.quantity, 0), 2)), 0) AS draft_bill_amount
+        FROM purchase_order_items i
+        CROSS JOIN LATERAL (SELECT {sql_qty_tagih("posted", "i", "po.tenant_id")} AS posted,
+                                   {sql_qty_tagih("draf", "i", "po.tenant_id")} AS draf) q
+        WHERE i.po_id = po.id
     ) ag ON true"""
 
 
@@ -132,6 +153,11 @@ def sql_sisa_ditagih(po: str = "po", ag: str = "ag") -> str:
     return f"(CASE WHEN {po}.status IN ({daftar}) THEN 0 ELSE GREATEST({po}.total_amount - {ag}.amount_billed, 0) END)"
 
 
+def sql_berjalan(po: str = "po") -> str:
+    """Predikat SQL PO "berjalan" = status di luar STATUS_TANPA_SISA_TAGIH (satu himpunan dengan sql_sisa_ditagih)."""
+    return f"{po}.status NOT IN ({', '.join(repr(x) for x in STATUS_TANPA_SISA_TAGIH)})"
+
+
 async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
     """{po_id: {aksi, terima_*, position_text(status ikut), amount_received, amount_billed, sisa_ditagih}} untuk po_ids — fungsi
     YANG SAMA untuk baris daftar dan detail. Turunan dari baris PO (bukan kolom cache)."""
@@ -139,7 +165,8 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
         return {}
     out = {}
     for r in await conn.fetch(
-        f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.amount_received, ag.amount_billed
+        f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.amount_received, ag.amount_billed,
+                   ag.draft_bill_amount
             FROM purchase_orders po {SQL_AGREGAT}
             WHERE po.tenant_id = $1 AND po.id = ANY($2::uuid[])""", tenant_id, list(po_ids)):
         sisa = NOL if r["status"] in STATUS_TANPA_SISA_TAGIH else r2(r["total_amount"]) - r2(r["amount_billed"])
@@ -148,7 +175,7 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
             "position_text": position_text(r["status"]),
             "aksi": aksi_po(r["status"], r["expected_date"], r["sisa_terima"], r["belum_ditagih"], hari_ini),
             "amount_received": r2(r["amount_received"]), "amount_billed": r2(r["amount_billed"]),
-            "sisa_ditagih": max(sisa, NOL),
+            "sisa_ditagih": max(sisa, NOL), "draft_bill_amount": r2(r["draft_bill_amount"]),
         }
     return out
 
@@ -252,25 +279,25 @@ def documents_baris(kelompok: list) -> list:
     return [{"type": d["kind"]} for g in kelompok for d in g["docs"]]
 
 
-# qty tertagih per baris PO = Σ bill_items bertaut pada bill TIDAK void (draf ikut). Alias baris PO = i; $2 = tenant.
-SQL_QTY_TAGIH = """COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-               WHERE bi.purchase_order_item_id = i.id AND b.tenant_id = $2 AND COALESCE(b.status_v2, b.status) <> 'void'), 0)"""
+# qty TERIKAT bill per baris PO (PAGAR) = Σ bill_items bertaut pada bill TIDAK void (draf ikut). Alias baris PO = i; $2 = tenant.
+SQL_QTY_TAGIH = sql_qty_tagih("pagar")
 
 
 # ---- Sinkron tagih (P-U2 sisi tulis): qty/jumlah/status tertagih TURUNAN dari bill_items bertaut --------------------------------------
 async def sinkron_tagih(conn, tenant_id: str, po_id) -> dict:
-    """Hitung ulang purchase_order_items.quantity_billed, purchase_orders.amount_billed (cache) dan status dari bill_items yang bertaut
-    (`bill_items.purchase_order_item_id`) pada bill TIDAK void (draf ikut = pola NetSuite: PO 'Partially Billed' sejak bill dibuat dari PO).
-    SATU fungsi untuk `/to-bill` DAN pemulihan saat bill dihapus/di-void (dipanggil BACKEND dari bills.py). Wajib di transaksi pemanggil,
-    SESUDAH PO dikunci (FOR UPDATE). Status hanya bergeser di keluarga terima/tagih (sent·partial_received·received·partial_billed·billed);
-    draft/closed/cancelled tak disentuh. -> {status, amount_billed}."""
+    """Hitung ulang dari bill_items bertaut (`bill_items.purchase_order_item_id`): purchase_order_items.quantity_billed = qty TERIKAT bill
+    non-void (PAGAR, draf ikut); purchase_orders.amount_billed (cache) dan STATUS dari bill POSTED saja (1 Nov 2026 D1, pola NetSuite: status
+    PO dari vendor bill terposting). SATU fungsi untuk `/to-bill`, posting bill (3 jalur bills_service) DAN pemulihan saat bill dihapus/di-void.
+    Wajib di transaksi pemanggil, SESUDAH PO dikunci (FOR UPDATE). Status hanya bergeser di keluarga terima/tagih
+    (sent·partial_received·received·partial_billed·billed); draft/closed/cancelled tak disentuh. -> {status, amount_billed}."""
     po = await conn.fetchrow("SELECT id, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, tenant_id)
     if not po:
         return {}
     await conn.execute(f"UPDATE purchase_order_items i SET quantity_billed = {SQL_QTY_TAGIH} WHERE i.po_id = $1", po_id, tenant_id)
-    baris = await conn.fetch(
-        "SELECT quantity, quantity_received, quantity_billed, total FROM purchase_order_items WHERE po_id = $1", po_id)
-    jml = jumlah_turunan([dict(b) for b in baris])
+    baris = [dict(b) for b in await conn.fetch(
+        f"""SELECT i.quantity, i.quantity_received, {sql_qty_tagih("posted")} AS quantity_billed, i.total
+            FROM purchase_order_items i WHERE i.po_id = $1""", po_id, tenant_id)]  # quantity_billed di sini = POSTED (angka/status)
+    jml = jumlah_turunan(baris)
     q_tagih = sum((_d(b["quantity_billed"]) for b in baris), NOL)
     semua_tagih = bool(baris) and all(_d(b["quantity_billed"]) >= _d(b["quantity"]) for b in baris)
     semua_terima = bool(baris) and all(_d(b["quantity_received"]) >= _d(b["quantity"]) for b in baris)
@@ -297,6 +324,12 @@ async def po_terkait_bill(conn, tenant_id: str, bill_id) -> list:
     return [r["po_id"] for r in await conn.fetch(
         """SELECT DISTINCT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id
            JOIN purchase_orders po ON po.id = i.po_id WHERE bi.bill_id = $1 AND po.tenant_id = $2""", bill_id, tenant_id)]
+
+
+async def sinkron_po_bill(conn, tenant_id: str, bill_id) -> list:
+    """Sesudah bill berubah status (posting: D1 1 Nov 2026) -> sinkron PO yang tertaut. Transaksi pemanggil."""
+    po_ids = await po_terkait_bill(conn, tenant_id, bill_id)
+    return await pulihkan_tagih(conn, tenant_id, po_ids) if po_ids else []
 
 
 async def pulihkan_tagih(conn, tenant_id: str, po_ids: list) -> list:

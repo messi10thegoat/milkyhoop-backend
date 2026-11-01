@@ -175,7 +175,8 @@ class PurchaseOrderItemResponse(BaseModel):
     description: str
     quantity: float
     quantity_received: float = 0
-    quantity_billed: float = 0
+    quantity_billed: float = 0          # 1 Nov 2026: bill POSTED
+    quantity_billed_draft: float = 0    # porsi bill draf (terpisah)
     unit: Optional[str] = None
     # 22 Okt 2026 (temuan WORKSPACE): uang baris = float (dulu int -> PO ber-sen [unit_price 2dp sejak P-U2] membuat GET detail 500)
     unit_price: float
@@ -205,6 +206,7 @@ class PurchaseOrderListItem(BaseModel):
     amount_received: float = 0
     amount_billed: float = 0
     sisa_ditagih: float = 0
+    draft_bill_amount: float = 0  # 1 Nov 2026: porsi bill draf (ditagih/sisa = bill POSTED)
     status: str
     ref_no: Optional[str] = None
     created_at: str
@@ -236,6 +238,7 @@ class PurchaseOrderDetail(BaseModel):
     amount_received: float = 0
     amount_billed: float = 0
     sisa_ditagih: float = 0
+    draft_bill_amount: float = 0  # 1 Nov 2026: porsi bill draf
     # P-U2: paritas detail == baris (fungsi sama: services/po_daftar)
     terima_terbuka: bool = False
     terima_hari: Optional[int] = None

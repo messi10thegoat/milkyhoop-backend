@@ -332,6 +332,7 @@ async def list_purchase_orders(
                     "amount_received": float(f["amount_received"]),
                     "amount_billed": float(f["amount_billed"]),
                     "sisa_ditagih": float(f["sisa_ditagih"]),
+                    "draft_bill_amount": float(f["draft_bill_amount"]),
                     "status": row["status"],
                     "ref_no": row["ref_no"],
                     "created_at": row["created_at"].isoformat(),
@@ -472,8 +473,8 @@ async def get_purchase_orders_summary(request: Request, search: Optional[str] = 
                     COALESCE(SUM(po.total_amount) FILTER (WHERE po.status <> 'cancelled'), 0) as total_value,
                     COALESCE(SUM(ag.amount_received) FILTER (WHERE po.status <> 'cancelled'), 0) as total_received,
                     COALESCE(SUM(ag.amount_billed) FILTER (WHERE po.status <> 'cancelled'), 0) as total_billed,
-                    COALESCE(SUM(GREATEST(po.total_amount - ag.amount_billed, 0))
-                        FILTER (WHERE po.status IN ('sent', 'partial_received', 'received', 'partial_billed')), 0) as pending_amount,
+                    COALESCE(SUM({PD.sql_sisa_ditagih()}), 0) as pending_amount,
+                    COALESCE(SUM(ag.draft_bill_amount) FILTER (WHERE {PD.sql_berjalan()}), 0) as draft_bill_amount,
                     {pill}
                 FROM purchase_orders po {PD.SQL_AGREGAT}
                 WHERE po.tenant_id = $1{w}
@@ -491,7 +492,8 @@ async def get_purchase_orders_summary(request: Request, search: Optional[str] = 
                 "total_value": float(PD.r2(row["total_value"])),
                 "total_received": float(PD.r2(row["total_received"])),
                 "total_billed": float(PD.r2(row["total_billed"])),
-                "pending_amount": float(PD.r2(row["pending_amount"])),
+                "pending_amount": float(PD.r2(row["pending_amount"])),  # 1 Nov: Σ sisa_ditagih (himpunan fakta_po, bill POSTED)
+                "draft_bill_amount": float(PD.r2(row["draft_bill_amount"])),
             }
             for k in PD.AKSI:
                 data[f"{k}_count"] = row[f"{k}_count"] or 0
@@ -558,13 +560,15 @@ async def get_purchase_order(request: Request, po_id: UUID):
                 raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
 
             # Get items
+            # 1 Nov 2026: qty ditagih tampil = bill POSTED, draf terpisah (cache quantity_billed = PAGAR, tak ditampilkan)
             items = await conn.fetch(
-                """
-                SELECT * FROM purchase_order_items
-                WHERE po_id = $1
-                ORDER BY line_number
+                f"""
+                SELECT i.*, {PD.sql_qty_tagih("posted")} AS q_posted, {PD.sql_qty_tagih("draf")} AS q_draf
+                FROM purchase_order_items i
+                WHERE i.po_id = $1
+                ORDER BY i.line_number
             """,
-                po_id,
+                po_id, ctx["tenant_id"],
             )
 
             # Get linked bills
@@ -601,6 +605,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "amount_received": float(f["amount_received"]),
                     "amount_billed": float(f["amount_billed"]),
                     "sisa_ditagih": float(f["sisa_ditagih"]),
+                    "draft_bill_amount": float(f["draft_bill_amount"]),
                     "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
                     "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
                     "position_text": f["position_text"], "aksi": f["aksi"],
@@ -623,7 +628,8 @@ async def get_purchase_order(request: Request, po_id: UUID):
                             "description": item["description"],
                             "quantity": float(item["quantity"]),
                             "quantity_received": float(item["quantity_received"] or 0),
-                            "quantity_billed": float(item["quantity_billed"] or 0),
+                            "quantity_billed": float(item["q_posted"] or 0),
+                            "quantity_billed_draft": float(item["q_draf"] or 0),
                             "unit": item["unit"],
                             "unit_price": float(item["unit_price"] or 0),
                             "discount_percent": float(item["discount_percent"] or 0),

@@ -2,9 +2,8 @@
 
 GET /api/purchase-orders/aggregate?q=unbilled|top_vendors|vendor_status|receive_window
 
-Putusan MASTER 1 Nov: "belum ditagih" = SATU definisi PO yang sudah ada, PD.fakta_po(...)["sisa_ditagih"] (sama dengan kolom
-Sisa daftar/detail; quantity_billed turunan bill_items bertaut, tagihan DRAF dihitung SUDAH ditagih). Bagian draf ditampilkan
-terpisah (draft_bill_amount) supaya FE bisa menyebutnya. Asimetri dengan SO (faktur draf = belum ditagih) = tiket terpisah.
+Putusan MASTER 1 Nov: "belum ditagih" = SATU definisi PO, PD.fakta_po(...)["sisa_ditagih"] (sama dengan kolom Sisa daftar/detail).
+Sejak unit asimetri-draf (1 Nov, cermin SO): ditagih = bill POSTED, porsi DRAF terpisah = fakta_po draft_bill_amount (satu sumber).
 PO adalah komitmen (belum AP), jadi bukan uang jurnal. Validasi parameter (400) memakai pembantu so_agregat apa adanya (paritas).
 """
 from fastapi import HTTPException
@@ -13,36 +12,33 @@ from . import po_daftar as PD
 from .so_agregat import BATAS_BARIS, _400, _f, _uuid, batas, rentang
 
 JENIS = ("unbilled", "top_vendors", "vendor_status", "receive_window")
-AKTIF_TIDAK = ("draft", "cancelled", "closed")   # PO yang masih "berjalan" = selain ini
+AKTIF_TIDAK = PD.STATUS_TANPA_SISA_TAGIH   # PO yang masih "berjalan" = selain ini (satu himpunan dengan sisa ditagih)
 NOL = PD.NOL
 
 _NAMA = "COALESCE(v.name, po.vendor_name)"
 _JOIN_VENDOR = "LEFT JOIN vendors v ON v.id = po.vendor_id AND v.tenant_id = po.tenant_id"
-# Porsi nilai PO yang tertagih oleh tagihan DRAF -- tautan & pembulatan SAMA dengan SQL_AGREGAT.amount_billed (bill_items bertaut).
-_SQL_DRAF = """COALESCE((SELECT SUM(ROUND(d.qty * i.total / NULLIF(i.quantity, 0), 2)) FROM purchase_order_items i
-                   JOIN LATERAL (SELECT COALESCE(SUM(bi.quantity), 0) AS qty FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
-                                 WHERE bi.purchase_order_item_id = i.id AND b.tenant_id = po.tenant_id
-                                   AND COALESCE(b.status_v2, b.status) = 'draft') d ON true
-                   WHERE i.po_id = po.id), 0)"""
+
+
+async def _fakta(conn, tenant_id: str, ids: list) -> dict:
+    """{po_id: fakta} -- fungsi YANG SAMA dengan baris daftar/detail (PD.fakta_po: sisa_ditagih, draft_bill_amount)."""
+    if not ids:
+        return {}
+    return await PD.fakta_po(conn, tenant_id, ids, await PD.tanggal_hari_ini(conn, tenant_id))
 
 
 async def _sisa(conn, tenant_id: str, ids: list) -> dict:
-    """{po_id: Decimal sisa ditagih} -- fungsi YANG SAMA dengan baris daftar/detail (PD.fakta_po)."""
-    if not ids:
-        return {}
-    hari = await PD.tanggal_hari_ini(conn, tenant_id)
-    return {k: v["sisa_ditagih"] for k, v in (await PD.fakta_po(conn, tenant_id, ids, hari)).items()}
+    return {k: v["sisa_ditagih"] for k, v in (await _fakta(conn, tenant_id, ids)).items()}
 
 
 async def unbilled(conn, tenant_id: str) -> dict:
     rows = await conn.fetch(
-        f"""SELECT po.id, po.po_number, po.vendor_id, {_NAMA} AS vendor_name, po.po_date, po.status, po.total_amount,
-                   {_SQL_DRAF} AS draft_bill_amount
+        f"""SELECT po.id, po.po_number, po.vendor_id, {_NAMA} AS vendor_name, po.po_date, po.status, po.total_amount
             FROM purchase_orders po {_JOIN_VENDOR}
             WHERE po.tenant_id = $1 AND po.status <> ALL($2::text[])""",
         tenant_id, list(AKTIF_TIDAK),
     )
-    sisa = await _sisa(conn, tenant_id, [r["id"] for r in rows])
+    f = await _fakta(conn, tenant_id, [r["id"] for r in rows])
+    sisa = {k: v["sisa_ditagih"] for k, v in f.items()}
     isi = sorted((r for r in rows if sisa.get(r["id"], NOL) > NOL), key=lambda r: (-sisa[r["id"]], r["po_number"]))
     return {
         "total": _f(sum((sisa[r["id"]] for r in isi), NOL)),
@@ -54,7 +50,7 @@ async def unbilled(conn, tenant_id: str) -> dict:
             "vendor_name": r["vendor_name"], "po_date": r["po_date"].isoformat(),
             "status": r["status"], "total_amount": _f(r["total_amount"]),
             "unbilled_amount": _f(sisa[r["id"]]),
-            "draft_bill_amount": _f(r["draft_bill_amount"]),
+            "draft_bill_amount": _f(f[r["id"]]["draft_bill_amount"]),
         } for r in isi[:BATAS_BARIS]],
     }
 
