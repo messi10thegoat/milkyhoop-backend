@@ -56,7 +56,9 @@ def test_po_qty_terlampaui_dari_bill_items_bukan_cache():
     b = asyncio.run(TA._blok_qty_po(k, "t", uuid4(), items))
     assert [x["code"] for x in b] == ["PO_QTY_TERLAMPAUI"] and "PO-1" in b[0]["message"]
     sql = k.sql[0][0]
-    assert "FROM bill_items bi" in sql and "quantity_billed" not in sql and "b.id <> $2" in sql and "NOT IN ('draft', 'void')" in sql
+    # 1 Nov 2026 D2: SATU pagar non-void (draf LAIN ikut) == to-bill
+    assert "FROM bill_items bi" in sql and "quantity_billed" not in sql and "b.id <> $2" in sql
+    assert "COALESCE(b.status_v2, b.status) <> 'void'" in sql and "NOT IN ('draft', 'void')" not in sql
     items[0]["qty_dasar"] = D("4")
     assert asyncio.run(TA._blok_qty_po(k, "t", uuid4(), items)) == []          # 6 + 4 = 10 pas -> lolos (toleransi 0)
     assert asyncio.run(TA._blok_qty_po(k, "t", uuid4(), [{"id": uuid4(), "purchase_order_item_id": po_item, "qty_dasar": None}])) == []

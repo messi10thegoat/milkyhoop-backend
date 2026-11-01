@@ -123,8 +123,12 @@ async def test_unbilled_sql_himpunan_dan_pagar_tenant():
     assert args == (TENANT, ["draft", "cancelled", "closed"])
     assert "po.status <> ALL($2::text[])" in sql and "po.tenant_id = $1" in sql
     assert "COALESCE(v.name, po.vendor_name)" in sql and "v.tenant_id = po.tenant_id" in sql
-    assert "COALESCE(b.status_v2, b.status) = 'draft'" in sql and "b.tenant_id = po.tenant_id" in sql
-    assert "bi.purchase_order_item_id = i.id" in sql       # tautan SAMA dengan quantity_billed (SQL_QTY_TAGIH)
+    # 1 Nov 2026 (satu sumber draf): porsi draf dari PD.fakta_po -> SQL unbilled tanpa predikat bill; definisinya di PD.SQL_AGREGAT
+    assert "bill_items" not in sql and "b.status" not in sql
+    from app.services import po_daftar as PD
+    assert PD.sql_qty_tagih("draf", "i", "po.tenant_id") in PD.SQL_AGREGAT
+    assert "COALESCE(b.status_v2, b.status) = 'draft'" in PD.SQL_AGREGAT and "b.tenant_id = po.tenant_id" in PD.SQL_AGREGAT
+    assert "bi.purchase_order_item_id = i.id" in PD.SQL_AGREGAT
 
 
 @pytest.mark.asyncio

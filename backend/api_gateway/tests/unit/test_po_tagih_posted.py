@@ -163,3 +163,30 @@ def test_agregat_draft_dari_fakta_tanpa_sql_lokal():
     src = inspect.getsource(PA)
     assert "_SQL_DRAF" not in src and "status = 'draft'" not in src
     assert 'f[r["id"]]["draft_bill_amount"]' in inspect.getsource(PA.unbilled)
+
+
+class _ConnAgg:
+    """Kueri unbilled -> baris PO; kueri fakta_po (SQL_AGREGAT) -> baris dengan draft_bill_amount BERBEDA per PO."""
+    def __init__(self, po): self.po = po
+
+    async def fetch(self, sql, *a):
+        if "ag.draft_bill_amount" in sql:
+            return [{"id": p["id"], "status": "partial_billed", "expected_date": None, "total_amount": p["total"], "sisa_terima": D(0),
+                     "belum_ditagih": D(0), "amount_received": p["total"], "amount_billed": p["posted"], "draft_bill_amount": p["draf"]}
+                    for p in self.po if p["id"] in set(a[1])]
+        return [{"id": p["id"], "po_number": p["no"], "vendor_id": None, "vendor_name": "V", "po_date": __import__("datetime").date(2026, 10, 1),
+                 "status": "partial_billed", "total_amount": p["total"]} for p in self.po]
+
+
+def test_agregat_draft_sama_dengan_fakta_per_po(monkeypatch):
+    """Kesetaraan (MASTER 1 Nov): draft_bill_amount aggregate == fakta_po per PO yang SAMA (tak tertukar antar PO)."""
+    from app.utils import tanggal_tenant as TT
+
+    async def hari(conn, tid): return __import__("datetime").date(2026, 11, 1)
+    monkeypatch.setattr(TT, "tanggal_dokumen", hari)
+    po = [{"id": uuid.uuid4(), "no": "PO-A", "total": D("1000"), "posted": D("100"), "draf": D("300")},
+          {"id": uuid.uuid4(), "no": "PO-B", "total": D("2000"), "posted": D("0"), "draf": D("50.5")}]
+    d = _jalan(PA.unbilled(_ConnAgg(po), T))
+    fakta = _jalan(PD.fakta_po(_ConnAgg(po), T, [p["id"] for p in po], None))
+    got = {r["id"]: r["draft_bill_amount"] for r in d["rows"]}
+    assert got == {str(p["id"]): float(fakta[p["id"]]["draft_bill_amount"]) for p in po} == {str(po[0]["id"]): 300.0, str(po[1]["id"]): 50.5}

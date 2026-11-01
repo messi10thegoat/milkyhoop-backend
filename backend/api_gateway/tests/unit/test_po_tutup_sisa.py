@@ -20,24 +20,27 @@ class _Kon:
 
 def _r(status, total="350028.00", billed="0", recv="10"):
     return {"id": uuid.uuid4(), "status": status, "expected_date": None, "total_amount": Decimal(total), "sisa_terima": Decimal("0"),
-            "belum_ditagih": Decimal(recv) - Decimal("0"), "amount_received": Decimal(total), "amount_billed": Decimal(billed)}
+            "belum_ditagih": Decimal(recv) - Decimal("0"), "amount_received": Decimal(total), "amount_billed": Decimal(billed),
+            "draft_bill_amount": Decimal("0")}  # 1 Nov 2026: kolom SQL_AGREGAT porsi bill draf
 
 
 def test_status_tanpa_sisa_tagih():
-    assert PD.STATUS_TANPA_SISA_TAGIH == ("cancelled", "closed")
+    assert PD.STATUS_TANPA_SISA_TAGIH == ("draft", "cancelled", "closed")  # 1 Nov 2026 D3: + draft (cermin SO draf tak berjalan)
     assert "closed" not in PD.STATUS_BISA_TAGIH
 
 
 def test_fakta_po_closed_dan_cancelled_nol_lainnya_total_minus_ditagih():
-    rows = [_r("closed"), _r("cancelled"), _r("received"), _r("partial_billed", billed="100000.00"), _r("closed", billed="100000.00")]
+    rows = [_r("closed"), _r("cancelled"), _r("received"), _r("partial_billed", billed="100000.00"), _r("closed", billed="100000.00"),
+            _r("draft")]  # 1 Nov 2026 D3: PO draf sisa 0
     f = asyncio.run(PD.fakta_po(_Kon(rows), "t", [r["id"] for r in rows], H))
-    assert [f[r["id"]]["sisa_ditagih"] for r in rows] == [Decimal("0"), Decimal("0"), Decimal("350028.00"), Decimal("250028.00"), Decimal("0")]
+    assert [f[r["id"]]["sisa_ditagih"] for r in rows] == [Decimal("0"), Decimal("0"), Decimal("350028.00"), Decimal("250028.00"), Decimal("0"),
+                                                          Decimal("0")]
     assert f[rows[0]["id"]]["aksi"] is None and f[rows[2]["id"]]["aksi"] == "perlu_ditagih"
 
 
 def test_sql_sisa_ditagih_padanan():
     q = PD.sql_sisa_ditagih()
-    assert q == "(CASE WHEN po.status IN ('cancelled', 'closed') THEN 0 ELSE GREATEST(po.total_amount - ag.amount_billed, 0) END)"
+    assert q == "(CASE WHEN po.status IN ('draft', 'cancelled', 'closed') THEN 0 ELSE GREATEST(po.total_amount - ag.amount_billed, 0) END)"  # D3
     assert "status IN ('partial_received', 'received', 'partial_billed')" in PD.sql_aksi("perlu_ditagih", "$2")
 
 
