@@ -63,6 +63,25 @@ def status_text_nd(status: str, status_detail: str, original_bill_id) -> str:
     return tg.status_id("vc", _detail_efektif(status, status_detail, original_bill_id))
 
 
+def status_picu(status: str, total_amount, amount_applied, amount_received) -> str:
+    """Status ND sesudah penerapan/refund berubah -- kembar trg update_vendor_credit_status (vendor_credit_applications aktif +
+    vendor_credit_refunds) -- ubah keduanya bersama. draft/void tak disentuh; Σ >= total -> applied; Σ > 0 -> partial; selain itu posted."""
+    if status in ("draft", "void"):
+        return status
+    jumlah = Decimal(str(amount_applied or 0)) + Decimal(str(amount_received or 0))
+    if jumlah >= Decimal(str(total_amount or 0)):
+        return "applied"
+    return "partial" if jumlah > 0 else "posted"
+
+
+def teks_keadaan(k: dict) -> dict:
+    """sisa_keadaan + status_text dari fakta {status, amount_applied, amount_refunded, original_bill_id} -- penentu SAMA dengan medan_baris
+    (pratinjau after dihitung ulang, bukan disalin dari before)."""
+    sd = status_detail_nd(k.get("status"), k.get("amount_applied"), k.get("amount_refunded"))
+    return {"sisa_keadaan": keadaan_nd(k.get("status"), sd, k.get("original_bill_id")),
+            "status_text": status_text_nd(k.get("status"), sd, k.get("original_bill_id"))}
+
+
 def sisa_lama(status, total_amount, amount_applied, amount_received):
     """remaining_amount rumus LAMA router (daftar :259 / detail :436) -- SATU tempat, perilaku tak diubah."""
     if status == "void":

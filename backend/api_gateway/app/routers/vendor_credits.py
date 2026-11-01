@@ -1933,18 +1933,28 @@ class _PratinjauAlasan(BaseModel):
 
 
 async def _keadaan_nd(conn, tid: str, vc_id) -> dict:
-    """before/after: medan U3c (NDD) + sisa jurnal; exists false bila tak ada."""
+    """before/after: medan U3c (NDD) + sisa jurnal + cache trigger (total/applied/refunded, == NK); exists false bila tak ada."""
     v = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vc_id, tid)
     if not v:
         return {"exists": False}
     m = (await NDD.medan_banyak(conn, tid, [v])).get(v["id"], {})
     return {"exists": True, "status": v["status"], "sisa_keadaan": m.get("sisa_keadaan"), "status_text": m.get("status_text"),
             "remaining": float(await ND.sisa_nd(conn, tid, vc_id)), "terpakai": m.get("terpakai"), "dikembalikan": m.get("dikembalikan"),
-            "original_bill_id": m.get("original_bill_id"), "original_bill_number": m.get("original_bill_number")}
+            "original_bill_id": m.get("original_bill_id"), "original_bill_number": m.get("original_bill_number"),
+            "total_amount": float(v["total_amount"] or 0), "amount_applied": float(v["amount_applied"] or 0),
+            "amount_refunded": float(v["amount_received"] or 0)}
 
 
-def _sesudah(sebelum: dict, **ubah) -> dict:
-    return {**sebelum, **ubah} if sebelum.get("exists") else sebelum
+def _sesudah(sebelum: dict, r: dict, picu: bool = False, **ubah) -> dict:
+    """after = before + FAKTA sesudah aksi; status (picu: penerapan/refund berubah -> kembar trigger) lalu sisa_keadaan + status_text
+    DIHITUNG ULANG dengan penentu daftar/detail (dulu status_text disalin dari before -> pratinjau posting tetap "Draf"). Diblok = tak
+    berubah (== NK)."""
+    if not sebelum.get("exists") or r["blocks"].daftar:
+        return sebelum
+    out = {**sebelum, **ubah}
+    if picu:
+        out["status"] = NDD.status_picu(out["status"], out["total_amount"], out["amount_applied"], out["amount_refunded"])
+    return {**out, **NDD.teks_keadaan(out)}
 
 
 async def _pratinjau_nd(request: Request, vendor_credit_id: UUID, aksi: str, isi, payload) -> dict:
@@ -1975,7 +1985,7 @@ async def preview_post_vendor_credit(request: Request, vendor_credit_id: UUID):
         vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vendor_credit_id, ctx["tenant_id"])
         r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True)
         bertaut = vc["original_bill_id"] is not None
-        return r, _sesudah(sebelum, status="posted", sisa_keadaan="terpakai" if bertaut else "utuh",
+        return r, _sesudah(sebelum, r, status="posted",
                            remaining=0.0 if bertaut else float(vc["total_amount"]), terpakai=float(vc["total_amount"]) if bertaut else 0.0)
     return await _pratinjau_nd(request, vendor_credit_id, "post", isi, {})
 
@@ -1991,7 +2001,8 @@ async def preview_apply_vendor_credit(request: Request, vendor_credit_id: UUID, 
         a = body.applications[0]
         r = await NDR.rencana_terapkan(conn, ctx["tenant_id"], vendor_credit_id, a.bill_id, a.amount, pratinjau=True)
         b = r.get("bill")
-        return r, _sesudah(sebelum, sisa_keadaan="terpakai", remaining=0.0, terpakai=float(r.get("total") or 0),
+        jml = float(r.get("total") or 0)
+        return r, _sesudah(sebelum, r, picu=True, remaining=0.0, terpakai=jml, amount_applied=sebelum["amount_applied"] + jml,
                            original_bill_id=str(b["id"]) if b else None, original_bill_number=b["invoice_number"] if b else None)
     return await _pratinjau_nd(request, vendor_credit_id, "apply", isi, body.model_dump(mode="json"))
 
@@ -2004,7 +2015,8 @@ async def preview_unapply_vendor_credit(request: Request, vendor_credit_id: UUID
         r = await NDR.rencana_lepas(conn, ctx["tenant_id"], vendor_credit_id, alasan, pratinjau=True)
         app = r.get("app")
         jml = float(app["amount_applied"]) if app else 0.0
-        return r, _sesudah(sebelum, sisa_keadaan="utuh", remaining=jml, terpakai=0.0, original_bill_id=None, original_bill_number=None)
+        return r, _sesudah(sebelum, r, picu=True, remaining=jml, terpakai=0.0, amount_applied=sebelum["amount_applied"] - jml,
+                           original_bill_id=None, original_bill_number=None)
     return await _pratinjau_nd(request, vendor_credit_id, "unapply", isi, {"reason": alasan})
 
 
@@ -2012,9 +2024,9 @@ async def _pratinjau_refund(request: Request, vendor_credit_id: UUID, body: Rece
     async def isi(conn, ctx, sebelum):
         r = await NDR.rencana_kembali(conn, ctx, vendor_credit_id, body, pratinjau=True)
         sisa = (r.get("sisa") or Decimal("0")) - Decimal(str(body.amount))
-        return r, _sesudah(sebelum, remaining=float(max(sisa, Decimal("0"))),
+        return r, _sesudah(sebelum, r, picu=True, remaining=float(max(sisa, Decimal("0"))),
                            dikembalikan=float(Decimal(str(sebelum.get("dikembalikan") or 0)) + Decimal(str(body.amount))),
-                           sisa_keadaan="dikembalikan" if sisa <= 0 else "sebagian_dikembalikan")
+                           amount_refunded=float(Decimal(str(sebelum["amount_refunded"])) + Decimal(str(body.amount))))
     return await _pratinjau_nd(request, vendor_credit_id, "refund", isi, body.model_dump(mode="json"))
 
 
@@ -2033,7 +2045,7 @@ async def preview_void_vendor_credit(request: Request, vendor_credit_id: UUID, b
         r = await NDR.rencana_batal(conn, ctx, vendor_credit_id, alasan, pratinjau=True)
         if r.get("hapus"):
             return r, {"exists": False}
-        return r, _sesudah(sebelum, status="void", sisa_keadaan="batal", remaining=0.0)
+        return r, _sesudah(sebelum, r, status="void", remaining=0.0, terpakai=0.0)  # jurnal dibalik -> terpakai 0 (refund memblok void)
     return await _pratinjau_nd(request, vendor_credit_id, "void", isi, {"reason": alasan})
 
 
