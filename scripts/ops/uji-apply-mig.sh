@@ -20,6 +20,7 @@ export MIG_MAIN=$T/main MIG_PG=$C MIG_GW=$C MIG_DB=ujimig MIG_BACKUP_DIR=$T/bk M
 gagal=0
 jalan() { bash "$S" "$@" > "$T/out" 2>&1; echo $?; }
 rec() { q -c "select count(*) from schema_migrations where version='$1'"; }
+kol() { q -c "select count(*) from information_schema.columns where table_name='$1' and column_name='$2'"; }
 ada() { q -c "select count(*) from information_schema.tables where table_name='$1'"; }
 cek() { if [ "$2" = "$3" ]; then echo "OK   $1"; else echo "MERAH $1 (harap $3, dapat $2)"; sed 's/^/      | /' "$T/out" | tail -4; gagal=1; fi; }
 
@@ -42,13 +43,14 @@ tahan() {  # tahan <mode> : transaksi lain memegang kunci t1 selama 25 dtk (ACCE
 lepas() { for _i in $(seq 1 40); do [ "$(q -c "select count(*) from pg_stat_activity where query like '%pg_sleep(25)%' and pid <> pg_backend_pid()")" = 0 ] && break; sleep 1; done; }
 tahan "ACCESS SHARE" AccessShareLock
 t0=$(date +%s); r=$(jalan V9003__kunci.sql); dt=$(( $(date +%s) - t0 ))
-cek "T4 kunci ditahan: rc" "$r" 7; cek "T4 nol catatan" "$(rec V9003__kunci.sql)" 0
+cek "T4 kunci ditahan: rc" "$r" 7; cek "T4 nol catatan" "$(rec V9003__kunci.sql)" 0; cek "T4 nol perubahan skema" "$(kol t1 c)" 0
 cek "T4 gagal cepat (<15 dtk, bukan menunggu 25 dtk)" "$([ $dt -lt 15 ] && echo cepat || echo "lambat ${dt}s")" cepat
 cek "T4 pesan LOCK_TIMEOUT" "$(grep -c '^LOCK_TIMEOUT' "$T/out")" 1
 lepas
 tahan "ACCESS EXCLUSIVE" AccessExclusiveLock
 t0=$(date +%s); r=$(jalan V9003__kunci.sql); dt=$(( $(date +%s) - t0 ))
 cek "T4b kunci eksklusif: cadangan gagal cepat: rc" "$r" 6; cek "T4b nol catatan" "$(rec V9003__kunci.sql)" 0
+cek "T4b migrasi TAK jalan tanpa cadangan (kolom c tak ada)" "$(kol t1 c)" 0
 cek "T4b gagal cepat (<15 dtk)" "$([ $dt -lt 15 ] && echo cepat || echo "lambat ${dt}s")" cepat
 lepas
 
