@@ -185,3 +185,56 @@ def test_rute_daftar_ringkas():
     r = c.get("/api/milkybook/v2/percakapan", headers=H)
     assert r.json()["items"][0]["draf"] == {"stage": "items", "pelanggan": "Rocky", "jumlah_baris": 1, "tersimpan": False}
     assert conn.log[0][2] == ("kaos", "u1")
+
+
+# ---------------------------------------------------------------- P6 Riwayat: status dokumen terkini (1 Nov 2026)
+QID = "7a7a7a7a-1111-4222-8333-444455556666"
+
+
+class _ConnRiwayat(_Conn):
+    def __init__(self, daftar, status):
+        super().__init__(daftar=daftar)
+        self.status = status
+
+    async def fetch(self, sql, *a):
+        self.log.append(("fetch", sql, a))
+        return self.status if sql == D.SQL_STATUS_DOK else self.daftar_baris
+
+
+def _baris_daftar(pid, draf):
+    return {"id": uuid.UUID(pid), "judul": None, "draf": draf, "n_parkir": 0, "versi": 2, "dibuat": None, "diubah": None}
+
+
+@pytest.mark.asyncio
+async def test_riwayat_status_dokumen_terkini_satu_kueri_tenant_eksplisit():
+    from datetime import date, datetime, timezone
+    from decimal import Decimal
+    tersimpan = _baris_daftar(PID, {**DRAF, "stage": "saved", "savedQuoteId": QID})
+    belum = _baris_daftar("8b8b8b8b-1111-4222-8333-444455556666", DRAF)
+    rusak = _baris_daftar("9c9c9c9c-1111-4222-8333-444455556666", {**DRAF, "savedQuoteId": "bukan-uuid"})
+    st = [{"id": uuid.UUID(QID), "quote_number": "QUO-2611-0004", "status": "sent", "total_amount": Decimal("8011475.00"),
+           "expiry_date": date(2026, 11, 15), "sent_at": datetime(2026, 11, 1, 9, tzinfo=timezone.utc),
+           "first_viewed_at": datetime(2026, 11, 1, 10, tzinfo=timezone.utc), "view_count": 2}]
+    conn = _ConnRiwayat([tersimpan, belum, rusak], st)
+    hasil = await D.daftar(conn, USER)
+    assert hasil[0]["dokumen"] == {"id": QID, "nomor": "QUO-2611-0004", "status": "sent", "total": 8011475,
+                                   "berlaku_sampai": "2026-11-15", "terkirim": "2026-11-01T09:00:00+00:00",
+                                   "dilihat": "2026-11-01T10:00:00+00:00", "jumlah_dilihat": 2}
+    assert hasil[1]["dokumen"] is None and hasil[2]["dokumen"] is None
+    kueri = [x for x in conn.log if x[1] == D.SQL_STATUS_DOK]
+    assert len(kueri) == 1 and kueri[0][2] == ("kaos", [QID])          # satu kueri, tenant dari token
+
+
+@pytest.mark.asyncio
+async def test_riwayat_penawaran_tenant_lain_tidak_muncul_dan_tanpa_kueri_bila_tak_ada():
+    conn = _ConnRiwayat([_baris_daftar(PID, {**DRAF, "savedQuoteId": QID})], [])   # DB tak mengembalikan (tenant lain)
+    assert (await D.daftar(conn, USER))[0]["dokumen"] is None
+    conn2 = _ConnRiwayat([_baris_daftar(PID, DRAF)], [])
+    await D.daftar(conn2, USER)
+    assert not any(x[1] == D.SQL_STATUS_DOK for x in conn2.log)
+
+
+def test_sql_status_dokumen_tersaring_tenant_dan_tautan_dicabut_diabaikan():
+    assert D.SQL_STATUS_DOK.count("tenant_id = $1") == 2
+    assert "revoked_at IS NULL" in D.SQL_STATUS_DOK and "kind = 'quotation'" in D.SQL_STATUS_DOK
+    assert not re.search(r"\b(INSERT|UPDATE|DELETE)\b", D.SQL_STATUS_DOK)

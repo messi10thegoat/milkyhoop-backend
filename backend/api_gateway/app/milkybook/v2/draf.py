@@ -16,6 +16,8 @@ from typing import Literal, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .cari_barang import rupiah
+
 UMUR_HARI = 7
 MAKS_DAFTAR = 50
 MAKS_PARKIR = 10
@@ -110,8 +112,48 @@ def isi_simpan(body: SimpanDraf) -> tuple:
     return draf, parkir
 
 
+# P6 Riwayat (03 §6, 1 Nov 2026): status dokumen TERKINI untuk draf yang sudah jadi penawaran (savedQuoteId), satu kueri,
+# tenant eksplisit (savedQuoteId tenant lain / terhapus = tidak muncul). Kiriman terakhir dari document_shares (jalur
+# bagikan yang sudah ada: /api/documents/quotation/{id}/share), "dilihat" = first_viewed_at suar halaman publik.
+SQL_STATUS_DOK = """
+SELECT q.id, q.quote_number, q.status, q.total_amount, q.expiry_date,
+       s.sent_at, s.first_viewed_at, s.view_count
+FROM quotes q
+LEFT JOIN LATERAL (
+  SELECT sent_at, first_viewed_at, view_count FROM document_shares
+  WHERE tenant_id = $1 AND kind = 'quotation' AND doc_id = q.id AND revoked_at IS NULL
+  ORDER BY sent_at DESC LIMIT 1) s ON true
+WHERE q.tenant_id = $1 AND q.id = ANY($2::uuid[])
+"""
+
+
+def _id_penawaran(draf) -> Optional[uuid.UUID]:
+    d = _json(draf) or {}
+    try:
+        return uuid.UUID(str(d["savedQuoteId"])) if d.get("savedQuoteId") else None
+    except (ValueError, TypeError):
+        return None
+
+
+def status_dokumen(r) -> dict:
+    return {"id": str(r["id"]), "nomor": r["quote_number"], "status": r["status"],
+            "total": rupiah(r["total_amount"]),
+            "berlaku_sampai": r["expiry_date"].isoformat() if r["expiry_date"] else None,
+            "terkirim": _waktu(r["sent_at"]), "dilihat": _waktu(r["first_viewed_at"]),
+            "jumlah_dilihat": r["view_count"] or 0}
+
+
 async def daftar(conn, user: dict) -> list:
-    return [ke_daftar(b) for b in await conn.fetch(SQL_DAFTAR, *_pemilik(user))]
+    t, _u = _pemilik(user)
+    hasil, baris = [], await conn.fetch(SQL_DAFTAR, *_pemilik(user))
+    ids = {b["id"]: _id_penawaran(b["draf"]) for b in baris}
+    cari = sorted({str(i) for i in ids.values() if i})
+    status = {r["id"]: status_dokumen(r) for r in await conn.fetch(SQL_STATUS_DOK, t, cari)} if cari else {}
+    for b in baris:
+        h = ke_daftar(b)
+        h["dokumen"] = status.get(ids[b["id"]]) if ids[b["id"]] else None
+        hasil.append(h)
+    return hasil
 
 
 async def buat(conn, user: dict, body: BuatPercakapan) -> dict:
