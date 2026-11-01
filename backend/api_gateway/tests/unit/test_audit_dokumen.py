@@ -72,7 +72,7 @@ class _Conn:
     async def execute(self, sql, *a): self.exec.append((" ".join(sql.split()), a))
 
 
-@pytest.mark.parametrize("kunci", list(AD.EVENT))
+@pytest.mark.parametrize("kunci", [k for k, e in AD.EVENT.items() if not e.identitas])
 def test_catat_dokumen_satu_baris_metadata_aksi_saja(kunci):
     c, did, uid = _Conn(), uuid.uuid4(), uuid.uuid4()
     _jalan(AD.catat_dokumen(c, "t1", kunci[0], kunci[1], did, "DOK-001", uid))
@@ -128,6 +128,22 @@ def test_riwayat_ump_lepas_tanpa_ganda_dari_audit():
              "entity_number": "VD-1", "metadata": {"ringkas": ev}, "source": "api"} for ev in ("VD_UNAPPLIED", "VD_APPLIED", "VD_REFUNDED", "VD_VOIDED")]
     ev, _ = _jalan(SR._selesaikan(_ConnRiwayat(rows), "t1", SR._Kumpul(), {"vendor_deposit": [did]}, {"vendor_deposit": True}, 200))
     assert [e["jenis"] for e in ev] == ["VD_VOIDED"]  # terap/lepas/refund tampil dari kolom beraktor; void (tanpa kolom) dari audit
+
+
+def test_identitas_per_event_dari_tabel_dan_salah_pasang_ditolak():
+    terap = {k for k, e in AD.EVENT.items() if e.identitas}
+    assert terap == {("vendor_credit", "applied"), ("vendor_credit", "unapplied"), ("vendor_credit", "refunded"),
+                     ("vendor_deposit", "applied"), ("vendor_deposit", "refunded")}
+    assert {k: AD.EVENT[k].identitas for k in terap} == {
+        ("vendor_credit", "applied"): ("ke", "kunci"), ("vendor_credit", "unapplied"): ("ke", "kunci"), ("vendor_credit", "refunded"): ("kunci",),
+        ("vendor_deposit", "applied"): ("ke", "kunci"), ("vendor_deposit", "refunded"): ("kunci",)}
+    for args in ({"ke": "B"}, {"kunci": 1, "ke": "B"}):  # refund TANPA sasaran: ke ditolak
+        with pytest.raises(ValueError):
+            _jalan(AD.catat_dokumen(_Conn(), "t1", "vendor_credit", "refunded", uuid.uuid4(), "VC-1", None, **args))
+    with pytest.raises(ValueError):  # terap wajib ke + kunci
+        _jalan(AD.catat_dokumen(_Conn(), "t1", "vendor_deposit", "applied", uuid.uuid4(), "VD-1", None, kunci=1))
+    with pytest.raises(ValueError):  # aksi lama tanpa identitas
+        _jalan(AD.catat_dokumen(_Conn(), "t1", "bill", "posted", uuid.uuid4(), "B-1", None, kunci=1))
 
 
 def test_catat_dokumen_tanpa_aktor_tetap_tercatat_userid_null():

@@ -25,6 +25,7 @@ class Ev(NamedTuple):
     entitas: str  # audit_logs.entity_type (cocok so_riwayat.ENTITAS_AUDIT)
     ringkas: str
     riwayat: bool  # True = ikut riwayat dokumen (event lama); False = jejak audit saja
+    identitas: tuple = ()  # metadata identitas WAJIB (persis) selain {jenis, aksi, ringkas, user_id}: "ke" (nomor sasaran), "kunci" (id baris)
 
 
 EVENT = {
@@ -36,15 +37,15 @@ EVENT = {
     ("vendor_deposit", "posted"): Ev("VD_POSTED", "vendor_deposit", "Uang muka pembelian diposting", False),
     ("vendor_deposit", "voided"): Ev("VD_VOIDED", "vendor_deposit", "Uang muka pembelian dibatalkan (void)", True),
     ("vendor_deposit", "unapplied"): Ev("VD_UNAPPLIED", "vendor_deposit", "Penerapan uang muka pembelian dilepas", False),
-    ("vendor_deposit", "applied"): Ev("VD_APPLIED", "vendor_deposit", "Uang muka pembelian diterapkan", False),
-    ("vendor_deposit", "refunded"): Ev("VD_REFUNDED", "vendor_deposit", "Uang muka pembelian dikembalikan vendor", False),
+    ("vendor_deposit", "applied"): Ev("VD_APPLIED", "vendor_deposit", "Uang muka pembelian diterapkan", False, ("ke", "kunci")),
+    ("vendor_deposit", "refunded"): Ev("VD_REFUNDED", "vendor_deposit", "Uang muka pembelian dikembalikan vendor", False, ("kunci",)),
     ("vendor_deposit", "deleted"): Ev("VD_DELETED", "vendor_deposit", "Draf uang muka pembelian dihapus", False),
     ("vendor_credit", "posted"): Ev("VC_POSTED", "vendor_credits", "Nota debit diposting", False),
     ("vendor_credit", "voided"): Ev("VC_VOIDED", "vendor_credits", "Nota debit dibatalkan (void)", False),
     ("vendor_credit", "deleted"): Ev("VC_DELETED", "vendor_credits", "Draf nota debit dihapus", False),
-    ("vendor_credit", "applied"): Ev("VC_APPLIED", "vendor_credits", "Nota debit diterapkan", False),
-    ("vendor_credit", "unapplied"): Ev("VC_UNAPPLIED", "vendor_credits", "Penerapan nota debit dilepas", False),
-    ("vendor_credit", "refunded"): Ev("VC_REFUNDED", "vendor_credits", "Pengembalian nota debit diterima", False),
+    ("vendor_credit", "applied"): Ev("VC_APPLIED", "vendor_credits", "Nota debit diterapkan", False, ("ke", "kunci")),
+    ("vendor_credit", "unapplied"): Ev("VC_UNAPPLIED", "vendor_credits", "Penerapan nota debit dilepas", False, ("ke", "kunci")),
+    ("vendor_credit", "refunded"): Ev("VC_REFUNDED", "vendor_credits", "Pengembalian nota debit diterima", False, ("kunci",)),
     ("purchase_order", "updated"): Ev("PO_UPDATED", "purchase_order", "Pesanan pembelian diubah", True),
     ("purchase_order", "received"): Ev("PO_RECEIVED", "purchase_order", "Barang diterima", True),
     ("purchase_order", "sent"): Ev("PO_SENT", "purchase_order", "Pesanan pembelian dikirim", False),
@@ -71,6 +72,9 @@ async def catat_dokumen(conn, tenant_id: str, jenis: str, aksi: str, doc_id, nom
     ke = nomor dokumen sasaran (terap/lepas), kunci = id baris aplikasi/refund; hanya ditulis bila ada."""
     from .so_riwayat import catat_riwayat  # lambat: so_riwayat mengimpor modul ini (TANPA_RIWAYAT, RINGKAS_RIWAYAT)
     ev = EVENT[(jenis, aksi)]
+    ada = tuple(k for k, v in (("ke", ke), ("kunci", kunci)) if v is not None)
+    if ada != ev.identitas:  # identitas per event = TABEL (satu sumber); salah pasang = galat, bukan baris audit yang menyimpang diam
+        raise ValueError(f"audit {ev.nama}: identitas {ada} != tabel {ev.identitas}")
     ringkas = f"{ev.ringkas} {nomor}" if nomor else ev.ringkas
     meta = {"jenis": jenis, "aksi": aksi}
     if ke is not None:
