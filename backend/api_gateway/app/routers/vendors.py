@@ -16,6 +16,7 @@ import logging
 import asyncpg
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import vendor_unik as VU  # VENDOR-DUPLIKAT (1 Nov 2026): 409 berkode satu bentuk dengan pelanggan
 from ..services import idem_buat  # VENDOR-IDEM (25 Okt 2026): X-Idempotency-Key buat/status/hapus/gabung
 from ..schemas.vendors import (
     VendorActivity,
@@ -245,70 +246,35 @@ async def check_duplicate(
 
         by_name = []
         by_npwp = []
+        kecuali = UUID(excludeId) if excludeId else None
 
+        def _baris(row):
+            return {"id": str(row["id"]), "name": row["name"], "company_name": row["company_name"],
+                    "display_name": row["display_name"], "company": row["company_name"], "npwp": row["tax_id"],
+                    "is_active": bool(row["is_active"])}
+
+        # VENDOR-DUPLIKAT (1 Nov 2026): dulu SELECT tanpa display_name lalu row["display_name"] -> KeyError -> 500 tiap ADA
+        # kecocokan; hanya vendor aktif (padahal nama nonaktif ikut memblok simpan, uq_vendors_tenant_name); % / _ di nama
+        # jadi wildcard. Kini: kolom lengkap, nonaktif ikut (is_active), ILIKE ber-escape. Filter tenant tetap.
         async with pool.acquire() as conn:
-            # Check by name (partial match, case-insensitive)
             if nama and nama.strip():
-                name_query = """
-                    SELECT id, name, company_name, tax_id
-                    FROM vendors
-                    WHERE tenant_id = $1
-                      AND is_active = true
-                      AND name ILIKE $2
-                """
-                params = [ctx["tenant_id"], f"%{nama.strip()}%"]
+                pola = "%" + nama.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                rows = await conn.fetch(
+                    """SELECT id, name, company_name, display_name, tax_id, is_active FROM vendors
+                       WHERE tenant_id = $1 AND name ILIKE $2 ESCAPE '\\' AND ($3::uuid IS NULL OR id <> $3::uuid)
+                       ORDER BY is_active DESC, name LIMIT 10""",
+                    ctx["tenant_id"], pola, kecuali)
+                by_name = [_baris(r) for r in rows]
 
-                if excludeId:
-                    name_query += " AND id != $3"
-                    params.append(UUID(excludeId))
-
-                name_query += " LIMIT 10"
-
-                rows = await conn.fetch(name_query, *params)
-                by_name = [
-                    {
-                        "id": str(row["id"]),
-                        "name": row["name"],
-                        "company_name": row["company_name"],
-                        "display_name": row["display_name"],
-                        "company": row["company_name"],
-                        "npwp": row["tax_id"],
-                    }
-                    for row in rows
-                ]
-
-            # Check by NPWP (exact match after normalization)
             if npwp and npwp.strip():
-                # Normalize NPWP: remove dots and dashes
                 normalized_npwp = npwp.replace(".", "").replace("-", "").strip()
-
-                npwp_query = """
-                    SELECT id, name, company_name, tax_id
-                    FROM vendors
-                    WHERE tenant_id = $1
-                      AND is_active = true
-                      AND REPLACE(REPLACE(tax_id, '.', ''), '-', '') = $2
-                """
-                params = [ctx["tenant_id"], normalized_npwp]
-
-                if excludeId:
-                    npwp_query += " AND id != $3"
-                    params.append(UUID(excludeId))
-
-                npwp_query += " LIMIT 10"
-
-                rows = await conn.fetch(npwp_query, *params)
-                by_npwp = [
-                    {
-                        "id": str(row["id"]),
-                        "name": row["name"],
-                        "company_name": row["company_name"],
-                        "display_name": row["display_name"],
-                        "company": row["company_name"],
-                        "npwp": row["tax_id"],
-                    }
-                    for row in rows
-                ]
+                rows = await conn.fetch(
+                    """SELECT id, name, company_name, display_name, tax_id, is_active FROM vendors
+                       WHERE tenant_id = $1 AND REPLACE(REPLACE(tax_id, '.', ''), '-', '') = $2
+                         AND ($3::uuid IS NULL OR id <> $3::uuid)
+                       ORDER BY is_active DESC, name LIMIT 10""",
+                    ctx["tenant_id"], normalized_npwp, kecuali)
+                by_npwp = [_baris(r) for r in rows]
 
         return {"byName": by_name, "byNpwp": by_npwp}
 
@@ -884,30 +850,9 @@ async def create_vendor(request: Request, body: CreateVendorRequest, response: R
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_NAMA:{ctx['tenant_id']}:{body.name.strip().lower()}")
                 if body.code:
                     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{ctx['tenant_id']}:{body.code.strip().lower()}")
-                # Check for duplicate name
-                existing = await conn.fetchval(
-                    "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2",
-                    ctx["tenant_id"],
-                    body.name,
-                )
-                if existing:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Vendor with name '{body.name}' already exists",
-                    )
-
-                # Check for duplicate code if provided
-                if body.code:
-                    existing_code = await conn.fetchval(
-                        "SELECT id FROM vendors WHERE tenant_id = $1 AND code = $2",
-                        ctx["tenant_id"],
-                        body.code,
-                    )
-                    if existing_code:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Vendor with code '{body.code}' already exists",
-                        )
+                # VENDOR-DUPLIKAT: nama/kode ganda -> 409 berkode (predikat == indeks unik DB; nonaktif ikut)
+                await VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)
+                await VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code)
 
                 # Parse opening_balance_date from string to date
                 opening_date = parse_date(getattr(body, "opening_balance_date", None))
@@ -1053,19 +998,14 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                 if not existing:
                     raise HTTPException(status_code=404, detail="Vendor not found")
 
-                # Check for duplicate name if name is being changed
+                # VENDOR-DUPLIKAT: nama/kode yang BERUBAH -> kunci (kembar buat) lalu 409 berkode bila dipakai vendor lain.
+                # Dulu kode tak dicek sama sekali -> indeks unik DB -> 500.
                 if body.name and body.name != existing["name"]:
-                    duplicate = await conn.fetchval(
-                        "SELECT id FROM vendors WHERE tenant_id = $1 AND name = $2 AND id != $3",
-                        ctx["tenant_id"],
-                        body.name,
-                        vendor_id,
-                    )
-                    if duplicate:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Vendor with name '{body.name}' already exists",
-                        )
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_NAMA:{ctx['tenant_id']}:{body.name.strip().lower()}")
+                    await VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name, kecuali_id=vendor_id)
+                if body.code and body.code != existing["code"]:
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{ctx['tenant_id']}:{body.code.strip().lower()}")
+                    await VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code, kecuali_id=vendor_id)
 
                 # Build update query dynamically
                 update_data = body.model_dump(exclude_unset=True)

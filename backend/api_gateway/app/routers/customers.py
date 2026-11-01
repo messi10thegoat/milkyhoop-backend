@@ -13,6 +13,7 @@ import asyncpg
 
 from ..services.termin_bayar import termin_hari
 from ..services.pelanggan_unik import tolak_nama_dipakai, tolak_nomor_dipakai
+from ..services.galat_berkode import GalatBerkode
 from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
@@ -707,6 +708,8 @@ async def _siapkan_buat_pelanggan(conn, tenant_id: str, body: CreateCustomerRequ
 def blok_dari_galat(e: HTTPException) -> dict:
     """HTTPException penentu -> blok pratinjau {code, message, field?, id?}: kode BE yang ada (satu kosakata dengan galat tulis)."""
     d = e.detail
+    if isinstance(e, GalatBerkode):  # VENDOR-DUPLIKAT: kode di atribut, detail = kalimat
+        return {"code": e.code, "message": str(d), **({"field": e.field} if e.field else {})}
     if isinstance(d, dict):
         b = {"code": d.get("code") or f"HTTP_{e.status_code}", "message": d.get("message") or str(d)}
         for k in ("field", "id"):

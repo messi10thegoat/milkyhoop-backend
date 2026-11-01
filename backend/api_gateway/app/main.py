@@ -331,6 +331,15 @@ async def _account_role_unmapped_handler(request, exc):  # noqa: ANN001
     )
 
 
+# VENDOR-DUPLIKAT (1 Nov 2026): galat berkode satu bentuk {detail: kalimat, code, message, field} -- lihat services/galat_berkode.py.
+from .services.galat_berkode import GalatBerkode as _GalatBerkode  # noqa: E402
+
+
+@app.exception_handler(_GalatBerkode)
+async def _galat_berkode_handler(request, exc):  # noqa: ANN001
+    return _JSONResp(status_code=exc.status_code, content=exc.badan(), headers=exc.headers)
+
+
 # Validate configuration on startup
 config_errors = settings.validate()
 if config_errors and settings.ENVIRONMENT == "production":

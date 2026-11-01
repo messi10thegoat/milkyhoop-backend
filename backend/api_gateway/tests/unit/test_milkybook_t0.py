@@ -58,6 +58,10 @@ def test_blok_dari_galat_kosakata_be():
     b = RC.blok_dari_galat(HTTPException(422, RC.PESAN_SALDO_AWAL_SAAT_BUAT))
     assert b["code"] == "SALDO_AWAL_SAAT_BUAT" and b["field"] == "ar_opening_balance"
     assert RC.blok_dari_galat(HTTPException(400, "lain"))["code"] == "HTTP_400"
+    # VENDOR-DUPLIKAT (1 Nov 2026): galat pelanggan kini GalatBerkode (detail = kalimat, kode di atribut) -> blok SAMA
+    from app.services.galat_berkode import GalatBerkode
+    assert RC.blok_dari_galat(GalatBerkode(409, "NAMA_PELANGGAN_DIPAKAI", "x", "name")) == {
+        "code": "NAMA_PELANGGAN_DIPAKAI", "message": "x", "field": "name"}
 
 
 def test_blok_validasi_jasa_bisa_dikirim():
