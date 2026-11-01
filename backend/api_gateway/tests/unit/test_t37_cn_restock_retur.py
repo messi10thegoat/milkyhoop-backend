@@ -60,6 +60,8 @@ class DB:
         s = " ".join(sql.split())
         if "get_next_journal_number" in s:
             return "JN-UJI"
+        if s == "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND journal_number = $2":
+            return None  # ND-JURNAL-NOMOR (1 Nov 2026): pra-cek satu ruang nama -- nomor NK belum dipakai jurnal lain
         if "get_weighted_average_cost" in s:
             return Decimal("30000")
         if s.startswith("SELECT id FROM warehouses"):

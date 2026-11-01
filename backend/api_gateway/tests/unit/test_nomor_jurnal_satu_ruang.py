@@ -202,9 +202,10 @@ def test_pra_cek_masih_ada():
 
 
 # ND-JURNAL-NOMOR: jurnal posting tiap dokumen = nomor DOKUMEN ITU SENDIRI (argumen ke-3) + cadangan khasnya.
+# Bentuk argumen = ast.unparse (kutip tunggal).
 SATU_RUANG = {
-    ("routers/vendor_credits.py", "post_vendor_credit"): ('vc["credit_number"]', "NDJ"),
-    ("routers/credit_notes.py", "posting_nota_kredit"): ('cn["credit_note_number"]', "NKJ"),
+    ("routers/vendor_credits.py", "post_vendor_credit"): ("vc['credit_number']", "NDJ"),
+    ("routers/credit_notes.py", "posting_nota_kredit"): ("cn['credit_note_number']", "NKJ"),
     ("routers/bill_payments.py", "create_bill_payment_journal"): ("payment_number", "PKJ"),
 }
 
