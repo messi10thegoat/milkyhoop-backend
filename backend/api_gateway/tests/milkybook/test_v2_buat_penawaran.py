@@ -310,3 +310,24 @@ async def test_v2_memakai_inti_penawaran_asli_tarif_dari_kode(monkeypatch):
     hasil = await BP.buat(db, {"tenant_id": TENANT, "user_id": UID}, badan, "draf-asli", izin_fn=None)
     assert db.baris_ditulis() == [(Decimal("11"), Decimal("11000.00"))]  # #39: tarif dari kode, bukan kiriman klien
     assert db.header_pajak() == [Decimal("11000.00")] and hasil["data"]["quote_number"] == "QUO-UJI-0001"
+
+
+@pytest.mark.asyncio
+async def test_v2_non_pkp_ber_ppn_422_tanpa_tulis_lewat_inti_asli(monkeypatch):
+    """#39 non-PKP tak boleh menawarkan PPN -- aturan di INTI; dipasang hanya di handler lama = v2 lolos = merah di sini."""
+    from tests.unit.test_t34_pajak_so import CUST, PPN11, TENANT, USER as UID
+    from tests.unit.test_t39_tarif_penawaran import DBQ
+    from app.services.pkp_guard import PESAN_NON_PKP
+
+    async def mulai(*a, **k):
+        return "kp", "sd", None
+
+    monkeypatch.setattr(idem_buat, "mulai", mulai)
+    db = DBQ(is_pkp=False)
+    badan = BP.BuatPenawaranV2(master_baru=[], penawaran={
+        "quote_date": "2026-09-25", "customer_id": CUST, "customer_name": "Pelanggan",
+        "items": [{"description": "Kaos", "quantity": 1, "unit_price": 100000, "tax_id": PPN11}]})
+    with pytest.raises(HTTPException) as e:
+        await BP.buat(db, {"tenant_id": TENANT, "user_id": UID}, badan, "draf-npkp", izin_fn=None)
+    assert (e.value.status_code, e.value.detail) == (422, PESAN_NON_PKP)
+    assert db.header_pajak() == [] and db.baris_ditulis() == []
