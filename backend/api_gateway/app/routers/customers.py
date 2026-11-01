@@ -774,118 +774,119 @@ async def create_customer(request: Request, body: CreateCustomerRequest, respons
             _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, _kunci, "CUSTOMER_CREATE", body, "customers", "customer", response)
             if _lama is not None:
                 return _lama
-            opening_date = await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], body)
-
-            # Generate UUID for customer ID
-            import uuid as uuid_mod
-
-            new_id = str(uuid_mod.uuid4())
-
-            async with conn.transaction():
-                # Insert customer with ALL fields
-                await conn.execute(
-                    """
-                    INSERT INTO customers (
-                    id, tenant_id, nomor_member, nama, telepon, email, alamat,
-                    contact_person, city, province, postal_code,
-                    tax_id, payment_terms_days, credit_limit, notes,
-                    mobile_phone, website, company_name, display_name,
-                    customer_type, is_pkp, nik, currency,
-                    ar_opening_balance, opening_balance_date, opening_balance_notes,
-                    created_by, phone2, community,
-                    nitku, jenis_id, negara, nomor_dokumen
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7,
-                    $8, $9, $10, $11,
-                    $12, $13, $14, $15,
-                    $16, $17, $18, $19,
-                    $20, $21, $22, $23,
-                    $24, $25, $26,
-                    $27, $28, $29,
-                    $30, $31, $32, $33
-                )
-            """,
-                    new_id,  # $1  id
-                    ctx["tenant_id"],  # $2  tenant_id
-                    body.code,  # $3  nomor_member
-                    body.name,  # $4  nama
-                    body.phone,  # $5  telepon
-                    body.email,  # $6  email
-                    body.address,  # $7  alamat
-                    body.contact_person,  # $8  contact_person
-                    body.city,  # $9  city
-                    body.province,  # $10 province
-                    body.postal_code,  # $11 postal_code
-                    body.tax_id,  # $12 tax_id
-                    body.payment_terms_days,  # $13 payment_terms_days
-                    body.credit_limit,  # $14 credit_limit
-                    body.notes,  # $15 notes
-                    body.mobile_phone,  # $16 mobile_phone
-                    body.website,  # $17 website
-                    body.company_name,  # $18 company_name
-                    body.display_name
-                    or body.name,  # $19 display_name (default to name)
-                    body.customer_type or "BADAN",  # $20 customer_type
-                    body.is_pkp,  # $21 is_pkp
-                    body.nik,  # $22 nik
-                    body.currency or "IDR",  # $23 currency
-                    body.ar_opening_balance or 0,  # $24 ar_opening_balance
-                    opening_date,  # $25 opening_balance_date
-                    body.opening_balance_notes,  # $26 opening_balance_notes
-                    ctx["user_id"],  # $27 created_by
-                    body.phone2,  # $28 phone2
-                    body.community,  # $29 community
-                    body.nitku,  # $30 nitku (V420)
-                    body.jenis_id,  # $31 jenis_id
-                    body.negara,  # $32 negara
-                    body.nomor_dokumen,  # $33 nomor_dokumen
-                )
-
-                # Extract user info for activity logging
-                user_id = (
-                    request.state.user.get("user_id")
-                    if hasattr(request.state, "user")
-                    else None
-                )
-                user_name = (
-                    request.state.user.get("username")
-                    or request.state.user.get("email")
-                    if hasattr(request.state, "user")
-                    else None
-                )
-
-                # Log activity
-                await conn.execute(
-                    """
-                    INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
-                    VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
-                """,
-                    new_id,
-                    ctx["tenant_id"],
-                    user_id,
-                    user_name,
-                )
-
-                # V428: alamat datar -> bawaan tagih (+kirim); alamat kirim terpisah (opsional) -> bawaan kirim
-                await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], new_id, user_id)
-                if body.shipping_address is not None:
-                    _kirim = body.shipping_address.model_dump(include=set(_alamat.MEDAN) & body.shipping_address.model_fields_set)
-                    if any(_alamat._isi(_kirim.get(k)) for k in _alamat.MEDAN_ISI):
-                        await _alamat.tambah(conn, ctx["tenant_id"], new_id, _kirim, kirim=True, oleh=user_id, nama=user_name)
-
-                logger.info(f"Customer created: {new_id}, name={body.name}")
-
-                return await idem_buat.simpan(conn, ctx, _kp, _sd, "CUSTOMER_CREATE", {
-                    "success": True,
-                    "message": "Customer created successfully",
-                    "data": {"id": str(new_id), "name": body.name, "code": body.code},
-                }, new_id)
+            new_id = await tulis_pelanggan_baru(conn, ctx, body, *_pelaku(request))
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "CUSTOMER_CREATE", {
+                "success": True,
+                "message": "Customer created successfully",
+                "data": {"id": str(new_id), "name": body.name, "code": body.code},
+            }, new_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating customer: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create customer")
+
+
+def _pelaku(request) -> tuple:
+    """(user_id, user_name) pencatat aktivitas dari token (bentuk lama create_customer)."""
+    if not hasattr(request.state, "user"):
+        return None, None
+    u = request.state.user
+    return u.get("user_id"), u.get("username") or u.get("email")
+
+
+async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, user_id, user_name) -> str:
+    """Tulis SATU pelanggan di transaksi PEMANGGIL (POST /customers dan Milkybook v2 buat atomik, 1 Nov 2026): penentu
+    _siapkan_buat_pelanggan + INSERT + aktivitas + alamat V428. -> id baru (str)."""
+    opening_date = await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], body)
+
+    # Generate UUID for customer ID
+    import uuid as uuid_mod
+
+    new_id = str(uuid_mod.uuid4())
+
+    async with conn.transaction():
+        # Insert customer with ALL fields
+        await conn.execute(
+            """
+            INSERT INTO customers (
+            id, tenant_id, nomor_member, nama, telepon, email, alamat,
+            contact_person, city, province, postal_code,
+            tax_id, payment_terms_days, credit_limit, notes,
+            mobile_phone, website, company_name, display_name,
+            customer_type, is_pkp, nik, currency,
+            ar_opening_balance, opening_balance_date, opening_balance_notes,
+            created_by, phone2, community,
+            nitku, jenis_id, negara, nomor_dokumen
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11,
+            $12, $13, $14, $15,
+            $16, $17, $18, $19,
+            $20, $21, $22, $23,
+            $24, $25, $26,
+            $27, $28, $29,
+            $30, $31, $32, $33
+        )
+    """,
+            new_id,  # $1  id
+            ctx["tenant_id"],  # $2  tenant_id
+            body.code,  # $3  nomor_member
+            body.name,  # $4  nama
+            body.phone,  # $5  telepon
+            body.email,  # $6  email
+            body.address,  # $7  alamat
+            body.contact_person,  # $8  contact_person
+            body.city,  # $9  city
+            body.province,  # $10 province
+            body.postal_code,  # $11 postal_code
+            body.tax_id,  # $12 tax_id
+            body.payment_terms_days,  # $13 payment_terms_days
+            body.credit_limit,  # $14 credit_limit
+            body.notes,  # $15 notes
+            body.mobile_phone,  # $16 mobile_phone
+            body.website,  # $17 website
+            body.company_name,  # $18 company_name
+            body.display_name
+            or body.name,  # $19 display_name (default to name)
+            body.customer_type or "BADAN",  # $20 customer_type
+            body.is_pkp,  # $21 is_pkp
+            body.nik,  # $22 nik
+            body.currency or "IDR",  # $23 currency
+            body.ar_opening_balance or 0,  # $24 ar_opening_balance
+            opening_date,  # $25 opening_balance_date
+            body.opening_balance_notes,  # $26 opening_balance_notes
+            ctx["user_id"],  # $27 created_by
+            body.phone2,  # $28 phone2
+            body.community,  # $29 community
+            body.nitku,  # $30 nitku (V420)
+            body.jenis_id,  # $31 jenis_id
+            body.negara,  # $32 negara
+            body.nomor_dokumen,  # $33 nomor_dokumen
+        )
+
+        # Log activity
+        await conn.execute(
+            """
+            INSERT INTO customer_activities (customer_id, tenant_id, type, description, actor_id, actor_name)
+            VALUES ($1, $2, 'created', 'Pelanggan dibuat', $3, $4)
+        """,
+            new_id,
+            ctx["tenant_id"],
+            user_id,
+            user_name,
+        )
+
+        # V428: alamat datar -> bawaan tagih (+kirim); alamat kirim terpisah (opsional) -> bawaan kirim
+        await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], new_id, user_id)
+        if body.shipping_address is not None:
+            _kirim = body.shipping_address.model_dump(include=set(_alamat.MEDAN) & body.shipping_address.model_fields_set)
+            if any(_alamat._isi(_kirim.get(k)) for k in _alamat.MEDAN_ISI):
+                await _alamat.tambah(conn, ctx["tenant_id"], new_id, _kirim, kirim=True, oleh=user_id, nama=user_name)
+
+        logger.info(f"Customer created: {new_id}, name={body.name}")
+    return new_id
 
 
 @router.patch("/{customer_id}", response_model=CustomerResponse)

@@ -729,6 +729,211 @@ async def preview_create_item(request: Request, body: dict):
     return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
 
 
+async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, user_name):
+    """Tulis SATU barang di transaksi/koneksi PEMANGGIL (POST /items dan Milkybook v2 buat atomik, 1 Nov 2026): penentu
+    _siapkan_buat_barang + INSERT + konversi satuan + saldo awal stok + aktivitas. -> id barang (UUID).
+    Pemanggil wajib lebih dulu tanpa_stok_bila_bukan_barang + periksa_badan_item (urutan lama create_item)."""
+    tenant_id = ctx["tenant_id"]
+    item_code_to_use, sku_to_use = await _siapkan_buat_barang(conn, tenant_id, ctx, body)
+
+    # Start transaction
+    async with conn.transaction():
+        # Insert item
+        # Parse opening_stock_date if provided
+        opening_date = None
+        if body.opening_stock_date:
+            try:
+                opening_date = dateclass.fromisoformat(body.opening_stock_date)
+            except (ValueError, TypeError):
+                opening_date = None
+
+        insert_query = """
+            INSERT INTO products (
+                tenant_id, nama_produk, satuan, base_unit, kategori, deskripsi, barcode,
+                item_type, track_inventory, is_returnable,
+                sales_account, purchase_account, sales_tax, purchase_tax,
+                sales_price, purchase_price, harga_jual,
+                image_url, reorder_level, preferred_vendor_id,
+                sales_account_id, purchase_account_id,
+                item_code, sku, inventory_account_id, cogs_account_id,
+                costing_method, opening_stock, opening_stock_rate, opening_stock_date,
+                for_sales, for_purchases, warehouse_id,
+                track_batches, track_expiry, default_expiry_days,
+                sales_tax_id, purchase_tax_id, bisa_dikirim,
+                created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10,
+                $11, $12, $13, $14,
+                $15, $16, $17,
+                $18, $19, $20,
+                $21, $22,
+                $23, $24, $25, $26,
+                $27, $28, $29, $30,
+                $31, $32, $33,
+                $34, $35, $36,
+                $37, $38, $39,
+                NOW(), NOW()
+            )
+            RETURNING id
+        """
+        item_id = await conn.fetchval(
+            insert_query,
+            ctx["tenant_id"],
+            body.name,
+            body.base_unit,  # satuan = base_unit
+            body.base_unit,
+            body.kategori,
+            body.deskripsi,
+            body.barcode,
+            body.item_type,
+            body.track_inventory,
+            body.is_returnable,
+            body.sales_account,
+            body.purchase_account,
+            body.sales_tax,
+            body.purchase_tax,
+            body.sales_price,
+            body.purchase_price,
+            body.sales_price,  # harga_jual = sales_price for backwards compat
+            body.image_url,
+            body.reorder_level,
+            body.preferred_vendor_id,
+            body.sales_account_id,
+            body.purchase_account_id,
+            item_code_to_use,
+            sku_to_use,
+            body.inventory_account_id,
+            body.cogs_account_id,
+            body.costing_method,
+            body.opening_stock,
+            body.opening_stock_rate,
+            opening_date,
+            body.for_sales,
+            body.for_purchases,
+            body.warehouse_id,
+            body.track_batches,
+            body.track_expiry,
+            body.default_expiry_days,
+            body.sales_tax_id,
+            body.purchase_tax_id,
+            # V318: flag non-stok bisa dikirim, SATU INSERT (dulu UPDATE kedua); CHECK DB menolak jasa
+            bool(body.bisa_dikirim),
+        )
+
+        # Insert unit conversions (goods only)
+        if body.item_type == "goods" and body.conversions:
+            for conv in body.conversions:
+                await conn.execute(
+                    """
+                    INSERT INTO unit_conversions (
+                        tenant_id, product_id, base_unit, conversion_unit, conversion_factor,
+                        purchase_price, sales_price, is_active, created_at, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW(), NOW())
+                    """,
+                    tenant_id,
+                    item_id,
+                    body.base_unit,
+                    conv.conversion_unit,
+                    conv.conversion_factor,
+                    conv.purchase_price,
+                    conv.sales_price,
+                )
+
+        # Create initial stock entry (if track_inventory)
+        if body.track_inventory and body.item_type == "goods":
+            # Determine opening stock values
+            initial_qty = (
+                Decimal(str(body.opening_stock))
+                if body.opening_stock
+                else Decimal("0")
+            )
+            initial_rate = (
+                Decimal(str(body.opening_stock_rate))
+                if body.opening_stock_rate
+                else (
+                    Decimal(str(body.purchase_price))
+                    if body.purchase_price
+                    else Decimal("0")
+                )
+            )
+            initial_value = initial_qty * initial_rate
+
+            # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
+            # (Law 16: stock derived from inventory_ledger, no persediaan writes)
+            if initial_qty > 0:
+                # t10-tanggal-bisnis: cadangan tanggal saldo awal = hari ini
+                # menurut zona tenant, bukan date.today() (UTC container:
+                # 00-07 WIB memberi KEMARIN).
+                ob_date = None
+                if body.opening_stock_date:
+                    try:
+                        ob_date = dateclass.fromisoformat(
+                            str(body.opening_stock_date)
+                        )
+                    except (ValueError, TypeError):
+                        ob_date = None
+                if ob_date is None:
+                    ob_date = await tanggal_dokumen(conn, tenant_id)
+
+                # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026).
+                # Titik ini tak pernah menyebut `warehouse_id` sama sekali,
+                # jadi ia menulis NULL SECARA STRUKTURAL -- bukan lewat
+                # rantai cadangan yang kebetulan kosong. Barisnya masuk
+                # buku, lalu trigger `trg_update_warehouse_stock` (yang
+                # mencocokkan `warehouse_id = NEW.warehouse_id`) tak pernah
+                # cocok: stok awal terlihat di layar dan ditolak saat
+                # dikirim. Baris saldo awal yang SUDAH tercatat tidak
+                # disentuh di sini -- itu koreksi data, tiket tersendiri,
+                # dan `inventory_ledger` bersifat hanya-tambah (Rule 8).
+                ob_warehouse = await conn.fetchval(
+                    """
+                    SELECT id FROM warehouses
+                    WHERE tenant_id = $1 AND is_active = true
+                    ORDER BY is_default DESC, created_at ASC
+                    LIMIT 1
+                    """,
+                    ctx["tenant_id"],
+                )
+                if ob_warehouse is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Saldo awal persediaan butuh gudang, dan tenant "
+                            "ini belum punya gudang aktif. Buat gudang dulu, "
+                            "atau simpan barang tanpa saldo awal."
+                        ),
+                    )
+                # Audit F1 (10 Okt 2026): saldo awal = JURNAL (Dr Persediaan / Cr Modal Saldo Awal) + kartu stok di
+                # transaksi ini. Dulu hanya baris kartu -> kartu bernilai, buku besar tidak (Law 1/4/6/16/23).
+                await catat_saldo_awal_stok(
+                    conn,
+                    tenant_id=ctx["tenant_id"],
+                    user_id=ctx.get("user_id"),
+                    product_id=item_id,
+                    product_code=item_code_to_use,
+                    product_name=body.name,
+                    tanggal=ob_date,
+                    qty=initial_qty,
+                    rate=initial_rate,
+                    warehouse_id=ob_warehouse,
+                    inventory_account_id=body.inventory_account_id,
+                )
+
+        # Log activity
+        await conn.execute(
+            """
+            INSERT INTO item_activities (item_id, tenant_id, type, description, actor_id, actor_name)
+            VALUES ($1, $2, 'created', 'Item dibuat', $3, $4)
+            """,
+            item_id,
+            tenant_id,
+            user_id if user_id else None,
+            user_name,
+        )
+    return item_id
+
+
 @router.post("/items", response_model=CreateItemResponse)
 async def create_item(request: Request, body: CreateItemRequest, response: Response = None):
     """
@@ -756,207 +961,8 @@ async def create_item(request: Request, body: CreateItemRequest, response: Respo
             if _lama is not None:
                 await _tx.rollback()
                 return _lama
-        item_code_to_use, sku_to_use = await _siapkan_buat_barang(conn, tenant_id, ctx, body)
-
-        # Start transaction
-        async with conn.transaction():
-            # Insert item
-            # Parse opening_stock_date if provided
-            opening_date = None
-            if body.opening_stock_date:
-                try:
-                    opening_date = dateclass.fromisoformat(body.opening_stock_date)
-                except (ValueError, TypeError):
-                    opening_date = None
-
-            insert_query = """
-                INSERT INTO products (
-                    tenant_id, nama_produk, satuan, base_unit, kategori, deskripsi, barcode,
-                    item_type, track_inventory, is_returnable,
-                    sales_account, purchase_account, sales_tax, purchase_tax,
-                    sales_price, purchase_price, harga_jual,
-                    image_url, reorder_level, preferred_vendor_id,
-                    sales_account_id, purchase_account_id,
-                    item_code, sku, inventory_account_id, cogs_account_id,
-                    costing_method, opening_stock, opening_stock_rate, opening_stock_date,
-                    for_sales, for_purchases, warehouse_id,
-                    track_batches, track_expiry, default_expiry_days,
-                    sales_tax_id, purchase_tax_id, bisa_dikirim,
-                    created_at, updated_at
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7,
-                    $8, $9, $10,
-                    $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20,
-                    $21, $22,
-                    $23, $24, $25, $26,
-                    $27, $28, $29, $30,
-                    $31, $32, $33,
-                    $34, $35, $36,
-                    $37, $38, $39,
-                    NOW(), NOW()
-                )
-                RETURNING id
-            """
-            item_id = await conn.fetchval(
-                insert_query,
-                ctx["tenant_id"],
-                body.name,
-                body.base_unit,  # satuan = base_unit
-                body.base_unit,
-                body.kategori,
-                body.deskripsi,
-                body.barcode,
-                body.item_type,
-                body.track_inventory,
-                body.is_returnable,
-                body.sales_account,
-                body.purchase_account,
-                body.sales_tax,
-                body.purchase_tax,
-                body.sales_price,
-                body.purchase_price,
-                body.sales_price,  # harga_jual = sales_price for backwards compat
-                body.image_url,
-                body.reorder_level,
-                body.preferred_vendor_id,
-                body.sales_account_id,
-                body.purchase_account_id,
-                item_code_to_use,
-                sku_to_use,
-                body.inventory_account_id,
-                body.cogs_account_id,
-                body.costing_method,
-                body.opening_stock,
-                body.opening_stock_rate,
-                opening_date,
-                body.for_sales,
-                body.for_purchases,
-                body.warehouse_id,
-                body.track_batches,
-                body.track_expiry,
-                body.default_expiry_days,
-                body.sales_tax_id,
-                body.purchase_tax_id,
-                # V318: flag non-stok bisa dikirim, SATU INSERT (dulu UPDATE kedua); CHECK DB menolak jasa
-                bool(body.bisa_dikirim),
-            )
-
-            # Insert unit conversions (goods only)
-            if body.item_type == "goods" and body.conversions:
-                for conv in body.conversions:
-                    await conn.execute(
-                        """
-                        INSERT INTO unit_conversions (
-                            tenant_id, product_id, base_unit, conversion_unit, conversion_factor,
-                            purchase_price, sales_price, is_active, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW(), NOW())
-                        """,
-                        tenant_id,
-                        item_id,
-                        body.base_unit,
-                        conv.conversion_unit,
-                        conv.conversion_factor,
-                        conv.purchase_price,
-                        conv.sales_price,
-                    )
-
-            # Create initial stock entry (if track_inventory)
-            if body.track_inventory and body.item_type == "goods":
-                # Determine opening stock values
-                initial_qty = (
-                    Decimal(str(body.opening_stock))
-                    if body.opening_stock
-                    else Decimal("0")
-                )
-                initial_rate = (
-                    Decimal(str(body.opening_stock_rate))
-                    if body.opening_stock_rate
-                    else (
-                        Decimal(str(body.purchase_price))
-                        if body.purchase_price
-                        else Decimal("0")
-                    )
-                )
-                initial_value = initial_qty * initial_rate
-
-                # Create inventory_ledger OPENING_BALANCE entry if opening stock > 0
-                # (Law 16: stock derived from inventory_ledger, no persediaan writes)
-                if initial_qty > 0:
-                    # t10-tanggal-bisnis: cadangan tanggal saldo awal = hari ini
-                    # menurut zona tenant, bukan date.today() (UTC container:
-                    # 00-07 WIB memberi KEMARIN).
-                    ob_date = None
-                    if body.opening_stock_date:
-                        try:
-                            ob_date = dateclass.fromisoformat(
-                                str(body.opening_stock_date)
-                            )
-                        except (ValueError, TypeError):
-                            ob_date = None
-                    if ob_date is None:
-                        ob_date = await tanggal_dokumen(conn, tenant_id)
-
-                    # GUDANG WAJIB, juga untuk saldo awal (11 Sep 2026).
-                    # Titik ini tak pernah menyebut `warehouse_id` sama sekali,
-                    # jadi ia menulis NULL SECARA STRUKTURAL -- bukan lewat
-                    # rantai cadangan yang kebetulan kosong. Barisnya masuk
-                    # buku, lalu trigger `trg_update_warehouse_stock` (yang
-                    # mencocokkan `warehouse_id = NEW.warehouse_id`) tak pernah
-                    # cocok: stok awal terlihat di layar dan ditolak saat
-                    # dikirim. Baris saldo awal yang SUDAH tercatat tidak
-                    # disentuh di sini -- itu koreksi data, tiket tersendiri,
-                    # dan `inventory_ledger` bersifat hanya-tambah (Rule 8).
-                    ob_warehouse = await conn.fetchval(
-                        """
-                        SELECT id FROM warehouses
-                        WHERE tenant_id = $1 AND is_active = true
-                        ORDER BY is_default DESC, created_at ASC
-                        LIMIT 1
-                        """,
-                        ctx["tenant_id"],
-                    )
-                    if ob_warehouse is None:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                "Saldo awal persediaan butuh gudang, dan tenant "
-                                "ini belum punya gudang aktif. Buat gudang dulu, "
-                                "atau simpan barang tanpa saldo awal."
-                            ),
-                        )
-                    # Audit F1 (10 Okt 2026): saldo awal = JURNAL (Dr Persediaan / Cr Modal Saldo Awal) + kartu stok di
-                    # transaksi ini. Dulu hanya baris kartu -> kartu bernilai, buku besar tidak (Law 1/4/6/16/23).
-                    await catat_saldo_awal_stok(
-                        conn,
-                        tenant_id=ctx["tenant_id"],
-                        user_id=ctx.get("user_id"),
-                        product_id=item_id,
-                        product_code=item_code_to_use,
-                        product_name=body.name,
-                        tanggal=ob_date,
-                        qty=initial_qty,
-                        rate=initial_rate,
-                        warehouse_id=ob_warehouse,
-                        inventory_account_id=body.inventory_account_id,
-                    )
-
-            # Log activity
-            user_id = request.state.user.get("user_id")
-            user_name = request.state.user.get("username") or request.state.user.get(
-                "email"
-            )
-            await conn.execute(
-                """
-                INSERT INTO item_activities (item_id, tenant_id, type, description, actor_id, actor_name)
-                VALUES ($1, $2, 'created', 'Item dibuat', $3, $4)
-                """,
-                item_id,
-                tenant_id,
-                user_id if user_id else None,
-                user_name,
-            )
+        item_id = await tulis_barang_baru(conn, ctx, body, request.state.user.get("user_id"),
+                                          request.state.user.get("username") or request.state.user.get("email"))
 
         logger.info(f"Created item {body.name} (id={item_id}) for tenant {tenant_id}")
 

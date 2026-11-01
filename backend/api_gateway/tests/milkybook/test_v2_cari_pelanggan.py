@@ -82,7 +82,7 @@ def _app(flag=True, baris=()):
             request.state.user = {"tenant_id": t, "user_id": "u1"}
         return await lanjut(request)
 
-    app.include_router(buat_router_v2(flag_fn=flag_fn, conn_fn=koneksi), prefix="/api/milkybook/v2")
+    app.include_router(buat_router_v2(flag_fn=flag_fn, conn_fn=koneksi, izin_fn=None), prefix="/api/milkybook/v2")
     return TestClient(app), conn
 
 

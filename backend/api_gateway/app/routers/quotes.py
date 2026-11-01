@@ -752,170 +752,174 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
                                                         response)
                 if _lama is not None:
                     return _lama
-                # Generate quote number
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
-                if _nomor_manual:
-                    if await conn.fetchval(
-                        "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2",
-                        ctx["tenant_id"], _nomor_manual):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                    quote_number = _nomor_manual
-                else:
-                    quote_number = await conn.fetchval(
-                        "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
-                    )
-
-                # 3h: kalkulator bersama (sales_doc_calc; HALF_UP 2dp).
-                _doc = await _quote_calc(
-                    conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
-                    body.discount_type, body.discount_value,
-                    shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id,
-                )
-                # #39: tenant non-PKP tak boleh menawarkan PPN (sama dengan SO #34 / faktur).
-                await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
-                calculated_items = _doc["items"]
-                totals = {
-                    "subtotal": _doc["net_subtotal"],
-                    "discount_amount": _doc["doc_discount"],
-                    "tax_amount": _doc["tax_amount"],
-                    "total_amount": _doc["total_amount"],
-                }
-
-                # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER)
-                dp = resolve_dp(
-                    totals["total_amount"], body.dp_amount, body.dp_percent
-                )
-
-                # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID).
-                body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
-                # Auto-resolve customer_name if not provided
-                if not body.customer_name and body.customer_id:
-                    cust = await conn.fetchrow(
-                        "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                        uuid_module.UUID(body.customer_id),
-                        ctx["tenant_id"],
-                    )
-                    if cust:
-                        body.customer_name = cust["nama"]
-
-                # Create quote
-                quote_id = uuid_module.uuid4()
-                await conn.execute(
-                    """
-                    INSERT INTO quotes (
-                        id, tenant_id, quote_number, quote_date, expiry_date,
-                        customer_id, customer_name, customer_email,
-                        reference, subject,
-                        subtotal, discount_type, discount_value, discount_amount,
-                        tax_amount, total_amount, status,
-                        notes, terms, footer, opening_text, closing_text,
-                        payment_bank_name, payment_account_number, payment_account_holder, created_by,
-                        dp_amount, dp_percent
-                    ) VALUES (
-                        $1, $2, $3, $4, $5,
-                        $6, $7, $8,
-                        $9, $10,
-                        $11, $12, $13, $14,
-                        $15, $16, 'draft',
-                        $17, $18, $19, $20, $21,
-                        $22, $23, $24, $25,
-                        $26, $27
-                    )
-                """,
-                    quote_id,
-                    ctx["tenant_id"],
-                    quote_number,
-                    body.quote_date,
-                    body.expiry_date,
-                    uuid_module.UUID(body.customer_id),
-                    body.customer_name,
-                    body.customer_email,
-                    body.reference,
-                    body.subject,
-                    totals["subtotal"],
-                    body.discount_type,
-                    body.discount_value,
-                    totals["discount_amount"],
-                    totals["tax_amount"],
-                    totals["total_amount"],
-                    body.notes,
-                    body.terms,
-                    body.footer,
-                    body.opening_text,
-                    body.closing_text,
-                    body.payment_bank_name,
-                    body.payment_account_number,
-                    await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name, body.payment_account_number, body.payment_account_holder),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
-                    ctx["user_id"],
-                    # FIX_P2_QUOTEDP 2026-06-16 (NUMERIC columns expect Decimal/None)
-                    Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
-                    Decimal(str(dp["dp_percent"])) if dp["dp_percent"] is not None else None,
-                )
-                if _ada_ongkir(body.shipping_amount, body.shipping_tax_code_id):
-                    await _tulis_ongkir(conn, quote_id, _doc, body.shipping_tax_code_id)  # V467
-
-                # 6 Okt 2026: isian SURAT (up., pembuka/penutup, catatan khusus, S&K, penanda tangan) -- SNAPSHOT dari
-                # bawaan (default_penawaran) untuk medan yang tak dikirim; sumber per medan (services/penawaran_surat).
-                from ..services import penawaran_surat as _surat
-                from ..services.default_dokumen import default_penawaran as _bawaan_pnw
-                await _surat.terapkan(conn, ctx["tenant_id"], quote_id, body, await _bawaan_pnw(
-                    conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), body.customer_id), buat=True)
-
-                from ..utils.urutan_baris import urutan_isian
-                _urut = urutan_isian(body.items)
-                # Create items
-                for idx, item in enumerate(calculated_items):
-                    await conn.execute(
-                        """
-                        INSERT INTO quote_items (
-                            id, quote_id, item_id, description,
-                            quantity, unit, unit_price, discount_percent,
-                            tax_id, tax_rate, tax_amount, line_total,
-                            group_name, sort_order, jumlah_baris
-                        ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
-                        )
-                    """,
-                        uuid_module.uuid4(),
-                        quote_id,
-                        uuid_module.UUID(item["item_id"])
-                        if item.get("item_id")
-                        else None,
-                        item["description"],
-                        item["quantity"],
-                        item.get("unit"),
-                        item["unit_price"],
-                        item.get("discount_percent", 0),
-                        uuid_module.UUID(item["tax_id"])
-                        if item.get("tax_id")
-                        else None,
-                        item.get("tax_rate", 0),
-                        item["tax_amount"],
-                        item["line_total"],
-                        item.get("group_name"),
-                        _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
-                        item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
-                    )
-
+                quote_id, data = await buat_penawaran_inti(conn, ctx, body)
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_CREATE", QuoteResponse(
-                    success=True,
-                    message="Penawaran dibuat",
-                    data={
-                        "id": str(quote_id),
-                        "quote_number": quote_number,
-                        "total_amount": totals["total_amount"],
-                        # FIX_P2_QUOTEDP 2026-06-16
-                        "dp_amount": dp["dp_amount"],
-                        "dp_percent": dp["dp_percent"],
-                    },
-                ), quote_id)
+                    success=True, message="Penawaran dibuat", data=data), quote_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating quote: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat penawaran.")
+
+
+async def buat_penawaran_inti(conn, ctx: dict, body: CreateQuoteRequest) -> tuple:
+    """Tulis SATU penawaran draf di transaksi PEMANGGIL (POST /quotes dan Milkybook v2 buat atomik, 1 Nov 2026):
+    nomor, hitung, PPN non-PKP, DP, pelanggan milik tenant, ongkir V467, isian surat, baris. -> (quote_id, data respons)."""
+    # Generate quote number
+    from ..services.document_number import bersihkan_nomor_dokumen_opsional
+    _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
+    if _nomor_manual:
+        if await conn.fetchval(
+            "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2",
+            ctx["tenant_id"], _nomor_manual):
+            raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+        quote_number = _nomor_manual
+    else:
+        quote_number = await conn.fetchval(
+            "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
+        )
+
+    # 3h: kalkulator bersama (sales_doc_calc; HALF_UP 2dp).
+    _doc = await _quote_calc(
+        conn, ctx["tenant_id"], [item.model_dump() for item in body.items],
+        body.discount_type, body.discount_value,
+        shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id,
+    )
+    # #39: tenant non-PKP tak boleh menawarkan PPN (sama dengan SO #34 / faktur).
+    await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+    calculated_items = _doc["items"]
+    totals = {
+        "subtotal": _doc["net_subtotal"],
+        "discount_amount": _doc["doc_discount"],
+        "tax_amount": _doc["tax_amount"],
+        "total_amount": _doc["total_amount"],
+    }
+
+    # FIX_P2_QUOTEDP 2026-06-16 — resolve canonical down-payment (NO-LEDGER)
+    dp = resolve_dp(
+        totals["total_amount"], body.dp_amount, body.dp_percent
+    )
+
+    # Pelanggan WAJIB milik tenant ini (30 Sep 2026; dulu hanya format UUID).
+    body.customer_id = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+    # Auto-resolve customer_name if not provided
+    if not body.customer_name and body.customer_id:
+        cust = await conn.fetchrow(
+            "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2",
+            uuid_module.UUID(body.customer_id),
+            ctx["tenant_id"],
+        )
+        if cust:
+            body.customer_name = cust["nama"]
+
+    # Create quote
+    quote_id = uuid_module.uuid4()
+    await conn.execute(
+        """
+        INSERT INTO quotes (
+            id, tenant_id, quote_number, quote_date, expiry_date,
+            customer_id, customer_name, customer_email,
+            reference, subject,
+            subtotal, discount_type, discount_value, discount_amount,
+            tax_amount, total_amount, status,
+            notes, terms, footer, opening_text, closing_text,
+            payment_bank_name, payment_account_number, payment_account_holder, created_by,
+            dp_amount, dp_percent
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8,
+            $9, $10,
+            $11, $12, $13, $14,
+            $15, $16, 'draft',
+            $17, $18, $19, $20, $21,
+            $22, $23, $24, $25,
+            $26, $27
+        )
+    """,
+        quote_id,
+        ctx["tenant_id"],
+        quote_number,
+        body.quote_date,
+        body.expiry_date,
+        uuid_module.UUID(body.customer_id),
+        body.customer_name,
+        body.customer_email,
+        body.reference,
+        body.subject,
+        totals["subtotal"],
+        body.discount_type,
+        body.discount_value,
+        totals["discount_amount"],
+        totals["tax_amount"],
+        totals["total_amount"],
+        body.notes,
+        body.terms,
+        body.footer,
+        body.opening_text,
+        body.closing_text,
+        body.payment_bank_name,
+        body.payment_account_number,
+        await _fc_snap.pemilik_cetak(conn, ctx["tenant_id"], body.payment_bank_name, body.payment_account_number, body.payment_account_holder),  # 28 Sep: snapshot pemilik rekening, bukan nama akun
+        ctx["user_id"],
+        # FIX_P2_QUOTEDP 2026-06-16 (NUMERIC columns expect Decimal/None)
+        Decimal(str(dp["dp_amount"])) if dp["dp_amount"] is not None else None,
+        Decimal(str(dp["dp_percent"])) if dp["dp_percent"] is not None else None,
+    )
+    if _ada_ongkir(body.shipping_amount, body.shipping_tax_code_id):
+        await _tulis_ongkir(conn, quote_id, _doc, body.shipping_tax_code_id)  # V467
+
+    # 6 Okt 2026: isian SURAT (up., pembuka/penutup, catatan khusus, S&K, penanda tangan) -- SNAPSHOT dari
+    # bawaan (default_penawaran) untuk medan yang tak dikirim; sumber per medan (services/penawaran_surat).
+    from ..services import penawaran_surat as _surat
+    from ..services.default_dokumen import default_penawaran as _bawaan_pnw
+    await _surat.terapkan(conn, ctx["tenant_id"], quote_id, body, await _bawaan_pnw(
+        conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), body.customer_id), buat=True)
+
+    from ..utils.urutan_baris import urutan_isian
+    _urut = urutan_isian(body.items)
+    # Create items
+    for idx, item in enumerate(calculated_items):
+        await conn.execute(
+            """
+            INSERT INTO quote_items (
+                id, quote_id, item_id, description,
+                quantity, unit, unit_price, discount_percent,
+                tax_id, tax_rate, tax_amount, line_total,
+                group_name, sort_order, jumlah_baris
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+            )
+        """,
+            uuid_module.uuid4(),
+            quote_id,
+            uuid_module.UUID(item["item_id"])
+            if item.get("item_id")
+            else None,
+            item["description"],
+            item["quantity"],
+            item.get("unit"),
+            item["unit_price"],
+            item.get("discount_percent", 0),
+            uuid_module.UUID(item["tax_id"])
+            if item.get("tax_id")
+            else None,
+            item.get("tax_rate", 0),
+            item["tax_amount"],
+            item["line_total"],
+            item.get("group_name"),
+            _urut[idx],  # 6 Okt 2026: indeks bila klien tak mengirim sort_order (bawaan skema 0)
+            item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # JUMLAH BARIS (V427)
+        )
+
+    return quote_id, {
+        "id": str(quote_id),
+        "quote_number": quote_number,
+        "total_amount": totals["total_amount"],
+        # FIX_P2_QUOTEDP 2026-06-16
+        "dp_amount": dp["dp_amount"],
+        "dp_percent": dp["dp_percent"],
+    }
 
 
 @router.post("/calculate")

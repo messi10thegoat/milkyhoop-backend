@@ -101,6 +101,11 @@ async def _flag_v2(tenant_id: str) -> bool:
         return FLAG in await fitur_aktif(conn, tenant_id)
 
 
+async def _izin_v2(user, jalur, metode):
+    from ..middleware.permission_middleware import izin_rute_pengguna
+    return await izin_rute_pengguna(user, jalur, metode)
+
+
 @asynccontextmanager
 async def _koneksi():
     from ..services.db_pool import get_db_pool
@@ -113,5 +118,5 @@ def milkybook_router():
     from .v2.router import buat_router_v2
     r = buat_router(_putaran, _PenyimpananMalas(), app_fn=_app, izin_fn_untuk=_izin_untuk,
                     flag_fn=_flag, hari_ini_fn=_hari_ini)
-    r.include_router(buat_router_v2(flag_fn=_flag_v2, conn_fn=_koneksi), prefix="/v2")  # flag milkybook_v2 (31 Okt)
+    r.include_router(buat_router_v2(flag_fn=_flag_v2, conn_fn=_koneksi, izin_fn=_izin_v2), prefix="/v2")  # flag milkybook_v2 (31 Okt)
     return r

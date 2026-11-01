@@ -79,6 +79,7 @@ POST /api/milkybook/kartu/{kartu_id}/ubah
 POST /api/milkybook/sesi
 POST /api/milkybook/sesi/{sesi_id}/berhenti
 POST /api/milkybook/sesi/{sesi_id}/pesan
+POST /api/milkybook/v2/penawaran
 POST /api/quotes/bulk/export
 POST /api/quotes/bulk/send
 POST /api/quotes/bulk/send/preview

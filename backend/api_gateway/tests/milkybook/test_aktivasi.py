@@ -21,7 +21,8 @@ def test_main_memasang_router_milkybook():
     assert re.search(r'app\.include_router\(milkybook_router\(\), prefix="/api/milkybook"', _src("app/main.py"))
 
 
-IZIN_V2 = {"/api/milkybook/v2/pelanggan": ("customer", "R")}  # data master: izin modulnya sendiri
+IZIN_V2 = {"/api/milkybook/v2/pelanggan": ("customer", "R"),  # data master: izin modulnya sendiri
+           "/api/milkybook/v2/penawaran": ("quote", "C")}  # buat penawaran; master baru dicek di handler
 
 
 def test_setiap_rute_terpetakan_izin_quote_r_pola_pertama():
