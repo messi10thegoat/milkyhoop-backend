@@ -252,6 +252,17 @@ def test_tagihan_idem_prefix_simpan_dan_replay(monkeypatch):
     assert _jalan(RB.delete_bill(_Req("K-1"), DID)) == lama and kon2.tulis() == [] and objek == []
 
 
+def _audit(baris, event, entitas, nomor, jenis, aksi):
+    """AUDIT-DOKUMEN (1 Nov 2026, OK MASTER): SATU baris audit_logs sesudah tulis dokumen -- event/entitas/nomor/aktor/tenant persis,
+    metadata HANYA {jenis, aksi, ringkas, user_id}."""
+    import json as _json
+    from app.services import audit_dokumen as _AD
+    q, a = baris
+    assert q.startswith("INSERT INTO audit_logs") and _AD.nama(jenis, aksi) == event
+    assert a[:6] == (str(UID), event, entitas, str(DID), nomor, T) and a[6] == f"api:{jenis}.{aksi}"
+    assert _json.loads(a[7]) == {"jenis": jenis, "aksi": aksi, "ringkas": f"{_AD.EVENT[(jenis, aksi)].ringkas} {nomor}", "user_id": str(UID)}
+
+
 # ============================================================ PEMBAYARAN KELUAR (DELETE /bill-payments/{id})
 BAYAR = {"id": DID, "payment_number": "BP-2610-0007", "status": "draft", "total_amount": D("100")}
 
@@ -270,8 +281,10 @@ def test_bayar_sukses_respons_sql_kunci_urutan(monkeypatch):
     i_lock = kon.indeks(lambda x: "pg_advisory_xact_lock" in x[1])
     i_baca = kon.indeks(lambda x: x[0] == "fetchrow" and "FROM bill_payments_v2" in x[1])
     assert kon.log[i_lock][2] == (f"BILL_PAYMENT:{DID}",) and kon.log[i_baca][1].endswith("FOR UPDATE")
-    assert kon.tulis() == [("DELETE FROM bill_payment_allocations WHERE payment_id = $1::uuid", (str(DID),)),
-                           ("DELETE FROM bill_payments_v2 WHERE id = $1::uuid", (str(DID),))]
+    assert kon.tulis()[:2] == [("DELETE FROM bill_payment_allocations WHERE payment_id = $1::uuid", (str(DID),)),
+                               ("DELETE FROM bill_payments_v2 WHERE id = $1::uuid", (str(DID),))]
+    assert len(kon.tulis()) == 3  # AUDIT-DOKUMEN: + satu baris audit sesudah DELETE (transaksi sama)
+    _audit(kon.tulis()[2], "PAYMENT_OUT_DELETED", "bill_payments_v2", "BP-2610-0007", "payment_out", "deleted")
     assert i_ten < i_lock < i_baca < kon.indeks(lambda x: x[1].startswith("DELETE"))
 
 
@@ -322,7 +335,9 @@ def test_umv_sukses_respons_inggris_lama_sql_dan_kunci(monkeypatch):
     i_baca = kon.indeks(lambda x: x[0] == "fetchrow" and "FROM vendor_deposits" in x[1])
     assert kon.log[i_lock][2] == (f"VENDOR_DEPOSIT:{DID}",)
     assert kon.log[i_baca][1] == "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE" and i_lock < i_baca
-    assert kon.tulis() == [("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", (DID, T))]
+    assert kon.tulis()[:1] == [("DELETE FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 AND status = 'draft'", (DID, T))]
+    assert len(kon.tulis()) == 2  # AUDIT-DOKUMEN: + satu baris audit sesudah DELETE
+    _audit(kon.tulis()[1], "VD_DELETED", "vendor_deposit", "VD-2026-00099", "vendor_deposit", "deleted")
 
 
 @pytest.mark.parametrize("baris,kode,teks", [
@@ -363,7 +378,9 @@ def test_nd_sukses_respons_sql_kunci(monkeypatch):
     i_baca = kon.indeks(lambda x: x[0] == "fetchrow" and "FROM vendor_credits" in x[1])
     assert kon.log[i_lock][2] == (f"VENDOR_CREDIT:{DID}",) and i_lock < i_baca
     assert kon.log[i_baca][1] == "SELECT id, status, credit_number FROM vendor_credits WHERE id = $1 AND tenant_id = $2 FOR UPDATE"
-    assert kon.tulis() == [("DELETE FROM vendor_credits WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id", (DID, T))]
+    assert kon.tulis()[:1] == [("DELETE FROM vendor_credits WHERE id = $1 AND tenant_id = $2 AND status = 'draft' RETURNING id", (DID, T))]
+    assert len(kon.tulis()) == 2  # AUDIT-DOKUMEN: + satu baris audit sesudah DELETE
+    _audit(kon.tulis()[1], "VC_DELETED", "vendor_credits", "VC-2610-0099", "vendor_credit", "deleted")
 
 
 @pytest.mark.parametrize("baris,hapus_ok,kode,teks", [

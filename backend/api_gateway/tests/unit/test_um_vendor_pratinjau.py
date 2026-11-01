@@ -235,7 +235,9 @@ def test_tulis_memakai_penentu_bersama():
     assert "lepas_penerapan(conn, ctx, deposit_id, application_id)" in src["unapply_vendor_deposit"]
     assert "R.rencana_lepas(" in lep and "kunci=True" in lep
     assert "R.rencana_kembali(" in src["refund_vendor_deposit"] and 'rk["akun_kas"]' in src["refund_vendor_deposit"]
-    assert "R.rencana_batal(" in src["void_vendor_deposit"] and "VD_VOIDED" in src["void_vendor_deposit"]
+    from app.services import audit_dokumen as AD  # AUDIT-DOKUMEN (1 Nov 2026, OK MASTER): nama event dari SATU tabel
+    assert AD.nama("vendor_deposit", "voided") == "VD_VOIDED"
+    assert "R.rencana_batal(" in src["void_vendor_deposit"] and '_ad.nama("vendor_deposit", "voided")' in src["void_vendor_deposit"]
     # B1b-2 (29 Okt): penentu + DELETE bersyarat dipindah ke inti hapus_draf_umv_core (rute tunggal + hapus massal)
     inti = inspect.getsource(VD.hapus_draf_umv_core)
     assert "hapus_draf_umv_core(conn, ctx, deposit_id)" in src["delete_vendor_deposit"]

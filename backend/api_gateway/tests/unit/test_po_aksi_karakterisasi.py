@@ -136,7 +136,9 @@ RESP = {
     "cancel": {"success": True, "message": "Pesanan pembelian dibatalkan.", "data": {"id": str(PID), "status": "cancelled"}},
 }
 PREFIX = {"delete": "PO_DELETE", "send": "PO_SEND", "cancel": "PO_CANCEL"}
-KOLOM_KUNCI = {"delete": "id, status, po_number", "send": "id, status, po_number", "cancel": "id, status"}
+KOLOM_KUNCI = {"delete": "id, status, po_number", "send": "id, status, po_number", "cancel": "id, status, po_number"}  # AUDIT-DOKUMEN: batal butuh nomor
+# AUDIT-DOKUMEN (1 Nov 2026, OK MASTER): kirim/batal + SATU baris audit sesudah UPDATE; hapus = trigger DB (bukan tulis app)
+AUDIT = {"send": ("PO_SENT", "sent"), "cancel": ("PO_CANCELLED", "cancelled")}
 AKSI = ("delete", "send", "cancel")
 
 
@@ -147,7 +149,17 @@ def test_sukses_respons_dan_sql_tulis_persis(monkeypatch, aksi):
     _pasang(monkeypatch, kon)
     r = _jalan(aksi, _Req())
     assert r == RESP[aksi]
-    assert kon.tulis() == [(SQL_TULIS[aksi], ARG_TULIS[aksi])]
+    assert kon.tulis()[:1] == [(SQL_TULIS[aksi], ARG_TULIS[aksi])]
+    assert len(kon.tulis()) == (2 if aksi in AUDIT else 1)
+    if aksi in AUDIT:
+        import json as _json
+        from app.services import audit_dokumen as _AD
+        q, a = kon.tulis()[1]
+        ev, ak = AUDIT[aksi]
+        assert q.startswith("INSERT INTO audit_logs") and _AD.nama("purchase_order", ak) == ev
+        assert a[:6] == (str(UID), ev, "purchase_order", str(PID), "PO-2610-0042", T) and a[6] == f"api:purchase_order.{ak}"
+        assert _json.loads(a[7]) == {"jenis": "purchase_order", "aksi": ak, "ringkas": f"{_AD.EVENT[('purchase_order', ak)].ringkas} PO-2610-0042",
+                                     "user_id": str(UID)}
     # satu transaksi, commit
     assert [x[1] for x in kon.log if x[0] == "tx"] == ["BEGIN", "COMMIT"]
 

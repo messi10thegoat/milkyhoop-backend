@@ -66,7 +66,9 @@ def test_bundel_po_grn_faktur_dan_riwayat():
     assert '"key": "po"' in k and '"key": "grn"' in k and '"key": "faktur"' in k and "TD.dok_tagihan" in k
     assert "kelompok_grn_banyak(conn, tenant_id, [gr])" in inspect.getsource(GD.kelompok_grn)
     r = inspect.getsource(GD.riwayat_grn)
-    assert "GRN_DITERIMA" in r and "GRN_DIBATALKAN" in r and "GRN_DITAGIH" in r and "_selesaikan" in r
+    from app.services import audit_dokumen as AD  # AUDIT-DOKUMEN (1 Nov 2026, OK MASTER): nama event dari SATU tabel
+    assert AD.nama("goods_receipt", "voided") == "GRN_DIBATALKAN"
+    assert "GRN_DITERIMA" in r and '_ad.nama("goods_receipt", "voided")' in r and "GRN_DITAGIH" in r and "_selesaikan" in r
 
 
 @pytest.mark.parametrize("jalur,metode,harap", [

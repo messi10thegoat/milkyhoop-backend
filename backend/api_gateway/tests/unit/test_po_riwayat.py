@@ -64,6 +64,10 @@ def test_entitas_audit_dan_ringkas_terdaftar():
 
 
 def test_router_mencatat_riwayat_dan_rute_history():
-    assert "catat_riwayat(conn" in inspect.getsource(PO.update_purchase_order) and '"PO_UPDATED"' in inspect.getsource(PO.update_purchase_order)
-    assert '"PO_RECEIVED"' in inspect.getsource(PO.receive_goods)
+    # AUDIT-DOKUMEN (1 Nov 2026, OK MASTER): nama event dari SATU tabel services/audit_dokumen
+    from app.services import audit_dokumen as AD
+    assert AD.nama("purchase_order", "updated") == "PO_UPDATED" and AD.nama("purchase_order", "received") == "PO_RECEIVED"
+    assert "catat_riwayat(conn" in inspect.getsource(PO.update_purchase_order)
+    assert '_ad.nama("purchase_order", "updated")' in inspect.getsource(PO.update_purchase_order)
+    assert '_ad.nama("purchase_order", "received")' in inspect.getsource(PO.receive_goods)
     assert any(r.path == "/{po_id}/history" and "GET" in r.methods for r in PO.router.routes)
