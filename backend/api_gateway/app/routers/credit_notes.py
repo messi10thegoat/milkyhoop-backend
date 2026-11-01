@@ -31,6 +31,7 @@ from uuid import UUID
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import teks_galat as tg
 from ..services import nota_kredit_rencana as NKR
+from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal posting = nomor NK
 from ..services.pihak_helpers import (
     pelanggan_kanonik_tenant,
     faktur_tenant_untuk_pelanggan,
@@ -1881,16 +1882,8 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
 
-    journal_number = await conn.fetchval(
-        """
-        SELECT get_next_journal_number($1, 'CN')
-    """,
-        ctx["tenant_id"],
-    )
-
-    if not journal_number:
-        # Fallback if function doesn't exist
-        journal_number = f"CN-{cn['credit_note_number']}"
+    # ND-JURNAL-NOMOR: jurnal = nomor NK-nya (satu ruang nama); sudah dipakai jurnal lama -> seri 'NKJ'
+    journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], cn["credit_note_number"], "NKJ")
 
     # Calculate amounts
     total_amount = cn["total_amount"]

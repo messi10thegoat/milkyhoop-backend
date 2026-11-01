@@ -37,6 +37,7 @@ from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
+from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal posting = nomor ND
 from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.tax_factor import resolve_dpp_factor  # ND-BUAT pagar DPP: resolver YANG SAMA dengan faktur pembelian
@@ -1332,15 +1333,8 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
 
                 journal_id = uuid_module.uuid4()
 
-                journal_number = await conn.fetchval(
-                    """
-                    SELECT get_next_journal_number($1, 'VC')
-                """,
-                    ctx["tenant_id"],
-                )
-
-                if not journal_number:
-                    journal_number = f"VC-{vc['credit_number']}"
+                # ND-JURNAL-NOMOR: jurnal = nomor ND-nya (satu ruang nama); sudah dipakai jurnal lama -> seri 'NDJ'
+                journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], vc["credit_number"], "NDJ")
 
                 # Calculate amounts
                 total_amount = vc["total_amount"]

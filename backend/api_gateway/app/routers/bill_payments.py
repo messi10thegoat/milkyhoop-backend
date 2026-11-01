@@ -16,6 +16,7 @@ from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama  # noqa: F401
 from ..services import bayar_keluar_rencana as BKR
+from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal pembayaran = nomor PK
 import uuid as uuid_module
 import logging
 import asyncpg
@@ -217,12 +218,8 @@ async def create_bill_payment_journal(
         pph_tax_code_id=pph_tax_code_id, pph_amount=pph_amount,
     )
 
-    # Generate journal number using database function
-    journal_number = await conn.fetchval(
-        "SELECT get_next_journal_number($1, 'BP')", ctx["tenant_id"]
-    )
-    if not journal_number:
-        journal_number = f"JRN-{payment_number}"
+    # ND-JURNAL-NOMOR: jurnal = nomor pembayarannya (satu ruang nama); sudah dipakai jurnal lain -> seri 'PKJ'
+    journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], payment_number, "PKJ")
 
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
