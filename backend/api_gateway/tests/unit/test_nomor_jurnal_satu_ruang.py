@@ -1,4 +1,12 @@
-"""Premis penomoran jurnal "satu ruang nama" (L2-C1 + C2, 23 Sep 2026).
+"""Premis penomoran jurnal "satu ruang nama" (L2-C1 + C2, 23 Sep 2026; diperluas ND-JURNAL-NOMOR 1 Nov 2026).
+
+1 Nov 2026 (putusan MASTER, pola NetSuite: dampak GL bernomor transaksi sumbernya): jurnal posting ND/NK/PK
+bernomor = nomor dokumennya lewat services/nomor_jurnal.nomor_jurnal_dokumen (cadangan NDJ/NKJ/PKJ). Dulu
+'VC'/'CN'/'BP' = urutan jurnal ber-awalan dokumen dengan penghitung TERPISAH -> jurnal bernomor = nomor
+dokumen LAIN (kaos 1 Nov: ND 3, NK 16; UMJ 69 + LPS 5 = baris sebelum 23 Sep). Aturan GENERIK: SEMUA
+awalan dokumen (diukur dari DB 1 Nov) terlarang sebagai awalan get_next_journal_number, kecuali
+IZIN_LITERAL yang beralasan (penerbit nomor DOKUMEN dari penghitung jurnal, atau format dokumen yang
+mustahil sama dengan PREFIX-YYMM-NNNN).
 
 Jurnal lepas pembayaran bernomor = nomor uang muka LPS-nya, jurnal uang muka bernomor = nomor
 uang mukanya (DEP-...). Pra-cek "nomor sudah dipakai jurnal lain?" lalu INSERT aman dari ras HANYA
@@ -18,7 +26,28 @@ import re
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
-TERLARANG = {"DEP", "LPS"}
+# Awalan nomor DOKUMEN (diukur 1 Nov 2026: semua kolom *_number/*_no tabel publik, pola ^AWALAN-angka).
+TERLARANG = {
+    "BILL", "PB", "BP", "PAY", "CN", "KRD", "DEP", "LPS", "OVP", "EXP", "GRN", "INV", "KSB", "PO", "PRO",
+    "QUO", "RCV", "SA", "SJ", "SO", "ST", "TRF", "VC", "VD", "WO",
+}
+
+# Situs awalan-dokumen LITERAL yang DIIZINKAN: (berkas relatif app/, fungsi, awalan) -> alasan.
+# Entri yang tak lagi cocok situs mana pun = basi -> merah.
+_VD = "jurnal void; dokumen uang muka vendor VD-YYYY-NNNNN (5 digit, tahun penuh) mustahil sama dengan VD-YYMM-NNNN"
+IZIN_LITERAL = {
+    ("services/bills_service.py", "record_payment", "BP"):
+        "MENERBITKAN nomor dokumen PK lama dari penghitung jurnal, jurnalnya bernomor sama (satu ruang nama)",
+    ("routers/sales_invoices.py", "_execute_fulfillment", "SJ"): "MENERBITKAN nomor dokumen Surat Jalan (bukan nomor jurnal)",
+    ("services/sj_so.py", "tulis", "SJ"): "MENERBITKAN nomor dokumen Surat Jalan dari pesanan (bukan nomor jurnal)",
+    ("services/grn_rencana.py", "tulis_grn", "GRN"): "MENERBITKAN nomor dokumen penerimaan barang (jurnalnya 'GRJ')",
+    ("routers/receive_payments.py", "_post_payment", "RCV"):
+        "dokumen RCV-YYYY-NNNN (tahun penuh) mustahil sama dengan jurnal RCV-YYMM-NNNN",
+    ("routers/bill_payments.py", "void_bill_payment", "VD"): _VD,
+    ("routers/payroll.py", "void_payroll", "VD"): _VD,
+    ("routers/receive_payments.py", "_tulis_void_pembayaran", "VD"): _VD,
+    ("routers/vendor_deposits.py", "void_vendor_deposit", "VD"): _VD,
+}
 SQL = re.compile(r"get_next_journal_number\(\s*[^,()]+?\s*,\s*([^,()]+?)\s*[,)]", re.S)
 
 # Awalan non-literal yang DIIZINKAN = PEMBUNGKUS yang meneruskan parameternya ke fungsi DB.
@@ -31,6 +60,8 @@ DAFTAR_IZIN = {
         ("pembungkus Python jurnal manual; pemanggil = 'JV'", "get_next_journal_number", 2),
     ("services/kernel_document_executor.py", "_next_journal_number", "prefix"):
         ("pembungkus kernel dokumen; pemanggil = 'DI'", "_next_journal_number", 2),
+    ("services/nomor_jurnal.py", "nomor_jurnal_dokumen", "cadangan"):
+        ("pembungkus satu ruang nama ND/NK/PK; pemanggil = 'NDJ' / 'NKJ' / 'PKJ'", "nomor_jurnal_dokumen", 3),
     ("services/sj_so.py", "_jurnal", "prefix"):
         ("pembungkus jurnal Surat Jalan dari pesanan (R1 irisan 2); pemanggil = 'DLV' / 'DLV-REV' / 'COGS' / 'RECOG' / 'REV'", "_jurnal", 3),
 }
@@ -134,8 +165,14 @@ def panggilan_pembungkus(nama, idx, app=APP):
 
 
 def test_tak_ada_awalan_literal_terlarang():
-    buruk = [h for h in enumerasi() if h[3] == "literal" and h[4] in TERLARANG]
-    assert not buruk, f"penerbit nomor jurnal DEP-/LPS- selain nomor uang muka: {buruk}"
+    buruk = [h for h in enumerasi() if h[3] == "literal" and h[4] in TERLARANG and (h[0], h[1], h[4]) not in IZIN_LITERAL]
+    assert not buruk, f"urutan jurnal ber-awalan DOKUMEN (penghitung terpisah -> jurnal bernomor = dokumen lain): {buruk}"
+
+
+def test_izin_literal_tak_basi():
+    situs = {(h[0], h[1], h[4]) for h in enumerasi() if h[3] == "literal"}
+    basi = [k for k in IZIN_LITERAL if k not in situs]
+    assert not basi, f"entri IZIN_LITERAL tak cocok situs mana pun (hapus): {basi}"
 
 
 def test_awalan_nonliteral_wajib_diizinkan():
@@ -160,6 +197,59 @@ def test_pra_cek_masih_ada():
     cd = (APP / "routers/customer_deposits.py").read_text()
     assert "journal_number = dep_no" in rp and "get_next_journal_number($1, 'LPJ')" in rp
     assert "journal_number = dep[\"deposit_number\"]" in cd and "get_next_journal_number($1, 'DPJ')" in cd
+    nj = (APP / "services/nomor_jurnal.py").read_text()
+    assert "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND journal_number = $2" in nj
+
+
+# ND-JURNAL-NOMOR: jurnal posting tiap dokumen = nomor DOKUMEN ITU SENDIRI (argumen ke-3) + cadangan khasnya.
+SATU_RUANG = {
+    ("routers/vendor_credits.py", "post_vendor_credit"): ('vc["credit_number"]', "NDJ"),
+    ("routers/credit_notes.py", "posting_nota_kredit"): ('cn["credit_note_number"]', "NKJ"),
+    ("routers/bill_payments.py", "create_bill_payment_journal"): ("payment_number", "PKJ"),
+}
+
+
+def _panggilan_satu_ruang():
+    hasil = {}
+    for rel, _fn in SATU_RUANG:
+        tree = ast.parse((APP / rel).read_text())
+        induk = _fungsi_induk(tree)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", getattr(n.func, "id", None)) == "nomor_jurnal_dokumen":
+                hasil.setdefault((rel, induk.get(id(n))), []).append(
+                    (ast.unparse(n.args[2]) if len(n.args) > 2 else None, _teks(n.args[3]) if len(n.args) > 3 else None))
+    return hasil
+
+
+def test_jurnal_posting_nd_nk_pk_bernomor_dokumennya():
+    assert _panggilan_satu_ruang() == {k: [v] for k, v in SATU_RUANG.items()}
+
+
+def test_pembungkus_satu_ruang():
+    import asyncio
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("nomor_jurnal", APP / "services/nomor_jurnal.py")
+    nj = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nj)
+
+    class Conn:
+        def __init__(self, terpakai, seri="NDJ-2611-0001"):
+            self.terpakai, self.seri, self.sql = terpakai, seri, []
+
+        async def fetchval(self, q, *a):
+            self.sql.append((q, a))
+            if "FROM journal_entries" in q:
+                return 1 if a[1] in self.terpakai else None
+            return self.seri
+
+    c = Conn(set())
+    assert asyncio.run(nj.nomor_jurnal_dokumen(c, "t", "VC-2611-0001", "NDJ")) == "VC-2611-0001"
+    assert c.sql[0][1] == ("t", "VC-2611-0001") and len(c.sql) == 1
+    c = Conn({"VC-2611-0001"})
+    assert asyncio.run(nj.nomor_jurnal_dokumen(c, "t", "VC-2611-0001", "NDJ")) == "NDJ-2611-0001"
+    assert c.sql[1][1] == ("t", "NDJ")
+    c = Conn({"VC-2611-0001"}, seri=None)
+    assert asyncio.run(nj.nomor_jurnal_dokumen(c, "t", "VC-2611-0001", "NDJ")) == "NDJ-VC-2611-0001"
 
 
 def test_pemindai_bisa_merah(tmp_path):
