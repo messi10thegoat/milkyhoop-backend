@@ -25,7 +25,7 @@ JALUR = [
     ("sales_orders.py", "update_sales_order", "UPDATE sales_orders"),
     ("sales_invoices.py", "create_invoice", "INSERT INTO sales_invoices"),
     ("sales_invoices.py", "update_invoice", "UPDATE sales_invoices SET"),
-    ("quotes.py", "create_quote", "INSERT INTO quotes"),
+    ("quotes.py", "buat_penawaran_inti", "INSERT INTO quotes"),  # 1 Nov 2026: inti bersama POST /quotes + Milkybook v2
     ("quotes.py", "_ubah_penawaran", "UPDATE quotes"),
     ("receive_payments.py", "update_receive_payment", "UPDATE receive_payments"),
     ("customer_deposits.py", "create_customer_deposit", "INSERT INTO customer_deposits"),

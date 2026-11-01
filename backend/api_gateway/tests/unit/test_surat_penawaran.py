@@ -61,7 +61,8 @@ def test_skema_menerima_dan_mengeluarkan_medan_sumber():
 def test_update_tak_menulis_medan_surat_lewat_update_data():
     src = inspect.getsource(Q._ubah_penawaran)  # 13 Okt: isi PATCH pindah ke inti bersama pratinjau
     assert "*_surat.MEDAN, *(m + \"_source\" for m in _surat.MEDAN)" in src and "_surat.terapkan(" in src
-    assert "_surat.terapkan(" in inspect.getsource(Q.create_quote) and "buat=True" in inspect.getsource(Q.create_quote)
+    inti = inspect.getsource(Q.buat_penawaran_inti)  # 1 Nov 2026: inti bersama POST /quotes + Milkybook v2
+    assert "buat_penawaran_inti(" in inspect.getsource(Q.create_quote) and "_surat.terapkan(" in inti and "buat=True" in inti
     assert "field_sources = s.field_sources" in inspect.getsource(Q.duplicate_quote)
 
 

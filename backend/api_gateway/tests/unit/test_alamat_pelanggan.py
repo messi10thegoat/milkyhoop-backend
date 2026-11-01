@@ -65,7 +65,9 @@ def test_rute_tulis_di_inventaris():
 
 
 def test_kabel_cermin_di_tulis_lama_dan_gabung():
-    assert "_alamat.cermin_dari_datar(conn, ctx[\"tenant_id\"], new_id" in inspect.getsource(CU.create_customer)
+    # 1 Nov 2026: tulis buat pindah ke inti bersama tulis_pelanggan_baru (POST /customers + Milkybook v2 buat atomik)
+    assert "tulis_pelanggan_baru(conn, ctx, body" in inspect.getsource(CU.create_customer)
+    assert "_alamat.cermin_dari_datar(conn, ctx[\"tenant_id\"], new_id" in inspect.getsource(CU.tulis_pelanggan_baru)
     up = inspect.getsource(CU.update_customer)
     assert '{"address", "city", "province", "postal_code"} & set(update_data)' in up
     assert up.index("await conn.execute(query, *params)") < up.index("cermin_dari_datar")   # dalam tx yang sama, sesudah UPDATE

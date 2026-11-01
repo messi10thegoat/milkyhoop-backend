@@ -154,7 +154,8 @@ def test_api_barang_bisa_dikirim():
     assert ItemListItem.model_fields["bisa_dikirim"].default is False
     s = _src(IT, "update_item")
     assert "'bisa_dikirim': 'bisa_dikirim'" in s and "Jasa tidak bisa ditandai 'bisa dikirim'" in s
-    c = _src(IT, "create_item")
+    assert "tulis_barang_baru(" in _src(IT, "create_item")
+    c = _src(IT, "tulis_barang_baru")  # 1 Nov 2026: INSERT di inti bersama (POST /items + Milkybook v2)
     # 13 Okt (W-20261013-ITEMFIELD): bisa_dikirim ikut INSERT yang sama (atomik), bukan UPDATE kedua
     assert "sales_tax_id, purchase_tax_id, bisa_dikirim," in c and "bool(body.bisa_dikirim)" in c
     assert "UPDATE products SET bisa_dikirim" not in c

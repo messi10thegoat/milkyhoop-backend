@@ -79,7 +79,7 @@ def test_simpan_bentuk_json_dan_hanya_berkunci(monkeypatch):
 
 @pytest.mark.parametrize("fn,prefix,penanda", [
     (CN.create_credit_note, "CN_CREATE", "buat_nota_kredit("),
-    (QU.create_quote, "QUOTE_CREATE", "generate_quote_number"),
+    (QU.create_quote, "QUOTE_CREATE", "buat_penawaran_inti("),  # 1 Nov 2026: penomoran di inti bersama (dicek di bawah)
 ])
 def test_jalur_buat_memakai_kunci_sebelum_menulis(fn, prefix, penanda):
     src = inspect.getsource(fn)
@@ -87,6 +87,12 @@ def test_jalur_buat_memakai_kunci_sebelum_menulis(fn, prefix, penanda):
     assert src.index("idem_buat.mulai(") < src.index(penanda), "replay SEBELUM penomoran/penulisan"
     assert src.count("idem_buat.simpan(") == 1
     assert inspect.signature(fn).parameters["response"].default is None
+
+
+def test_inti_penawaran_menomori_dan_tanpa_idem_sendiri():
+    """Inti bersama POST /quotes + Milkybook v2: penomoran DI DALAM inti (dipanggil sesudah replay), idem milik pemanggil."""
+    src = inspect.getsource(QU.buat_penawaran_inti)
+    assert "generate_quote_number" in src and "idem_buat" not in src
 
 
 def _req(kunci):

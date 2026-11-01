@@ -212,7 +212,8 @@ def test_tak_ada_insert_kartu_saldo_awal_di_luar_service():
 
 # ---------------- (6) rute memakai service ----------------
 def test_rute_items_memakai_service_dalam_transaksi():
-    src = inspect.getsource(IT.create_item)
+    assert "tulis_barang_baru(" in inspect.getsource(IT.create_item)
+    src = inspect.getsource(IT.tulis_barang_baru)  # 1 Nov 2026: inti bersama (POST /items + Milkybook v2)
     assert "INSERT INTO inventory_ledger" not in src and "gen_random_uuid()" not in src
     # AS-G14 (24 Okt): periksa_saldo_awal di penentu bersama, dipanggil SEBELUM transaksi tulis
     assert "periksa_saldo_awal(" in inspect.getsource(IT._siapkan_buat_barang)

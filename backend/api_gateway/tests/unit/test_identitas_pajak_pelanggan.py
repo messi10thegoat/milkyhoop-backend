@@ -84,7 +84,7 @@ def test_patch_memanggil_pagar_gabungan_dengan_nilai_db():
 
 
 def test_insert_create_kolom_placeholder_argumen_sejajar():
-    src = inspect.getsource(cu.create_customer)
+    src = inspect.getsource(cu.tulis_pelanggan_baru)  # 1 Nov 2026: INSERT di inti bersama (POST /customers + Milkybook v2)
     m = re.search(r"INSERT INTO customers \((.*?)\)\s*VALUES \((.*?)\)", src, re.S)
     kolom = [k.strip() for k in m.group(1).split(",")]
     tempat = re.findall(r"\$(\d+)", m.group(2))

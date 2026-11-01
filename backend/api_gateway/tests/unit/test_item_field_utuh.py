@@ -108,7 +108,8 @@ def test_pajak_kosong_tanpa_kueri():
 
 # ---- jalur handler (sumber) ----
 def test_insert_create_memuat_id_pajak_dan_bisa_dikirim_dengan_placeholder_cocok():
-    src = inspect.getsource(I.create_item)
+    src = inspect.getsource(I.tulis_barang_baru)  # 1 Nov 2026: INSERT di inti bersama (POST /items + Milkybook v2)
+    assert "tulis_barang_baru(conn, ctx, body" in inspect.getsource(I.create_item)
     q = src[src.index('INSERT INTO products ('):src.index('RETURNING id')]
     kolom = [k.strip() for k in q[q.index("(") + 1:q.index(")")].split(",")]
     nilai = re.findall(r"\$(\d+)", q)

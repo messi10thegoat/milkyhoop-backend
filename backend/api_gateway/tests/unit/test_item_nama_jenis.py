@@ -48,7 +48,9 @@ def test_v402_pelanggan_indeks_mati_dihapus_nomor_dijaga():
 def test_cek_nama_barang_app_sejajar_indeks_parsial():
     """App mengabaikan barang terhapus -- benar HANYA bersama indeks parsial V402 (sebelumnya: 500)."""
     # AS-G14 (24 Okt): cek buat pindah ke penentu bersama _siapkan_buat_barang (dipanggil create_item DAN pratinjau)
-    assert "_siapkan_buat_barang(" in inspect.getsource(I.create_item)
+    # 1 Nov 2026: create_item -> inti bersama tulis_barang_baru (juga Milkybook v2) -> penentu
+    assert "tulis_barang_baru(" in inspect.getsource(I.create_item)
+    assert "_siapkan_buat_barang(" in inspect.getsource(I.tulis_barang_baru)
     for f in (I._siapkan_buat_barang, I.update_item, I.duplicate_item):
         assert "nama_produk = $2" in inspect.getsource(f) and "deleted_at IS NULL" in inspect.getsource(f), f.__name__
 
@@ -95,7 +97,8 @@ def test_nama_pelanggan_hanya_aktif_dan_kosong_tak_bertanya():
 
 
 def test_buat_ubah_pulihkan_pelanggan_lewat_pemeriksa():
-    src = inspect.getsource(CU.create_customer)
+    assert "tulis_pelanggan_baru(conn, ctx, body" in inspect.getsource(CU.create_customer)  # 1 Nov 2026: inti bersama
+    src = inspect.getsource(CU.tulis_pelanggan_baru)
     assert "_siapkan_buat_pelanggan(conn, ctx[\"tenant_id\"], body)" in src and "already exists" not in src
     src = inspect.getsource(CU._siapkan_buat_pelanggan)  # AS-G14 (24 Okt): penentu bersama buat + pratinjau
     assert "tolak_nama_dipakai(conn, tenant_id, body.name)" in src

@@ -23,7 +23,7 @@ def test_sort_order_klien_dihormati_campuran():
 
 
 def test_create_penawaran_dan_so_memakai_urutan_isian():
-    for f in (Q.create_quote, SO.create_sales_order):
+    for f in (Q.buat_penawaran_inti, SO.create_sales_order):  # 1 Nov 2026: Penawaran = inti bersama
         src = inspect.getsource(f)
         assert "_urut = urutan_isian(body.items)" in src and "_urut[idx]" in src, f.__name__
         assert 'item.get("sort_order", idx)' not in src

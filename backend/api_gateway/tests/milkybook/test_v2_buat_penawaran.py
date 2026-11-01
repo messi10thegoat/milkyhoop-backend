@@ -30,7 +30,7 @@ def _baris(item_id=None, **kw):
 
 
 def _penawaran(customer_id="c-baru", items=None, **kw):
-    p = {"quote_date": "2026-11-01", "customer_id": customer_id, "items": items or [_baris("i-baru")]}
+    p = {"quote_date": "2026-11-01", "customer_id": customer_id, "items": [_baris("i-baru")] if items is None else items}
     p.update(kw)
     return p
 
@@ -284,3 +284,29 @@ def test_handler_lama_memanggil_inti_bersama():
     assert "buat_penawaran_inti(conn, ctx, body)" in inspect.getsource(RQ.create_quote)
     assert "tulis_pelanggan_baru(conn, ctx, body" in inspect.getsource(RC.create_customer)
     assert "tulis_barang_baru(conn, ctx, body" in inspect.getsource(RI.create_item)
+
+
+# ---------------------------------------------------------------- inti ASLI di DB palsu #34/#39 (sabotase inti = merah di sini juga)
+
+@pytest.mark.asyncio
+async def test_v2_memakai_inti_penawaran_asli_tarif_dari_kode(monkeypatch):
+    from decimal import Decimal
+
+    from tests.unit.test_t34_pajak_so import CUST, PPN11, TENANT, USER as UID
+    from tests.unit.test_t39_tarif_penawaran import DBQ
+
+    async def mulai(*a, **k):
+        return "kp", "sd", None
+
+    async def simpan(c, ctx, kp, sd, st, resp, rid):
+        return resp
+
+    monkeypatch.setattr(idem_buat, "mulai", mulai)
+    monkeypatch.setattr(idem_buat, "simpan", simpan)
+    db = DBQ()
+    badan = BP.BuatPenawaranV2(master_baru=[], penawaran={
+        "quote_date": "2026-09-25", "customer_id": CUST, "customer_name": "Pelanggan",
+        "items": [{"description": "Kaos", "quantity": 1, "unit_price": 100000, "tax_id": PPN11, "tax_rate": 0}]})
+    hasil = await BP.buat(db, {"tenant_id": TENANT, "user_id": UID}, badan, "draf-asli", izin_fn=None)
+    assert db.baris_ditulis() == [(Decimal("11"), Decimal("11000.00"))]  # #39: tarif dari kode, bukan kiriman klien
+    assert db.header_pajak() == [Decimal("11000.00")] and hasil["data"]["quote_number"] == "QUO-UJI-0001"

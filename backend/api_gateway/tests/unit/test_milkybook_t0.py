@@ -28,9 +28,12 @@ def test_patch_sidik_exclude_unset_dan_tabel_idem():
 
 
 def test_penentu_satu_untuk_pratinjau_dan_tulis():
-    assert "_siapkan_buat_pelanggan(" in inspect.getsource(RC.create_customer)
+    # 1 Nov 2026: create_* -> inti bersama tulis_pelanggan_baru / tulis_barang_baru (juga Milkybook v2) -> penentu
+    assert "tulis_pelanggan_baru(" in inspect.getsource(RC.create_customer)
+    assert "_siapkan_buat_pelanggan(" in inspect.getsource(RC.tulis_pelanggan_baru)
     assert "_siapkan_buat_pelanggan(" in inspect.getsource(RC.preview_create_customer)
-    assert "_siapkan_buat_barang(" in inspect.getsource(RI.create_item)
+    assert "tulis_barang_baru(" in inspect.getsource(RI.create_item)
+    assert "_siapkan_buat_barang(" in inspect.getsource(RI.tulis_barang_baru)
     p = inspect.getsource(RI.preview_create_item)
     assert "_siapkan_buat_barang(" in p and "tanpa_stok_bila_bukan_barang(" in p and "periksa_badan_item(" in p
     for f in (RC.preview_create_customer, RI.preview_create_item):
@@ -41,9 +44,10 @@ def test_penentu_satu_untuk_pratinjau_dan_tulis():
 def test_item_idem_sebelum_validasi():
     """Ketuk ganda = replay, bukan 409 nama dipakai: idem dimulai SEBELUM penentu."""
     s = inspect.getsource(RI.create_item)
-    assert s.index("idem_buat.mulai(") < s.index("_siapkan_buat_barang(")
+    assert s.index("idem_buat.mulai(") < s.index("tulis_barang_baru(")  # penentu di dalam inti (1 Nov 2026)
     s = inspect.getsource(RC.create_customer)
-    assert s.index("idem_buat.mulai(") < s.index("_siapkan_buat_pelanggan(")
+    assert s.index("idem_buat.mulai(") < s.index("tulis_pelanggan_baru(")
+    assert "idem_buat" not in inspect.getsource(RI.tulis_barang_baru) + inspect.getsource(RC.tulis_pelanggan_baru)
 
 
 def test_blok_dari_galat_kosakata_be():
