@@ -6,7 +6,7 @@ from typing import Callable
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from . import buat_penawaran, cari_pelanggan
+from . import buat_penawaran, cari_barang, cari_pelanggan
 
 FLAG = "milkybook_v2"
 
@@ -30,6 +30,13 @@ def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable) -
         user = await _pengguna(request)
         async with conn_fn() as conn:
             return {"items": await cari_pelanggan.cari(conn, user["tenant_id"], q, batas)}
+
+    @r.get("/barang")
+    async def cari_barang_v2(request: Request, q: str = Query("", max_length=80),
+                             batas: int = Query(6, ge=1, le=10)):
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            return {"items": await cari_barang.cari(conn, user["tenant_id"], q, batas)}
 
     @r.post("/penawaran")
     async def buat_penawaran_v2(request: Request, body: buat_penawaran.BuatPenawaranV2, response: Response):
