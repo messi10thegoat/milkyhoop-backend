@@ -13,6 +13,7 @@ import ast
 import asyncio
 import os
 import pathlib
+import re
 import uuid
 
 import pytest
@@ -215,6 +216,9 @@ def test_patch_vendor_cek_nama_dan_kode_yang_berubah():
 
 
 # ---- pemindai ----
+_KODE_DUPLIKAT = re.compile(r"\b(NAMA|KODE)_(PELANGGAN|VENDOR)_DIPAKAI\b|\bKODE_(NAMA|NOMOR|KODE)\b")
+
+
 def _pelanggaran(akar=APP):
     buruk = []
     for p in list((akar / "routers").glob("*.py")) + list((akar / "services").glob("*.py")):
@@ -223,7 +227,8 @@ def _pelanggaran(akar=APP):
             if not (isinstance(n, ast.Call) and getattr(n.func, "id", getattr(n.func, "attr", None)) == "HTTPException"):
                 continue
             seg = ast.get_source_segment(src, n) or ""
-            if ("PELANGGAN_DIPAKAI" in seg or "VENDOR_DIPAKAI" in seg or "KODE_NOMOR" in seg or "KODE_NAMA" in seg
+            # identifier PERSIS (batas kata): KODE_NAMA_BARANG (items, di luar lingkup) bukan pelanggaran
+            if (_KODE_DUPLIKAT.search(seg)
                     or ("already exists" in seg and p.name in ("vendors.py", "customers.py") and "Vendor with" in seg)):
                 buruk.append(f"{p.name}:{n.lineno}")
     return buruk
@@ -239,5 +244,6 @@ def test_pemindai_bisa_merah(tmp_path):
     (tmp_path / "routers" / "vendors.py").write_text(
         "def f(n):\n    raise HTTPException(status_code=400, detail=f\"Vendor with name '{n}' already exists\")\n")
     (tmp_path / "services" / "x.py").write_text(
-        "def g():\n    raise HTTPException(status_code=409, detail={'code': KODE_NAMA, 'message': 'm'})\n")
-    assert sorted(_pelanggaran(tmp_path)) == ["vendors.py:2", "x.py:2"]
+        "def g():\n    raise HTTPException(status_code=409, detail={'code': KODE_NAMA, 'message': 'm'})\n"
+        "def h():\n    return HTTPException(status_code=409, detail={'code': KODE_NAMA_BARANG, 'message': 'm'})\n")
+    assert sorted(_pelanggaran(tmp_path)) == ["vendors.py:2", "x.py:2"]  # KODE_NAMA_BARANG (x.py:4) bukan pelanggaran
