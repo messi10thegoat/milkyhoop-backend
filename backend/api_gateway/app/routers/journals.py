@@ -973,7 +973,7 @@ async def reclassify_bill_inventory(
             "AND $2 BETWEEN start_date AND end_date ORDER BY start_date DESC LIMIT 1",
             tenant_id, entry_date)
         if period and period["status"] in ("CLOSED", "LOCKED"):
-            raise ValueError(f"Periode {period['status']} untuk {entry_date}")
+            raise ValueError(tg.periode_tertutup(None, period["status"]))  # PERIODE-TEKS
         jnum = await get_next_journal_number(conn, tenant_id, "JV", entry_date)
         desc = (f"Reklasifikasi Persediaan 1-10600 -> {target_account_code} untuk "
                 f"{len(bills)} bill non-inventori (dual-ledger putus). {ticket}. {reason}").strip()

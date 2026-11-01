@@ -19,6 +19,7 @@ from decimal import Decimal
 import logging
 import asyncpg
 
+from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..schemas.production import (
     CreateProductionOrderRequest,
@@ -3186,10 +3187,7 @@ async def month_end_reconcile(request: Request, body: dict):
                 if period_status in ("CLOSED", "LOCKED") and not dry_run:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            f"Period '{period}' is {fp['status']}; reconcile must "
-                            f"run before the period is closed/locked."
-                        ),
+                        detail=tg.periode_tertutup(period, fp["status"]),  # PERIODE-TEKS: hanya teks (Manufaktur diparkir)
                     )
                 p_start = fp["start_date"]
                 p_end = fp["end_date"]
@@ -3719,7 +3717,7 @@ async def void_month_end_reconcile(
                 if fp and str(fp["status"]).upper() in ("CLOSED", "LOCKED"):
                     raise HTTPException(
                         status_code=400,
-                        detail="Cannot void: target period is closed/locked",
+                        detail=tg.periode_tertutup(None, fp["status"]),  # PERIODE-TEKS: hanya teks (Manufaktur diparkir)
                     )
 
                 rev_id = await _reverse_journal(

@@ -62,10 +62,10 @@ async def _rencana_jurnal_nd(conn, tid: str, source_type: str, deskripsi: str, t
 
 
 async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
-    """== cek periode penulis ND ("Periode akuntansi sudah {status}", 400)."""
+    """== cek periode penulis ND (400; PERIODE-TEKS: kalimat tg.periode_tertutup)."""
     r = await conn.fetchrow("SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, tgl)
     if r and r["status"] != "OPEN":
-        bl.galat("PERIODE_TERTUTUP", 400, f"Periode akuntansi sudah {r['status']}")
+        bl.galat("PERIODE_TERTUTUP", 400, tg.periode_tertutup(None, r["status"]))
 
 
 # ------------------------------------------------------------------ nomor (P2P-3b)

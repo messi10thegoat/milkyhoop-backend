@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from . import tagihan_aksi as TA
+from . import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from .role_resolver import AccountRole
 
 PENANDA = "RECLASS-COGS-CLASS"
@@ -123,7 +124,7 @@ async def jalankan(conn, tid: str, user_id, dry_run: bool = True, alasan: str = 
         periode = await conn.fetchrow("SELECT id, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date "
                                       "ORDER BY start_date DESC LIMIT 1", tid, tanggal)
         if periode and periode["status"] in ("CLOSED", "LOCKED"):
-            raise HTTPException(status_code=400, detail={"code": "PERIODE_TERTUTUP", "message": f"Periode {periode['status']} untuk {tanggal}."})
+            raise HTTPException(status_code=400, detail={"code": "PERIODE_TERTUTUP", "message": tg.periode_tertutup(None, periode["status"])})
         nomor = await conn.fetchval("SELECT get_next_journal_number($1, 'JV', $2)", tid, tanggal)
         desk = (f"{PENANDA}: reklas kelas beban pembelian {len(moves)} FPB "
                 f"({', '.join(m['invoice_number'] for m in moves)}). {alasan}").strip()[:500]
@@ -162,7 +163,7 @@ async def balik(conn, tid: str, user_id, journal_id, alasan: str, tanggal=None) 
         periode = await conn.fetchrow("SELECT id, status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date "
                                       "ORDER BY start_date DESC LIMIT 1", tid, tanggal)
         if periode and periode["status"] in ("CLOSED", "LOCKED"):
-            raise HTTPException(status_code=400, detail={"code": "PERIODE_TERTUTUP", "message": f"Periode {periode['status']} untuk {tanggal}."})
+            raise HTTPException(status_code=400, detail={"code": "PERIODE_TERTUTUP", "message": tg.periode_tertutup(None, periode["status"])})
         baris = await conn.fetch("SELECT account_id, memo, debit, credit FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", jid)
         total = sum((Decimal(str(b["debit"])) for b in baris), NOL)
         nomor = await conn.fetchval("SELECT get_next_journal_number($1, 'JV', $2)", tid, tanggal)
