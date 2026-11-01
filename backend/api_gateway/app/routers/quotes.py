@@ -2834,6 +2834,11 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
         ),
         # V467: data ongkir sudah ada; BARIS ongkir di templat pdf/quote.html = unit PDF (P4 paket Milkybook v2)
         "shipping_charges": _ongkir_tersimpan(quote)[0] or None,
+        # P4 (1 Nov 2026): baris "Ongkos kirim" di ringkasan. tax_amount SUDAH memuat PPN ongkir (compute_document),
+        # jadi Subtotal - Diskon + Ongkos kirim + PPN = Total tanpa baris pajak kedua.
+        "shipping_amount": _ongkir_tersimpan(quote)[0],
+        "shipping_tax_amount": Decimal(str(quote.get("shipping_tax_amount") or 0)),
+        "shipping_tax_rate": Decimal(str(quote.get("shipping_tax_rate") or 0)),
         "adjustment": None,
         "adjustment_label": None,
         "opening_text": quote["opening_text"],
@@ -2872,7 +2877,7 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
     # 3h: dua desimal hanya bila Penawaran ini bersen (lihat filter `rupiah`).
     quote_data["has_cents"] = pdf_service.money_has_cents(
         quote_data["subtotal"], quote_data["discount_amount"], quote_data["tax_amount"],
-        quote_data["total_amount"], quote_data["dp_amount"], quote_data["dp_remaining"],
+        quote_data["total_amount"], quote_data["dp_amount"], quote_data["dp_remaining"], quote_data["shipping_amount"],
         *[v for it in quote_data["items"] for v in (it["unit_price"], it["tax_amount"], it["line_total"])],
     )
     return {"quote_data": quote_data, "tenant_info": tenant_info, "quote": quote}

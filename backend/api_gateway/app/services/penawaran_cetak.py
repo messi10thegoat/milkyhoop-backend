@@ -43,9 +43,12 @@ def bagian_kontak(nama, telepon, email) -> list:
     return out
 
 
-def label_pajak(items) -> str:
-    """'PPN 11%' bila semua baris berpajak bertarif sama; 'PPN' bila campuran."""
+def label_pajak(items, tarif_ongkir=None) -> str:
+    """'PPN 11%' bila semua baris berpajak bertarif sama; 'PPN' bila campuran. tarif_ongkir = tarif PPN ongkir yang
+    BENAR-BENAR dikenakan (None bila ongkir tanpa PPN): ongkir bertarif lain ikut membuat label campuran."""
     tarif = {Decimal(str(i.get("tax_rate") or 0)).normalize() for i in items if Decimal(str(i.get("tax_rate") or 0)) > 0}
+    if tarif_ongkir is not None and Decimal(str(tarif_ongkir)) > 0:
+        tarif.add(Decimal(str(tarif_ongkir)).normalize())
     if len(tarif) == 1:
         t = tarif.pop()
         return f"PPN {t:f}%".replace(".", ",")
@@ -67,6 +70,7 @@ def siapkan(quote: dict, tenant: dict) -> dict:
         "telepon_usaha": format_telepon(tenant.get("phone")),
         "up": baris_up(quote.get("customer_name"), quote.get("attention_name"), quote.get("attention_title")),
         "kontak": bagian_kontak(quote.get("signer_name"), quote.get("signer_phone"), quote.get("signer_email")),
-        "label_pajak": label_pajak(quote.get("items") or []),
+        "label_pajak": label_pajak(quote.get("items") or [],
+                                   quote.get("shipping_tax_rate") if Decimal(str(quote.get("shipping_tax_amount") or 0)) > 0 else None),
         "alamat_pelanggan": alamat_pelanggan(quote.get("customer_alamat"), quote.get("customer_address"), quote.get("customer_city")),
     }

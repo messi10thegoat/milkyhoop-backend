@@ -88,3 +88,47 @@ def test_semua_email_cetak_terbungkus_email_off():
     telanjang = [(f.name, m.group(0)) for f in app.rglob("*.html") for m in re.finditer(r"\{\{ [a-z_.]*email \}\}", f.read_text())
                  if "<!--email_off-->" + m.group(0) not in f.read_text()]
     assert not telanjang, telanjang
+
+
+# P4 Milkybook v2 (1 Nov 2026): ongkos kirim di ringkasan PDF Penawaran (V467). Contoh acuan paket 03 §2.
+Q04 = dict(subtotal=Decimal("7550000"), discount_type="percentage", discount_value=5, discount_amount=Decimal("377500"),
+           tax_amount=Decimal("788975"), shipping_amount=Decimal("50000"), shipping_tax_amount=Decimal("0"),
+           total_amount=Decimal("8011475"), items=[dict(DASAR["items"][0], tax_rate=12)])
+
+
+def _ringkasan(h):
+    s = h[h.index('class="sum"'):h.index('class="tot"')]
+    return re.findall(r"<span>([^<]+)</span><span>(-?Rp [^<]+)</span>", s)
+
+
+def test_ongkir_baris_sendiri_urutan_dan_jumlah_cocok_total():
+    h = _html(**Q04).html
+    baris = _ringkasan(h)
+    assert [b[0] for b in baris] == ["Subtotal", "Diskon 5%", "Ongkos kirim", "PPN 12%"]
+    assert dict(baris)["Ongkos kirim"] == "Rp 50.000"
+    nilai = [int(v.replace("Rp", "").replace(".", "").replace(" ", "")) for _, v in baris]
+    assert sum(nilai) == 8011475                                   # Subtotal - Diskon + Ongkir + PPN = Total tercetak
+    assert "Rp 8.011.475" in h[h.index('class="tot"'):]
+
+
+def test_ongkir_nol_tidak_dicetak():
+    assert "Ongkos kirim" not in _html(**dict(Q04, shipping_amount=Decimal("0"))).html
+    assert "Ongkos kirim" not in _html().html                      # penawaran lama tanpa kunci ongkir
+
+
+def test_label_pajak_ongkir_bertarif_lain_jadi_campuran():
+    i12 = [{"tax_rate": 12}]
+    assert PC.label_pajak(i12, None) == "PPN 12%"                   # ongkir tanpa PPN tak mengubah label
+    assert PC.label_pajak(i12, Decimal("12.00")) == "PPN 12%"
+    assert PC.label_pajak(i12, 11) == "PPN"
+    assert PC.siapkan(dict(Q04, shipping_tax_rate=11, shipping_tax_amount=5500), {})["label_pajak"] == "PPN"
+    assert PC.siapkan(dict(Q04, shipping_tax_rate=11, shipping_tax_amount=0), {})["label_pajak"] == "PPN 12%"
+
+
+def test_pemuat_pdf_mengisi_ongkir_dan_sen():
+    import inspect
+    from app.routers import quotes as Q
+    src = inspect.getsource(Q.muat_pdf_penawaran)
+    for k in ('"shipping_amount": _ongkir_tersimpan(quote)[0]', '"shipping_tax_amount"', '"shipping_tax_rate"',
+              'quote_data["shipping_amount"],'):
+        assert k in src, k
