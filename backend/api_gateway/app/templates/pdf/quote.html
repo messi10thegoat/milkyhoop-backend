@@ -68,10 +68,9 @@
     {% if quote.discount_amount and quote.discount_amount|float > 0 %}
     <div><span>Diskon{% if quote.discount_type == "percentage" %} {{ "%g" % (quote.discount_value|float) }}%{% endif %}</span><span>-Rp {{ quote.discount_amount | rupiah(quote.has_cents) }}</span></div>
     {% endif %}
-    {# P4 (1 Nov 2026): ongkos kirim = baris sendiri, sama dengan faktur (V290/V467); PPN ongkir sudah di baris PPN. #}
-    {% if quote.shipping_amount and quote.shipping_amount|float > 0 %}
+    {%- if quote.shipping_amount and quote.shipping_amount|float > 0 %}{# P4 (1 Nov 2026): ongkos kirim = baris sendiri, sama dengan faktur (V290/V467); PPN ongkir sudah di baris PPN. Tanda - = HTML tanpa ongkir identik dengan sebelum P4. #}
     <div><span>Ongkos kirim</span><span>Rp {{ quote.shipping_amount | rupiah(quote.has_cents) }}</span></div>
-    {% endif %}
+    {%- endif %}
     {% if quote.tax_amount and quote.tax_amount|float > 0 %}
     <div><span>{{ tampil.label_pajak }}</span><span>Rp {{ quote.tax_amount | rupiah(quote.has_cents) }}</span></div>
     {% endif %}
