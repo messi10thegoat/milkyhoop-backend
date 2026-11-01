@@ -119,7 +119,10 @@ def test_insert_create_memuat_id_pajak_dan_bisa_dikirim_dengan_placeholder_cocok
     assert "_siapkan_buat_barang(" in src
     assert 'nama_pajak_item(conn, tenant_id, body.sales_tax_id, "sales_tax_id", "output")' in pen
     assert 'nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")' in pen
-    assert 'periksa_badan_item(body, "POST /items")' in src
+    # periksa_badan_item tetap di PEMANGGIL inti (create_item; Milkybook v2 di rencanakan) -- urutan lama: sebelum koneksi
+    assert 'periksa_badan_item(body, "POST /items")' in inspect.getsource(I.create_item)
+    from app.milkybook.v2 import buat_penawaran as BP
+    assert "periksa_badan_item(b, " in inspect.getsource(BP.rencanakan)
 
 
 def test_update_memetakan_id_pajak():
