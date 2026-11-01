@@ -477,8 +477,11 @@ class VendorDuplicateItem(BaseModel):
 
     id: str
     name: str
+    company_name: Optional[str] = None
+    display_name: Optional[str] = None
     company: Optional[str] = None
     npwp: Optional[str] = None
+    is_active: bool = True  # VENDOR-DUPLIKAT: nonaktif ikut dicari (nama nonaktif juga memblok simpan)
 
 
 class VendorDuplicateCheckResponse(BaseModel):

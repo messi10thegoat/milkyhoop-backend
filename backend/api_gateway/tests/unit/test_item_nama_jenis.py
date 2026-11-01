@@ -72,8 +72,9 @@ class Conn:
 def test_nama_pelanggan_dipakai_409_berkode():
     with pytest.raises(HTTPException) as e:
         _j(PU.tolak_nama_dipakai(Conn(uuid.uuid4()), T, "Budi"))
-    assert e.value.status_code == 409
-    assert e.value.detail["code"] == "NAMA_PELANGGAN_DIPAKAI" and '"Budi"' in e.value.detail["message"]
+    assert e.value.status_code == 409 and e.value.code == "NAMA_PELANGGAN_DIPAKAI" and '"Budi"' in e.value.detail
+    # VENDOR-DUPLIKAT (1 Nov 2026): satu bentuk GalatBerkode; badan respons persis (detail string kalimat)
+    assert e.value.badan() == {"detail": e.value.detail, "code": "NAMA_PELANGGAN_DIPAKAI", "message": e.value.detail, "field": "name"}
     _j(PU.tolak_nama_dipakai(Conn(None), T, "Budi"))
 
 
@@ -81,7 +82,8 @@ def test_nomor_pelanggan_dipakai_409_berkode_predikat_sama_dengan_indeks():
     c, kid = Conn(uuid.uuid4()), uuid.uuid4()
     with pytest.raises(HTTPException) as e:
         _j(PU.tolak_nomor_dipakai(c, T, "C0007", kecuali_id=kid))
-    assert e.value.status_code == 409 and e.value.detail["code"] == "KODE_PELANGGAN_DIPAKAI"
+    assert e.value.status_code == 409 and e.value.code == "KODE_PELANGGAN_DIPAKAI" and isinstance(e.value.detail, str)
+    assert e.value.badan() == {"detail": e.value.detail, "code": "KODE_PELANGGAN_DIPAKAI", "message": e.value.detail, "field": "code"}
     sql, a = c.q[0]
     assert "nomor_member = $2 AND deleted_at IS NULL" in sql and "tenant_id = $1" in sql and a == (T, "C0007", str(kid))
 
