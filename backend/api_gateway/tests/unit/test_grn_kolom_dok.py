@@ -52,8 +52,10 @@ def test_batch_dua_kueri_berapa_pun_baris_dan_bertenant():
     assert "tenant_id = $1 AND id = ANY($2::uuid[])" in s1 and a1[0] == T and sorted(a1[1], key=str) == sorted({PO1, PO2}, key=str)
     assert "b.tenant_id = $1" in s2 and "l.status = 'active'" in s2 and "i.goods_receipt_id = ANY($2::uuid[])" in s2 and a2 == (T, [g["id"] for g in grs])
     pasangan = list(zip(a3[1], a3[2]))
-    assert "FROM document_shares WHERE tenant_id = $1" in s3 and a3[0] == T and len(pasangan) == len(set(pasangan)) == 3  # PO1, PO2, PB-1 unik
-    assert sorted(a3[1]) == ["bill", "purchase_order", "purchase_order"]  # GRN belum bisa dibagikan -> tak ditanya
+    # L7 lanjutan (1 Nov): GRN kini bisa dibagikan -> ikut ditanya: PO1, PO2, PB-1 + 5 GRN, unik, tetap SATU kueri
+    assert "FROM document_shares WHERE tenant_id = $1" in s3 and a3[0] == T and len(pasangan) == len(set(pasangan)) == 8
+    assert sorted(a3[1]) == ["bill"] + ["goods_receipt"] * 5 + ["purchase_order"] * 2
+    assert {d for k, d in pasangan if k == "goods_receipt"} == {str(g["id"]) for g in grs}
 
 
 def test_detail_sama_dengan_daftar_per_baris():

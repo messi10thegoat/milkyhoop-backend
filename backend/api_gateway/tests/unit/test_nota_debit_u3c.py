@@ -112,6 +112,9 @@ def test_kelompok_nd_menerima_id_str_dan_uuid():
 
     class K:
         async def fetch(self, sql, *a):
+            if "FROM document_shares" in sql:  # L7 lanjutan (1 Nov): bundel ND -> lapis_kirim (satu kueri tautan, kunci teks)
+                assert a == ("t", ["debit_note"], [str(vid)])
+                return []
             assert all(type(x).__name__ == "UUID" for x in a[1])
             return [{"id": vid, "credit_number": "VC-1", "credit_date": None, "total_amount": 1, "status": "draft", "original_bill_id": None}]
     for kunci in (vid, str(vid)):
