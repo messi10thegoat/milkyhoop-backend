@@ -76,6 +76,21 @@ def test_periksa_per_status_nyata(kind, status):
     assert c.sql[0][1] == (uid, T)  # tenant eksplisit
 
 
+@pytest.mark.parametrize("kind,status", [(k, s) for k in sorted(STATUS) for s in sorted(STATUS[k])])
+def test_jalur_tunggal_dokumen_ada_draf_ditolak_sama_dengan_massal(kind, status):
+    """Share/pratinjau TUNGGAL (dokumen._dokumen_ada lewat _DOKUMEN_TABEL) menolak draf PERSIS seperti massal (massal punya cek
+    status 'draft' sendiri, jadi tanpa tes ini draf jalur tunggal bisa lolos diam)."""
+    uid = uuid.uuid4()
+    c = _Conn({"nomor": "X-1", "status": status})
+    if STATUS[kind][status] == "DOKUMEN_DRAF":
+        with pytest.raises(HTTPException) as e:
+            _jalan(D._dokumen_ada(c, T, kind, uid))
+        assert e.value.status_code == 409 and e.value.detail["code"] == "DOKUMEN_DRAF"
+    else:
+        assert _jalan(D._dokumen_ada(c, T, kind, uid))["status"] == status
+    assert c.sql[0][1] == (uid, T)
+
+
 @pytest.mark.parametrize("kind", sorted(BARU))
 def test_periksa_tak_ada_404(kind):
     with pytest.raises(HTTPException) as e:
