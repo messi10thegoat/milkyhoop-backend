@@ -1159,6 +1159,9 @@ class BillsService:
                         bill_id,
                         user_id,
                     )
+                    # UMP-PO U-B: kait terapkan otomatis (SETIAP jalur posting FPB; tagihan tanpa tautan PO = no-op), transaksi yang SAMA
+                    from . import ump_terap_otomatis as _uto
+                    await _uto.terapkan_otomatis(conn, {"tenant_id": tenant_id, "user_id": user_id}, bill_id)
                     # 1 Nov 2026 D1: status/ditagih PO tertaut = bill POSTED -> sinkron di transaksi yang SAMA
                     from . import po_daftar as _pd
                     await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
@@ -2931,6 +2934,9 @@ class BillsService:
                     from . import po_daftar as _pd
                     await _pd.sinkron_po_bill(conn, tenant_id, bill_id)
                     await _ad.catat_dokumen(conn, tenant_id, "bill", "posted", bill_id, invoice_number, user_id)  # AUDIT-DOKUMEN (Law 12)
+                    # UMP-PO U-B: kait terapkan otomatis (tagihan tanpa tautan PO = no-op), transaksi yang SAMA (Law 23)
+                    from . import ump_terap_otomatis as _uto
+                    await _uto.terapkan_otomatis(conn, {"tenant_id": tenant_id, "user_id": user_id}, bill_id)
 
                     # DTL writes for tax report (Law 16, /milkyhoop-tax Rule 3+10)
                     if tax_amount_dec > 0:
@@ -3196,7 +3202,8 @@ class BillsService:
         return ln
 
     async def post_bill(
-        self, tenant_id: str, bill_id: UUID, user_id: UUID, idem: Optional[Dict[str, Any]] = None, conn_luar=None
+        self, tenant_id: str, bill_id: UUID, user_id: UUID, idem: Optional[Dict[str, Any]] = None, conn_luar=None,
+        skip_deposit_ids=(),
     ) -> Dict[str, Any]:
         """
         Transition bill from draft to posted.
@@ -3610,6 +3617,12 @@ class BillsService:
                     from . import grn_tagih as _gt
                     await _gt.tulis_tautan(conn, list(_grn["rencana"].values()))
 
+                # UMP-PO U-B (putusan pemilik 2 Nov): uang muka ber-PO DITERAPKAN OTOMATIS ke FPB dari PO itu, transaksi YANG SAMA
+                # (Law 23; cermin sales_invoices._auto_apply_so_deposits). Satu galat = seluruh posting batal (cermin SI).
+                from . import ump_terap_otomatis as _uto
+                _terap = await _uto.terapkan_otomatis(conn, {"tenant_id": tenant_id, "user_id": user_id}, bill_id,
+                                                      bill["issue_date"], skip_deposit_ids)
+
                 logger.info(f"Bill posted: {bill_id}")
 
                 return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_POST", {
@@ -3619,6 +3632,7 @@ class BillsService:
                         "id": str(bill_id),
                         "status": "posted",
                         "posted_at": datetime.now().isoformat(),
+                        "deposit_applications": [{**t, "amount": float(t["amount"])} for t in _terap],
                     },
                 }, bill_id)
 

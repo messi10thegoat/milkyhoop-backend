@@ -7,7 +7,7 @@ Integrates with accounting kernel for AP and journal entries.
 
 from fastapi import APIRouter, HTTPException, Request, Response, Query, UploadFile, File, Body, Depends
 from fastapi.responses import StreamingResponse
-from typing import Optional, Literal
+from typing import List, Optional, Literal
 from uuid import UUID
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -923,16 +923,45 @@ async def _pratinjau_aksi(request: Request, bill_id: UUID, isi):
 
 
 @router.post("/{bill_id}/post/preview")
-async def preview_post_bill(request: Request, bill_id: UUID):
+async def preview_post_bill(request: Request, bill_id: UUID,
+                            skip_deposit_ids: List[str] = Query(default=[], description="Berulang atau dipisah koma")):
     """Pratinjau POSTING draf (penentu SATU dgn post_bill: tagihan_aksi.blok_posting + hitung_debit). Isi: jurnal yang akan dibuat
-    (Dr per baris / PPN Masukan / Cr Utang), grand_total, status_sesudah. payload = null (POST /post tanpa badan)."""
+    (Dr per baris / PPN Masukan / Cr Utang), grand_total, status_sesudah. payload = null (POST /post tanpa badan).
+    UMP-PO U-B: + deposit_applications = uang muka ber-PO yang AKAN diterapkan otomatis (perencana SAMA dengan posting)."""
     from ..services import tagihan_aksi as TA
+    from ..services import ump_terap_otomatis as UTO
+    _skip = UTO.urai_skip(skip_deposit_ids)
 
     async def isi(conn, ctx):
         r = await TA.rencana_posting(conn, ctx["tenant_id"], bill_id)
+        rencana = await UTO.rencana(conn, ctx["tenant_id"], bill_id, await UTO.sisa_untuk_rencana(conn, ctx["tenant_id"], bill_id), _skip)
+        jurnal_um = await UTO.baris_jurnal_rencana(conn, ctx["tenant_id"], rencana, r["blocks"])
         return {"blocks": r["blocks"], "status_sesudah": "posted", "position_text_sesudah": "Belum lunas",
-                "journal_lines": r["baris"], "grand_total": f"{r['grand_total']:.2f}", "tax_amount": f"{r['tax_amount']:.2f}", "payload": None}
+                "journal_lines": r["baris"], "grand_total": f"{r['grand_total']:.2f}", "tax_amount": f"{r['tax_amount']:.2f}",
+                "deposit_applications": UTO.untuk_respons(rencana), "deposit_application_journals": jurnal_um,
+                "skip_deposit_ids": _skip, "payload": None}
     return await _pratinjau_aksi(request, bill_id, isi)
+
+
+@router.get("/{bill_id}/deposit-plan")
+async def get_bill_deposit_plan(request: Request, bill_id: UUID,
+                                skip_deposit_ids: List[str] = Query(default=[], description="Berulang atau dipisah koma")):
+    """UMP-PO U-B -- READ-ONLY, cermin GET /sales-invoices/{id}/deposit-plan: uang muka ber-PO yang akan diterapkan posting ke
+    tagihan ini (perencana SAMA dengan POST /post). Draf: terhadap total tagihan; terposting: terhadap sisa dari jurnal."""
+    from ..services import ump_terap_otomatis as UTO
+    ctx = get_user_context(request)
+    _skip = UTO.urai_skip(skip_deposit_ids)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        b = await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, ctx["tenant_id"])
+        if not b:
+            raise HTTPException(status_code=404, detail="Faktur pembelian tidak ditemukan.")
+        sisa = await UTO.sisa_untuk_rencana(conn, ctx["tenant_id"], bill_id)
+        rencana = await UTO.rencana(conn, ctx["tenant_id"], bill_id, sisa, _skip)
+        pos = await UTO.po_tagihan(conn, ctx["tenant_id"], bill_id)
+    return {"success": True, "data": {
+        "bill_id": str(bill_id), "purchase_order_ids": [str(p) for p in pos], "skip_deposit_ids": _skip, "outstanding": float(sisa),
+        "total_planned": float(sum((p["planned_amount"] for p in rencana), Decimal("0"))), "deposits": UTO.untuk_respons(rencana)}}
 
 
 @router.post("/{bill_id}/void/preview")
@@ -1764,7 +1793,8 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: 
 
 
 @router.post("/{bill_id}/post", response_model=CreateBillResponseV2)
-async def post_bill(request: Request, bill_id: UUID, response: Response = None):
+async def post_bill(request: Request, bill_id: UUID, response: Response = None,
+                    skip_deposit_ids: List[str] = Query(default=[], description="Berulang atau dipisah koma")):
     """
     Post a draft bill to accounting.
 
@@ -1783,9 +1813,13 @@ async def post_bill(request: Request, bill_id: UUID, response: Response = None):
 
         service = await get_bills_service()
         kunci = idem_buat.kunci_dari(request)  # AS-GP2 Law 14: kunci klien saja (BILL_POST)
+        from ..services import ump_terap_otomatis as UTO
+        _skip = UTO.urai_skip(skip_deposit_ids)  # UMP-PO U-B: uang muka yang dilewati pengguna (cermin SI)
         result = await service.post_bill(
             tenant_id=ctx["tenant_id"], bill_id=bill_id, user_id=ctx["user_id"],
-            idem={"ctx": ctx, "kunci": kunci, "isi": {}, "response": response} if kunci else None,
+            idem={"ctx": ctx, "kunci": kunci, "isi": ({"skip_deposit_ids": sorted(_skip)} if _skip else {}), "response": response}
+            if kunci else None,
+            skip_deposit_ids=_skip,
         )
 
         if not result["success"]:

@@ -699,7 +699,6 @@ async def apply_vendor_deposit(
     """
     ctx = get_user_context(request)
     pool = await get_pool()
-    jumlah = Decimal(str(data.amount))
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -711,163 +710,174 @@ async def apply_vendor_deposit(
                 conn, ctx, _kunci_idem(request), "VD_APPLY", deposit_id, lambda: data.model_dump(mode="json"), response)
             if lama is not None:
                 return lama
-            # Urutan kunci GLOBAL: baris TAGIHAN dulu, lalu uang muka (sama dgn lepas_penerapan & void faktur BACKEND) -> tanpa deadlock silang
-            await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", data.bill_id, ctx["tenant_id"])
-            # Law 13: kunci SALDO bersama apply/refund/void + kunci apply; semua pemeriksaan di DALAM lock (G4: dulu di luar -> over-apply)
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                f"VENDOR_DEPOSIT_SALDO:{deposit_id}",
-            )
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                f"DEPOSIT_APPLY:{deposit_id}",
-            )
-            vd = await conn.fetchrow(
-                "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                deposit_id,
-                ctx["tenant_id"],
-            )
-            if not vd:
-                raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
-            await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", data.bill_id, ctx["tenant_id"])
-            _tolak((await R.rencana_terapkan(conn, ctx, vd, data, data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])))["blocks"])  # = /apply/preview
-            # sisa dari JURNAL (Law 1/16), bukan kolom cache remaining_amount
-            sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)
-            if jumlah > sisa:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
-                )
-            bill = await conn.fetchrow(
-                "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3 FOR UPDATE",
-                data.bill_id,
-                vd["vendor_id"],
-                ctx["tenant_id"],
-            )
-            if not bill:
-                raise HTTPException(
-                    status_code=400, detail="Tagihan tidak ditemukan atau bukan milik vendor ini."
-                )
-            if bill["status"] not in ("posted", "partial"):
-                raise HTTPException(status_code=400, detail="Tagihan harus sudah diposting.")
-            bill_remaining = await get_bill_remaining_from_journal(
-                conn, ctx["tenant_id"], bill["id"]
-            )
-            if jumlah > bill_remaining:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Jumlah melebihi sisa tagihan. Sisa tagihan: {bill_remaining}",
-                )
-            applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-            ap_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_TRADE)
-            vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
-
-            # Law 5: Period check
-            period_row = await conn.fetchrow(
-                "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                ctx["tenant_id"],
-                applied_date,
-            )
-            if period_row and period_row["status"] != "OPEN":
-                raise HTTPException(
-                    status_code=400,
-                    detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
-                )
-
-            # Generate journal
-            # Self-healing canonical generator (V176): emits canonical JV-YYMM-NNNN
-            # keyed to applied_date (the journal_date), fixing the prior split where the
-            # counter used deposit_date but the emitted year used applied_date.
-            journal_number = await conn.fetchval(
-                "SELECT get_next_journal_number($1, $2, $3)",
-                ctx["tenant_id"],
-                "JV",
-                applied_date,
-            )
-
-            # Law 20: Create journal as DRAFT
-            journal = await conn.fetchrow(
-                """
-                INSERT INTO journal_entries (
-                    tenant_id, journal_number, journal_date, description,
-                    source_type, source_id, total_debit, total_credit, status, created_by
-                ) VALUES ($1, $2, $3, $4, 'DEPOSIT_APPLICATION', $5, $6, $6, 'DRAFT', $7)
-                RETURNING id
-                """,
-                ctx["tenant_id"],
-                journal_number,
-                applied_date,
-                f"Apply Deposit {vd['deposit_number']} to Bill {bill['invoice_number']}",
-                deposit_id,
-                jumlah,
-                ctx.get("user_id"),
-            )
-
-            # Dr. Hutang Usaha
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
-                VALUES ($1, 1, $2, $3, 0, $4)
-                """,
-                journal["id"],
-                ap_account,
-                jumlah,
-                f"Apply Deposit to Bill {bill['invoice_number']}",
-            )
-
-            # Cr. Uang Muka Vendor
-            await conn.execute(
-                """
-                INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
-                VALUES ($1, 2, $2, 0, $3, $4)
-                """,
-                journal["id"],
-                vendor_deposit_account,
-                jumlah,
-                f"Apply Deposit {vd['deposit_number']}",
-            )
-
-            # Law 20: Post after all lines
-            await conn.execute(
-                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                journal["id"],
-            )
-
-            # Create application record
-            app = await conn.fetchrow(
-                """
-                INSERT INTO vendor_deposit_applications (
-                    vendor_deposit_id, bill_id, amount, applied_date, journal_id, created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id
-                """,
-                deposit_id,
-                data.bill_id,
-                jumlah,
-                applied_date,
-                journal["id"],
-                ctx.get("user_id"),
-            )
-            await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "applied", deposit_id, vd["deposit_number"], ctx.get("user_id"),
-                                    ke=bill["invoice_number"], kunci=app["id"])  # AUDIT (Law 12)
-
-            # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
-            # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
-            await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], data.bill_id)
-
-            # Sisa sesudah penerapan = JURNAL (deposit: UMV.sisa_jurnal; tagihan: compute_ap_outstanding), bukan kolom cache
-            resp = ApplyDepositResponse(
-                application_id=app["id"],
-                deposit_id=deposit_id,
-                deposit_number=vd["deposit_number"],
-                bill_id=data.bill_id,
-                bill_number=bill["invoice_number"],
-                applied_amount=jumlah,
-                deposit_remaining=await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id),
-                bill_remaining=await get_bill_remaining_from_journal(conn, ctx["tenant_id"], data.bill_id),
-                journal_id=journal["id"],
-            )
+            resp = await terapkan_uang_muka_inti(conn, ctx, deposit_id, data)
             return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_APPLY", resp, deposit_id)
+
+
+async def terapkan_uang_muka_inti(conn, ctx: dict, deposit_id, data) -> ApplyDepositResponse:
+    """SATU penulis penerapan uang muka pembelian ke tagihan (UMP-PO U-B, 2 Nov 2026: dipindah UTUH dari rute /apply, isi tak berubah).
+    Dipakai rute POST /{deposit_id}/apply DAN penerapan OTOMATIS saat posting FPB dari PO (services/ump_terap_otomatis), cermin
+    customer_deposits.apply_deposit_core. Pemanggil memegang transaksi (Law 23) + idempotensi (rute: idem_buat; otomatis: posting FPB).
+    data: .bill_id, .amount, .applied_date. Kunci: baris tagihan -> saldo/apply uang muka -> baris uang muka (Law 13). Jurnal
+    DEPOSIT_APPLICATION Dr Hutang Usaha / Cr Uang Muka Pembelian DRAFT -> POSTED (Law 20); sisa dari JURNAL (Law 1/16)."""
+    jumlah = Decimal(str(data.amount))
+    # Urutan kunci GLOBAL: baris TAGIHAN dulu, lalu uang muka (sama dgn lepas_penerapan & void faktur BACKEND) -> tanpa deadlock silang
+    await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", data.bill_id, ctx["tenant_id"])
+    # Law 13: kunci SALDO bersama apply/refund/void + kunci apply; semua pemeriksaan di DALAM lock (G4: dulu di luar -> over-apply)
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"VENDOR_DEPOSIT_SALDO:{deposit_id}",
+    )
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"DEPOSIT_APPLY:{deposit_id}",
+    )
+    vd = await conn.fetchrow(
+        "SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        deposit_id,
+        ctx["tenant_id"],
+    )
+    if not vd:
+        raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
+    await conn.fetchrow("SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE", data.bill_id, ctx["tenant_id"])
+    _tolak((await R.rencana_terapkan(conn, ctx, vd, data, data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])))["blocks"])  # = /apply/preview
+    # sisa dari JURNAL (Law 1/16), bukan kolom cache remaining_amount
+    sisa = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id)
+    if jumlah > sisa:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
+        )
+    bill = await conn.fetchrow(
+        "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3 FOR UPDATE",
+        data.bill_id,
+        vd["vendor_id"],
+        ctx["tenant_id"],
+    )
+    if not bill:
+        raise HTTPException(
+            status_code=400, detail="Tagihan tidak ditemukan atau bukan milik vendor ini."
+        )
+    if bill["status"] not in ("posted", "partial"):
+        raise HTTPException(status_code=400, detail="Tagihan harus sudah diposting.")
+    bill_remaining = await get_bill_remaining_from_journal(
+        conn, ctx["tenant_id"], bill["id"]
+    )
+    if jumlah > bill_remaining:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Jumlah melebihi sisa tagihan. Sisa tagihan: {bill_remaining}",
+        )
+    applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    ap_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_TRADE)
+    vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
+
+    # Law 5: Period check
+    period_row = await conn.fetchrow(
+        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+        ctx["tenant_id"],
+        applied_date,
+    )
+    if period_row and period_row["status"] != "OPEN":
+        raise HTTPException(
+            status_code=400,
+            detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS: kalimat dari penentu bersama
+        )
+
+    # Generate journal
+    # Self-healing canonical generator (V176): emits canonical JV-YYMM-NNNN
+    # keyed to applied_date (the journal_date), fixing the prior split where the
+    # counter used deposit_date but the emitted year used applied_date.
+    journal_number = await conn.fetchval(
+        "SELECT get_next_journal_number($1, $2, $3)",
+        ctx["tenant_id"],
+        "JV",
+        applied_date,
+    )
+
+    # Law 20: Create journal as DRAFT
+    journal = await conn.fetchrow(
+        """
+        INSERT INTO journal_entries (
+            tenant_id, journal_number, journal_date, description,
+            source_type, source_id, total_debit, total_credit, status, created_by
+        ) VALUES ($1, $2, $3, $4, 'DEPOSIT_APPLICATION', $5, $6, $6, 'DRAFT', $7)
+        RETURNING id
+        """,
+        ctx["tenant_id"],
+        journal_number,
+        applied_date,
+        f"Apply Deposit {vd['deposit_number']} to Bill {bill['invoice_number']}",
+        deposit_id,
+        jumlah,
+        ctx.get("user_id"),
+    )
+
+    # Dr. Hutang Usaha
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+        VALUES ($1, 1, $2, $3, 0, $4)
+        """,
+        journal["id"],
+        ap_account,
+        jumlah,
+        f"Apply Deposit to Bill {bill['invoice_number']}",
+    )
+
+    # Cr. Uang Muka Vendor
+    await conn.execute(
+        """
+        INSERT INTO journal_lines (journal_id, line_number, account_id, debit, credit, memo)
+        VALUES ($1, 2, $2, 0, $3, $4)
+        """,
+        journal["id"],
+        vendor_deposit_account,
+        jumlah,
+        f"Apply Deposit {vd['deposit_number']}",
+    )
+
+    # Law 20: Post after all lines
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        journal["id"],
+    )
+
+    # Create application record
+    app = await conn.fetchrow(
+        """
+        INSERT INTO vendor_deposit_applications (
+            vendor_deposit_id, bill_id, amount, applied_date, journal_id, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        """,
+        deposit_id,
+        data.bill_id,
+        jumlah,
+        applied_date,
+        journal["id"],
+        ctx.get("user_id"),
+    )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "vendor_deposit", "applied", deposit_id, vd["deposit_number"], ctx.get("user_id"),
+                            ke=bill["invoice_number"], kunci=app["id"])  # AUDIT (Law 12)
+
+    # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+    # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], data.bill_id)
+
+    # Sisa sesudah penerapan = JURNAL (deposit: UMV.sisa_jurnal; tagihan: compute_ap_outstanding), bukan kolom cache
+    resp = ApplyDepositResponse(
+        application_id=app["id"],
+        deposit_id=deposit_id,
+        deposit_number=vd["deposit_number"],
+        bill_id=data.bill_id,
+        bill_number=bill["invoice_number"],
+        applied_amount=jumlah,
+        deposit_remaining=await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id),
+        bill_remaining=await get_bill_remaining_from_journal(conn, ctx["tenant_id"], data.bill_id),
+        journal_id=journal["id"],
+    )
+    return resp
 
 
 # ============================================================================
