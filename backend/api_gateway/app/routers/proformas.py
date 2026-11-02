@@ -757,7 +757,7 @@ def _blok_purpose_buat(body) -> Optional[dict]:
     return None
 
 
-async def _rencana_buat(conn, ctx: dict, body, oid) -> dict:
+async def _rencana_buat(conn, ctx: dict, body, oid, pratinjau: bool = False) -> dict:
     """Penentu BUAT proforma (PROFORMA-PRATINJAU-BUAT, 2 Nov 2026, disetujui MASTER): SEMUA blok, urutan & kalimat = pemeriksaan
     POST /proformas lama (tujuan -> SO -> persen/nominal -> plafon). Nominal hasil persen dihitung SERVER (nominal_dari_persen,
     Decimal HALF_UP ke rupiah, Law 9/25). Dipakai POST /proformas (sesudah kunci) DAN POST /proformas/preview (baca saja)."""
@@ -789,9 +789,10 @@ async def _rencana_buat(conn, ctx: dict, body, oid) -> dict:
                 await assert_within_order_total(conn, tid, oid, order_total, amount)
             except HTTPException as e:
                 blocks.append(_blok("PROFORMA_EXCEEDS_BILLABLE", e.status_code, e.detail))
-    sebelum = await rincian_tagih(conn, tid, oid, order_total)
-    return {"order": order, "blocks": blocks, "percent": percent, "amount": amount,
-            "impact": {"amount": amount, "before": _ringkas_tagih(sebelum)}}
+    impact = {"amount": amount}
+    if pratinjau:  # dampak plafon hanya untuk pratinjau (jalur buat tak membaca apa pun di luar pemeriksaan lama)
+        impact["before"] = _ringkas_tagih(await rincian_tagih(conn, tid, oid, order_total))
+    return {"order": order, "blocks": blocks, "percent": percent, "amount": amount, "impact": impact}
 
 
 @router.post("/preview")
@@ -804,7 +805,7 @@ async def preview_create_proforma(request: Request, body: CreateProformaRequest)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction(readonly=True):
-            r = await _rencana_buat(conn, ctx, body, oid)
+            r = await _rencana_buat(conn, ctx, body, oid, pratinjau=True)
     o = r["order"]
     return {"success": True, "data": {
         "sales_order_id": str(oid), "order_number": o["order_number"], "can_proceed": not r["blocks"],

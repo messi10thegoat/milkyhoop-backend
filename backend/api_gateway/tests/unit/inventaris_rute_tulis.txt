@@ -459,6 +459,7 @@ POST /api/production/{order_id}/release
 POST /api/production/{order_id}/report-output
 POST /api/production/{order_id}/start
 POST /api/proformas
+POST /api/proformas/preview
 POST /api/proformas/{proforma_id}/cancel
 POST /api/proformas/{proforma_id}/cancel/preview
 POST /api/proformas/{proforma_id}/correct-amount

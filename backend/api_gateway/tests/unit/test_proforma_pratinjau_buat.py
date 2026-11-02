@@ -37,7 +37,7 @@ def _pasang(monkeypatch, status="confirmed", total=Decimal("8025000"), sisa=Deci
 
 
 def _r(b):
-    return _j(P._rencana_buat(None, {"tenant_id": T}, b, uuid.uuid4()))
+    return _j(P._rencana_buat(None, {"tenant_id": T}, b, uuid.uuid4(), pratinjau=True))
 
 
 def test_persen_jadi_nominal_server(monkeypatch):
@@ -75,5 +75,5 @@ def test_buat_memakai_penentu_dan_angkat_blok_pertama():
 
 def test_pratinjau_baca_saja_tanpa_kunci_penentu_sama():
     s = inspect.getsource(P.preview_create_proforma)
-    assert "conn.transaction(readonly=True)" in s and "_rencana_buat(conn, ctx, body, oid)" in s
+    assert "conn.transaction(readonly=True)" in s and "_rencana_buat(conn, ctx, body, oid, pratinjau=True)" in s
     assert "pg_advisory" not in s and "INSERT" not in s

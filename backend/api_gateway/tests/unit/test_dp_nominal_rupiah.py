@@ -54,13 +54,16 @@ def test_hitung_dp_so_memakai_rumus_yang_sama():
 def test_proforma_buat_dan_ubah_memakai_rumus_rupiah_bukan_float():
     src = _src("routers/proformas.py")
     assert "* percent / 100.0" not in src and "percent / 100" not in src  # float 2 desimal = akar Pergatsi
-    assert "nominal_dari_persen(order[\"total_amount\"], body.percent_of_order)" in _fungsi("routers/proformas.py", "create_proforma")
+    # PROFORMA-PRATINJAU-BUAT (2 Nov 2026): rumus buat kini di penentu SATU (_rencana_buat) yang dipanggil create + pratinjau
+    assert "nominal_dari_persen(order[\"total_amount\"], body.percent_of_order)" in _fungsi("routers/proformas.py", "_rencana_buat")
+    assert "_rencana_buat(conn, ctx, body, oid)" in _fungsi("routers/proformas.py", "create_proforma")
     assert "nominal_dari_persen(order[\"total_amount\"], body.percent_of_order)" in _fungsi("routers/proformas.py", "_rencana_ubah")
 
 
 def test_nominal_diketik_juga_rupiah():
     assert PF.rupiah(Decimal("5000377.50")) == Decimal("5000378") and PF.rupiah("1500.4") == Decimal("1500")
-    assert "rupiah(body.amount)" in _fungsi("routers/proformas.py", "create_proforma")
+    assert "rupiah(body.amount)" in _fungsi("routers/proformas.py", "_rencana_buat")  # PROFORMA-PRATINJAU-BUAT: penentu buat
+    assert "_rencana_buat(conn, ctx, body, oid)" in _fungsi("routers/proformas.py", "create_proforma")
     assert "rupiah(body.amount)" in _fungsi("routers/proformas.py", "_rencana_ubah")
 
 
