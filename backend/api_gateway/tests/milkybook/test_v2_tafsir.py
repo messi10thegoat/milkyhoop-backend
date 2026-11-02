@@ -238,7 +238,7 @@ def test_pemindai_tool_baca_tanpa_jalur_tulis():
     for modul in (cari_pelanggan, cari_barang):
         for nama, sql in _sql_konstanta(modul).items():
             assert sql and not tulis.search(sql), (modul.__name__, nama)
-    for nama in ("SQL_TAGIHAN", "SQL_PELANGGAN_ADA", "SQL_STOK"):
+    for nama in ("SQL_TAGIHAN", "SQL_PELANGGAN_ADA", "SQL_STOK", "SQL_OMZET"):
         assert not tulis.search(getattr(T, nama)), nama
     src = inspect.getsource(T.jalankan_tool)
     assert "execute(" not in src and "transaction(" not in src
@@ -310,3 +310,75 @@ def test_rute_validasi_dan_jawaban():
     assert p.panggilan == []
     r = c.post("/api/milkybook/v2/tafsir", headers=h, json={"teks": "halo", "tahap": "items"})
     assert r.status_code == 200 and r.json()["sumber"] == "llm"
+
+
+# ---------------------------------------------------------------- omzet per periode (tiket CH05, 2 Nov)
+from datetime import date  # noqa: E402
+
+HARI = date(2026, 11, 2)  # Senin
+
+
+@pytest.mark.parametrize("nama,mulai,sampai,label", [
+    ("hari_ini", date(2026, 11, 2), date(2026, 11, 2), "hari ini (2 November 2026)"),
+    ("kemarin", date(2026, 11, 1), date(2026, 11, 1), "kemarin (1 November 2026)"),
+    ("minggu_ini", date(2026, 11, 2), date(2026, 11, 2), "minggu ini (2 November 2026 s/d 2 November 2026)"),
+    ("bulan_ini", date(2026, 11, 1), date(2026, 11, 2), "bulan ini (1 November 2026 s/d 2 November 2026)"),
+    ("bulan_lalu", date(2026, 10, 1), date(2026, 10, 31), "bulan lalu (Oktober 2026)"),
+    ("tahun_ini", date(2026, 1, 1), date(2026, 11, 2), "tahun ini (1 Januari 2026 s/d 2 November 2026)"),
+])
+def test_periode_tertutup_berakhir_hari_ini(nama, mulai, sampai, label):
+    assert T.periode(nama, HARI) == (mulai, sampai, label)
+
+
+def test_periode_tepi_dan_tak_dikenal():
+    assert T.periode("minggu_ini", date(2026, 11, 8))[0] == date(2026, 11, 2)  # Minggu -> Senin minggu itu
+    assert T.periode("bulan_lalu", date(2026, 1, 15))[:2] == (date(2025, 12, 1), date(2025, 12, 31))
+    assert T.periode("bulan_depan", HARI) is None and T.periode("", HARI) is None
+    assert set(T.PERIODE) == set(next(t for t in T.TOOLS if t["name"] == "sales_summary")["input_schema"]
+                                  ["properties"]["periode"]["enum"])
+
+
+class ConnOmzet(Conn):
+    def __init__(self, omzet):
+        super().__init__()
+        self.omzet = omzet
+
+    async def fetchval(self, sql, *a):
+        self.log.append(("fetchval", sql, a))
+        return self.omzet if sql == T.SQL_OMZET else None
+
+
+@pytest.mark.asyncio
+async def test_sales_summary_dari_jurnal_dengan_tanggal_tenant(monkeypatch):
+    async def hari_ini(conn, tenant):
+        return HARI
+    monkeypatch.setattr(T, "hari_ini_tenant", hari_ini)
+    conn = ConnOmzet(Decimal("12500000.00"))
+    h = await T.jalankan_tool(conn, "kaos", "sales_summary", {"periode": "bulan_ini"})
+    assert h == {"periode": "bulan ini (1 November 2026 s/d 2 November 2026)", "mulai": "2026-11-01", "sampai": "2026-11-02",
+                 "omzet": 12500000, "definisi": T.DEFINISI_OMZET}
+    assert T.DEFINISI_OMZET == "pendapatan bersih (sesudah retur/diskon), tanpa PPN, dari jurnal terposting"
+    assert conn.log == [("fetchval", T.SQL_OMZET, ("kaos", date(2026, 11, 1), HARI))]
+    assert await T.jalankan_tool(conn, "kaos", "sales_summary", {"periode": "bulan_depan"}) == {"galat": "periode tidak dikenal"}
+
+
+def test_sql_omzet_jurnal_posted_revenue_tenant():
+    s = T.SQL_OMZET
+    assert "FROM journal_lines" in s and "je.status = 'POSTED'" in s and "coa.account_type = 'REVENUE'" in s
+    assert "je.tenant_id = $1" in s and "coa.tenant_id = je.tenant_id" in s and "BETWEEN $2 AND $3" in s
+    assert "OTHER_INCOME" not in s and "sales_invoices" not in s  # Law 16: bukan SUM(wrapper)
+
+
+@pytest.mark.asyncio
+async def test_alur_omzet_angka_dari_tool_lolos_penjaga(monkeypatch):
+    async def hari_ini(conn, tenant):
+        return HARI
+    monkeypatch.setattr(T, "hari_ini_tenant", hari_ini)
+    p = Pemanggil([_guna("t1", "sales_summary", {"periode": "bulan_ini"})],
+                  [_jawab(reply="Omzet bulan ini (1-2 November 2026) Rp12.500.000.")])
+    hasil, conn = await _jalan(p, conn=ConnOmzet(Decimal("12500000")), body=_body("omzet bulan ini gimana"))
+    assert hasil["sumber"] == "llm" and hasil["tool_calls"] == [{"name": "sales_summary", "args": {"periode": "bulan_ini"}}]
+    p2 = Pemanggil([_guna("t1", "sales_summary", {"periode": "bulan_ini"})], [_jawab(reply="Omzet bulan ini Rp13.000.000.")])
+    hasil2, _ = await _jalan(p2, conn=ConnOmzet(Decimal("12500000")), body=_body("omzet bulan ini gimana"))
+    assert hasil2["sumber"] == "penjaga"  # angka bukan dari tool -> ditolak
+    assert "WAJIB menyebut label periode" in T.SISTEM and "BELUM bisa" in T.SISTEM

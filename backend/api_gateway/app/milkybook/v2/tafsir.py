@@ -3,7 +3,8 @@
 - Keluaran tertutup: model wajib menutup lewat tool `jawab` (strict) -> divalidasi pydantic. Tak sah / tanpa jawab =
   clarify (tanya balik), tidak menebak.
 - Tool BACA saja: search_customers, search_items (inti yang sama dengan rute /v2/pelanggan, /v2/barang), open_invoices
-  (compute_customer_ar, Law 16), stock (inventory_ledger). Tidak ada jalur tulis (dikunci tes pemindai).
+  (compute_customer_ar, Law 16), stock (inventory_ledger), sales_summary (omzet per periode dari JURNAL, Law 16; tiket CH05
+  2 Nov). Tidak ada jalur tulis (dikunci tes pemindai).
 - Penjaga angka (Law 0 / 3.1): setiap angka uang/persen di `reply` harus ada di hasil tool giliran ini atau ketikan
   pengguna; selain itu jawaban diganti tanya balik (sumber 'penjaga').
 - Pagar biaya SAMA dengan v1: biaya bulan ini (asisten_aksi 'giliran') >= batas tenant -> tanpa panggilan model.
@@ -15,6 +16,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Callable, Literal, Optional
 
@@ -62,6 +64,39 @@ class Jawab(BaseModel):
     reply: str = Field(..., min_length=1, max_length=400)
 
 
+DEFINISI_OMZET = "pendapatan bersih (sesudah retur/diskon), tanpa PPN, dari jurnal terposting"
+PERIODE = ("hari_ini", "kemarin", "minggu_ini", "bulan_ini", "bulan_lalu", "tahun_ini")
+_BULAN = ("", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November",
+          "Desember")
+
+
+def _tgl(d: date) -> str:
+    return f"{d.day} {_BULAN[d.month]} {d.year}"
+
+
+def periode(nama: str, hari_ini: date) -> Optional[tuple[date, date, str]]:
+    """Periode tertutup -> (mulai, sampai, label). Periode berjalan berakhir HARI INI (tanggal bisnis tenant), bukan
+    akhir bulan. Nama di luar PERIODE -> None."""
+    if nama == "hari_ini":
+        return hari_ini, hari_ini, f"hari ini ({_tgl(hari_ini)})"
+    if nama == "kemarin":
+        k = hari_ini - timedelta(days=1)
+        return k, k, f"kemarin ({_tgl(k)})"
+    if nama == "minggu_ini":
+        m = hari_ini - timedelta(days=hari_ini.weekday())
+        return m, hari_ini, f"minggu ini ({_tgl(m)} s/d {_tgl(hari_ini)})"
+    if nama == "bulan_ini":
+        m = hari_ini.replace(day=1)
+        return m, hari_ini, f"bulan ini ({_tgl(m)} s/d {_tgl(hari_ini)})"
+    if nama == "bulan_lalu":
+        akhir = hari_ini.replace(day=1) - timedelta(days=1)
+        return akhir.replace(day=1), akhir, f"bulan lalu ({_BULAN[akhir.month]} {akhir.year})"
+    if nama == "tahun_ini":
+        m = hari_ini.replace(month=1, day=1)
+        return m, hari_ini, f"tahun ini ({_tgl(m)} s/d {_tgl(hari_ini)})"
+    return None
+
+
 def _skema(props: dict) -> dict:
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
@@ -76,6 +111,9 @@ TOOLS = [
      "search_customers.", "strict": True, "input_schema": _skema({"customer_id": {"type": "string"}})},
     {"name": "stock", "description": "Stok satu barang. item_id dari search_items.", "strict": True,
      "input_schema": _skema({"item_id": {"type": "string"}})},
+    {"name": "sales_summary", "description": "Omzet usaha ini dalam satu periode: pendapatan usaha bersih dari jurnal "
+     "(penjualan dikurangi retur/diskon; tanpa pendapatan lain). Hasil: label periode, tanggal mulai-sampai, omzet.",
+     "strict": True, "input_schema": _skema({"periode": {"type": "string", "enum": list(PERIODE)}})},
     {"name": "jawab", "description": "WAJIB dipanggil sekali untuk menutup giliran dengan jawaban akhir.", "strict": True,
      "input_schema": _skema({
          "intent": {"type": "string", "enum": list(INTENT.__args__)},
@@ -84,7 +122,7 @@ TOOLS = [
          "reply": {"type": "string"},
      })},
 ]
-TOOL_BACA = ("search_customers", "search_items", "open_invoices", "stock")
+TOOL_BACA = ("search_customers", "search_items", "open_invoices", "stock", "sales_summary")
 
 SISTEM = """Anda penafsir ketikan untuk asisten penawaran harga Milkybook (aplikasi pembukuan usaha kecil Indonesia).
 Aturan program sudah gagal memahami ketikan ini; tugas Anda menentukan maksudnya, lalu menutup dengan tool `jawab`.
@@ -92,7 +130,10 @@ Aturan program sudah gagal memahami ketikan ini; tugas Anda menentukan maksudnya
 Maksud (intent):
 - fill_slot: pengguna mengisi bagian draf (slot customer/items/valid/dp/tax); `value` = isi yang dimaksud, apa adanya.
 - check_exists: pengguna bertanya apakah pelanggan/barang sudah ada -> cari dulu dengan tool, lalu jawab.
-- answer_question: pertanyaan di tengah jalan (tagihan terbuka, stok, harga) -> cari dengan tool, jawab singkat.
+- answer_question: pertanyaan di tengah jalan (tagihan terbuka, stok, harga, omzet/penjualan per periode) -> cari dengan
+  tool, jawab singkat. Omzet: sales_summary dengan periode yang paling cocok; jawaban WAJIB menyebut label periode dan
+  `definisi` dari hasil alat secara ringkas. Omzet 0 dijawab Rp0 apa adanya. Omzet per pelanggan/per barang/per
+  periode di luar pilihan alat BELUM bisa: katakan jujur, jangan mengarang angka.
 - switch_task: pengguna ingin pindah ke pekerjaan lain (mis. catat biaya, batal, mulai baru); `value` = pekerjaan itu.
 - clarify: maksud tidak jelas -> tanya balik dengan pilihan, JANGAN menebak.
 
@@ -115,6 +156,15 @@ FROM compute_customer_ar($1, $2)
 WHERE outstanding > 0 AND invoice_id IS NOT NULL
 ORDER BY due_date ASC, invoice_date ASC
 LIMIT 10
+"""
+# Omzet = pendapatan usaha bersih per periode dari JURNAL (Law 16; pola _FLOW_CREDIT_NORMAL_SQL driver_deltas, akun
+# REVENUE saja -- retur/diskon penjualan ikut sebagai akun REVENUE berdebit; OTHER_INCOME tidak termasuk omzet).
+SQL_OMZET = """
+SELECT COALESCE(SUM(jl.credit) - SUM(jl.debit), 0) AS omzet
+FROM journal_lines jl
+JOIN journal_entries je ON je.id = jl.journal_id
+JOIN chart_of_accounts coa ON coa.id = jl.account_id AND coa.tenant_id = je.tenant_id
+WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND je.journal_date BETWEEN $2 AND $3 AND coa.account_type = 'REVENUE'
 """
 SQL_PELANGGAN_ADA = "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL"
 SQL_STOK = """
@@ -159,7 +209,20 @@ async def jalankan_tool(conn, tenant_id: str, nama: str, args: dict) -> dict:
         if r["jenis"] != "goods":
             return {"nama": r["nama"], "stok": None, "keterangan": "barang ini tidak dilacak stoknya"}
         return {"nama": r["nama"], "stok": _rp(r["stok"]), "satuan": r["satuan"]}
+    if nama == "sales_summary":
+        p = periode(str(args.get("periode", "")), await hari_ini_tenant(conn, tenant_id))
+        if not p:
+            return {"galat": "periode tidak dikenal"}
+        mulai, sampai, label = p
+        return {"periode": label, "mulai": mulai.isoformat(), "sampai": sampai.isoformat(),
+                "omzet": _rp(await conn.fetchval(SQL_OMZET, tenant_id, mulai, sampai)), "definisi": DEFINISI_OMZET}
     return {"galat": f"tool tidak dikenal: {nama}"}
+
+
+async def hari_ini_tenant(conn, tenant_id: str) -> date:
+    """Tanggal bisnis tenant (zona tenant), sama dengan tanggal dokumen."""
+    from ...utils.tanggal_tenant import tanggal_dokumen
+    return await tanggal_dokumen(conn, tenant_id)
 
 
 # ---------------------------------------------------------------- log ketikan (V470)
