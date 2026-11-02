@@ -33,7 +33,7 @@ def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
     assert "conn.transaction(readonly=True)" in s and "kunci=False" in s
     for dilarang in ("pg_advisory", "FOR UPDATE", "_tulis_void_pembayaran(", "tr.rollback"):
         assert dilarang not in s, dilarang
-    assert "_baris_balik(asli)" in s and "status_bayar_faktur(" in s
+    assert "_baris_balik(asli)" in s and "_faktur_sesudah_void(sebelum, r[\"alokasi\"])" in s
     r = inspect.getsource(RP._rencana_void_pembayaran)
     assert '" FOR UPDATE" if kunci else ""' in r and "dep_ids if kunci else []" in r
 
@@ -58,3 +58,16 @@ def test_penulis_void_tanpa_raise_sendiri_semua_penghalang_di_penentu():
     assert "reversal_journal_id=void_journal_id" in src
     import app.services.pihak_helpers as PHx
     assert "raise" not in inspect.getsource(PHx.segarkan_cache_piutang_faktur)
+
+
+def test_faktur_sesudah_void_sisa_naik_sebesar_alokasi_aktif():
+    sb = {"i1": {"invoice_number": "INV-1", "total_amount": Decimal("1000"), "status": "partial", "outstanding": Decimal("600")},
+          "i2": {"invoice_number": "INV-2", "total_amount": Decimal("500"), "status": "paid", "outstanding": Decimal("0")},
+          "i3": {"invoice_number": "INV-3", "total_amount": Decimal("700"), "status": "partial", "outstanding": Decimal("300")}}
+    alok = [{"invoice_id": "i1", "amount_applied": Decimal("400"), "status": "active"},
+            {"invoice_id": "i2", "amount_applied": Decimal("500"), "status": "active"},
+            {"invoice_id": "i3", "amount_applied": Decimal("400"), "status": "reversed"}]
+    r = RP._faktur_sesudah_void(sb, alok)
+    assert (r["i1"]["outstanding"], r["i1"]["status"]) == (Decimal("1000"), "posted")
+    assert (r["i2"]["outstanding"], r["i2"]["status"]) == (Decimal("500"), "posted")
+    assert r["i3"] is sb["i3"]  # dilepas: tak disentuh

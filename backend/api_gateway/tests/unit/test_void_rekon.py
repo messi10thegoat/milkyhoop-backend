@@ -102,9 +102,12 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
                      and getattr(n.func, "id", "") == "_rencana_void_pembayaran"]
         assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
-        kunci_prev = [n.lineno for n in ast.walk(_fungsi_void(src, '"/{payment_id}/void/preview"'))
-                      if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
-        assert kunci_prev, "pratinjau mengambil lock yang sama"
+        # U-P4a (2 Nov 2026, putusan MASTER): pratinjau = penentu YANG SAMA (cek rekon ikut) tetapi BACA SAJA tanpa kunci
+        # (pola cabang customer_deposits di bawah); kunci + tulis hanya di /void.
+        prev = _fungsi_void(src, '"/{payment_id}/void/preview"')
+        kunci_prev = [n.lineno for n in ast.walk(prev) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        psrc = ast.get_source_segment(src, prev)
+        assert not kunci_prev and "readonly=True" in psrc and "_rencana_void_pembayaran(" in psrc, "pratinjau baca saja, penentu sama"
         fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef)
                   and n.name == "_rencana_void_pembayaran")
         kunci = "_TANPA_KUNCI_DI_PENENTU_"  # kunci dipegang pemanggil; lewati cek lock-di-dalam di bawah

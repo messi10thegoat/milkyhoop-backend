@@ -32,11 +32,13 @@ def test_izin_dipetakan():
 def test_satu_penentu_satu_penulis():
     st, sp = inspect.getsource(RP.void_receive_payment), inspect.getsource(RP.preview_void_receive_payment)
     for f in ("_rencana_void_pembayaran(", "_tulis_void_pembayaran("):
-        assert f in st and f in sp, f
+        assert f in st, f
+    # U-P4a (2 Nov 2026, putusan MASTER): pratinjau = penentu SAMA (kunci=False) TANPA penulis, transaksi READ ONLY
+    assert "_rencana_void_pembayaran(" in sp and "kunci=False" in sp and "_tulis_void_pembayaran(" not in sp
     for kata in ("INSERT INTO journal_entries", "UPDATE receive_payments", "create_reversal_bank_transaction"):
         assert kata not in st and kata not in sp, f"penulis harus satu tempat: {kata}"
     assert "INSERT INTO journal_entries" in inspect.getsource(RP._tulis_void_pembayaran)
-    assert "await tr.rollback()" in sp and "finally" in sp, "pratinjau WAJIB rollback"
+    assert "conn.transaction(readonly=True)" in sp, "pratinjau WAJIB baca saja"
 
 
 def test_idempotensi_sebelum_kunci_domain_dan_dicatat():

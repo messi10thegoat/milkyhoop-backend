@@ -2574,6 +2574,24 @@ class PratinjauVoidPembayaranRequest(BaseModel):
     void_reason: Optional[str] = Field(None, max_length=500)  # opsional DI PRATINJAU: "alasan wajib" tampil sebagai blok
 
 
+def _faktur_sesudah_void(sebelum: dict, alokasi) -> dict:
+    """MURNI (U-P4a) -- keadaan faktur SESUDAH void dari keadaan sebelum (compute_ar_outstanding) + alokasi AKTIF: sisa naik
+    sebesar alokasi; status = pihak_helpers.status_bayar_faktur (aturan SAMA dengan segarkan_cache_piutang_faktur penulis).
+    Alokasi yang sudah DILEPAS tak disentuh (efeknya dikembalikan saat lepas); faktur draf/void tak disentuh penulis."""
+    from ..services.pihak_helpers import status_bayar_faktur
+    sesudah = {}
+    for a in alokasi:
+        k = str(a["invoice_id"])
+        sb = sebelum.get(k)
+        if a["status"] == "reversed" or not sb or sb["status"] in ("draft", "void"):
+            continue
+        out = Decimal(str(sb["outstanding"] or 0)) + Decimal(str(a["amount_applied"] or 0))
+        sesudah[k] = {"invoice_number": sb["invoice_number"], "outstanding": out, "status": status_bayar_faktur(sb["total_amount"], out)[1]}
+    for k, sb in sebelum.items():
+        sesudah.setdefault(k, sb)
+    return sesudah
+
+
 def _baris_balik(baris) -> list:
     """MURNI (U-P4a 2 Nov 2026) -- baris jurnal PEMBALIK dari baris jurnal asli: debit<->kredit ditukar, memo "Reversal - …".
     SATU sumber untuk penulis void (jurnal pembayaran + jurnal lepas LPS) DAN pratinjau void READ ONLY."""
@@ -2968,7 +2986,6 @@ async def preview_void_receive_payment(
     (status faktur sesudah, == segarkan_cache_piutang_faktur), cermin bank = -nominal asli (== create_reversal_bank_transaction).
     Respons: kunci LAMA tetap persis (can_void, journal_lines, invoices_reopened, bank_reversal, …) + kunci pola Pembayaran
     Keluar (action, can_proceed, before/after, journals[], bank_transactions[], invoices, payload)."""
-    from ..services.pihak_helpers import status_bayar_faktur
     from ..services.bank_sync import JENIS_PEMBALIK
     ctx = get_user_context(request)
     if not ctx["user_id"]:
@@ -3004,17 +3021,7 @@ async def preview_void_receive_payment(
                 for x in r["lepas"]:
                     jurnal.append(await _balik(x["unapply_journal_id"], "RECEIVE_PAYMENT_UNAPPLY",
                                                f"Void {p['payment_number']}: batal lepas pembayaran ({x['deposit_number']})"))
-                sesudah = {}
-                for a in r["alokasi"]:
-                    k = str(a["invoice_id"])
-                    sb = sebelum.get(k)
-                    if a["status"] == "reversed" or not sb or sb["status"] in ("draft", "void"):
-                        continue
-                    out = Decimal(str(sb["outstanding"] or 0)) + Decimal(str(a["amount_applied"] or 0))
-                    sesudah[k] = {"invoice_number": sb["invoice_number"], "outstanding": out,
-                                  "status": status_bayar_faktur(sb["total_amount"], out)[1]}
-                for k, sb in sebelum.items():
-                    sesudah.setdefault(k, sb)
+                sesudah = _faktur_sesudah_void(sebelum, r["alokasi"])
     ok, bt = not r["blocks"], r["orig_bt"]
     terbuka = []
     for a in r["alokasi"]:
