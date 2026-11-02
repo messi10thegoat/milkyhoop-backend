@@ -245,7 +245,7 @@ def test_apply_melebihi_sisa_JURNAL_ditolak_walau_cache_besar(monkeypatch, peran
     monkeypatch.setattr(VD, "tanggal_dokumen", hari)
     with pytest.raises(HTTPException) as e:
         asyncio.run(VD.apply_vendor_deposit(_Req(), DID, VS.ApplyDepositRequest(bill_id=BILL, amount=500)))
-    assert e.value.status_code == 400 and "Saldo uang muka tidak cukup" in e.value.detail
+    assert e.value.status_code == 400 and e.value.detail == "Nilai penerapan Rp 500 melebihi sisa uang muka Rp 100."
     assert not any("INSERT INTO journal_entries" in q for k, q in kon.log)
 
 
@@ -267,7 +267,7 @@ def test_refund_melebihi_sisa_jurnal_ditolak(monkeypatch, peran):
     _pool(monkeypatch, VD, kon)
     with pytest.raises(HTTPException) as e:
         asyncio.run(VD.refund_vendor_deposit(_Req(), DID, VS.VendorDepositRefundCreate(refund_date=date(2026, 10, 22), amount=500)))
-    assert e.value.status_code == 400 and "Saldo uang muka tidak cukup" in e.value.detail
+    assert e.value.status_code == 400 and e.value.detail == "Pengembalian Rp 500 melebihi sisa uang muka Rp 50."
 
 
 def test_apply_dan_refund_memakai_kunci_saldo_yang_sama():

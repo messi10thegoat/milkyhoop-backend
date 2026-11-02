@@ -32,16 +32,6 @@ async def sisa_tagihan(conn, tid: str, bill_id) -> Decimal:
     return max(NOL, _d(await conn.fetchval(SQL_SISA_TAGIHAN, tid, bill_id)))
 
 
-def kalimat_saldo_tidak_cukup(sisa) -> str:
-    """U-kode (2 Nov): tg.rp, format sama dengan DP Penjualan (_rp_dp); dipakai penentu + penulis /apply + /refund."""
-    return f"Saldo uang muka tidak cukup. Tersedia: {tg.rp(sisa)}."
-
-
-def kalimat_melebihi_sisa_tagihan(sisa) -> str:
-    """U-kode (2 Nov): tg.rp (dulu Decimal mentah 'Sisa tagihan: 50000'); dipakai penentu + penulis /apply."""
-    return f"Jumlah melebihi sisa tagihan. Sisa tagihan: {tg.rp(sisa)}."
-
-
 def blok(code: str, message: str, status: int = 400) -> dict:
     return {"code": code, "message": message, "status": status}
 
@@ -218,7 +208,7 @@ async def rencana_terapkan(conn, ctx, vd, body, hari_ini, pratinjau: bool = Fals
         bloks.append(blok("BELUM_DIPOSTING", "Uang muka harus diposting dulu sebelum diterapkan."))
     sisa = await UMV.sisa_jurnal(conn, tid, vd["id"]) if vd["status"] in STATUS_TERBIT else NOL
     if vd["status"] in STATUS_TERBIT and jumlah > sisa:
-        bloks.append(blok("SALDO_TIDAK_CUKUP", kalimat_saldo_tidak_cukup(sisa)))
+        bloks.append(blok("SALDO_TIDAK_CUKUP", tg.penerapan_melebihi_sisa(jumlah, sisa)))
     bill = await conn.fetchrow("SELECT id, invoice_number, status FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3",
                                body.bill_id, vd["vendor_id"], tid)
     sisa_t = NOL
@@ -229,7 +219,7 @@ async def rencana_terapkan(conn, ctx, vd, body, hari_ini, pratinjau: bool = Fals
             bloks.append(blok("TAGIHAN_BELUM_DIPOSTING", "Tagihan harus sudah diposting."))
         sisa_t = await sisa_tagihan(conn, tid, bill["id"])
         if jumlah > sisa_t:
-            bloks.append(blok("MELEBIHI_SISA_TAGIHAN", kalimat_melebihi_sisa_tagihan(sisa_t)))
+            bloks.append(blok("MELEBIHI_SISA_TAGIHAN", tg.penerapan_melebihi_sisa_tagihan(jumlah, sisa_t)))
     tgl = body.applied_date or hari_ini
     if TUM.sebelum_uang_muka(tgl, vd.get("deposit_date")):  # TGL-UM (putusan pemilik 2 Nov): tolak berkalimat, bukan geser
         bloks.append(blok(TUM.KODE, TUM.kalimat(vd["deposit_number"], tgl, vd.get("deposit_date"))))
@@ -296,7 +286,7 @@ async def rencana_kembali(conn, ctx, vd, body, pratinjau: bool = False) -> dict:
         bloks.append(blok("BELUM_DIPOSTING", "Uang muka harus sudah diposting."))
     sisa = await UMV.sisa_jurnal(conn, tid, vd["id"]) if vd["status"] in STATUS_TERBIT else NOL
     if vd["status"] in STATUS_TERBIT and jumlah > sisa:
-        bloks.append(blok("SALDO_TIDAK_CUKUP", kalimat_saldo_tidak_cukup(sisa)))
+        bloks.append(blok("SALDO_TIDAK_CUKUP", tg.pengembalian_melebihi_sisa(jumlah, sisa)))
     um = await _akun(conn, tid, AccountRole.AP_PREPAID, bloks)
     coa_kas, ba = await akun_kas(conn, tid, body.bank_account_id, getattr(body, "account_id", None), bloks, wajib=True)
     await _periode(conn, tid, body.refund_date, bloks)

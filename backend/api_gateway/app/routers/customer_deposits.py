@@ -2598,7 +2598,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
     if aksi == "refund":
         if body.amount > sisa:
             blok.append(_blok_dp("REFUND_EXCEEDS_REMAINING", 400,
-                                 f"Pengembalian {_rp_dp(body.amount)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {_rp_dp(sisa)}."))
+                                 tg.pengembalian_melebihi_sisa(body.amount, sisa, (await label_deposit(conn, tid, deposit_id)).lower())))
         try:
             akun = await conn.fetchrow("SELECT account_type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
                                        UUID(body.account_id), tid)
@@ -2615,7 +2615,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
         total = sum((a.amount for a in body.applications), Decimal("0"))
         if total > sisa:
             blok.append(_blok_dp("APPLY_EXCEEDS_REMAINING", 400,
-                                 f"Nilai penerapan {_rp_dp(total)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {_rp_dp(sisa)}."))
+                                 tg.penerapan_melebihi_sisa(total, sisa, (await label_deposit(conn, tid, deposit_id)).lower())))
     return blok
 
 

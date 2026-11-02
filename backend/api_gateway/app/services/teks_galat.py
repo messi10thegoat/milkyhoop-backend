@@ -36,6 +36,19 @@ def rp(x) -> str:
     return f"Rp {tanda}{teks}"
 
 
+def penerapan_melebihi_sisa(jumlah, sisa, label: str = "uang muka") -> str:
+    """Satu pola DP Penjualan + Uang Muka Vendor (U-kode, 2 Nov 2026). label Penjualan = label_deposit (uang muka/pelunasan)."""
+    return f"Nilai penerapan {rp(jumlah)} melebihi sisa {label} {rp(sisa)}."
+
+
+def pengembalian_melebihi_sisa(jumlah, sisa, label: str = "uang muka") -> str:
+    return f"Pengembalian {rp(jumlah)} melebihi sisa {label} {rp(sisa)}."
+
+
+def penerapan_melebihi_sisa_tagihan(jumlah, sisa) -> str:
+    return f"Nilai penerapan {rp(jumlah)} melebihi sisa tagihan faktur {rp(sisa)}."
+
+
 def qty(x) -> str:
     """Kuantitas: '5' / '2,5' / '1.250' (tanpa nol ekor, koma desimal, titik ribuan)."""
     d = _desimal(x)

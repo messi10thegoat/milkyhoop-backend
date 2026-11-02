@@ -59,33 +59,47 @@ def test_tanpa_format_angka_mentah_di_kalimat_uang():
         assert ":,.0f}" not in src and ":,}" not in src, mod.__name__
 
 
-def test_ump_vendor_melebihi_sisa_tagihan_rupiah():
-    from app.services import uang_muka_vendor_rencana as UMVR
-    assert UMVR.kalimat_melebihi_sisa_tagihan(Decimal("274.50")) == "Jumlah melebihi sisa tagihan. Sisa tagihan: Rp 274,50."
-    arg = _argumen_kalimat(UMVR.rencana_terapkan, "MELEBIHI_SISA_TAGIHAN")
-    assert arg and all(_panggil(a, "kalimat_melebihi_sisa_tagihan") for a in arg)
-
-
-def test_penulis_apply_uang_muka_vendor_kalimat_sama():
-    # cek ganda penulis /apply (sesudah penentu) WAJIB kalimat yang sama, bukan Decimal mentah
-    from app.routers import vendor_deposits as VD
-    src = inspect.getsource(VD.terapkan_uang_muka_inti)
-    assert "detail=R.kalimat_melebihi_sisa_tagihan(bill_remaining)" in src
-    assert "Sisa tagihan: {" not in src
-
-
-def test_ump_vendor_saldo_tidak_cukup_rupiah_sama_dgn_dp_penjualan():
-    from app.services import uang_muka_vendor_rencana as UMVR
+def test_pola_tunggal_dp_dan_ump():
     from app.services import teks_galat as tg
-    assert UMVR.kalimat_saldo_tidak_cukup(Decimal("100")) == "Saldo uang muka tidak cukup. Tersedia: Rp 100."
-    assert UMVR.kalimat_saldo_tidak_cukup(Decimal("1250.5")) == f"Saldo uang muka tidak cukup. Tersedia: {tg.rp(Decimal('1250.5'))}."
-    for fn in (UMVR.rencana_terapkan, UMVR.rencana_kembali):
-        arg = _argumen_kalimat(fn, "SALDO_TIDAK_CUKUP")
-        assert arg and all(_panggil(a, "kalimat_saldo_tidak_cukup") for a in arg), fn.__name__
+    assert tg.penerapan_melebihi_sisa(Decimal("500"), Decimal("100.50")) == "Nilai penerapan Rp 500 melebihi sisa uang muka Rp 100,50."
+    assert tg.penerapan_melebihi_sisa(Decimal("500"), Decimal("100"), "pelunasan") == "Nilai penerapan Rp 500 melebihi sisa pelunasan Rp 100."
+    assert tg.pengembalian_melebihi_sisa(Decimal("1250000"), Decimal("50")) == "Pengembalian Rp 1.250.000 melebihi sisa uang muka Rp 50."
+    assert tg.penerapan_melebihi_sisa_tagihan(Decimal("30000"), Decimal("20000.5")) == \
+        "Nilai penerapan Rp 30.000 melebihi sisa tagihan faktur Rp 20.000,50."
 
 
-def test_penulis_uang_muka_vendor_saldo_kalimat_sama():
+def _panggil_tg(node, nama: str) -> bool:
+    return isinstance(node, ast.Call) and ast.unparse(node.func) == f"tg.{nama}"
+
+
+def test_penentu_ump_vendor_pola_tunggal():
+    from app.services import uang_muka_vendor_rencana as UMVR
+    for fn, kode, nama in ((UMVR.rencana_terapkan, "SALDO_TIDAK_CUKUP", "penerapan_melebihi_sisa"),
+                           (UMVR.rencana_terapkan, "MELEBIHI_SISA_TAGIHAN", "penerapan_melebihi_sisa_tagihan"),
+                           (UMVR.rencana_kembali, "SALDO_TIDAK_CUKUP", "pengembalian_melebihi_sisa")):
+        arg = _argumen_kalimat(fn, kode)
+        assert arg and all(_panggil_tg(a, nama) for a in arg), (fn.__name__, kode, [ast.unparse(a) for a in arg])
+
+
+def test_penulis_ump_vendor_pola_tunggal():
     from app.routers import vendor_deposits as VD
-    for fn in (VD.terapkan_uang_muka_inti, VD.refund_vendor_deposit):
-        src = inspect.getsource(fn)
-        assert "detail=R.kalimat_saldo_tidak_cukup(sisa)" in src and "Tersedia: {" not in src, fn.__name__
+    t = inspect.getsource(VD.terapkan_uang_muka_inti)
+    r = inspect.getsource(VD.refund_vendor_deposit)
+    assert "detail=tg.penerapan_melebihi_sisa(jumlah, sisa)" in t and "detail=tg.penerapan_melebihi_sisa_tagihan(jumlah, bill_remaining)" in t
+    assert "detail=tg.pengembalian_melebihi_sisa(jumlah, sisa)" in r
+    for src in (t, r):
+        assert "Tersedia: " not in src and "Sisa tagihan: " not in src
+
+
+def test_dp_penjualan_pola_tunggal_label_tetap():
+    from app.services import uang_muka_rencana as UMR
+    from app.routers import customer_deposits as CD
+    src = inspect.getsource(UMR)
+    assert "detail=tg.penerapan_melebihi_sisa(total, remaining, (await label_deposit(conn, tid, deposit_id)).lower())" in src
+    assert "detail=tg.pengembalian_melebihi_sisa(body.amount, remaining, (await label_deposit(conn, tid, deposit_id)).lower())" in src
+    assert "detail=tg.penerapan_melebihi_sisa_tagihan(app.amount, sisa)" in src
+    assert '"Nilai penerapan melebihi sisa tagihan faktur."' not in src
+    c = inspect.getsource(CD)
+    assert "tg.pengembalian_melebihi_sisa(body.amount, sisa, (await label_deposit(conn, tid, deposit_id)).lower())" in c
+    assert "tg.penerapan_melebihi_sisa(total, sisa, (await label_deposit(conn, tid, deposit_id)).lower())" in c
+    assert 'f"Nilai penerapan {' not in c and 'f"Pengembalian {_rp_dp' not in c

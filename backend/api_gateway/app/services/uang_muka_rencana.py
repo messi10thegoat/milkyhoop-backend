@@ -72,7 +72,7 @@ async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
     if total > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Nilai penerapan {CD._rp_dp(total)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {CD._rp_dp(remaining)}.",
+            detail=tg.penerapan_melebihi_sisa(total, remaining, (await label_deposit(conn, tid, deposit_id)).lower()),
         )
     application_date = body.application_date or await CD.tanggal_dokumen(conn, tid)
     if TUM.sebelum_uang_muka(application_date, dep.get("deposit_date")):  # TGL-UM (putusan pemilik 2 Nov): tolak, bukan geser
@@ -92,7 +92,7 @@ async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
         # penulis menulis baris demi baris: baris sebelumnya ke faktur yang sama sudah memotong sisanya
         sisa = await CD.get_invoice_remaining_from_journal(conn, tid, inv_id) - dipakai.get(inv_id, NOL)
         if app.amount > sisa:
-            raise HTTPException(status_code=400, detail="Nilai penerapan melebihi sisa tagihan faktur.")
+            raise HTTPException(status_code=400, detail=tg.penerapan_melebihi_sisa_tagihan(app.amount, sisa))
         ada = inv_id in dipakai or await conn.fetchval(
             """SELECT id FROM customer_deposit_applications
                WHERE deposit_id = $1 AND invoice_id = $2 AND COALESCE(status, 'active') <> 'reversed'""",
@@ -156,7 +156,7 @@ async def rencana_kembalikan(conn, ctx: dict, deposit_id, body) -> dict:
     if body.amount > remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Pengembalian {CD._rp_dp(body.amount)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {CD._rp_dp(remaining)}.",
+            detail=tg.pengembalian_melebihi_sisa(body.amount, remaining, (await label_deposit(conn, tid, deposit_id)).lower()),
         )
     akun_kas = UUID(body.account_id)
     account = await conn.fetchrow(

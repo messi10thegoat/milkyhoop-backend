@@ -165,7 +165,7 @@ async def test_terapkan_rencana_baris_jurnal_tanpa_tulis(lingkungan):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("jumlah,pesan", [(("30000", "30000"), "Uang muka ini sudah diterapkan ke faktur itu."),
-                                          (("40000", "30000"), "Nilai penerapan melebihi sisa tagihan faktur.")])
+                                          (("40000", "30000"), "Nilai penerapan Rp 30.000 melebihi sisa tagihan faktur Rp 20.000.")])
 async def test_terapkan_dua_baris_faktur_sama_galat_sama_dengan_tulis_berurutan(lingkungan, jumlah, pesan):
     """Penulis lama menulis baris 1 dulu: sisa faktur 60.000 - 40.000 = 20.000 < 30.000 -> 'melebihi'; 30.000 + 30.000 muat ->
     baris 2 ditolak 'sudah diterapkan' (aplikasi aktif baris 1). Penentu mensimulasikan efek baris sebelumnya."""
