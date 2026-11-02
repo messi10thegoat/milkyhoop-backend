@@ -100,6 +100,8 @@ class Konek:
         s = self._s(sql)
         if "FROM sales_order_items soi" in s:
             return self.rows
+        if "FROM warehouses WHERE tenant_id" in s and "is_active" in s:  # gudang_bawaan.bawaan: meniru saring is_active SQL
+            return [{"id": GUD, "name": "Gudang Utama", "is_active": True, "is_default": True}] if self.gudang_aktif else []
         if "FROM sales_invoices WHERE tenant_id" in s:
             return []
         if "FROM sj_faktur_alokasi a" in s and "GROUP BY si.invoice_number" in s:
@@ -418,10 +420,17 @@ def test_stok_dilewati_tanpa_flag_stok_dan_masuk_dengan_flag():
 
 def test_stok_semua_blok_sekaligus():
     c = Konek(rows=_stok_rows(5), flag_stok=True, wac=Decimal("0"), stok_ada=Decimal("2"), gudang_aktif=False)
-    r = jalan(S.rencana(c, ctx(), SO, S.SJSOIn()))
+    r = jalan(S.rencana(c, ctx(), SO, S.SJSOIn(warehouse_id=GUD)))  # gudang DIMINTA tapi nonaktif (GUDANG-NONSTOK 2 Nov)
     k = kodes(r)
     for x in ("SJ_SO_GUDANG_NONAKTIF", "SJ_SO_WAC_NOL", "SJ_SO_STOK_TIDAK_CUKUP"):
         assert x in k, (x, k)
+
+
+def test_stok_tanpa_gudang_diminta_hanya_gudang_nonaktif_wajib_pilih():
+    """GUDANG-NONSTOK: jalur bawaan tanpa gudang aktif -> SJ_SO_GUDANG_WAJIB (perilaku nyata; bawaan menyaring is_active)."""
+    c = Konek(rows=_stok_rows(5), flag_stok=True, gudang_aktif=False)
+    r = jalan(S.rencana(c, ctx(), SO, S.SJSOIn()))
+    assert "SJ_SO_GUDANG_WAJIB" in kodes(r) and "SJ_SO_GUDANG_NONAKTIF" not in kodes(r) and r["warehouse"] is None
 
 
 def test_stok_batch_serial_belum_didukung():

@@ -80,9 +80,9 @@ def _tgl(monkeypatch):
     monkeypatch.setattr(SI, "tanggal_dokumen", t)
 
 
-async def _kirim(c, qty=5):
+async def _kirim(c, qty=5, gudang=None):
     return await SI._execute_fulfillment(c, T, "u1", {"id": INV, "invoice_number": "INV-2609-0200"},
-                                         [{"invoice_item_id": BARIS, "quantity": qty}], None, date(2026, 9, 27))
+                                         [{"invoice_item_id": BARIS, "quantity": qty}], gudang, date(2026, 9, 27))
 
 
 @pytest.mark.asyncio
@@ -111,8 +111,8 @@ async def test_non_stok_tanpa_flag_ditolak_nol_tulisan(pk):
 @pytest.mark.asyncio
 async def test_baris_stok_tetap_jalur_lama():
     c = Conn(dilacak=True)
-    with pytest.raises(HTTPException) as e:
-        await _kirim(c)
+    with pytest.raises(HTTPException) as e:  # GUDANG-NONSTOK: baris ber-stok wajib bergudang (tanpa gudang -> test_gudang_nonstok)
+        await _kirim(c, gudang=uuid.uuid4())
     assert "Stok" in str(e.value.detail)
 
 
