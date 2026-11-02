@@ -5,7 +5,8 @@ SERAGAM (23 Okt 2026, ANDROID/MASTER, ADITIF): baris & detail + billing_state/st
 sumber dgn ?aksi= & /summary); detail bills[] (tautan aktif + jenis); /documents (bundel po · grn · faktur, bentuk ND U3c); /history
 (bentuk riwayat ND/tagihan); pratinjau batal + kode/nama akun + sebelum/sesudah."""
 import logging
-from typing import Optional
+from datetime import date
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -66,16 +67,44 @@ SQL_HEADER = """
     WHERE g.tenant_id = $1
 """
 
+# U-GRN-DAFTAR (2 Nov 2026, disetujui MASTER; cermin deliveries._syarat_cari): SATU predikat ?search= untuk daftar DAN /summary?search=.
+# Alias g (goods_receipts), po (purchase_orders), v (vendors), w (warehouses) -- tersedia di SQL_HEADER dan FROM_RINGKASAN.
+FROM_RINGKASAN = """
+    FROM goods_receipts g
+    LEFT JOIN purchase_orders po ON po.id = g.purchase_order_id AND po.tenant_id = g.tenant_id
+    LEFT JOIN vendors v ON v.id = g.vendor_id
+    LEFT JOIN warehouses w ON w.id = g.warehouse_id
+    WHERE g.tenant_id = $1"""
+URUTAN_GRN = {"receipt_date": "g.receipt_date {o}, g.created_at {o}", "receipt_number": "g.receipt_number {o}",
+              "vendor_name": "vendor_name {o}", "status": "g.status {o}", "created_at": "g.created_at {o}"}
+
+
+def _syarat_cari(search, mulai: int):
+    """(predikat, [parameter]) ?search=: No. penerimaan, No. SJ vendor, No. PO, nama vendor, nama gudang (ILIKE %q%)."""
+    if not isinstance(search, str) or not search:
+        return None, []
+    p = f"${mulai}"
+    return (f"(g.receipt_number ILIKE {p} OR g.vendor_delivery_note ILIKE {p} OR po.po_number ILIKE {p} "
+            f"OR COALESCE(v.name, po.vendor_name) ILIKE {p} OR w.name ILIKE {p})"), [f"%{search}%"]
+
 
 @router.get("")
 async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID] = Query(None),
                               status: Optional[str] = Query(None, pattern="^(posted|void)$"),
                               aksi: Optional[str] = Query(None, pattern="^belum_ditagih$"),
-                              limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+                              limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+                              search: Optional[str] = Query(None),
+                              date_from: Optional[date] = Query(None), date_to: Optional[date] = Query(None),
+                              sort_by: Literal["receipt_date", "receipt_number", "vendor_name", "status", "created_at"] = Query("receipt_date"),
+                              sort_order: Literal["asc", "desc"] = Query("desc")):
     ctx = get_user_context(request)
     po_id = purchase_order_id if isinstance(purchase_order_id, UUID) else None
     st = status if isinstance(status, str) else None
     ak = aksi if isinstance(aksi, str) else None  # pemanggilan langsung: default = objek Query
+    dari = date_from if isinstance(date_from, date) else None
+    sampai = date_to if isinstance(date_to, date) else None
+    urut = URUTAN_GRN.get(sort_by if isinstance(sort_by, str) else "receipt_date", URUTAN_GRN["receipt_date"])
+    arah = "ASC" if sort_order == "asc" else "DESC"
     pool = await get_pool()
     async with pool.acquire() as conn:
         syarat, par = "", [ctx["tenant_id"]]
@@ -87,8 +116,18 @@ async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID
             syarat += f" AND g.status = ${len(par)}"
         if ak is not None:
             syarat += f" AND {GD.sql_aksi(ak)}"  # predikat SAMA dengan /summary
+        cari, pc = _syarat_cari(search, len(par) + 1)  # U-GRN-DAFTAR: predikat SAMA dengan /summary?search=
+        if cari:
+            par += pc
+            syarat += f" AND {cari}"
+        if dari is not None:
+            par.append(dari)
+            syarat += f" AND g.receipt_date >= ${len(par)}"
+        if sampai is not None:
+            par.append(sampai)
+            syarat += f" AND g.receipt_date <= ${len(par)}"
         total = await conn.fetchval(f"SELECT count(*) FROM ({SQL_HEADER}{syarat}) x", *par)
-        rows = await conn.fetch(f"{SQL_HEADER}{syarat} ORDER BY g.receipt_date DESC, g.created_at DESC LIMIT {int(limit)} OFFSET {int(offset)}", *par)
+        rows = await conn.fetch(f"{SQL_HEADER}{syarat} ORDER BY {urut.format(o=arah)}, g.id {arah} LIMIT {int(limit)} OFFSET {int(offset)}", *par)
         # L5b (31 Okt 2026, aditif): documents[]/doc_count per baris = bundel detail TANPA rekap, pembentuk batch SATU (2 kueri, bukan N+1)
         kel = await GD.kelompok_grn_banyak(conn, ctx["tenant_id"], rows)
     items = []
@@ -97,12 +136,15 @@ async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID
         it["documents"] = GD.documents_baris(kel.get(str(r["id"]), []))
         it["doc_count"] = len(it["documents"])
         items.append(it)
-    return {"success": True, "data": {"items": items, "total": int(total), "limit": limit, "offset": offset}}
+    return {"success": True, "data": {"items": items, "total": int(total), "limit": limit, "offset": offset,
+                                      "has_more": int(offset) + len(items) < int(total)}}
 
 
 @router.get("/summary")
-async def goods_receipts_summary(request: Request, purchase_order_id: Optional[UUID] = Query(None)):
-    """Ringkasan + pill AKSI belum_ditagih (predikat SAMA dgn ?aksi=; nilai = Σ grni_open_amount). Uang string 2dp."""
+async def goods_receipts_summary(request: Request, purchase_order_id: Optional[UUID] = Query(None), search: Optional[str] = Query(None)):
+    """Ringkasan + pill AKSI belum_ditagih (predikat SAMA dgn ?aksi=; nilai = Σ grni_open_amount). Uang string 2dp.
+    U-GRN-DAFTAR (aditif, cermin /deliveries/summary): total_posted/total_voided/total_all + today_count (receipt_date = tanggal_bisnis
+    tenant); ?search= = predikat SAMA dengan daftar dan mempersempit SEMUA hitungan."""
     ctx = get_user_context(request)
     po_id = purchase_order_id if isinstance(purchase_order_id, UUID) else None
     pool = await get_pool()
@@ -111,12 +153,19 @@ async def goods_receipts_summary(request: Request, purchase_order_id: Optional[U
         if po_id is not None:
             par.append(po_id)
             syarat = f" AND g.purchase_order_id = ${len(par)}"
+        cari, pc = _syarat_cari(search, len(par) + 1)
+        if cari:
+            par += pc
+            syarat += f" AND {cari}"
         r = await conn.fetchrow(
             f"""SELECT count(*) AS total, count(*) FILTER (WHERE g.status = 'posted') AS posted, count(*) FILTER (WHERE g.status = 'void') AS void,
+                       count(*) FILTER (WHERE g.receipt_date = tanggal_bisnis($1)) AS today_count,
                        count(*) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}) AS n_aksi,
                        COALESCE(SUM({GD.sql_grni_terbuka()}) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}), 0) AS v_aksi
-                FROM goods_receipts g WHERE g.tenant_id = $1{syarat}""", *par)
+                {FROM_RINGKASAN}{syarat}""", *par)
     return {"success": True, "data": {"total": int(r["total"]), "posted": int(r["posted"]), "void": int(r["void"]),
+                                      "total_all": int(r["total"]), "total_posted": int(r["posted"]), "total_voided": int(r["void"]),
+                                      "today_count": int(r["today_count"]),
                                       f"{GD.AKSI_BELUM_DITAGIH}_count": int(r["n_aksi"]),
                                       f"{GD.AKSI_BELUM_DITAGIH}_value": f"{G._d(r['v_aksi']):.2f}"}}
 
