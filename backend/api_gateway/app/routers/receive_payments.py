@@ -1587,13 +1587,27 @@ def _f_rp(v):
     return float(v) if v is not None else None
 
 
+def _faktur_sesudah_penerimaan(alokasi: list, draf: bool) -> list:
+    """MURNI (U-P4b-1) -- faktur SESUDAH penerimaan dari alokasi tervalidasi (_periksa_penerimaan: sisa SEBELUM dari jurnal):
+    sisa sesudah = sebelum - alokasi; status = pihak_helpers.status_bayar_faktur (aturan SAMA dengan segarkan_cache_piutang_faktur
+    yang dijalankan _post_payment). Draf: tak memengaruhi faktur (sisa tetap, status None)."""
+    from ..services.pihak_helpers import status_bayar_faktur
+    out = []
+    for v in alokasi:
+        sisa = Decimal(str(v["remaining_before"])) - Decimal(str(v["amount_applied"]))
+        out.append({"invoice_id": str(v["invoice_id"]), "invoice_number": v["invoice_number"],
+                    "remaining_before": _f_rp(v["remaining_before"]), "amount_applied": _f_rp(v["amount_applied"]),
+                    "remaining_after": _f_rp(v["remaining_before"] if draf else sisa),
+                    "status_after": None if draf else status_bayar_faktur(v["invoice_amount"], sisa)[1]})
+    return out
+
+
 async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
     """U-P4b-1 (2 Nov 2026, disetujui MASTER) -- penentu BUAT penerimaan BACA SAJA (tanpa kunci, tanpa tulis): pemeriksaan
     YANG SAMA dengan buat_penerimaan (_periksa_penerimaan kunci=False; galat pertama -> blok, kalimat sama), baris jurnal posting
     dari fungsi MURNI yang SAMA dengan _post_payment, cermin bank (rekening bank-tertaut), faktur sesudah
     (pihak_helpers.status_bayar_faktur), nomor PERKIRAAN dari penghitung tabel (dibaca, tak dinaikkan). Law 1/16 (sisa dari
     jurnal), 9/25 (Decimal), 27 (akun lewat peran), 29 (penyelesaian piutang)."""
-    from ..services.pihak_helpers import status_bayar_faktur
     from ..services.role_resolver import AccountRoleUnmappedError
     tid = ctx["tenant_id"]
     body = body.model_copy(deep=True)  # pemeriksaan mengubah body (seperti penulis); salinan supaya pemanggil tak terpengaruh
@@ -1611,12 +1625,7 @@ async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentReque
     sq = await conn.fetchrow("SELECT last_number, year FROM receive_payment_sequences WHERE tenant_id = $1", tid)
     nomor = f"RCV-{th}-{((sq['last_number'] + 1) if (sq and sq['year'] == th) else 1):04d}"  # rumus SAMA dengan fungsi DB penomoran RCV (penghitung tabel, dibaca)
     hasil["payment_number"] = nomor
-    for v in cek["validated_allocations"]:
-        sisa = Decimal(str(v["remaining_before"])) - Decimal(str(v["amount_applied"]))
-        hasil["invoices"].append({"invoice_id": str(v["invoice_id"]), "invoice_number": v["invoice_number"],
-                                  "remaining_before": _f_rp(v["remaining_before"]), "amount_applied": _f_rp(v["amount_applied"]),
-                                  "remaining_after": _f_rp(sisa if not body.save_as_draft else v["remaining_before"]),
-                                  "status_after": (status_bayar_faktur(v["invoice_amount"], sisa)[1] if not body.save_as_draft else None)})
+    hasil["invoices"] = _faktur_sesudah_penerimaan(cek["validated_allocations"], body.save_as_draft)
     if body.save_as_draft:
         return hasil  # draf: nol jurnal / bank / uang muka
     try:

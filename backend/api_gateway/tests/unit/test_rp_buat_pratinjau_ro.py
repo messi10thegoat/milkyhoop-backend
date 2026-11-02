@@ -60,3 +60,15 @@ def test_nomor_perkiraan_rumus_sama_dengan_generator():
     r = inspect.getsource(RP.rencana_penerimaan_ro)
     assert "(sq['last_number'] + 1) if (sq and sq['year'] == th) else 1" in r and 'f"RCV-{th}-' in r
     assert "OVP-{bl['yymm']}-{((last or 0) + 1):04d}" in r
+
+
+def test_faktur_sesudah_penerimaan_sisa_turun_sebesar_alokasi():
+    alok = [{"invoice_id": "i1", "invoice_number": "INV-1", "invoice_amount": Decimal("1000"), "remaining_before": Decimal("1000"),
+             "amount_applied": Decimal("400")},
+            {"invoice_id": "i2", "invoice_number": "INV-2", "invoice_amount": Decimal("500"), "remaining_before": Decimal("500"),
+             "amount_applied": Decimal("500")}]
+    r = RP._faktur_sesudah_penerimaan(alok, False)
+    assert [(x["remaining_after"], x["status_after"]) for x in r] == [(600.0, "partial"), (0.0, "paid")]
+    d = RP._faktur_sesudah_penerimaan(alok, True)
+    assert [(x["remaining_after"], x["status_after"]) for x in d] == [(1000.0, None), (500.0, None)]
+    assert 'hasil["invoices"] = _faktur_sesudah_penerimaan(cek["validated_allocations"], body.save_as_draft)' in inspect.getsource(RP.rencana_penerimaan_ro)
