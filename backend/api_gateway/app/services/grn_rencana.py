@@ -25,6 +25,8 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
+
 NOL = Decimal("0")
 SEN = Decimal("0.01")
 FLAG = "penerimaan_barang_v1"
@@ -73,9 +75,7 @@ async def _gudang(conn, tenant_id: str, diminta, po_gudang):
     for kandidat in (diminta, po_gudang):
         if kandidat is not None:
             return await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", kandidat, tenant_id)
-    return await conn.fetchrow(
-        "SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1",
-        tenant_id)
+    return await gudang_bawaan.bawaan(conn, tenant_id)  # GUDANG-NONSTOK: aturan SAMA dengan kirim SO (satu aktif / satu is_default)
 
 
 # Tagihan tertunda (D): baris tagihan TERPOSTING atas baris PO ber-stok yang qty-nya belum habis tertaut (tautan aktif jenis apa pun).

@@ -2012,6 +2012,11 @@ async def _execute_fulfillment(
             )
             continue
 
+        # GUDANG-NONSTOK (2 Nov 2026): baris ber-stok WAJIB bergudang -- pagar inti untuk SEMUA pemanggil (/fulfill, kirim SO,
+        # posting auto-fulfill). Kalimat sama dengan rute lama.
+        if warehouse_id is None:
+            raise HTTPException(400, "Gudang wajib dipilih.")
+
         # 3. Availability gate ONLY (read-only).
         # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger
         # on inventory_ledger (trg_update_warehouse_stock). The ledger insert in
@@ -7037,12 +7042,12 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         notes = body.get("notes")
         req_items = body.get("items", [])
 
-        if not warehouse_id_str:
-            raise HTTPException(400, "Gudang wajib dipilih.")
         if not req_items:
             raise HTTPException(400, "Barang wajib diisi.")
 
-        warehouse_id = UUID(warehouse_id_str)
+        # GUDANG-NONSTOK (2 Nov 2026): gudang wajib HANYA bila ada baris ber-stok -- pagar di _execute_fulfillment (inti,
+        # SEMUA pemanggil). Semua baris non-stok (V318) -> tanpa gudang.
+        warehouse_id = UUID(warehouse_id_str) if warehouse_id_str else None
         fulfillment_date = (
             dt_date.fromisoformat(fulfillment_date_str) if fulfillment_date_str else None
         )
@@ -7076,7 +7081,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 # Compute payload hash
                 payload_for_hash = canonical_json(
                     {
-                        "warehouse_id": str(warehouse_id),
+                        "warehouse_id": str(warehouse_id) if warehouse_id else None,
                         "fulfillment_date": fulfillment_date_str,
                         "recognize_revenue": recognize_revenue,
                         "items": sorted(

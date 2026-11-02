@@ -25,6 +25,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from . import teks_galat as tg
+from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
 from . import pengiriman_serah as serah_mod
 
@@ -120,14 +121,12 @@ async def _gudang(conn, tid: str, diminta: Optional[str], so, flag: bool = False
         if r:
             return {"id": str(r["id"]), "name": r["name"], "source": "tenant_setting",
                     "source_label": f"dari pengaturan pengiriman: {r['name']}"}, None
-    aktif = await conn.fetch(kol + " AND is_active ORDER BY name", tid)
-    for calon in (list(aktif) if len(aktif) == 1 else [], [r for r in aktif if r["is_default"]]):
-        if len(calon) == 1:
-            r = calon[0]
-            g = {"id": str(r["id"]), "name": r["name"], "source": "tenant_default"}
-            if flag:
-                g["source_label"] = f"gudang bawaan usaha: {r['name']}"
-            return g, None
+    r = await gudang_bawaan.bawaan(conn, tid)  # GUDANG-NONSTOK: satu penentu bawaan (satu aktif / satu is_default)
+    if r:
+        g = {"id": str(r["id"]), "name": r["name"], "source": "tenant_default"}
+        if flag:
+            g["source_label"] = f"gudang bawaan usaha: {r['name']}"
+        return g, None
     return None, {"code": "SO_FULFILL_WAREHOUSE_REQUIRED", "message": "Pilih gudang pengiriman."}
 
 
@@ -264,7 +263,9 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
                       "message": f"Faktur draf {', '.join(draf)} belum terbit — barangnya belum bisa dikirim."})
 
     pref = await serah_mod.preferensi(conn, tid) if flag else {"lokasi_id": None, "metode_id": None}
-    gudang, blok_gudang = await _gudang(conn, tid, body.warehouse_id, so, flag, pref["lokasi_id"])
+    # GUDANG-NONSTOK (2 Nov): gudang hanya bila ADA baris dilacak stok yang dialokasikan; semua non-stok -> tanpa gudang
+    gudang, blok_gudang = (await _gudang(conn, tid, body.warehouse_id, so, flag, pref["lokasi_id"])
+                           if any(a["b"]["dilacak"] for a in alokasi) else (None, None))
     if blok_gudang:
         blocks.append(blok_gudang)
     serah = None
@@ -364,7 +365,7 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
                 per_soi[k] = per_soi.get(k, _NOL) + a["qty"]
         payload = {
             "items": [{"sales_order_item_id": k, "quantity": _q(v)} for k, v in per_soi.items()],
-            "warehouse_id": gudang["id"],
+            "warehouse_id": gudang["id"] if gudang else None,  # GUDANG-NONSTOK: semua non-stok -> null
             "fulfillment_date": tgl.isoformat(),
             "notes": body.notes,
         }
@@ -387,7 +388,7 @@ async def tulis_kirim_so(conn, ctx: dict, r: dict, kunci: Optional[str] = None) 
     for f in r["faktur"]:
         items = [{"invoice_item_id": a["b"]["id"], "quantity": a["qty"]} for a in r["kelompok"][f["id"]]]
         h = await _execute_fulfillment(
-            conn, ctx["tenant_id"], ctx["user_id"], f, items, UUID(r["warehouse"]["id"]), r["fulfillment_date"],
+            conn, ctx["tenant_id"], ctx["user_id"], f, items, UUID(r["warehouse"]["id"]) if r["warehouse"] else None, r["fulfillment_date"],
             recognize_revenue=True,
             idempotency_key=(f"SO_FULFILL:{kunci}:{f['id']}" if kunci else None),
             notes=r["payload"]["notes"] if r["payload"] else None,

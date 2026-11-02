@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from . import pengiriman_serah as serah_mod
+from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
 from .role_resolver import AccountRole, resolve_account_id_by_role
 from .so_riwayat import catat_riwayat
@@ -143,9 +144,7 @@ async def _gudang_default(conn, tid: str, diminta, so_gudang):
         if kandidat is not None:
             g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", kandidat, tid)
             return g, sumber
-    return await conn.fetchrow(
-        "SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1",
-        tid), "default"
+    return await gudang_bawaan.bawaan(conn, tid), "default"  # GUDANG-NONSTOK: satu aktif / satu is_default, selain itu None
 
 
 async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> dict:
