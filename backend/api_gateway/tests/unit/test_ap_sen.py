@@ -101,12 +101,21 @@ class _K:
         return None
 
 
+@pytest.fixture
+def peran(monkeypatch):
+    """Peran akun AP/kas terpetakan (fake tak punya tabel account_roles)."""
+    async def akun(*a, **k):
+        return uuid4()
+    monkeypatch.setattr(BKR, "resolve_account_id_by_role", akun)
+    monkeypatch.setattr(BKR, "resolve_account_id_or_none", akun)
+
+
 def _kode(sisa, jumlah):
     r = asyncio.run(BKR.rencana_bayar_tagihan(_K(sisa), "t", uuid4(), {"amount": jumlah, "payment_method": "transfer"}, pratinjau=True))
     return [b["code"] for b in r["blocks"]], r
 
 
-def test_tagihan_bersen_bisa_dilunasi_persis():
+def test_tagihan_bersen_bisa_dilunasi_persis(peran):
     kode, _ = _kode(Decimal("274.50"), Decimal("274.50"))
     assert "MELEBIHI_SISA_TAGIHAN" not in kode, kode          # dulu int(274,50)=274 -> 274,50 > 274 DITOLAK
     kode, r = _kode(Decimal("274.50"), Decimal("274.51"))
@@ -115,7 +124,7 @@ def test_tagihan_bersen_bisa_dilunasi_persis():
     assert msg == "Jumlah pembayaran Rp 274,51 melebihi sisa tagihan Rp 274,50."
 
 
-def test_bulat_perilaku_lama():
+def test_bulat_perilaku_lama(peran):
     assert "MELEBIHI_SISA_TAGIHAN" not in _kode(Decimal("50000.00"), Decimal("50000"))[0]
     assert "MELEBIHI_SISA_TAGIHAN" in _kode(Decimal("50000.00"), Decimal("50001"))[0]
 
