@@ -108,6 +108,14 @@ class UpdatePurchaseOrderRequest(BaseModel):
 # REQUEST MODELS - Operations
 # =============================================================================
 
+def normal_sj_vendor(v):
+    """No. SJ vendor: strip; kosong -> None (kolom CHECK menolak string kosong)."""
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v or None
+
+
 class ReceiveItemRequest(BaseModel):
     """Single item to receive."""
     po_item_id: str = Field(..., description="PO item UUID")
@@ -121,6 +129,13 @@ class ReceiveGoodsRequest(BaseModel):
     notes: Optional[str] = None
     # GRN (flag penerimaan_barang_v1, 23 Okt): gudang penerima barang ber-stok; kosong = gudang PO -> gudang bawaan tenant
     warehouse_id: Optional[UUID] = None
+    # GRN-SJ-VENDOR (V472, 2 Nov 2026): nomor surat jalan vendor (pola SAP Delivery Note); spasi dibuang, kosong = None
+    vendor_delivery_note: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("vendor_delivery_note", mode="before")
+    @classmethod
+    def _sj_vendor(cls, v):
+        return normal_sj_vendor(v)
 
 
 class ToBillItemRequest(BaseModel):
@@ -148,6 +163,14 @@ class ReceivePreviewRequest(BaseModel):
     receive_date: Optional[date] = None
     items: Optional[List[ReceiveItemRequest]] = None
     warehouse_id: Optional[UUID] = None  # GRN (flag penerimaan_barang_v1)
+    # GRN-SJ-VENDOR: catatan + No. SJ vendor ikut pratinjau -> payload membawanya (FE tak perlu menyisip sendiri)
+    notes: Optional[str] = None
+    vendor_delivery_note: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("vendor_delivery_note", mode="before")
+    @classmethod
+    def _sj_vendor(cls, v):
+        return normal_sj_vendor(v)
 
 
 class ToBillPreviewRequest(BaseModel):

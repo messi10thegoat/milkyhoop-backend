@@ -42,7 +42,7 @@ async def _po(conn, tid, rows):
 
 async def _grn(conn, tid, rows):
     return {r["id"]: [r["vendor_name"], r["receipt_number"], r["receipt_date"], r["po_number"], r["warehouse_name"],
-                      GD.medan(r)["status_text"], r["status"], None] for r in rows}
+                      GD.medan(r)["status_text"], r["status"], r["vendor_delivery_note"]] for r in rows}  # Referensi = No. SJ vendor (V472)
 
 
 async def _tagihan(conn, tid, rows):
@@ -86,7 +86,7 @@ SPEC_BELI = {
         "goods-receipts", "penerimaan-barang",
         ("Vendor", "No. penerimaan", "Tgl. terima", "Pesanan pembelian", "Gudang", "Status"),
         f"""SELECT g.id, COALESCE(v.name, po.vendor_name) AS vendor_name, g.receipt_number, g.receipt_date, po.po_number,
-                   w.name AS warehouse_name, g.status, {GD.sql_kolom("g")}
+                   w.name AS warehouse_name, g.status, g.vendor_delivery_note, {GD.sql_kolom("g")}
             FROM goods_receipts g
             JOIN purchase_orders po ON po.id = g.purchase_order_id AND po.tenant_id = g.tenant_id
             LEFT JOIN vendors v ON v.id = g.vendor_id
