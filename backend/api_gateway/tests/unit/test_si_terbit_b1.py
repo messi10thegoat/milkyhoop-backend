@@ -65,14 +65,21 @@ def test_penulis_memakai_penentu_bersama():
 
 
 def test_pratinjau_baca_saja_tanpa_kunci_penulis_penomoran():
-    s = inspect.getsource(F.rencana_terbit_ro)
-    for terlarang in ("pg_advisory", "FOR UPDATE", "get_next_journal_number", "INSERT ", "UPDATE ", "DELETE ", "terbitkan_faktur",
-                      "_internal_post_invoice", "apply_deposit_core", "_execute_fulfillment", "alokasikan_saat_faktur"):
-        assert terlarang not in s, terlarang
-    for wajib in ("baris_jv(", "alokasi_baris(", "pilih_cabang(", "pecah_pendapatan(", "jumlah_recog_jasa(", "baris_recog(",
-                  "UMR.baris_terapkan(", "plan_so_deposit_application(", "TUM.tanggal_terap_otomatis("):
-        assert wajib in s, wajib
-    assert "complete = False" in s and "CATATAN_SEBAGIAN" in s
+    # PANGGILAN + konstanta SQL (bukan teks/docstring -- pelajaran spek kata vs panggilan)
+    pohon = ast.parse(inspect.getsource(F.rencana_terbit_ro).lstrip())
+    panggil = {ast.unparse(n.func).split(".")[-1] for n in ast.walk(pohon) if isinstance(n, ast.Call)}
+    for terlarang in ("terbitkan_faktur", "_internal_post_invoice", "apply_deposit_core", "_execute_fulfillment",
+                      "alokasikan_saat_faktur", "get_next_journal_number", "execute"):
+        assert terlarang not in panggil, terlarang
+    sql = [n.value.upper() for n in ast.walk(pohon) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    sql += [F.SQL_ITEMS.upper(), F.SQL_SJ_MUNGKIN.upper()]
+    for frasa in ("INSERT ", "UPDATE ", "DELETE ", "FOR UPDATE", "PG_ADVISORY", "GET_NEXT_JOURNAL_NUMBER"):
+        assert not any(frasa in q for q in sql), frasa
+    for wajib in ("baris_jv", "alokasi_baris", "pilih_cabang", "pecah_pendapatan", "jumlah_recog_jasa", "baris_recog",
+                  "baris_terapkan", "plan_so_deposit_application", "tanggal_terap_otomatis"):
+        assert wajib in panggil, wajib
+    src = inspect.getsource(F.rencana_terbit_ro)
+    assert "if cabang == CABANG_KIRIM_OTOMATIS:\n        complete = False" in src and "complete = not sj_mungkin" in src
 
 
 def test_rute_pratinjau_readonly_rollback_bentuk():
