@@ -59,7 +59,9 @@ def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
 def test_nomor_perkiraan_rumus_sama_dengan_generator():
     r = inspect.getsource(RP.rencana_penerimaan_ro)
     assert "(sq['last_number'] + 1) if (sq and sq['year'] == th) else 1" in r and 'f"RCV-{th}-' in r
-    assert "OVP-{bl['yymm']}-{((last or 0) + 1):04d}" in r
+    # U-P4b-2: rumus OVP pindah ke helper SATU sumber (pratinjau buat + pratinjau posting draf)
+    assert "await _perkiraan_nomor_ovp(conn, tid)" in r
+    assert "OVP-{bl['yymm']}-{((last or 0) + 1):04d}" in inspect.getsource(RP._perkiraan_nomor_ovp)
 
 
 def test_faktur_sesudah_penerimaan_sisa_turun_sebesar_alokasi():

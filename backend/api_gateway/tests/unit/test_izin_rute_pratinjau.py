@@ -47,6 +47,7 @@ KHUSUS = {
     # Faktur Pembelian tahap 2: ubah draf = PATCH /bills/v2/{id} (penentu bersama services/tagihan_rencana.blok_ubah + hitung)
     "POST /api/bills/{bill_id}/edit/preview": "PATCH /api/bills/v2/{bill_id}",
     "POST /api/bills/{bill_id}/delete/preview": "DELETE /api/bills/{bill_id}",
+    "POST /api/receive-payments/{payment_id}/delete/preview": "DELETE /api/receive-payments/{payment_id}",  # U-P4b-2
     # AS-GP3 Pembayaran Keluar: hapus draf = DELETE (penentu bersama services/bayar_keluar_rencana.rencana_hapus_draf_bayar)
     "POST /api/bill-payments/{payment_id}/delete/preview": "DELETE /api/bill-payments/{payment_id}",
     "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
