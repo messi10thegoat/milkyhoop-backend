@@ -20,6 +20,7 @@ from .galat_berkode import GalatBerkode
 from .pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 from .role_resolver import AccountRole, resolve_account_id_by_role
 from .status_uang_muka import status_detail_dp
+from .uang_muka_daftar import status_text_um  # DP-POSISI (2 Nov 2026)
 
 NOL = Decimal("0")
 
@@ -294,7 +295,9 @@ async def keadaan_sesudah(conn, tid: str, deposit_id, aksi: str, p: dict) -> dic
             st = "applied" if dipakai + kembali >= jumlah else ("partial" if dipakai + kembali > 0 else "posted")
         else:
             dipakai, kembali = r["amount_applied"], r["amount_refunded"]
-    return {"exists": True, "status": st, "status_detail": status_detail_dp(st, dipakai, kembali), "amount": float(r["amount"] or 0),
+    sd = status_detail_dp(st, dipakai, kembali)
+    # DP-POSISI (2 Nov 2026): position_text DIHITUNG dari keadaan SESUDAH (penentu sama dengan daftar/detail), cermin UMP
+    return {"exists": True, "status": st, "status_detail": sd, "position_text": status_text_um(sd), "amount": float(r["amount"] or 0),
             "amount_applied": float(dipakai or 0), "amount_refunded": float(kembali or 0), "remaining": float(sisa)}
 
 

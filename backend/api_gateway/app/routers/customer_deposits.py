@@ -2625,8 +2625,10 @@ async def _keadaan_dp(conn, tid: str, deposit_id) -> dict:
            WHERE id = $1 AND tenant_id = $2""", deposit_id, tid)
     if not r:
         return {"exists": False}
-    return {"exists": True, "status": r["status"],
-            "status_detail": status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"]), "amount": float(r["amount"] or 0),
+    sd = status_detail_dp(r["status"], r["amount_applied"], r["amount_refunded"])
+    # DP-POSISI (2 Nov 2026, cermin pratinjau UMP): position_text = teks status daftar/detail DP (SATU penentu _umd.status_text_um)
+    return {"exists": True, "status": r["status"], "status_detail": sd, "position_text": _umd.status_text_um(sd),
+            "amount": float(r["amount"] or 0),
             "amount_applied": float(r["amount_applied"] or 0), "amount_refunded": float(r["amount_refunded"] or 0),
             "remaining": float(await compute_deposit_remaining(conn, tid, deposit_id))}
 
