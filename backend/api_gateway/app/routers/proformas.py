@@ -751,6 +751,69 @@ async def list_proformas_for_order(request: Request, order_id: str):
 # ============================================================================
 
 
+def _blok_purpose_buat(body) -> Optional[dict]:
+    if _normalisasi_purpose(body.purpose) not in VALID_PURPOSES:
+        return _blok("PROFORMA_PURPOSE_INVALID", 400, f"purpose harus salah satu dari {list(VALID_PURPOSES)}")
+    return None
+
+
+async def _rencana_buat(conn, ctx: dict, body, oid) -> dict:
+    """Penentu BUAT proforma (PROFORMA-PRATINJAU-BUAT, 2 Nov 2026, disetujui MASTER): SEMUA blok, urutan & kalimat = pemeriksaan
+    POST /proformas lama (tujuan -> SO -> persen/nominal -> plafon). Nominal hasil persen dihitung SERVER (nominal_dari_persen,
+    Decimal HALF_UP ke rupiah, Law 9/25). Dipakai POST /proformas (sesudah kunci) DAN POST /proformas/preview (baca saja)."""
+    tid = ctx["tenant_id"]
+    blocks = []
+    b = _blok_purpose_buat(body)
+    if b:
+        blocks.append(b)
+    order = await fetch_order_or_404(conn, tid, oid)
+    if order["status"] not in SO_BILLABLE_STATUSES:
+        blocks.append(_blok("SO_NOT_BILLABLE", 400, {"code": "SO_NOT_BILLABLE", "message": (  # 3 Okt: kode stabil
+            f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
+            f"dengan proforma. Konfirmasi pesanannya dulu.")}))
+    order_total = _f(order["total_amount"]) or 0.0
+    percent = _f(body.percent_of_order)
+    amount = float(rupiah(body.amount)) if body.amount is not None else None  # IDR rupiah penuh (11 Okt)
+    if percent is None and amount is None:
+        blocks.append(_blok("PROFORMA_AMOUNT_REQUIRED", 400, "Isi salah satu: persen dari pesanan atau jumlah."))
+    elif percent is not None and (percent <= 0 or percent > 100):
+        blocks.append(_blok("PROFORMA_PERCENT_INVALID", 400, "Persen dari pesanan harus di antara 0 dan 100."))
+        amount = None
+    else:
+        if percent is not None:  # 11 Okt (Pergatsi): persen -> nominal SEKALI
+            amount = float(nominal_dari_persen(order["total_amount"], body.percent_of_order))
+        if amount is None or amount <= 0:
+            blocks.append(_blok("PROFORMA_AMOUNT_INVALID", 400, "amount harus lebih besar dari 0."))
+        else:
+            try:  # pagar plafon YANG SAMA dengan ubah/terbit
+                await assert_within_order_total(conn, tid, oid, order_total, amount)
+            except HTTPException as e:
+                blocks.append(_blok("PROFORMA_EXCEEDS_BILLABLE", e.status_code, e.detail))
+    sebelum = await rincian_tagih(conn, tid, oid, order_total)
+    return {"order": order, "blocks": blocks, "percent": percent, "amount": amount,
+            "impact": {"amount": amount, "before": _ringkas_tagih(sebelum)}}
+
+
+@router.post("/preview")
+async def preview_create_proforma(request: Request, body: CreateProformaRequest):
+    """PROFORMA-PRATINJAU-BUAT (2 Nov 2026): pratinjau BUAT -- penentu YANG SAMA dengan POST /proformas (_rencana_buat), transaksi
+    READ ONLY tanpa kunci, nol tulis. -> nominal rupiah dari SERVER (persen -> nominal), semua blok (kalimat = 400 buat), plafon
+    tagih SO sebelum, payload POST ternormalisasi. Izin = buat proforma (middleware ^/api/proformas POST -> proforma C)."""
+    ctx = get_user_context(request)
+    oid = _uuid_or_404(body.sales_order_id, "Sales Order")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            r = await _rencana_buat(conn, ctx, body, oid)
+    o = r["order"]
+    return {"success": True, "data": {
+        "sales_order_id": str(oid), "order_number": o["order_number"], "can_proceed": not r["blocks"],
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "amount": r["amount"], "percent_of_order": r["percent"], "order_total_amount": _f(o["total_amount"]),
+        "impact": r["impact"],
+        "payload": (body.model_dump(mode="json") if not r["blocks"] else None)}}  # badan POST apa adanya (server menghitung ulang)
+
+
 @router.post("", status_code=201)
 async def create_proforma(request: Request, body: CreateProformaRequest):
     """Buat proforma (status draft) dari sebuah Sales Order."""
@@ -758,12 +821,10 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
         ctx = get_user_context(request)
         oid = _uuid_or_404(body.sales_order_id, "Sales Order")
 
+        _b = _blok_purpose_buat(body)  # PROFORMA-PRATINJAU-BUAT: kalimat SAMA dengan blok pratinjau
+        if _b:
+            raise HTTPException(status_code=_b["status"], detail=_b["detail"])
         _purpose = _normalisasi_purpose(body.purpose)
-        if _purpose not in VALID_PURPOSES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"purpose harus salah satu dari {list(VALID_PURPOSES)}",
-            )
 
         try:
             kunci_klien = kunci_idempotensi_klien(request)
@@ -793,39 +854,11 @@ async def create_proforma(request: Request, body: CreateProformaRequest):
                         })
                     if lama is not None:
                         return lama
-                order = await fetch_order_or_404(conn, ctx["tenant_id"], oid)
-
-                if order["status"] not in SO_BILLABLE_STATUSES:
-                    raise HTTPException(  # 3 Okt: kode stabil (bentuk sama dgn SO_NOT_ACCEPTING_DEPOSIT)
-                        status_code=400,
-                        detail={"code": "SO_NOT_BILLABLE", "message": (
-                            f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
-                            f"dengan proforma. Konfirmasi pesanannya dulu."
-                        )},
-                    )
-
-                order_total = _f(order["total_amount"]) or 0.0
-
-                percent = _f(body.percent_of_order)
-                amount = float(rupiah(body.amount)) if body.amount is not None else None  # IDR rupiah penuh (11 Okt)
-                if percent is None and amount is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Isi salah satu: persen dari pesanan atau jumlah.",
-                    )
-                if percent is not None:
-                    if percent <= 0 or percent > 100:
-                        raise HTTPException(
-                            status_code=400, detail="Persen dari pesanan harus di antara 0 dan 100."
-                        )
-                    # 11 Okt (Pergatsi): persen -> nominal SEKALI, Decimal HALF_UP ke rupiah (dulu float 2 desimal)
-                    amount = float(nominal_dari_persen(order["total_amount"], body.percent_of_order))
-                if amount is None or amount <= 0:
-                    raise HTTPException(status_code=400, detail="amount harus lebih besar dari 0.")
-
-                await assert_within_order_total(
-                    conn, ctx["tenant_id"], oid, order_total, amount
-                )
+                # PROFORMA-PRATINJAU-BUAT (2 Nov 2026): penentu SATU dengan POST /proformas/preview; blok pertama diangkat
+                # dengan status + detail YANG SAMA seperti pemeriksaan lama (urutan: SO -> persen/nominal -> plafon).
+                r = await _rencana_buat(conn, ctx, body, oid)
+                _angkat_blok_pertama(r)
+                order, percent, amount = r["order"], r["percent"], r["amount"]
 
                 number = await conn.fetchval(
                     "SELECT generate_proforma_number($1)", ctx["tenant_id"]
