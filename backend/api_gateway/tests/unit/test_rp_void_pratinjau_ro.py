@@ -44,3 +44,17 @@ def test_kunci_respons_lama_tetap_dan_kunci_baru():
               "source_deposit", "reversal_date", "payment_number", "customer_name", "preview",
               "action", "can_proceed", "before", "after", "journals", "bank_transactions", "invoices", "payload"):
         assert f'"{k}":' in s, k
+
+
+def test_penulis_void_tanpa_raise_sendiri_semua_penghalang_di_penentu():
+    """VOID_REJECTED lama (galat dari penulis) hilang di pratinjau READ ONLY: buktikan penulis TAK punya raise sendiri --
+    setiap penolakan ada di penentu _rencana_void_pembayaran (blok berkode). Pemanggil penulis: _baris_balik (murni),
+    create_reversal_bank_transaction (raise hanya bila reversal_journal_id kosong -- selalu diisi), segarkan_cache_piutang_faktur
+    (tanpa raise)."""
+    import ast
+    src = inspect.getsource(RP._tulis_void_pembayaran)
+    pohon = ast.parse(src.replace("\n    ", "\n", 0))
+    assert [n for n in ast.walk(pohon) if isinstance(n, ast.Raise)] == []
+    assert "reversal_journal_id=void_journal_id" in src
+    import app.services.pihak_helpers as PHx
+    assert "raise" not in inspect.getsource(PHx.segarkan_cache_piutang_faktur)
