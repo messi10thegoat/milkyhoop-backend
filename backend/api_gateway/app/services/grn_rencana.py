@@ -206,7 +206,26 @@ def untuk_respons(r: dict) -> dict:
             "grni_amount": str(r2(r["nilai_grni"]))}
 
 
-async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Optional[str] = None) -> dict:
+KODE_SJ_DIPAKAI = "SJ_VENDOR_SUDAH_DIPAKAI"
+
+
+async def sj_vendor_dipakai(conn, tenant_id: str, vendor_id, sj_vendor: Optional[str]) -> list:
+    """GRN-SJ-VENDOR: nomor GRN non-batal milik vendor yang SAMA dengan No. SJ vendor yang SAMA (indeks V472). Tanpa nilai = []."""
+    if not sj_vendor or vendor_id is None:
+        return []
+    rows = await conn.fetch(
+        """SELECT receipt_number FROM goods_receipts WHERE tenant_id = $1 AND vendor_id = $2 AND vendor_delivery_note = $3
+           AND status <> 'void' ORDER BY receipt_date, receipt_number""", tenant_id, vendor_id, sj_vendor)
+    return [r["receipt_number"] for r in rows]
+
+
+def catatan_sj_dipakai(sj_vendor: str, nomor: list) -> dict:
+    """Catatan pratinjau (BUKAN blok; vendor boleh memakai ulang nomor -- pola SAP/NetSuite memperingatkan)."""
+    return {"code": KODE_SJ_DIPAKAI, "message": f"No. SJ vendor {sj_vendor} sudah dipakai di {', '.join(nomor)}."}
+
+
+async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Optional[str] = None,
+                    sj_vendor: Optional[str] = None) -> dict:
     """Di transaksi PEMANGGIL sesudah PO dikunci & penghitung diterima ditulis. Blok rencana WAJIB sudah ditolak pemanggil.
     -> {goods_receipt_id, receipt_number, journal_id}."""
     from uuid import uuid4
@@ -218,8 +237,8 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
     gudang_id = rencana["gudang"]["id"] if rencana.get("gudang") else None
     await conn.execute(
         """INSERT INTO goods_receipts (id, tenant_id, receipt_number, purchase_order_id, vendor_id, receipt_date, warehouse_id, status,
-                                      notes, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, 'posted', $8, $9)""",
-        gid, tid, nomor, po["id"], po.get("vendor_id"), receive_date, gudang_id, notes, uid)
+                                      notes, created_by, vendor_delivery_note) VALUES ($1, $2, $3, $4, $5, $6, $7, 'posted', $8, $9, $10)""",
+        gid, tid, nomor, po["id"], po.get("vendor_id"), receive_date, gudang_id, notes, uid, sj_vendor)
     jid = None
     if rencana["jurnal"]:
         jid, _ = await _jurnal(conn, tid, uid, prefix="GRJ", tanggal=receive_date, source_type=SUMBER, source_id=gid,

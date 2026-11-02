@@ -1149,7 +1149,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
 
-                _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes) if _grn is not None else None
+                _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes,
+                                         body.vendor_delivery_note) if _grn is not None else None
                 if _grn is not None and po["status"] in PR.STATUS_DITAGIH:
                     # GRN aturan D: PO sudah (sebagian) ditagih -> status dihitung ulang dgn aturan bersama (tagih menang atas terima), bukan
                     # diturunkan ke received/partial_received oleh UPDATE di atas. Flag mati: jalur ini tak tercapai (perilaku lama utuh).
@@ -1508,23 +1509,27 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
     async def isi(conn, ctx, po):
         hari = await tanggal_dokumen(conn, ctx["tenant_id"])
         items = [i.model_dump() for i in body.items] if body and body.items else None
-        r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari, kunci=False)
+        r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari, kunci=False,
+                                    notes=body.notes if body else None, sj_vendor=body.vendor_delivery_note if body else None)
         return {"blocks": r["blocks"], "status_sesudah": r["status_sesudah"], "receive_date": r["payload"]["receive_date"],
                 "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
                            "akan_diterima": _f2(b["akan_diterima"])} for b in r["baris"]],
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
                 "payload": r["payload"],
-                **(await _pratinjau_grn(conn, ctx["tenant_id"], po, r, body.warehouse_id if body else None))}
+                **(await _pratinjau_grn(conn, ctx["tenant_id"], po, r, body.warehouse_id if body else None,
+                                        body.vendor_delivery_note if body else None))}
     return await _pratinjau(request, po_id, isi)
 
 
-async def _pratinjau_grn(conn, tid: str, po, terima: dict, warehouse_id) -> dict:
-    """GRN (flag penerimaan_barang_v1): blok GRN digabung ke blok terima + rincian dokumen & jurnal yang AKAN terbentuk. Flag mati = {}."""
+async def _pratinjau_grn(conn, tid: str, po, terima: dict, warehouse_id, sj_vendor=None) -> dict:
+    """GRN (flag penerimaan_barang_v1): blok GRN digabung ke blok terima + rincian dokumen & jurnal yang AKAN terbentuk. Flag mati = {}.
+    GRN-SJ-VENDOR: notes[] = catatan (bukan blok) No. SJ vendor sudah dipakai GRN lain vendor yang sama."""
     if not await G.aktif(conn, tid):
         return {}
     g = await G.rencana_grn(conn, tid, po, terima, warehouse_id)
     terima["blocks"].extend(g["blocks"])
-    return {"goods_receipt": G.untuk_respons(g)}
+    dipakai = await G.sj_vendor_dipakai(conn, tid, po.get("vendor_id"), sj_vendor)
+    return {"goods_receipt": G.untuk_respons(g), "notes": [G.catatan_sj_dipakai(sj_vendor, dipakai)] if dipakai else []}
 
 
 @router.post("/{po_id}/close/preview")
