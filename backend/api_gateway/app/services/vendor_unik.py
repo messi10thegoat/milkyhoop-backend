@@ -12,7 +12,8 @@ KODE_KODE = "KODE_VENDOR_DIPAKAI"
 
 
 def _pemegang(aktif) -> str:
-    return "vendor lain" if aktif else "vendor nonaktif (aktifkan lagi atau gunakan nama lain)"
+    # NAMA-NONAKTIF (2 Nov 2026): kalimat nonaktif SAMA dengan pelanggan_unik
+    return "vendor lain" if aktif else "vendor nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain"
 
 
 async def tolak_nama_dipakai(conn, tenant_id: str, nama, kecuali_id=None) -> None:
