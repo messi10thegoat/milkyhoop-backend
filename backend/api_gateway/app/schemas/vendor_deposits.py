@@ -68,6 +68,8 @@ class VendorDepositResponse(VendorDepositBase):
     remaining_amount: float
     status: VendorDepositStatus
     journal_id: Optional[UUID] = None
+    # UMP-PO U-A (2 Nov 2026): nomor jurnal posting (Tinjau sesudah "Simpan & posting" = nomor nyata, cermin DP Penjualan)
+    journal_number: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by: Optional[UUID] = None

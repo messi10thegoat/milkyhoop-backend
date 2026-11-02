@@ -182,7 +182,8 @@ async def list_vendor_deposits(
         rows = await conn.fetch(
             f"""
             SELECT vd.*, v.name as vendor_name, v.code as vendor_code,
-                   ba.account_name as bank_account_name, po.po_number as purchase_order_number
+                   ba.account_name as bank_account_name, po.po_number as purchase_order_number,
+                   (SELECT je.journal_number FROM journal_entries je WHERE je.id = vd.journal_id AND je.tenant_id = vd.tenant_id) AS journal_number
             {dari}
             LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id AND ba.tenant_id = vd.tenant_id
             LEFT JOIN purchase_orders po ON vd.purchase_order_id = po.id AND po.tenant_id = vd.tenant_id
@@ -378,10 +379,14 @@ async def create_vendor_deposit(request: Request, data: VendorDepositCreate, res
         if data.simpan_dan_posting:  # "Simpan & posting" satu langkah (pola QBO/NetSuite Vendor Prepayment): inti posting YANG SAMA, tx yang sama
             await _posting_inti(conn, ctx, row["id"])
             row = await conn.fetchrow("SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2", row["id"], ctx["tenant_id"])
+        # UMP-PO U-A: nomor jurnal nyata ikut respons ("Simpan & posting"); draf = None
+        nomor_jurnal = await conn.fetchval("SELECT journal_number FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+                                           row["journal_id"], ctx["tenant_id"]) if row["journal_id"] else None
         resp = VendorDepositResponse(
             **dict(row),
             vendor_name=vendor["name"],
             vendor_code=vendor["code"],
+            journal_number=nomor_jurnal,
         )
         return await idem_buat.simpan(conn, ctx, kp, sidik, "VD_CREATE", resp, row["id"])
 
@@ -443,7 +448,7 @@ async def update_vendor_deposit(
             row = await conn.fetchrow(
                 """
                 SELECT vd.*, v.name as vendor_name, v.code as vendor_code,
-                       ba.account_name as bank_account_name
+                       ba.account_name as bank_account_name, (SELECT je.journal_number FROM journal_entries je WHERE je.id = vd.journal_id AND je.tenant_id = vd.tenant_id) AS journal_number
                 FROM vendor_deposits vd
                 JOIN vendors v ON vd.vendor_id = v.id
                 LEFT JOIN bank_accounts ba ON vd.bank_account_id = ba.id
@@ -1413,7 +1418,7 @@ async def preview_create_vendor_deposit(request: Request, data: VendorDepositCre
     """Pratinjau BUAT (badan = POST /vendor-deposits). simpan_dan_posting=true -> + rencana jurnal posting. Blok: vendor/PO/rekening/
     periode/peran akun. Nominal >0 & <=2 desimal dijaga skema (422)."""
     async def isi(conn, ctx):
-        r = await R.rencana_buat(conn, ctx, data)
+        r = await R.rencana_buat(conn, ctx, data, pratinjau=True)  # READ ONLY: plafon PO dibaca tanpa kunci
         return _jawab(None, "create", r, data.model_dump(mode="json"))
     return await _baca_pratinjau(request, isi)
 
@@ -1496,23 +1501,24 @@ async def preview_edit_vendor_deposit(request: Request, deposit_id: UUID, data: 
 @router.get("/{deposit_id}/applicable-bills")
 async def get_applicable_bills(request: Request, deposit_id: UUID):
     """Calon tagihan untuk TERAPKAN: tagihan vendor yang SAMA, terposting, sisa > 0 dari compute_ap_outstanding (sumber yang SAMA dgn
-    penjaga /apply). Uang string 2 desimal (pola bundel). Urut jatuh tempo, nomor."""
+    penjaga /apply). Uang string 2 desimal (pola bundel). UMP-PO U-A: FPB dari PO uang muka ini DULU (same_po), lalu jatuh tempo, nomor."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
         vd = await _vd_baca(conn, ctx, deposit_id)
         rows = await conn.fetch(
-            """SELECT b.id, b.invoice_number, b.issue_date, b.due_date, b.amount, o.outstanding
+            """SELECT b.id, b.invoice_number, b.issue_date, b.due_date, b.amount, o.outstanding,
+                      ($3::uuid IS NOT NULL AND b.purchase_order_id IS NOT DISTINCT FROM $3::uuid) AS same_po
                FROM bills b JOIN compute_ap_outstanding($1) o ON o.bill_id = b.id
                WHERE b.tenant_id = $1 AND b.vendor_id = $2 AND b.status IN ('posted', 'partial') AND o.outstanding > 0
-               ORDER BY b.due_date NULLS LAST, b.invoice_number""", ctx["tenant_id"], vd["vendor_id"])
+               ORDER BY same_po DESC, b.due_date NULLS LAST, b.invoice_number""", ctx["tenant_id"], vd["vendor_id"], vd["purchase_order_id"])
         sisa_um = await UMV.sisa_jurnal(conn, ctx["tenant_id"], deposit_id) if vd["status"] in R.STATUS_TERBIT else Decimal("0")
         return {"success": True, "data": {
             "deposit_id": str(deposit_id), "deposit_remaining": f"{PD.r2(sisa_um):.2f}",
             "bills": [{"bill_id": str(r["id"]), "bill_number": r["invoice_number"], "issue_date": r["issue_date"].isoformat() if r["issue_date"] else None,
                        "due_date": r["due_date"].isoformat() if r["due_date"] else None, "total": f"{PD.r2(r['amount']):.2f}",
-                       "remaining": f"{PD.r2(r['outstanding']):.2f}"} for r in rows]}}
+                       "remaining": f"{PD.r2(r['outstanding']):.2f}", "same_po": bool(r["same_po"])} for r in rows]}}
 
 
 @router.get("/{deposit_id}/history")

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from . import po_daftar as PD
 from . import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
+from . import uang_muka_po as UPO  # UMP-PO U-A (2 Nov 2026): plafon UMP ber-PO <= sisa PO (cermin plafon DP)
 from . import uang_muka_vendor as UMV
 from . import uang_muka_vendor_daftar as UMD
 from .role_resolver import AccountRole
@@ -138,7 +139,7 @@ async def _bank(conn, tid: str, ba, jumlah, jenis: str) -> list:
 
 
 # ---------------------------------------------------------------- buat (+ simpan & posting)
-async def rencana_buat(conn, ctx, body) -> dict:
+async def rencana_buat(conn, ctx, body, pratinjau: bool = False) -> dict:
     """Blok buat: vendor milik tenant · PO milik tenant, vendor SAMA, tak dibatalkan · rekening sah. body.simpan_dan_posting -> + rencana
     posting (periode tanggal uang muka, peran akun, jurnal Dr Uang Muka Pembelian / Cr Kas-Bank)."""
     tid = ctx["tenant_id"]
@@ -154,6 +155,10 @@ async def rencana_buat(conn, ctx, body) -> dict:
             bloks.append(blok("PO_BEDA_VENDOR", "Pesanan pembelian itu milik vendor lain.", 422))
         elif po["status"] == "cancelled":
             bloks.append(blok("PO_DIBATALKAN", "Pesanan pembelian itu sudah dibatalkan.", 422))
+        else:  # UMP-PO: plafon di bawah kunci PO (jalur tulis); pratinjau baca tanpa kunci
+            b = await UPO.periksa_plafon(conn, tid, body.purchase_order_id, body.amount, None, kunci=not pratinjau)
+            if b:
+                bloks.append(blok(b["code"], b["message"], b["status"]))
     coa_kas, ba = await akun_kas(conn, tid, body.bank_account_id, None, bloks, wajib=False)
     jumlah = _d(body.amount)
     jurnal, bank = [], []
@@ -181,6 +186,10 @@ async def rencana_posting(conn, ctx, vd, pratinjau: bool = False) -> dict:
     coa_kas, ba = await akun_kas(conn, tid, vd["bank_account_id"], None, bloks, wajib=False)
     await _periode(conn, tid, vd["deposit_date"], bloks)
     jumlah = _d(vd["amount"])
+    if vd["status"] == "draft" and vd.get("purchase_order_id"):  # UMP-PO: cek ULANG plafon saat posting (draf menahan, dicek lagi)
+        b = await UPO.periksa_plafon(conn, tid, vd["purchase_order_id"], jumlah, vd["id"], kunci=not pratinjau)
+        if b:
+            bloks.append(blok(b["code"], b["message"], b["status"]))
     jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", f"Vendor Deposit - {vd['deposit_number']}", vd["deposit_date"],
                       [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])] if um and coa_kas else []
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
@@ -332,6 +341,23 @@ async def rencana_ubah(conn, ctx, vd, perubahan: dict, pratinjau: bool = False) 
     """AS-GP4 (24 Okt 2026): ubah uang muka DRAF -- penentu SATU untuk PATCH /{id} (sesudah kunci VENDOR_DEPOSIT + FOR UPDATE, urutan SAMA
     dengan posting) dan POST /{id}/edit/preview (READ ONLY). Blok status = pesan lama (400 "Can only update draft deposits")."""
     bloks = [] if vd["status"] == "draft" else [blok("BUKAN_DRAF", "Can only update draft deposits")]
+    tid = ctx["tenant_id"]
+    if not bloks and ("amount" in perubahan or "purchase_order_id" in perubahan):
+        # UMP-PO: PO / nominal berubah -> aturan PO yang SAMA dengan buat (milik tenant, vendor sama, tak batal) + plafon
+        po_id = perubahan.get("purchase_order_id", vd.get("purchase_order_id"))
+        if po_id:
+            po = await conn.fetchrow("SELECT vendor_id, status FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, tid)
+            vendor = perubahan.get("vendor_id", vd["vendor_id"])
+            if not po:
+                bloks.append(blok("PO_TIDAK_DITEMUKAN", "Pesanan pembelian tidak ditemukan di usaha ini.", 422))
+            elif po["vendor_id"] and str(po["vendor_id"]) != str(vendor):
+                bloks.append(blok("PO_BEDA_VENDOR", "Pesanan pembelian itu milik vendor lain.", 422))
+            elif po["status"] == "cancelled":
+                bloks.append(blok("PO_DIBATALKAN", "Pesanan pembelian itu sudah dibatalkan.", 422))
+            else:
+                b = await UPO.periksa_plafon(conn, tid, po_id, perubahan.get("amount", vd["amount"]), vd["id"], kunci=not pratinjau)
+                if b:
+                    bloks.append(blok(b["code"], b["message"], b["status"]))
     sebelum = await keadaan(conn, ctx["tenant_id"], vd["id"]) if pratinjau else {}
     jadi = {k: (str(v) if v is not None and not isinstance(v, (int, float, str, bool)) else v) for k, v in perubahan.items()}
     return {"blocks": bloks, "before": sebelum, "after": ({**sebelum, **({"amount": _f(perubahan["amount"])} if "amount" in perubahan else {})}
