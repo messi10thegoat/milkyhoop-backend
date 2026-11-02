@@ -146,7 +146,7 @@ def test_apply_tulis_menolak_dengan_blok_pertama_pesan_sama(kon):
     kon(Kon(sisa=D("100")))
     with pytest.raises(HTTPException) as e:
         run(VD.apply_vendor_deposit(_Req(), DID, VS.ApplyDepositRequest(bill_id=BILL, amount="500")))
-    assert e.value.status_code == 400 and e.value.detail == p["blocks"][0]["message"] == "Saldo uang muka tidak cukup. Tersedia: 100"
+    assert e.value.status_code == 400 and e.value.detail == p["blocks"][0]["message"] == "Saldo uang muka tidak cukup. Tersedia: Rp 100."
 
 
 def test_post_preview_bank_cermin(kon):

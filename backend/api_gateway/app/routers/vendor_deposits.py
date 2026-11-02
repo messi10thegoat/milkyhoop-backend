@@ -746,7 +746,7 @@ async def terapkan_uang_muka_inti(conn, ctx: dict, deposit_id, data) -> ApplyDep
     if jumlah > sisa:
         raise HTTPException(
             status_code=400,
-            detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
+            detail=R.kalimat_saldo_tidak_cukup(sisa),
         )
     bill = await conn.fetchrow(
         "SELECT * FROM bills WHERE id = $1 AND vendor_id = $2 AND tenant_id = $3 FOR UPDATE",
@@ -766,7 +766,7 @@ async def terapkan_uang_muka_inti(conn, ctx: dict, deposit_id, data) -> ApplyDep
     if jumlah > bill_remaining:
         raise HTTPException(
             status_code=400,
-            detail=f"Jumlah melebihi sisa tagihan. Sisa tagihan: {bill_remaining}",
+            detail=R.kalimat_melebihi_sisa_tagihan(bill_remaining),
         )
     applied_date = data.applied_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
     ap_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_TRADE)
@@ -954,7 +954,7 @@ async def refund_vendor_deposit(
             if jumlah > sisa:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Saldo uang muka tidak cukup. Tersedia: {sisa}",
+                    detail=R.kalimat_saldo_tidak_cukup(sisa),
                 )
             vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
             bank_account_coa = rk["akun_kas"]  # dari penentu: rekening (tenant eksplisit) atau akun kas ASSET is_cash; wajib salah satu

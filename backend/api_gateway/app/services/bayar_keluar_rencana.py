@@ -70,6 +70,12 @@ async def _uuid_sah(bl: Blok, nilai, nama: str) -> Optional[UUID]:
         return None
 
 
+def kalimat_bayar_melebihi_sisa(jumlah, sisa) -> str:
+    """Cermin SI 'Jumlah bayar melebihi sisa tagihan Rp ...'; tg.rp (dulu format koma Inggris 1,000,000)."""
+    from . import teks_galat as tg
+    return f"Jumlah pembayaran {tg.rp(jumlah)} melebihi sisa tagihan {tg.rp(sisa)}."
+
+
 async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
     """== routers/bill_payments.check_period_is_open (Law 5; status CLOSED/LOCKED -> 403, pesan teks_galat)."""
     from . import teks_galat as tg
@@ -441,7 +447,7 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
         if not pratinjau:
             return out
     if payment_amount > remaining:
-        blok("MELEBIHI_SISA_TAGIHAN", f"Jumlah pembayaran ({payment_amount:,}) melebihi sisa tagihan ({remaining:,})")
+        blok("MELEBIHI_SISA_TAGIHAN", kalimat_bayar_melebihi_sisa(payment_amount, remaining))
         if not pratinjau:
             return out
 

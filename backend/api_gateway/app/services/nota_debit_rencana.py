@@ -61,6 +61,16 @@ async def _rencana_jurnal_nd(conn, tid: str, source_type: str, deskripsi: str, t
             "journal_date": tgl.isoformat() if tgl else None, "lines": await _tampil(conn, tid, baris)}
 
 
+def kalimat_nd_melebihi_sisa_tagihan(sisa, total, nomor_tagihan) -> str:
+    """Cermin NK (credit_notes 'Melebihi sisa faktur ...'); tg.rp, sen tidak dibulatkan (Law 9)."""
+    return f"Melebihi sisa tagihan {tg.rp(sisa)}: nota debit {tg.rp(total)} atas {nomor_tagihan or 'tagihan'}."
+
+
+def kalimat_nd_refund_melebihi_sisa(jumlah, sisa) -> str:
+    """Cermin NK CN_REFUND_MELEBIHI_SISA; tg.rp, sen tidak dibulatkan (Law 9)."""
+    return f"Pengembalian dana {tg.rp(jumlah)} melebihi sisa nota debit {tg.rp(sisa)}."
+
+
 async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
     """== cek periode penulis ND (400; PERIODE-TEKS: kalimat tg.periode_tertutup)."""
     r = await conn.fetchrow("SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, tgl)
@@ -109,9 +119,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
         if sisa_t is None:
             bl.galat("TAGIHAN_TIDAK_AKTIF", 400, f"Tagihan {vc['original_bill_number'] or ''} belum dibukukan atau sudah batal.")
         elif Decimal(str(vc["total_amount"])) > sisa_t:
-            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, (
-                f"Melebihi sisa tagihan {sisa_t:,.0f}: nota debit {Decimal(str(vc['total_amount'])):,.0f} atas "
-                f"{vc['original_bill_number'] or 'tagihan'}.").replace(",", "."))
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, kalimat_nd_melebihi_sisa_tagihan(sisa_t, vc["total_amount"], vc["original_bill_number"]))
     if vc["status"] != "draft":
         bl.galat("BUKAN_DRAF", 400, tg.tak_bisa_status("vc", vc["status"], "diposting", vc["credit_number"]))
     ap = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
@@ -196,7 +204,7 @@ async def rencana_terapkan(conn, tid: str, vc_id, bill_id, jumlah, pratinjau: bo
         if sisa is None:
             bl.galat("TAGIHAN_TIDAK_AKTIF", 400, f"Tagihan {bill['invoice_number']} belum dibukukan atau sudah batal.")
         elif total > sisa:
-            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, f"Melebihi sisa tagihan {tg.rp(sisa)}: nota debit {tg.rp(total)} atas {bill['invoice_number']}.")
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, kalimat_nd_melebihi_sisa_tagihan(sisa, total, bill["invoice_number"]))
     tag = [{"bill_id": str(bill["id"]), "bill_number": bill["invoice_number"], "remaining_before": _f(sisa),
             "remaining_after": _f(sisa - total)}] if bill and sisa is not None else []
     return {"blocks": bl, "vc": vc, "bill": bill, "total": total, "journals": [], "bank_transactions": [], "bills": tag, "stock": []}
@@ -242,7 +250,7 @@ async def rencana_kembali(conn, ctx, vc_id, body, pratinjau: bool = False) -> di
             f"Nota debit ini terkait tagihan {vc['original_bill_number'] or ''}; lepas penerapan dulu sebelum menerima pengembalian dana."))
     sisa = await ND.sisa_nd(conn, tid, vc_id)
     if Decimal(str(body.amount)) > sisa:
-        bl.galat("MELEBIHI_SISA", 400, f"Pengembalian dana {Decimal(str(body.amount)):,.0f} melebihi sisa nota debit {sisa:,.0f}.".replace(",", "."))
+        bl.galat("MELEBIHI_SISA", 400, kalimat_nd_refund_melebihi_sisa(body.amount, sisa))
     akun_id = None
     if body.bank_account_id:
         ba = await conn.fetchrow("SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2", UUID(body.bank_account_id), tid)
