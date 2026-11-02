@@ -102,7 +102,7 @@ TERAP = [
     (ND.terapkan_nota_debit, '"vendor_credit", "applied"', "INSERT INTO vendor_credit_applications", 'ke=bill["invoice_number"], kunci=app_id'),
     (ND.lepas_nota_debit, '"vendor_credit", "unapplied"', "UPDATE vendor_credit_applications SET status = 'reversed'", 'ke=app["bill_number"], kunci=app["id"]'),
     (VC.receive_refund, '"vendor_credit", "refunded"', "INSERT INTO vendor_credit_refunds", "kunci=refund_id"),
-    (VD.apply_vendor_deposit, '"vendor_deposit", "applied"', "INSERT INTO vendor_deposit_applications", 'ke=bill["invoice_number"], kunci=app["id"]'),
+    (VD.terapkan_uang_muka_inti, '"vendor_deposit", "applied"', "INSERT INTO vendor_deposit_applications", 'ke=bill["invoice_number"], kunci=app["id"]'),
     (VD.refund_vendor_deposit, '"vendor_deposit", "refunded"', "INSERT INTO vendor_deposit_refunds", 'kunci=refund["id"]'),
 ]
 

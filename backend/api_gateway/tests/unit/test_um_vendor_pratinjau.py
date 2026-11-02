@@ -225,11 +225,11 @@ def test_preview_404(kon):
 
 # ---------------------------------------------------------------- tulis memakai penentu
 def test_tulis_memakai_penentu_bersama():
-    src = {n: inspect.getsource(getattr(VD, n)) for n in ("create_vendor_deposit", "_posting_inti", "apply_vendor_deposit",
+    src = {n: inspect.getsource(getattr(VD, n)) for n in ("create_vendor_deposit", "_posting_inti", "terapkan_uang_muka_inti",
                                                           "unapply_vendor_deposit", "refund_vendor_deposit", "void_vendor_deposit",
                                                           "delete_vendor_deposit")}
     assert "R.rencana_buat(" in src["create_vendor_deposit"] and "_posting_inti(conn, ctx, row[\"id\"])" in src["create_vendor_deposit"]
-    assert "R.rencana_posting(" in src["_posting_inti"] and "R.rencana_terapkan(" in src["apply_vendor_deposit"]
+    assert "R.rencana_posting(" in src["_posting_inti"] and "R.rencana_terapkan(" in src["terapkan_uang_muka_inti"]
     from app.services import uang_muka_vendor_lepas as L
     lep = inspect.getsource(L.lepas_penerapan)
     assert "lepas_penerapan(conn, ctx, deposit_id, application_id)" in src["unapply_vendor_deposit"]

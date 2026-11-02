@@ -218,7 +218,7 @@ def test_void_hanya_ditahan_penerapan_aktif_atau_refund():
 
 def test_kunci_saldo_sama_di_semua_jalur_saldo():
     from app.services import uang_muka_vendor_lepas as L
-    for fn in (VD.apply_vendor_deposit, VD.refund_vendor_deposit, VD.void_vendor_deposit, L.lepas_penerapan):
+    for fn in (VD.terapkan_uang_muka_inti, VD.refund_vendor_deposit, VD.void_vendor_deposit, L.lepas_penerapan):  # UMP-PO U-B: penulis kini inti (dipindah utuh dari rute; retarget OK MASTER 2 Nov)
         assert "VENDOR_DEPOSIT_SALDO:{deposit_id}" in inspect.getsource(fn), fn.__name__
     assert "lepas_penerapan(conn, ctx, deposit_id, application_id)" in inspect.getsource(VD.unapply_vendor_deposit)
 
@@ -226,7 +226,7 @@ def test_kunci_saldo_sama_di_semua_jalur_saldo():
 def test_urutan_kunci_global_tagihan_dulu():
     """Tagihan (FOR UPDATE) SEBELUM kunci SALDO uang muka di /apply dan lepas_penerapan (sama dgn void faktur BACKEND) -> tanpa deadlock silang."""
     from app.services import uang_muka_vendor_lepas as L
-    for src in (inspect.getsource(VD.apply_vendor_deposit), inspect.getsource(L.lepas_penerapan)):
+    for src in (inspect.getsource(VD.terapkan_uang_muka_inti), inspect.getsource(L.lepas_penerapan)):  # UMP-PO U-B: penulis kini inti (dipindah utuh dari rute; retarget OK MASTER 2 Nov)
         assert src.index("FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE") < src.index("VENDOR_DEPOSIT_SALDO:")
 
 
