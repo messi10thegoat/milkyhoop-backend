@@ -3014,7 +3014,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             _pasangan = []
             for _itm in items:
                 _a = _d(_itm["_allocated"])
-                if _a <= 0:
+                if _a == 0:  # U-SI-LAW: alokasi negatif ikut (penjaga Law 4 di pecah_pendapatan)
                     continue
                 _pid = _itm.get("item_id") or _itm.get("product_id")
                 _itype = (
@@ -3398,6 +3398,11 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                             "Buat dulu di modul Pelanggan."
                         ),
                     )
+
+                # U-SI-LAW (a): auto_post = terbit di tempat -> periode dicek SEBELUM tulis apa pun, kalimat/kode SAMA dengan
+                # POST /post (terbitkan_faktur). Dulu langsung _internal_post_invoice: pagar DB menolak -> 500 generik.
+                if body.auto_post:
+                    await check_period_is_open(conn, ctx["tenant_id"], body.invoice_date)
 
                 # F3: jatuh tempo = isian pengguna, atau termin pelanggan, atau tanggal faktur (aturan SAMA
                 # dengan faktur dari SO; tenant eksplisit di kueri pelanggan, Law 24)

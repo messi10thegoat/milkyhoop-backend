@@ -22,13 +22,39 @@ def r2(x) -> Decimal:
     return _d(x).quantize(DUA, rounding=ROUND_HALF_UP)
 
 
-def hitung_baris(item: dict) -> dict:
-    """item: {quantity, unit_price, discount_percent, discount_amount, tax_rate, ...} -> item + subtotal/discount_amount/tax_amount/total (Decimal 2dp)."""
+KODE_DISKON_BARIS = "DISKON_BARIS_MELEBIHI"
+
+
+def diskon_berlebih(item: dict):
+    """U-SI-LAW (putusan pemilik LANGSUNG 2 Nov, MASTER: PO simetris): (diskon, subtotal) bila diskon baris > nilai baris, selain itu None."""
+    qty, harga = _d(item.get("quantity")), _d(item.get("unit_price"))
+    persen, nominal = _d(item.get("discount_percent")), _d(item.get("discount_amount"))
+    subtotal = r2(qty * harga)
+    diskon = r2(subtotal * persen / SERATUS) if persen > NOL else r2(nominal)
+    return (diskon, subtotal) if diskon > subtotal else None
+
+
+def blok_diskon_baris(items: list) -> list:
+    """Blok pratinjau (kalimat SAMA dengan galat 400 penulis) untuk setiap baris berdiskon melebihi nilainya."""
+    from .teks_galat import diskon_baris_melebihi
+    return [{"code": KODE_DISKON_BARIS, "message": diskon_baris_melebihi(*x), "status": 400}
+            for x in (diskon_berlebih(i) for i in items) if x]
+
+
+def hitung_baris(item: dict, tolak: bool = True) -> dict:
+    """item: {quantity, unit_price, discount_percent, discount_amount, tax_rate, ...} -> item + subtotal/discount_amount/tax_amount/total (Decimal 2dp).
+    U-SI-LAW: diskon > nilai baris DITOLAK (dulu dipotong diam-diam ke subtotal). tolak=True (penulis) -> GalatBerkode 400; tolak=False
+    (pratinjau, blok dari blok_diskon_baris) -> angka tampil dipotong supaya tabel tetap terbaca."""
     qty, harga = _d(item.get("quantity")), _d(item.get("unit_price"))
     persen, nominal, tarif = _d(item.get("discount_percent")), _d(item.get("discount_amount")), _d(item.get("tax_rate"))
     subtotal = r2(qty * harga)
     diskon = r2(subtotal * persen / SERATUS) if persen > NOL else r2(nominal)
-    diskon = min(diskon, subtotal)
+    if diskon > subtotal:
+        if tolak:
+            from .galat_berkode import GalatBerkode
+            from .teks_galat import diskon_baris_melebihi
+            raise GalatBerkode(400, KODE_DISKON_BARIS, diskon_baris_melebihi(diskon, subtotal), field="discount_amount")
+        diskon = subtotal
     neto = subtotal - diskon
     pajak = r2(neto * tarif / SERATUS) if tarif > NOL else NOL
     return {**item, "subtotal": subtotal, "discount_amount": diskon, "tax_amount": pajak, "total": neto + pajak}

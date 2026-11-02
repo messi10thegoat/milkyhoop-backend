@@ -114,6 +114,12 @@ def kata_periode(status) -> str:
     return _PERIODE.get(str(status or "").upper(), "ditutup")
 
 
+def diskon_baris_melebihi(diskon, nilai) -> str:
+    """U-SI-LAW (putusan pemilik LANGSUNG 2 Nov "B1 Tolak", pola NetSuite/SAP): diskon baris tak boleh melebihi nilai baris --
+    SATU kalimat untuk semua pintu dokumen (penjualan lewat sales_doc_calc.line_net, PO lewat po_hitung.hitung_baris)."""
+    return f"Diskon baris {rp(diskon)} melebihi nilai baris {rp(nilai)}."
+
+
 def periode_tertutup(nama, status) -> str:
     """'Periode Okt 2026 sudah ditutup. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya.'"""
     kata = _PERIODE.get(str(status or "").upper(), "ditutup")

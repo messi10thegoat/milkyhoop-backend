@@ -53,6 +53,11 @@ class DocumentDiscountError(ValueError):
     """Diskon dokumen melebihi jumlah neto baris (DPP negatif). Router memetakan ke 400."""
 
 
+class LineDiscountError(DocumentDiscountError):
+    """U-SI-LAW: diskon BARIS melebihi nilai baris (neto negatif). Turunan DocumentDiscountError -> semua penangkap yang ada
+    (penawaran/SO/faktur/NK) memetakannya ke 400 dengan kalimat ini."""
+
+
 def d(v) -> Decimal:
     if v is None or v == "":
         return _ZERO
@@ -87,6 +92,8 @@ def line_net(item: dict) -> dict:
         gross = d(item.get("jumlah_baris"))  # tersimpan (sudah divalidasi saat disimpan / hasil pro-rata faktur)
     pct = d(item.get("discount_percent"))
     disc = gross * pct / _HUNDRED if pct > 0 else d(item.get("discount_amount"))
+    if q2(disc) > q2(gross):  # U-SI-LAW: neto negatif DITOLAK (dulu lolos -> alokasi negatif -> RECOG timpang, Law 4)
+        raise LineDiscountError(tg.diskon_baris_melebihi(q2(disc), q2(gross)))
     net = q2(gross - disc)
     sub = q2(gross)
     return {"subtotal": sub, "discount_amount": sub - net, "net": net}

@@ -166,36 +166,7 @@ async def _hitung_ulang_total(conn, po_id):
     return t
 
 
-def calculate_item_totals(item: dict) -> dict:
-    """Calculate item totals with discount and tax."""
-    quantity = Decimal(str(item.get("quantity", 0)))
-    unit_price = Decimal(str(item.get("unit_price", 0)))
-    discount_percent = Decimal(str(item.get("discount_percent", 0)))
-    discount_amount = Decimal(str(item.get("discount_amount", 0)))
-    tax_rate = Decimal(str(item.get("tax_rate", 0)))
-
-    subtotal = quantity * unit_price
-
-    # Apply discount (percent takes precedence)
-    if discount_percent > 0:
-        discount = subtotal * discount_percent / 100
-    else:
-        discount = discount_amount
-
-    after_discount = subtotal - discount
-
-    # Apply tax
-    tax_amount = after_discount * tax_rate / 100
-
-    total = after_discount + tax_amount
-
-    return {
-        **item,
-        "subtotal": int(subtotal),
-        "discount_amount": int(discount),
-        "tax_amount": int(tax_amount),
-        "total": int(total),
-    }
+# U-SI-LAW (2 Nov 2026): calculate_item_totals DIHAPUS -- kode mati (nol pemanggil); aturan baris PO SATU sumber: services/po_hitung.hitung_baris.
 
 
 # =============================================================================
@@ -1471,6 +1442,7 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
     pool = await get_pool()
     async with pool.acquire() as conn:
         _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
+    bloks = list(bloks) + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
     h = PR.hitung([i.model_dump() for i in body.items], body.discount_percent, body.discount_amount, body.tax_rate)
     return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), **PR.hitung_json(h),
                                       "payload": body.model_dump(mode="json")}}

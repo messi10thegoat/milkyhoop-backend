@@ -69,17 +69,22 @@ def pilih_cabang(alok_qty, ada_stok: bool, semua_berbiaya: bool, ada_untuk_kirim
 
 
 def pecah_pendapatan(pasangan: list) -> tuple:
-    """[(alokasi, item_type)] -> (barang, jasa). Alokasi <= 0 dilewati; item_type 'service' -> jasa, selain itu (goods/
-    non_inventory/manual/None) -> barang."""
+    """[(alokasi, item_type)] -> (barang, jasa). item_type 'service' -> jasa, selain itu (goods/non_inventory/manual/None) -> barang.
+    U-SI-LAW penjaga Law 4 (putusan pemilik 2 Nov): alokasi != 0 masuk embernya (dulu <= 0 DIBUANG -> kredit > debit); ember bersih <= 0
+    dilipat ke ember lain -> Σ kredit == Σ alokasi == debit RECOG. Semua alokasi positif (seluruh data 2 Nov) -> hasil IDENTIK."""
     barang, jasa = NOL, NOL
     for a, jenis in pasangan:
         a = _d(a)
-        if a <= 0:
+        if a == 0:
             continue
         if jenis == "service":
             jasa += a
         else:
             barang += a
+    if jasa < 0 or (jasa == 0 and barang < 0):
+        barang, jasa = barang + jasa, NOL
+    if barang < 0 and jasa > 0:
+        barang, jasa = NOL, barang + jasa
     return barang, jasa
 
 
@@ -245,7 +250,7 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
     if akun_dimuka is not None and cabang == CABANG_JASA:
         debit = jumlah_recog_jasa([it["_allocated"] for it in items])
         if debit > 0:
-            pas = [(it["_allocated"], await jenis(it)) for it in items if _d(it["_allocated"]) > 0]
+            pas = [(it["_allocated"], await jenis(it)) for it in items if _d(it["_allocated"]) != 0]
             await recog(debit, pas, f"Dimuka → Penjualan {inv['invoice_number']}", f"Revenue Recognition {inv['invoice_number']} (Service)")
     if akun_dimuka is not None and ada_stok:
         nt = []

@@ -47,8 +47,9 @@ def _f(v):
 
 # ---------------------------------------------------------------- hitung (create / patch / calculate)
 def hitung(items: list, discount_percent=0, discount_amount=0, tax_rate=0) -> dict:
-    """items: dict baris (bentuk PurchaseOrderItemCreate.model_dump()). -> {baris (Decimal), header (Decimal)}. SATU kalkulator create/patch."""
-    baris = [PH.hitung_baris(i) for i in items]
+    """items: dict baris (bentuk PurchaseOrderItemCreate.model_dump()). -> {baris (Decimal), header (Decimal)}. SATU kalkulator create/patch.
+    Pratinjau (/calculate): tolak=False -- diskon berlebih jadi BLOK (PH.blok_diskon_baris) di pemanggil, bukan galat."""
+    baris = [PH.hitung_baris(i, tolak=False) for i in items]
     return {"baris": baris, "header": PH.hitung_header(baris, discount_percent, discount_amount, tax_rate)}
 
 
@@ -101,7 +102,8 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
         # diterima tak boleh dikurangi di bawah qty diterima). Dengan status Draf/Terkirim mestinya nol; penjaga ini menjaga data lama.
         if any(_d(r.get("quantity_received")) > NOL or _d(r.get("quantity_billed")) > NOL for r in lama):
             bloks.append(blok("PO_BARIS_SUDAH_DITERIMA", "Baris yang barangnya sudah diterima atau ditagih tidak bisa diganti."))
-        baris_baru = [PH.hitung_baris(i.model_dump()) for i in body.items]
+        bloks.extend(PH.blok_diskon_baris([i.model_dump() for i in body.items]))  # U-SI-LAW: kalimat == 400 penulis
+        baris_baru = [PH.hitung_baris(i.model_dump(), tolak=False) for i in body.items]
     uang = baris_baru is not None or any(k in data for k in ("discount_percent", "discount_amount", "tax_rate"))
     header = None
     if uang:
