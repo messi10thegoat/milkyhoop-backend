@@ -60,6 +60,7 @@
       <tr><td>No. Penerimaan</td><td>:</td><td><strong>{{ gr.receipt_number or "-" }}</strong></td></tr>
       <tr><td>Tanggal</td><td>:</td><td>{{ gr.receipt_date | date_id if gr.receipt_date else "-" }}</td></tr>
       <tr><td>No. Pesanan</td><td>:</td><td>{{ gr.po_number or "-" }}</td></tr>
+      {% if gr.vendor_delivery_note %}<tr><td>No. SJ Vendor</td><td>:</td><td>{{ gr.vendor_delivery_note }}</td></tr>{% endif %}
       {% if gr.po_ref_no %}<tr><td>No. Referensi</td><td>:</td><td>{{ gr.po_ref_no }}</td></tr>{% endif %}
       {% if gr.warehouse_name %}<tr><td>Gudang</td><td>:</td><td>{{ gr.warehouse_name }}</td></tr>{% endif %}
     </table>
