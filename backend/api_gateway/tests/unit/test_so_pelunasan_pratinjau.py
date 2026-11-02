@@ -165,9 +165,10 @@ def pasang(monkeypatch):
                 try:
                     await inti(conn, ctx, body)
                 except HTTPException as e:
-                    return {"blocks": [{"code": "RP_REJECTED", "message": e.detail}], "invoices": []}
+                    return {"blocks": [{"code": "RP_REJECTED", "message": e.detail}], "invoices": [], "journals": [], "bank_transactions": []}
             ss = c.sisa_sesudah
             return {"blocks": [], "payment_number": "RCV-2609-0009", "payment_method": "bank_transfer",
+                    "journals": JURNAL_FAKE, "bank_transactions": BANK_FAKE,
                     "overpayment_deposit_number": conn.ovp,
                     "invoices": [{"invoice_id": a.invoice_id,
                                   "remaining_after": float(ss.get(UUID(a.invoice_id), Decimal("0")) if ss is not None
@@ -185,6 +186,12 @@ def pasang(monkeypatch):
         return c
     _p.tangkap = tangkap
     return _p
+
+
+# U-P4c (retarget disetujui MASTER 2 Nov): rencana_penerimaan_ro ASLI selalu membawa journals + bank_transactions
+# (receive_payments.py hasil awal); fake meniru, pratinjau WAJIB meneruskannya apa adanya (identitas).
+JURNAL_FAKE = [{"journal_number": None, "source_type": "RECEIVE_PAYMENT", "lines": [{"account_code": "1-10100", "debit": 1.0, "credit": 0.0}]}]
+BANK_FAKE = [{"bank_account": "BCA", "amount": 1.0, "transaction_type": "deposit"}]
 
 
 async def _pv(**badan):
@@ -214,6 +221,7 @@ async def test_bawaan_lunasi_semua_tertua_dulu_payload_ke_inti(pasang):
     assert d["overpayment"] == 0.0 and d["total_remaining_after"] == 0.0
     assert d["bank_account"] == {"id": str(BA1), "label": "BCA", "type": "bank", "source": "default"}
     assert d["payment_method"] == "bank_transfer" and d["payment_number_preview"] == "RCV-2609-0009"
+    assert d["journals"] == JURNAL_FAKE and d["bank_transactions"] == BANK_FAKE  # U-P4c: dari penentu yang sama
     assert [n["code"] for n in d["notes"]] == ["RP_DRAFT_INVOICES"] and "INV-3" in d["notes"][0]["message"]
     # payload = badan PERSIS yang dijalankan inti (dan yang FE kirim ke POST /api/receive-payments)
     b = pasang.tangkap["body"]
@@ -255,6 +263,7 @@ async def test_semua_penghalang_sekaligus_tanpa_inti(pasang):
                                                 "RP_ACCOUNT_REQUIRED", "RP_PERIOD_CLOSED"]
     assert d["can_save"] is False and d["payload"] is None and "body" not in pasang.tangkap
     assert c.tulis == [] and c.tx == ["start", "rollback"]
+    assert d["journals"] == [] and d["bank_transactions"] == []  # U-P4c: diblok -> kosong
 
 
 @pytest.mark.asyncio

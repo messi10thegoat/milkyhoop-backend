@@ -140,9 +140,10 @@ def pasang(monkeypatch):
             tangkap["tx"] = list(conn.tx)
             conn.inti = True
             if inti_gagal:
-                return {"blocks": [{"code": "RP_REJECTED", "message": inti_gagal}], "invoices": []}
+                return {"blocks": [{"code": "RP_REJECTED", "message": inti_gagal}], "invoices": [], "journals": [], "bank_transactions": []}
             ss = c.sisa_sesudah
             return {"blocks": [], "payment_number": "RCV-2026-0040", "payment_method": "bank_transfer", "overpayment_deposit_number": None,
+                    "journals": JURNAL_FAKE, "bank_transactions": BANK_FAKE,
                     "invoices": [{"invoice_id": a.invoice_id,
                                   "remaining_after": float(ss.get(INV, Decimal("0")) if ss is not None else c.sisa - a.amount_applied)}
                                  for a in body.allocations]}
@@ -160,6 +161,12 @@ def pasang(monkeypatch):
     return _p
 
 
+# U-P4c (retarget disetujui MASTER 2 Nov): rencana_penerimaan_ro ASLI selalu membawa journals + bank_transactions
+# (receive_payments.py hasil awal); fake meniru, pratinjau WAJIB meneruskannya apa adanya (identitas).
+JURNAL_FAKE = [{"journal_number": None, "source_type": "RECEIVE_PAYMENT", "lines": [{"account_code": "1-10100", "debit": 1.0, "credit": 0.0}]}]
+BANK_FAKE = [{"bank_account": "BCA", "amount": 1.0, "transaction_type": "deposit"}]
+
+
 async def _pv(**badan):
     return (await SI.preview_receive_payment_for_invoice(_req(), INV, SP.SIReceivePaymentPreviewRequest(**badan)))["data"]
 
@@ -172,6 +179,7 @@ async def test_bawaan_lunasi_sisa_lewat_inti_lalu_rollback(pasang):
     assert d["customer"] == {"id": str(CUST), "name": "Budi"}
     assert (d["total_remaining"], d["total_applied"], d["total_remaining_after"]) == (300000.0, 300000.0, 0.0)
     assert d["payment_number_preview"] == "RCV-2026-0040" and d["payment_method"] == "bank_transfer"
+    assert d["journals"] == JURNAL_FAKE and d["bank_transactions"] == BANK_FAKE  # U-P4c: dari penentu yang sama
     assert RP.CreateReceivePaymentRequest(**d["payload"]) == pasang.tangkap["body"]
     assert d["payload"]["allocations"] == [{"invoice_id": str(INV), "amount_applied": "300000"}]
     assert pasang.tangkap["tx"] == ["start"] and c.tx == ["start", "rollback"]  # U-P4b-1: tanpa savepoint penulis
@@ -200,6 +208,7 @@ async def test_semua_blok_sekaligus_tanpa_inti(pasang):
     assert [b["code"] for b in d["blocks"]] == ["RP_INVOICE_DRAFT", "RP_AMOUNT_INVALID", "RP_CUSTOMER_MISSING",
                                                 "RP_ACCOUNT_REQUIRED", "RP_PERIOD_CLOSED"]
     assert d["payload"] is None and "body" not in pasang.tangkap and c.tx == ["start", "rollback"]
+    assert d["journals"] == [] and d["bank_transactions"] == []  # U-P4c: diblok -> kosong
 
 
 @pytest.mark.asyncio
