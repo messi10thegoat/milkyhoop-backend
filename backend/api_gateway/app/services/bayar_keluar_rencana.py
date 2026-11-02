@@ -87,6 +87,12 @@ async def periode_terbuka(conn, tid: str, tgl, bl: Blok) -> None:
         bl.galat("PERIODE_TERTUTUP", 403, tg.periode_tertutup(p["period_name"], p["status"]))
 
 
+def rupiah_desimal(v) -> Decimal:
+    """Nominal uang -> Decimal tanpa int() (sen utuh, Law 9); bulat -> eksponen 0 (sama dengan int lama di teks/JSON). None -> 0."""
+    d = Decimal(str(v)) if v is not None else Decimal("0")
+    return d.quantize(Decimal(1)) if d == d.to_integral_value() else d
+
+
 async def sisa_tagihan(conn, tid: str, bill_id) -> Decimal:
     """== routers/bill_payments.get_bill_remaining_from_journal (compute_ap_rincian V440/V441; 0 = tidak aktif)."""
     from .tagihan_daftar import sisa_tagihan_jurnal
@@ -438,9 +444,11 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
         if not pratinjau:
             return out
 
-    remaining = int(await conn.fetchval(SQL_SISA_LAMA, tid, str(bill_id), bill_id) or 0)
+    # U-AP-SEN (putusan pemilik LANGSUNG 2 Nov "samakan Penjualan", pola SI 6b): sisa TANPA int() -- dulu sisa 274,50 -> 274 sehingga
+    # tagihan bersen tak pernah bisa dilunasi persis. Bulat -> eksponen 0 (perilaku/teks nilai bulat sama seperti int lama).
+    remaining = rupiah_desimal(await conn.fetchval(SQL_SISA_LAMA, tid, str(bill_id), bill_id))
     if remaining == 0 and bill["amount_paid"] == 0 and bill["amount"] > 0:
-        remaining = int(bill["amount"] - bill["amount_paid"])
+        remaining = rupiah_desimal(bill["amount"] - bill["amount_paid"])
     payment_amount = Decimal(str(request["amount"]))
     if payment_amount <= 0:
         blok("NOMINAL_TIDAK_POSITIF", "Nominal pembayaran harus lebih dari 0.")

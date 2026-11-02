@@ -6,7 +6,7 @@ This module defines request and response models for the /api/bills endpoints.
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Literal, Dict, Any
-from .uang_json import UangJson  # item 7: bulat -> int (JSON sama), ber-sen -> float
+from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; U-AP-SEN: masukan sen
 from uuid import UUID
 from datetime import date, datetime
 from decimal import Decimal
@@ -73,7 +73,7 @@ class RecordPaymentRequest(BaseModel):
     At least one must be provided. bank_account_id takes precedence if both are provided.
     """
 
-    amount: int = Field(..., gt=0)
+    amount: UangMasuk = Field(..., gt=0)  # U-AP-SEN (putusan pemilik 2 Nov): sen boleh, pola SI 6b
     payment_date: Optional[date] = None  # Default: today
     payment_method: Literal["cash", "transfer", "check", "other"]
     bank_account_id: Optional[UUID] = Field(
@@ -85,7 +85,7 @@ class RecordPaymentRequest(BaseModel):
     reference: Optional[str] = None
     notes: Optional[str] = None
     pph_tax_code_id: Optional[str] = None
-    pph_amount: Optional[int] = 0
+    pph_amount: Optional[UangMasuk] = 0  # U-AP-SEN
 
     @model_validator(mode="after")
     def validate_account(self):
@@ -563,7 +563,7 @@ class BillActivity(BaseModel):
     field_name: Optional[str] = None
     old_value: Optional[str] = None
     new_value: Optional[str] = None
-    amount: Optional[int] = None
+    amount: Optional[UangJson] = None  # U-AP-SEN
     payment_method: Optional[str] = None
     bank_account_name: Optional[str] = None
     details: Optional[str] = None

@@ -20,7 +20,7 @@ This mirrors ReceivePayments for the payable side.
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict, Optional, List, Literal
-from .uang_json import UangJson  # item 7: bulat -> int (JSON sama), ber-sen -> float
+from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; U-AP-SEN: masukan sen
 from datetime import date
 
 
@@ -51,7 +51,7 @@ class BillAllocationInput(BaseModel):
     """Single bill allocation in create/update request."""
 
     bill_id: str = Field(..., description="Bill UUID to allocate payment to")
-    amount_applied: int = Field(..., gt=0, description="Amount to apply in IDR")
+    amount_applied: UangMasuk = Field(..., gt=0, description="Amount to apply in IDR (sen boleh, U-AP-SEN)")
 
 
 # =============================================================================
@@ -76,14 +76,14 @@ class CreateBillPaymentRequest(BaseModel):
         max_length=255,
         description="Auto-looked up from bank_account_id if not provided",
     )
-    total_amount: int = Field(..., gt=0, description="Total payment amount in IDR")
+    total_amount: UangMasuk = Field(..., gt=0, description="Total payment amount in IDR (sen boleh, U-AP-SEN)")
 
     # Optional discount and fees
-    discount_amount: int = Field(0, ge=0, description="Early payment discount in IDR")
+    discount_amount: UangMasuk = Field(0, ge=0, description="Early payment discount in IDR")
     discount_account_id: Optional[str] = Field(
         None, description="Discount account UUID (CoA)"
     )
-    bank_fee_amount: int = Field(0, ge=0, description="Bank fee in IDR")
+    bank_fee_amount: UangMasuk = Field(0, ge=0, description="Bank fee in IDR")
     bank_fee_account_id: Optional[str] = Field(
         None, description="Bank fee account UUID (CoA)"
     )
@@ -136,10 +136,10 @@ class UpdateBillPaymentRequest(BaseModel):
     payment_method: Optional[PaymentMethod] = None
     bank_account_id: Optional[str] = None
     bank_account_name: Optional[str] = None
-    total_amount: Optional[int] = Field(None, gt=0)
-    discount_amount: Optional[int] = Field(None, ge=0)
+    total_amount: Optional[UangMasuk] = Field(None, gt=0)
+    discount_amount: Optional[UangMasuk] = Field(None, ge=0)
     discount_account_id: Optional[str] = None
-    bank_fee_amount: Optional[int] = Field(None, ge=0)
+    bank_fee_amount: Optional[UangMasuk] = Field(None, ge=0)
     bank_fee_account_id: Optional[str] = None
     check_number: Optional[str] = None
     check_due_date: Optional[date] = None
@@ -171,10 +171,10 @@ class BillAllocationResponse(BaseModel):
     id: str
     bill_id: str
     bill_number: str
-    bill_amount: int
-    remaining_before: int
-    amount_applied: int
-    remaining_after: int
+    bill_amount: UangJson  # U-AP-SEN: bulat -> int (JSON sama), ber-sen -> float
+    remaining_before: UangJson
+    amount_applied: UangJson
+    remaining_after: UangJson
 
 
 # =============================================================================
@@ -192,9 +192,9 @@ class BillPaymentListItem(BaseModel):
     vendor_name: str
     payment_date: str
     payment_method: str
-    total_amount: int
-    allocated_amount: int
-    unapplied_amount: int
+    total_amount: UangJson  # U-AP-SEN
+    allocated_amount: UangJson
+    unapplied_amount: UangJson
     status: str
     bill_count: int = 0
     created_at: str
@@ -240,19 +240,19 @@ class BillPaymentDetail(BaseModel):
     source_deposit_id: Optional[str] = None
     source_deposit_number: Optional[str] = None
 
-    # Amounts
-    total_amount: int
-    allocated_amount: int
-    unapplied_amount: int
-    discount_amount: int
+    # Amounts (U-AP-SEN: UangJson)
+    total_amount: UangJson
+    allocated_amount: UangJson
+    unapplied_amount: UangJson
+    discount_amount: UangJson
     discount_account_id: Optional[str] = None
-    bank_fee_amount: int
+    bank_fee_amount: UangJson
     bank_fee_account_id: Optional[str] = None
 
     # Multi-currency
     currency_code: str = "IDR"
     exchange_rate: float = 1.0
-    amount_in_base_currency: int = 0
+    amount_in_base_currency: UangJson = 0  # U-AP-SEN
 
     # Check/Giro details
     check_number: Optional[str] = None
@@ -369,14 +369,14 @@ class AvailableVendorDepositItem(BaseModel):
     id: str
     deposit_number: str
     deposit_date: str
-    amount: int
-    amount_applied: int
-    amount_refunded: int
-    remaining_amount: int
+    amount: UangJson  # U-AP-SEN (uang muka vendor boleh bersen)
+    amount_applied: UangJson
+    amount_refunded: UangJson
+    remaining_amount: UangJson
 
 
 class AvailableVendorDepositsResponse(BaseModel):
     """Response for vendor available deposits."""
 
     deposits: List[AvailableVendorDepositItem]
-    total_available: int
+    total_available: UangJson
