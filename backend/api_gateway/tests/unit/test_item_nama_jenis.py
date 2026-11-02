@@ -64,6 +64,10 @@ class Conn:
         self.q.append((sql, a))
         return self.ada
 
+    async def fetchrow(self, sql, *a):  # NAMA-NONAKTIF: penentu nama membaca is_active (pemegang aktif/nonaktif)
+        self.q.append((sql, a))
+        return {"id": self.ada, "is_active": True} if self.ada else None
+
     async def fetch(self, sql, *a):
         self.q.append((sql, a))
         return self.jenis
@@ -88,10 +92,10 @@ def test_nomor_pelanggan_dipakai_409_berkode_predikat_sama_dengan_indeks():
     assert "nomor_member = $2 AND deleted_at IS NULL" in sql and "tenant_id = $1" in sql and a == (T, "C0007", str(kid))
 
 
-def test_nama_pelanggan_hanya_aktif_dan_kosong_tak_bertanya():
+def test_nama_pelanggan_belum_terhapus_dan_kosong_tak_bertanya():
     c = Conn(None)
     _j(PU.tolak_nama_dipakai(c, T, "X"))
-    assert "is_active = true" in c.q[0][0]
+    assert "is_active = true" not in c.q[0][0] and "deleted_at IS NULL" in c.q[0][0]  # NAMA-NONAKTIF: nonaktif ikut memblok
     c = Conn(uuid.uuid4())
     _j(PU.tolak_nama_dipakai(c, T, None))
     _j(PU.tolak_nomor_dipakai(c, T, ""))

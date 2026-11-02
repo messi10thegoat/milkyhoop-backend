@@ -81,7 +81,7 @@ def test_nama_vendor_dipakai_aktif_409_persis():
 
 def test_nama_vendor_dipakai_nonaktif_disebut():
     g = _galat(VU.tolak_nama_dipakai(Conn({"id": uuid.uuid4(), "is_active": False}), T, "PT Lama"))
-    assert g.detail == 'Nama vendor "PT Lama" sudah dipakai vendor nonaktif (aktifkan lagi atau gunakan nama lain).'
+    assert g.detail == 'Nama vendor "PT Lama" sudah dipakai vendor nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain.'
     assert g.badan()["code"] == "NAMA_VENDOR_DIPAKAI"
 
 
@@ -108,7 +108,7 @@ def test_vendor_bebas_dan_kosong_tak_bertanya():
 
 # ---- pelanggan (satu bentuk) ----
 def test_pelanggan_satu_bentuk():
-    g = _galat(PU.tolak_nama_dipakai(Conn({"id": uuid.uuid4()}), T, "Budi"))
+    g = _galat(PU.tolak_nama_dipakai(Conn({"id": uuid.uuid4(), "is_active": True}), T, "Budi"))
     m = 'Nama pelanggan "Budi" sudah dipakai pelanggan lain. Gunakan nama lain.'
     assert g.status_code == 409 and g.badan() == {"detail": m, "code": "NAMA_PELANGGAN_DIPAKAI", "message": m, "field": "name"}
     g = _galat(PU.tolak_nomor_dipakai(Conn({"id": uuid.uuid4()}), T, "C0007"))
