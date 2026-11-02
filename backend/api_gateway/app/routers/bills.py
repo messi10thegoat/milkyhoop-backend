@@ -1377,6 +1377,7 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
     kunci). Bentuk == POST /bill-payments/preview."""
     ctx = get_user_context(request)
     from ..services import bayar_keluar_rencana as BKR
+    from ..services.nomor_jurnal_perkiraan import perkiraan_nomor_jurnal
     pool = await get_pool()
     async with pool.acquire() as conn:
         tr = conn.transaction(readonly=True)
@@ -1384,12 +1385,15 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
         try:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             r = await BKR.pratinjau_bayar_tagihan(conn, ctx["tenant_id"], bill_id, body.model_dump())
+            # U-BP-NOMOR: perkiraan nomor BP- (rumus SAMA dengan get_next_journal_number(tenant, 'BP') di record_payment), baca saja
+            nomor = await perkiraan_nomor_jurnal(conn, ctx["tenant_id"], "BP")
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     if r["after"] is None:
         raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
     return {"success": True, "data": {
         "bill_id": str(bill_id), "action": "pay", "can_proceed": not r["blocks"],
+        "payment_number_preview": nomor, "payment_number_estimated": True,
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
         "bills": r["bills"], "pph": r.get("pph"), "payload": body.model_dump(mode="json"), "preview": True}}
