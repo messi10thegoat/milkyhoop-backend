@@ -1298,6 +1298,28 @@ def tolak_sumber_deposit():
         "message": "Pembayaran dari uang muka tidak lewat Penerimaan. Gunakan Terapkan uang muka pada uang muka itu."})
 
 
+def _kalimat_alokasi_melebihi(diterapkan, sisa) -> str:
+    """Kalimat SATU sumber (DRAF-CEK-SISA 2 Nov 2026): buat penerimaan (_periksa_penerimaan) DAN posting draf (_periksa_sisa_draf)."""
+    return f"Alokasi {tg.rp(diterapkan)} melebihi sisa tagihan faktur {tg.rp(sisa)}."
+
+
+async def _periksa_sisa_draf(conn, tid: str, payment_id, kunci: bool) -> list:
+    """DRAF-CEK-SISA (2 Nov 2026; putusan LANGSUNG pemilik: periksa ulang & tolak, cegah piutang minus): posting DRAF memeriksa
+    ULANG tiap alokasi aktif terhadap sisa faktur SEKARANG (get_invoice_remaining_from_journal -- sumber SAMA dengan validator buat,
+    Law 1/16). kunci=True (rute posting): faktur FOR UPDATE seperti buat (Law 13). kunci=False (pratinjau): baca saja.
+    -> blok [{code: RP_ALLOCATION_EXCEEDS, message}] (kalimat SAMA dengan buat)."""
+    blok = []
+    for a in await conn.fetch(
+            "SELECT invoice_id, amount_applied FROM receive_payment_allocations WHERE payment_id = $1 AND tenant_id = $2 "
+            "AND COALESCE(status, 'active') <> 'reversed' ORDER BY created_at", payment_id, tid):
+        if kunci:
+            await conn.fetchval("SELECT id FROM sales_invoices WHERE id = $1 AND tenant_id = $2 FOR UPDATE", a["invoice_id"], tid)
+        sisa = await get_invoice_remaining_from_journal(conn, tid, a["invoice_id"])
+        if a["amount_applied"] > sisa:
+            blok.append({"code": "RP_ALLOCATION_EXCEEDS", "message": _kalimat_alokasi_melebihi(a["amount_applied"], sisa)})
+    return blok
+
+
 def _KUNCI(kunci: bool) -> str:
     return " FOR UPDATE" if kunci else ""
 
@@ -1452,7 +1474,7 @@ async def _periksa_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest
         if alloc.amount_applied > invoice_remaining:
             raise HTTPException(
                 status_code=400,
-                detail=f"Alokasi {tg.rp(alloc.amount_applied)} melebihi sisa tagihan faktur {tg.rp(invoice_remaining)}.",
+                detail=_kalimat_alokasi_melebihi(alloc.amount_applied, invoice_remaining),
             )
 
         validated_allocations.append(
@@ -2087,6 +2109,8 @@ async def _pratinjau_draf_penerimaan(conn, ctx: dict, payment_id, aksi: str) -> 
                 blocks.append({"code": "PERIOD_CLOSED", "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
         if p["status"] != "draft":
             blocks.append({"code": "RP_NOT_DRAFT", "message": _kalimat_tak_bisa_posting(p["status"])})
+        else:  # DRAF-CEK-SISA: penentu SAMA dengan rute posting (baca saja)
+            blocks.extend(await _periksa_sisa_draf(conn, tid, payment_id, kunci=False))
         if not blocks:
             try:
                 akun_dp = await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
@@ -2563,6 +2587,11 @@ async def post_receive_payment(request: Request, payment_id: UUID):
                 )
                 if payment_date:
                     await check_period_is_open(conn, ctx["tenant_id"], payment_date)
+
+                # DRAF-CEK-SISA (putusan pemilik 2 Nov): alokasi draf diperiksa ULANG terhadap sisa faktur sekarang
+                _blok_sisa = await _periksa_sisa_draf(conn, ctx["tenant_id"], payment_id, kunci=True)
+                if _blok_sisa:
+                    raise HTTPException(status_code=400, detail=_blok_sisa[0]["message"])
 
                 result = await _post_payment(conn, ctx, payment_id)
 
