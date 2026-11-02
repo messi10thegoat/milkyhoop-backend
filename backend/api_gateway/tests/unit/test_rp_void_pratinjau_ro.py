@@ -40,8 +40,8 @@ def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
 
 def test_kunci_respons_lama_tetap_dan_kunci_baru():
     s = inspect.getsource(RP.preview_void_receive_payment)
-    for k in ("can_void", "journal_lines", "invoices_reopened", "bank_reversal", "overpay_deposit", "unapply_deposits",
-              "source_deposit", "reversal_date", "payment_number", "customer_name", "preview",
+    for k in ("can_void", "blocks", "journal_lines", "invoices_reopened", "bank_reversal", "overpay_deposit", "unapply_deposits",
+              "source_deposit", "reversal_date", "payment_number", "customer_name", "total_amount", "preview",
               "action", "can_proceed", "before", "after", "journals", "bank_transactions", "invoices", "payload"):
         assert f'"{k}":' in s, k
 
@@ -71,3 +71,15 @@ def test_faktur_sesudah_void_sisa_naik_sebesar_alokasi_aktif():
     assert (r["i1"]["outstanding"], r["i1"]["status"]) == (Decimal("1000"), "posted")
     assert (r["i2"]["outstanding"], r["i2"]["status"]) == (Decimal("500"), "posted")
     assert r["i3"] is sb["i3"]  # dilepas: tak disentuh
+
+
+def test_kunci_lama_pembaca_fe_selalu_berbentuk_benar():
+    """Pembaca FE satu-satunya (pratinjauBatalPenerimaan.ts:34-49) membaca kunci lama: larik WAJIB larik walau kosong,
+    can_void boolean -- dijaga dari sumber: tiap kunci larik dibangun dari list comprehension / variabel list, bukan None."""
+    s = inspect.getsource(RP.preview_void_receive_payment)
+    assert '"can_void": ok,' in s and "ok, bt = not r[\"blocks\"], r[\"orig_bt\"]" in s
+    assert '"blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],' in s
+    assert '"journal_lines": baris_utama,' in s and 'baris_utama = jurnal[0]["lines"] if (jurnal and p["journal_id"]) else []' in s
+    assert '"invoices_reopened": terbuka,' in s and "terbuka = []" in s
+    assert '"unapply_deposits": [{"deposit_number": x["deposit_number"]} for x in r["lepas"]],' in s
+    assert '"total_amount": _f_void(p["total_amount"]),' in s and '"payment_number": p["payment_number"],' in s
