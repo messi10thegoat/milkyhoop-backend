@@ -16,6 +16,11 @@ import asyncpg
 from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
+from ..services.galat_berkode import GalatBerkode
+
+# AUTO-FULFILL-GUDANG (2 Nov 2026): posting faktur ber-stok yang auto-kirim tanpa gudang faktur & tanpa gudang bawaan jelas.
+KODE_GUDANG_WAJIB_POSTING = "GUDANG_WAJIB"
+PESAN_GUDANG_WAJIB_POSTING = "Pilih gudang di faktur: barang ber-stok dikirim saat faktur diterbitkan dan wajib bergudang."
 from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 from ..services.so_riwayat import catat_riwayat, riwayat_faktur
@@ -3013,10 +3018,14 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
 
         posting_warehouse_id = invoice.get("warehouse_id")
         if not posting_warehouse_id:
-            posting_warehouse_id = await conn.fetchval(
-                "SELECT id FROM warehouses WHERE tenant_id=$1 ORDER BY created_at LIMIT 1",
-                ctx["tenant_id"],
-            )
+            # AUTO-FULFILL-GUDANG (2 Nov 2026, putusan MASTER, pola NetSuite: lokasi wajib untuk barang stok): gudang bawaan
+            # SATU aturan (gudang_bawaan.bawaan: satu aktif / satu is_default). Dulu "ORDER BY created_at LIMIT 1" tanpa saring
+            # aktif -> bisa gudang nonaktif/acak. None -> posting DITOLAK; galat me-rollback SELURUH posting (Law 23).
+            from ..services import gudang_bawaan as _gb
+            _g = await _gb.bawaan(conn, ctx["tenant_id"])
+            if _g is None:
+                raise GalatBerkode(400, KODE_GUDANG_WAJIB_POSTING, PESAN_GUDANG_WAJIB_POSTING, field="warehouse_id")
+            posting_warehouse_id = _g["id"]
 
         await _execute_fulfillment(
             conn,
