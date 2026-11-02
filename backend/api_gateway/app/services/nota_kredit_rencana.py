@@ -167,6 +167,38 @@ def _sesudah_nk(sebelum: dict, cn, d_terapkan, d_kembali, faktur_baru) -> dict:
             "amount_applied": float(dipakai), "amount_refunded": float(kembali), "remaining": float(sisa)}
 
 
+# ---- U-P6 (2 Nov 2026): kunci bentuk Nota Debit (ADITIF; kunci lama tetap). Alias dihitung dari nilai YANG SAMA, bukan penentu kedua.
+def stok_bentuk_nd(restock: list) -> list:
+    """Baris rencana restock -> bentuk ND stock[] (nota_debit_rencana.rencana_hpp): product_id, product, quantity, unit_cost, total_cost."""
+    return [{"product_id": str(x["product_id"]), "product": x["nama"], "quantity": float(x["qty"]),
+             "unit_cost": float(x["unit_cost"]), "total_cost": float(x["line_cost"])} for x in restock]
+
+
+def bank_bentuk_nd(bank) -> list:
+    """bank{bank_transactions[]} NK -> bentuk ND bank_transactions[{bank_account, amount, transaction_type}] (+ bank_account_id)."""
+    return [{"bank_account": b["bank_account_name"], "bank_account_id": b["bank_account_id"], "amount": b["amount"],
+             "transaction_type": b["transaction_type"]} for b in ((bank or {}).get("bank_transactions") or [])]
+
+
+def alias_aksi_nd(d: dict, restock: list) -> dict:
+    """Pratinjau aksi NK (post/void/apply/unapply/refund): + stock, bank_transactions, invoices (cermin bills[] ND)."""
+    d["stock"] = stok_bentuk_nd(restock)
+    d["bank_transactions"] = bank_bentuk_nd(d.get("bank"))
+    d["invoices"] = [dict(d["invoice"])] if d.get("invoice") else []
+    return d
+
+
+def alias_buat_nd(d: dict, stok: list) -> dict:
+    """Pratinjau BUAT NK: + action, can_proceed, preview, subtotal, discount_amount, journals, stock, bank_transactions, invoices."""
+    f = d.get("invoice")
+    d.update({"action": "create", "can_proceed": d["can_save"], "preview": True,
+              "subtotal": d["gross_subtotal"], "discount_amount": d["doc_discount"],
+              "journals": d["journals_on_post"], "stock": stok if d["can_save"] else [], "bank_transactions": [],
+              "invoices": ([{"invoice_id": f["id"], "invoice_number": f["invoice_number"], "remaining_before": f["remaining"],
+                             "remaining_after": f["remaining_after_post"]}] if f else [])})
+    return d
+
+
 async def pratinjau_aksi_nk(conn, ctx: dict, cn_id, aksi: str, body) -> dict:
     """aksi in (apply, unapply, refund); body = ApplyCreditNoteRequest | alasan (str|None) | RefundCreditNoteRequest. Pemanggil membuka
     transaksi READ ONLY. Bentuk respons == pratinjau lama (FE pratinjauAksiNk.ts), journal_number null (preseden ND U3d)."""
@@ -222,10 +254,10 @@ async def pratinjau_aksi_nk(conn, ctx: dict, cn_id, aksi: str, body) -> dict:
         payload = {"reason": (body or "").strip() or None}
     else:
         payload = body.model_dump(mode="json")
-    return {"credit_note_id": str(cn_id), "action": aksi, "can_proceed": bisa, "blocks": bl.respons(),
-            "before": sebelum, "after": sesudah, "journals": jurnal, "bank": bank,
-            "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
-            "payload": payload, "preview": True}
+    return alias_aksi_nd({"credit_note_id": str(cn_id), "action": aksi, "can_proceed": bisa, "blocks": bl.respons(),
+                          "before": sebelum, "after": sesudah, "journals": jurnal, "bank": bank,
+                          "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
+                          "payload": payload, "preview": True}, [])
 
 
 # =============================================================================================================================
@@ -516,7 +548,8 @@ async def pratinjau_post_void_nk(conn, ctx: dict, cn_id, aksi: str, alasan) -> d
             f1 = float(Decimal(str(f0)) + await kredit_piutang_nk(conn, tid, cn_id))
     for k in (sebelum, sesudah):
         k.pop("original_invoice_id", None)
-    return {"credit_note_id": str(cn_id), "action": aksi, "can_proceed": bisa, "blocks": bl.respons(),
-            "before": sebelum, "after": sesudah, "journals": jurnal,
-            "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
-            "payload": ({"reason": alasan} if aksi == "void" else {}), "preview": True}
+    return alias_aksi_nd({"credit_note_id": str(cn_id), "action": aksi, "can_proceed": bisa, "blocks": bl.respons(),
+                          "before": sebelum, "after": sesudah, "journals": jurnal,
+                          "invoice": ({"invoice_id": str(fid), "remaining_before": f0, "remaining_after": f1} if fid else None),
+                          "payload": ({"reason": alasan} if aksi == "void" else {}), "preview": True},
+                         r["restock"] if (bisa and aksi == "post") else [])
