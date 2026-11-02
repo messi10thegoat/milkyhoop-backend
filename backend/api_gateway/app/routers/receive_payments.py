@@ -1602,6 +1602,14 @@ def _faktur_sesudah_penerimaan(alokasi: list, draf: bool) -> list:
     return out
 
 
+async def _perkiraan_nomor_ovp(conn, tid: str) -> str:
+    """Nomor uang muka kelebihan bayar BERIKUTNYA (rumus SAMA dengan fungsi DB penomoran 'OVP'; penghitung dibaca, tak dinaikkan)."""
+    bl = await conn.fetchrow("SELECT TO_CHAR(tanggal_bisnis($1), 'YYYY-MM') AS ym, TO_CHAR(tanggal_bisnis($1), 'YYMM') AS yymm", tid)
+    last = await conn.fetchval("SELECT last_number FROM customer_deposit_sequences WHERE tenant_id = $1 AND year_month = $2",
+                               tid, bl["ym"])
+    return f"OVP-{bl['yymm']}-{((last or 0) + 1):04d}"
+
+
 async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
     """U-P4b-1 (2 Nov 2026, disetujui MASTER) -- penentu BUAT penerimaan BACA SAJA (tanpa kunci, tanpa tulis): pemeriksaan
     YANG SAMA dengan buat_penerimaan (_periksa_penerimaan kunci=False; galat pertama -> blok, kalimat sama), baris jurnal posting
@@ -1657,11 +1665,8 @@ async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentReque
         if ba:  # == create_bank_transaction_for_journal di _post_payment (deposit, +total_amount)
             hasil["bank_transactions"] = [{"bank_account": ba["account_name"], "amount": _f_rp(body.total_amount),
                                            "transaction_type": "deposit"}]
-    if cek["unapplied_amount"] and cek["unapplied_amount"] > 0:  # == generate_customer_deposit_number(tid, 'OVP')
-        bl = await conn.fetchrow("SELECT TO_CHAR(tanggal_bisnis($1), 'YYYY-MM') AS ym, TO_CHAR(tanggal_bisnis($1), 'YYMM') AS yymm", tid)
-        last = await conn.fetchval("SELECT last_number FROM customer_deposit_sequences WHERE tenant_id = $1 AND year_month = $2",
-                                   tid, bl["ym"])
-        hasil["overpayment_deposit_number"] = f"OVP-{bl['yymm']}-{((last or 0) + 1):04d}"
+    if cek["unapplied_amount"] and cek["unapplied_amount"] > 0:
+        hasil["overpayment_deposit_number"] = await _perkiraan_nomor_ovp(conn, tid)
     return hasil
 
 
@@ -2035,10 +2040,7 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
                 raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
 
             if payment["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Hanya penerimaan berstatus Draf yang bisa dihapus. Penerimaan yang sudah diterima dibatalkan, bukan dihapus.",
-                )
+                raise HTTPException(status_code=400, detail=KALIMAT_HAPUS_BUKAN_DRAF)
 
             # Delete (cascade will delete allocations)
             await conn.execute("DELETE FROM receive_payments WHERE id = $1", payment_id)
@@ -2061,6 +2063,92 @@ async def delete_receive_payment(request: Request, payment_id: UUID):
         raise HTTPException(status_code=500, detail="Gagal menghapus penerimaan.")
 
 
+async def _pratinjau_draf_penerimaan(conn, ctx: dict, payment_id, aksi: str) -> dict:
+    """U-P4b-2 (2 Nov 2026, disetujui MASTER): pratinjau POSTING / HAPUS draf penerimaan -- BACA SAJA tanpa kunci. Penghalang dan
+    kalimat SAMA dengan tulis (check_period_is_open, _kalimat_tak_bisa_posting, KALIMAT_HAPUS_BUKAN_DRAF); efek posting dari
+    fungsi MURNI yang SAMA dengan _post_payment (_baris_*_penerimaan) + _faktur_sesudah_penerimaan (sisa jurnal SEKARANG)."""
+    from ..services.role_resolver import AccountRoleUnmappedError
+    tid = ctx["tenant_id"]
+    p = await conn.fetchrow("SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2", payment_id, tid)
+    if not p:
+        raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
+    blocks, journals, bank, invoices, ovp = [], [], [], [], None
+    before = {"exists": True, "status": p["status"], "payment_number": p["payment_number"], "total_amount": _f_rp(p["total_amount"])}
+    if aksi == "delete":
+        if p["status"] != "draft":
+            blocks.append({"code": "RP_NOT_DRAFT", "message": KALIMAT_HAPUS_BUKAN_DRAF})
+        after = {"exists": False} if not blocks else before
+    else:
+        if p["payment_date"]:
+            try:  # == rute /post (Law 5)
+                await check_period_is_open(conn, tid, p["payment_date"])
+            except HTTPException as e:
+                d = e.detail
+                blocks.append({"code": "PERIOD_CLOSED", "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
+        if p["status"] != "draft":
+            blocks.append({"code": "RP_NOT_DRAFT", "message": _kalimat_tak_bisa_posting(p["status"])})
+        if not blocks:
+            try:
+                akun_dp = await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+                akun_ar = await resolve_account_id_by_role(conn, tid, AccountRole.AR_TRADE)
+                akun_diskon = None
+                if p["discount_amount"] and p["discount_amount"] > 0:
+                    akun_diskon = p["discount_account_id"] or await resolve_account_id_by_role(conn, tid, AccountRole.REVENUE_SALES_DISCOUNT)
+            except AccountRoleUnmappedError as e:
+                blocks.append({"code": "PERAN_AKUN_BELUM_DIPETAKAN", "message": str(e)})
+        if not blocks:
+            baris = (_baris_debit_penerimaan(p, akun_dp) + (_baris_diskon_penerimaan(p, akun_diskon) if akun_diskon else [])
+                     + _baris_piutang_penerimaan(p, akun_ar) + _baris_kelebihan_penerimaan(p, akun_dp))
+            akun = {r["id"]: r for r in await conn.fetch(
+                "SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                tid, list({b["account_id"] for b in baris if b["account_id"]}))}
+            journals = [{"journal_number": None, "source_type": "RECEIVE_PAYMENT", "journal_date": p["payment_date"].isoformat(),
+                         "description": f"Penerimaan Pembayaran {p['payment_number']} - {p['customer_name']}",
+                         "lines": [{"account_code": akun[b["account_id"]]["account_code"] if b["account_id"] in akun else None,
+                                    "account_name": akun[b["account_id"]]["name"] if b["account_id"] in akun else None,
+                                    "debit": _f_rp(b["debit"]), "credit": _f_rp(b["credit"])} for b in baris]}]
+            if p["source_type"] == "cash" and p["bank_account_id"]:
+                ba = await conn.fetchrow("SELECT id, account_name FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+                                         p["bank_account_id"], tid)
+                if ba:
+                    bank = [{"bank_account": ba["account_name"], "amount": _f_rp(p["total_amount"]), "transaction_type": "deposit"}]
+            alok = []
+            for a in await conn.fetch(
+                    """SELECT a.invoice_id, a.invoice_number, a.amount_applied, si.total_amount AS invoice_amount
+                       FROM receive_payment_allocations a JOIN sales_invoices si ON si.id = a.invoice_id AND si.tenant_id = $2
+                       WHERE a.payment_id = $1 ORDER BY a.created_at""", payment_id, tid):
+                alok.append({**dict(a), "remaining_before": await get_invoice_remaining_from_journal(conn, tid, a["invoice_id"])})
+            invoices = _faktur_sesudah_penerimaan(alok, False)
+            if p["unapplied_amount"] and p["unapplied_amount"] > 0:
+                ovp = await _perkiraan_nomor_ovp(conn, tid)
+        after = {**before, "status": "posted"} if not blocks else before
+    return {"payment_id": str(payment_id), "action": aksi, "can_proceed": not blocks, "blocks": blocks, "before": before,
+            "after": after, "journals": journals, "bank_transactions": bank, "invoices": invoices,
+            "overpayment_deposit_number": ovp, "preview": True}
+
+
+async def _baca_draf(request: Request, payment_id, aksi: str) -> dict:
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            return {"success": True, "data": await _pratinjau_draf_penerimaan(conn, ctx, payment_id, aksi)}
+
+
+@router.post("/{payment_id}/post/preview")
+async def preview_post_receive_payment(request: Request, payment_id: UUID):
+    """U-P4b-2: pratinjau POSTING draf penerimaan (baca saja; pola Pembayaran Keluar /bill-payments/{id}/post/preview)."""
+    return await _baca_draf(request, payment_id, "post")
+
+
+@router.post("/{payment_id}/delete/preview")
+async def preview_delete_receive_payment(request: Request, payment_id: UUID):
+    """U-P4b-2: pratinjau HAPUS draf penerimaan (baca saja; kalimat == DELETE)."""
+    return await _baca_draf(request, payment_id, "delete")
+
+
 # =============================================================================
 # INTERNAL: POST PAYMENT
 # =============================================================================
@@ -2081,6 +2169,15 @@ def _deposit_payment_method(rp_method: str) -> str:
             detail=f"Metode bayar '{rp_method}' tak didukung untuk uang muka dari kelebihan bayar",
         )
     return m
+
+
+# ---- U-P4b-2 (2 Nov 2026): kalimat penolakan SATU sumber untuk tulis (DELETE, _post_payment) DAN pratinjau draf.
+KALIMAT_HAPUS_BUKAN_DRAF = ("Hanya penerimaan berstatus Draf yang bisa dihapus. Penerimaan yang sudah diterima dibatalkan, "
+                            "bukan dihapus.")
+
+
+def _kalimat_tak_bisa_posting(status) -> str:
+    return tg.tak_bisa_status("rp", status, "diposting")
 
 
 # ---- U-P4b-1 (2 Nov 2026): baris jurnal penerimaan dari fungsi MURNI, dipakai _post_payment DAN pratinjau READ ONLY.
@@ -2154,7 +2251,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     if payment["status"] != "draft":
         raise HTTPException(
             status_code=400,
-            detail=tg.tak_bisa_status("rp", payment["status"], "diposting"),
+            detail=_kalimat_tak_bisa_posting(payment["status"]),
         )
 
     # Get account IDs

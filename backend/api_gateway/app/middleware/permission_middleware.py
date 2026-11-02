@@ -192,6 +192,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/receive-payments/[^/]+$", ["PATCH", "PUT"], "receive_payment", "U"),
     (r"^/api/receive-payments/[^/]+$", ["DELETE"], "receive_payment", "D"),
     (r"^/api/receive-payments/[^/]+/post$", ["POST"], "receive_payment", "P"),
+    (r"^/api/receive-payments/[^/]+/post/preview$", ["POST"], "receive_payment", "P"),  # U-P4b-2: = izin posting
+    (r"^/api/receive-payments/[^/]+/delete/preview$", ["POST"], "receive_payment", "D"),  # U-P4b-2: = izin hapus
     (r"^/api/receive-payments/[^/]+/void$", ["POST"], "receive_payment", "V"),
     (r"^/api/receive-payments/[^/]+/void/preview$", ["POST"], "receive_payment", "V"),  # U3b 4 Okt 2026
     (r"^/api/receive-payments/[^/]+/history$", ["GET"], "receive_payment", "R"),  # U3b (GET tak-terpetakan = tertutup)
