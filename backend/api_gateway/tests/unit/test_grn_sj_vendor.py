@@ -138,16 +138,19 @@ def test_bentuk_daftar_detail_membawa_sj_vendor():
           "status": "posted", "vendor_delivery_note": "SJ-3", "voided_at": None}
     assert RG._bentuk(gr)["vendor_delivery_note"] == "SJ-3"
     assert RG._bentuk({**gr, "vendor_delivery_note": None})["vendor_delivery_note"] is None
+    assert RG._bentuk({k: v for k, v in gr.items() if k != "vendor_delivery_note"})["vendor_delivery_note"] is None  # tanpa kolom
 
 
 def test_pdf_dan_ekspor():
     from app.services import cetak_goods_receipt as CG
     s = inspect.getsource(CG)
-    assert "g.vendor_delivery_note" in s and '"vendor_delivery_note": gr["vendor_delivery_note"]' in s
+    # pembaca AMAN sebelum/tanpa kolom V472 (urutan migrasi/rollback terbalik): to_jsonb(g)->>'..' + .get; HANYA INSERT wajib kolom
+    assert "to_jsonb(g)->>'vendor_delivery_note' AS vendor_delivery_note" in s and '"vendor_delivery_note": gr.get("vendor_delivery_note")' in s
+    assert "g.vendor_delivery_note" not in s
     t = (APP / "templates/pdf/goods_receipt.html").read_text()
     assert "{% if gr.vendor_delivery_note %}<tr><td>No. SJ Vendor</td><td>:</td><td>{{ gr.vendor_delivery_note }}</td></tr>{% endif %}" in t
     spec = BE.SPEC_BELI["goods-receipts"]
-    assert "g.vendor_delivery_note" in spec.sql
+    assert "to_jsonb(g)->>'vendor_delivery_note' AS vendor_delivery_note" in spec.sql and "g.vendor_delivery_note" not in spec.sql
     rows = [{"id": 1, "vendor_name": "V", "receipt_number": "GRN-1", "receipt_date": None, "po_number": "PO-1", "warehouse_name": None,
              "status": "posted", "vendor_delivery_note": "SJ-8"}]
 
@@ -162,3 +165,30 @@ def test_pdf_dan_ekspor():
     finally:
         M.GD = asli
     assert baris[-1] == "SJ-8" and len(baris) == len(spec.kolom) + 2
+    tanpa_kolom = [{k: v for k, v in rows[0].items() if k != "vendor_delivery_note"}]
+    M.GD = D
+    try:
+        assert _j(M._grn(None, T, tanpa_kolom))[1][-1] is None  # baris tanpa kolom (sebelum V472) tak meledak
+    finally:
+        M.GD = asli
+
+
+def _tes_lama(nama):
+    """Muat berkas tes saudara apa adanya (fake-nya dipakai ulang TANPA diubah)."""
+    import importlib.util
+    p = pathlib.Path(__file__).with_name(nama)
+    spec = importlib.util.spec_from_file_location(f"_saudara_{p.stem}", p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_konteks_pdf_membawa_sj_vendor():
+    from app.services import cetak_goods_receipt as CG
+    TC = _tes_lama("test_cetak_um_grn.py")
+    gr = TC._gr(vendor_delivery_note="SJ-77")
+    c = TC._ConnGR(gr, None, [TC._brs("Kain katun", "20")])
+    g = _j(CG.muat_pdf_goods_receipt(c, {"tenant_id": TC.TID}, gr["id"]))["gr_data"]
+    assert g["vendor_delivery_note"] == "SJ-77"
+    g0 = _j(CG.muat_pdf_goods_receipt(TC._ConnGR(TC._gr(), None, [TC._brs("Kain katun", "20")]), {"tenant_id": TC.TID}, gr["id"]))["gr_data"]
+    assert g0["vendor_delivery_note"] is None  # baris tanpa kolom (sebelum V472 / sesudah rollback) tak meledak

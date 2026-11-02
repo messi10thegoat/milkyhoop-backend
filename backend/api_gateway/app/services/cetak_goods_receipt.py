@@ -12,7 +12,8 @@ async def muat_pdf_goods_receipt(conn, ctx, gr_id) -> dict:
     """-> {gr_data, tenant_info}. 404 bila GRN tak ada di tenant ini."""
     tid = ctx["tenant_id"]
     gr = await conn.fetchrow(
-        """SELECT g.id, g.receipt_number, g.receipt_date, g.status, g.notes, g.voided_at, g.voided_reason, g.vendor_id, g.vendor_delivery_note,
+        """SELECT g.id, g.receipt_number, g.receipt_date, g.status, g.notes, g.voided_at, g.voided_reason, g.vendor_id,
+                  to_jsonb(g)->>'vendor_delivery_note' AS vendor_delivery_note,
                   po.po_number, po.ref_no AS po_ref_no, COALESCE(v.name, po.vendor_name) AS vendor_name, w.name AS warehouse_name
            FROM goods_receipts g
            JOIN purchase_orders po ON po.id = g.purchase_order_id AND po.tenant_id = g.tenant_id
@@ -35,7 +36,7 @@ async def muat_pdf_goods_receipt(conn, ctx, gr_id) -> dict:
         "receipt_date": gr["receipt_date"].isoformat() if gr["receipt_date"] else None,
         "status": gr["status"], "notes": gr["notes"], "voided_at": gr["voided_at"], "voided_reason": gr["voided_reason"],
         "po_number": gr["po_number"], "po_ref_no": gr["po_ref_no"], "warehouse_name": gr["warehouse_name"],
-        "vendor_delivery_note": gr["vendor_delivery_note"],
+        "vendor_delivery_note": gr.get("vendor_delivery_note"),  # aman sebelum/tanpa kolom V472
         "vendor_name": gr["vendor_name"], "vendor_alamat": alamat_vendor(vendor),
         "vendor_telepon": (vendor["phone"] or vendor["mobile_phone"]) if vendor else None,
         "items": baris,
