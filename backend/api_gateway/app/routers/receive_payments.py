@@ -2574,9 +2574,17 @@ class PratinjauVoidPembayaranRequest(BaseModel):
     void_reason: Optional[str] = Field(None, max_length=500)  # opsional DI PRATINJAU: "alasan wajib" tampil sebagai blok
 
 
-async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: bool = False) -> dict:
+def _baris_balik(baris) -> list:
+    """MURNI (U-P4a 2 Nov 2026) -- baris jurnal PEMBALIK dari baris jurnal asli: debit<->kredit ditukar, memo "Reversal - …".
+    SATU sumber untuk penulis void (jurnal pembayaran + jurnal lepas LPS) DAN pratinjau void READ ONLY."""
+    return [{"account_id": ln["account_id"], "debit": ln["credit"], "credit": ln["debit"],
+             "memo": f"Reversal - {ln['memo'] or ''}"} for ln in baris]
+
+
+async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: bool = False, kunci: bool = True) -> dict:
     """SEMUA penghalang void (urutan = galat rute lama). 404 dinaikkan langsung. Nol tulisan.
-    Pemanggil WAJIB sudah memegang kunci RECEIVE_PAYMENT_VOID:{id} di dalam transaksi."""
+    kunci=True (penulis /void): pemanggil WAJIB sudah memegang RECEIVE_PAYMENT_VOID:{id}; baris dikunci FOR UPDATE + DEPOSIT:{id}.
+    kunci=False (pratinjau, U-P4a): baca saja tanpa kunci apa pun (transaksi READ ONLY)."""
     tid = ctx["tenant_id"]
     blocks = []
     if wajib_alasan and not (reason or "").strip():
@@ -2592,7 +2600,7 @@ async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: 
     except HTTPException as e:
         blocks.append(_blok_void("PERIOD_CLOSED", e.status_code, _teks_galat(e.detail), e.detail))
     payment = await conn.fetchrow(
-        "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2 FOR UPDATE", payment_id, tid
+        "SELECT * FROM receive_payments WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""), payment_id, tid
     )
     if not payment:
         raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
@@ -2618,7 +2626,7 @@ async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: 
         # Urutan tetap: VOID (pemanggil) -> DEPOSIT terurut. Tak ada jalur lain yang mengambil DEPOSIT lalu VOID.
         dep_ids = sorted({str(x) for x in ([payment["created_deposit_id"]] if payment["created_deposit_id"] else [])}
                          | {str(r["unapply_deposit_id"]) for r in lepas})
-        for did in dep_ids:
+        for did in (dep_ids if kunci else []):
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"DEPOSIT:{did}")
         # Option B: uang muka overpay yang SUDAH dipakai/dikembalikan tak boleh divoid lewat void RP.
         if payment["created_deposit_id"]:
@@ -2654,7 +2662,7 @@ async def _rencana_void_pembayaran(conn, ctx, payment_id, reason, wajib_alasan: 
             payment_id, tid)
         if payment["journal_id"]:
             orig_bt = await conn.fetchrow(
-                """SELECT bt.id, bt.bank_account_id, bt.amount, ba.account_name FROM bank_transactions bt
+                """SELECT bt.id, bt.bank_account_id, bt.amount, bt.transaction_type, ba.account_name FROM bank_transactions bt
                    LEFT JOIN bank_accounts ba ON ba.id = bt.bank_account_id
                    WHERE bt.journal_id = $1 AND bt.tenant_id = $2 ORDER BY bt.created_at ASC LIMIT 1""",
                 payment["journal_id"], tid)
@@ -2710,8 +2718,8 @@ async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) ->
             hari_ini,  # t10-tanggal-bisnis
         )
 
-        # Create reversed lines (swap debit/credit)
-        for idx, line in enumerate(original_lines, 1):
+        # Create reversed lines (swap debit/credit) -- _baris_balik = SATU sumber dengan pratinjau (U-P4a)
+        for idx, line in enumerate(_baris_balik(original_lines), 1):
             await conn.execute(
                 """
                 INSERT INTO journal_lines (
@@ -2722,9 +2730,9 @@ async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) ->
                 void_journal_id,
                 idx,
                 line["account_id"],
-                line["credit"],  # Swap
-                line["debit"],  # Swap
-                f"Reversal - {line['memo'] or ''}",
+                line["debit"],
+                line["credit"],
+                line["memo"],
             )
 
         # Law 20: DRAFT->POSTED after all reversal journal lines are inserted
@@ -2792,10 +2800,10 @@ async def _tulis_void_pembayaran(conn, ctx, payment_id, reason: str, r: dict) ->
             _orig["source_id"], _r["unapply_journal_id"], _orig["total_debit"], ctx["user_id"],
             hari_ini,  # t10-tanggal-bisnis
         )
-        for _i, _ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"]), 1):
+        for _i, _ln in enumerate(_baris_balik(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", _r["unapply_journal_id"])), 1):
             await conn.execute(
                 "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                uuid_module.uuid4(), _rev, _i, _ln["account_id"], _ln["credit"], _ln["debit"], f"Reversal - {_ln['memo'] or ''}",
+                uuid_module.uuid4(), _rev, _i, _ln["account_id"], _ln["debit"], _ln["credit"], _ln["memo"],
             )
         await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", _rev)
         await conn.execute("UPDATE journal_entries SET reversed_by_id = $2, reversed_at = NOW() WHERE id = $1", _r["unapply_journal_id"], _rev)
@@ -2954,9 +2962,14 @@ async def _keadaan_faktur(conn, tid: str, ids: list) -> dict:
 async def preview_void_receive_payment(
     request: Request, payment_id: UUID, body: Optional[PratinjauVoidPembayaranRequest] = None
 ):
-    """PRATINJAU void pembayaran: penentu + penulis YANG SAMA dengan /void, transaksi SELALU di-ROLLBACK (nol tulis),
-    SEMUA penghalang, faktur yang terbuka lagi (status + sisa sebelum/sesudah), baris jurnal balik, cermin bank,
-    uang muka yang ikut batal."""
+    """PRATINJAU void pembayaran -- U-P4a (2 Nov 2026, disetujui MASTER): transaksi READ ONLY TANPA kunci, penulis TIDAK
+    dijalankan. Penentu = _rencana_void_pembayaran(kunci=False) (urutan + kalimat blok == /void); efek dihitung dari fungsi
+    MURNI yang SAMA dengan penulis: _baris_balik (jurnal pembalik + jurnal lepas LPS), pihak_helpers.status_bayar_faktur
+    (status faktur sesudah, == segarkan_cache_piutang_faktur), cermin bank = -nominal asli (== create_reversal_bank_transaction).
+    Respons: kunci LAMA tetap persis (can_void, journal_lines, invoices_reopened, bank_reversal, …) + kunci pola Pembayaran
+    Keluar (action, can_proceed, before/after, journals[], bank_transactions[], invoices, payload)."""
+    from ..services.pihak_helpers import status_bayar_faktur
+    from ..services.bank_sync import JENIS_PEMBALIK
     ctx = get_user_context(request)
     if not ctx["user_id"]:
         raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
@@ -2964,32 +2977,45 @@ async def preview_void_receive_payment(
     tid = ctx["tenant_id"]
     pool = await get_pool()
     await _ensure_receive_payments_role_preconditions(pool, tid)
-    baris, sesudah = [], {}
+    jurnal = []
     async with pool.acquire() as conn:
-        tr = conn.transaction()
-        await tr.start()
-        try:
+        async with conn.transaction(readonly=True):
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"RECEIVE_PAYMENT_VOID:{payment_id}")
-            r = await _rencana_void_pembayaran(conn, ctx, payment_id, alasan, wajib_alasan=True)
+            r = await _rencana_void_pembayaran(conn, ctx, payment_id, alasan, wajib_alasan=True, kunci=False)
+            p = r["payment"]
             ids = [a["invoice_id"] for a in r["alokasi"] if a["status"] != "reversed"]
             sebelum = await _keadaan_faktur(conn, tid, ids)
             sesudah = sebelum
             if not r["blocks"]:
-                try:
-                    async with conn.transaction():  # savepoint
-                        h = await _tulis_void_pembayaran(conn, ctx, payment_id, alasan, r)
-                        baris = [dict(x) for x in await conn.fetch(
-                            """SELECT coa.account_code, coa.name AS account_name, jl.debit, jl.credit
-                               FROM journal_lines jl JOIN chart_of_accounts coa ON coa.id = jl.account_id
-                               WHERE jl.journal_id = $1 ORDER BY jl.line_number""",
-                            UUID(h["data"]["void_journal_id"]))]
-                        sesudah = await _keadaan_faktur(conn, tid, ids)
-                except HTTPException as e:
-                    r["blocks"].append(_blok_void("VOID_REJECTED", e.status_code, _teks_galat(e.detail), e.detail))
-        finally:
-            await tr.rollback()  # SELALU: pratinjau tak pernah menulis
-    p, ok, bt = r["payment"], not r["blocks"], r["orig_bt"]
+                async def _balik(jid, source_type, deskripsi):
+                    asli = await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", jid)
+                    akun = {x["id"]: x for x in await conn.fetch(
+                        "SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                        tid, list({ln["account_id"] for ln in asli}))} if asli else {}
+                    nomor = await conn.fetchval("SELECT journal_number FROM journal_entries WHERE id = $1 AND tenant_id = $2", jid, tid)
+                    return {"journal_number": None, "source_type": source_type, "description": deskripsi,
+                            "journal_date": r["hari_ini"].isoformat(), "reversal_of": nomor,
+                            "lines": [{"account_code": akun[b["account_id"]]["account_code"] if b["account_id"] in akun else None,
+                                       "account_name": akun[b["account_id"]]["name"] if b["account_id"] in akun else None,
+                                       "debit": _f_void(b["debit"]), "credit": _f_void(b["credit"])} for b in _baris_balik(asli)]}
+                if p["journal_id"]:
+                    jurnal.append(await _balik(p["journal_id"], "RECEIVE_PAYMENT",
+                                               f"Void {p['payment_number']} - {p['customer_name']} - {alasan}"))
+                for x in r["lepas"]:
+                    jurnal.append(await _balik(x["unapply_journal_id"], "RECEIVE_PAYMENT_UNAPPLY",
+                                               f"Void {p['payment_number']}: batal lepas pembayaran ({x['deposit_number']})"))
+                sesudah = {}
+                for a in r["alokasi"]:
+                    k = str(a["invoice_id"])
+                    sb = sebelum.get(k)
+                    if a["status"] == "reversed" or not sb or sb["status"] in ("draft", "void"):
+                        continue
+                    out = Decimal(str(sb["outstanding"] or 0)) + Decimal(str(a["amount_applied"] or 0))
+                    sesudah[k] = {"invoice_number": sb["invoice_number"], "outstanding": out,
+                                  "status": status_bayar_faktur(sb["total_amount"], out)[1]}
+                for k, sb in sebelum.items():
+                    sesudah.setdefault(k, sb)
+    ok, bt = not r["blocks"], r["orig_bt"]
     terbuka = []
     for a in r["alokasi"]:
         if a["status"] == "reversed":
@@ -3006,7 +3032,12 @@ async def preview_void_receive_payment(
             "outstanding_after": _f_void(sa["outstanding"]) if sa else None,
         })
     um = r["uang_muka"]
+    baris_utama = jurnal[0]["lines"] if (jurnal and p["journal_id"]) else []
+    bank_balik = ({"bank_account_id": str(bt["bank_account_id"]), "bank_account_name": bt["account_name"],
+                   "amount": _f_void(-bt["amount"])} if bt else None)  # bentuk lama (tanpa syarat blok, seperti dulu)
+    sebelum_p = {"exists": True, "status": p["status"], "payment_number": p["payment_number"], "total_amount": _f_void(p["total_amount"])}
     return {"success": True, "data": {
+        # ---- kunci LAMA (tetap persis; FE Penjualan membacanya) ----
         "payment_id": str(p["id"]),
         "payment_number": p["payment_number"],
         "customer_name": p["customer_name"],
@@ -3016,15 +3047,24 @@ async def preview_void_receive_payment(
         "can_void": ok,
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "reversal_date": r["hari_ini"].isoformat(),
-        "journal_lines": [{"account_code": x["account_code"], "account_name": x["account_name"],
-                           "debit": _f_void(x["debit"]), "credit": _f_void(x["credit"])} for x in baris],
+        "journal_lines": baris_utama,
         "invoices_reopened": terbuka,
         "overpay_deposit": ({"deposit_number": um["deposit_number"], "amount": _f_void(um["amount"])} if um else None),
         "unapply_deposits": [{"deposit_number": x["deposit_number"]} for x in r["lepas"]],
         "source_deposit": ({"deposit_number": r["sumber_dep"]["deposit_number"]} if r["sumber_dep"] else None),
-        "bank_reversal": ({"bank_account_id": str(bt["bank_account_id"]), "bank_account_name": bt["account_name"],
-                           "amount": _f_void(-bt["amount"])} if bt else None),
+        "bank_reversal": bank_balik,
         "preview": True,
+        # ---- kunci pola Pembayaran Keluar (U-P4a, aditif) ----
+        "action": "void",
+        "can_proceed": ok,
+        "before": sebelum_p,
+        "after": {**sebelum_p, "status": "voided"} if ok else sebelum_p,
+        "journals": jurnal,
+        "bank_transactions": ([{"bank_account": bt["account_name"], "amount": _f_void(-bt["amount"]),
+                                "transaction_type": JENIS_PEMBALIK.get(bt["transaction_type"], "adjustment")}]
+                              if (bt and ok) else []),
+        "invoices": terbuka,
+        "payload": {"void_reason": alasan},
     }}
 
 

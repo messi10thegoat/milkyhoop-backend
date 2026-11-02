@@ -130,6 +130,14 @@ async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn, kecual
         )
 
 
+def status_bayar_faktur(total, outstanding) -> tuple:
+    """MURNI -- (dibayar, status) faktur dari total + sisa tagih (compute_ar_outstanding). SATU aturan untuk penulis cache
+    (segarkan_cache_piutang_faktur) DAN pratinjau (U-P4a 2 Nov 2026: void penerimaan READ ONLY)."""
+    out = max(Decimal("0"), Decimal(str(outstanding or 0)))
+    dibayar = Decimal(str(total or 0)) - out
+    return dibayar, ("paid" if out < Decimal("0.01") else ("partial" if dibayar > Decimal("0.005") else "posted"))
+
+
 async def segarkan_cache_piutang_faktur(conn, tenant_id: str, invoice_id) -> None:
     """Cache amount_paid/status faktur + accounts_receivable dihitung ULANG dari compute_ar_outstanding (Rule 12).
 
@@ -146,8 +154,7 @@ async def segarkan_cache_piutang_faktur(conn, tenant_id: str, invoice_id) -> Non
         tenant_id, invoice_id,
     )
     out = max(Decimal("0"), Decimal(str(out)))
-    dibayar = Decimal(str(f["total_amount"])) - out
-    status = "paid" if out < Decimal("0.01") else ("partial" if dibayar > Decimal("0.005") else "posted")
+    dibayar, status = status_bayar_faktur(f["total_amount"], out)
     await conn.execute(
         "UPDATE sales_invoices SET amount_paid = $1, status = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4",
         dibayar, status, invoice_id, tenant_id,
