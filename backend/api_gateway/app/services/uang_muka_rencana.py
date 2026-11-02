@@ -295,10 +295,10 @@ async def keadaan_sesudah(conn, tid: str, deposit_id, aksi: str, p: dict) -> dic
             st = "applied" if dipakai + kembali >= jumlah else ("partial" if dipakai + kembali > 0 else "posted")
         else:
             dipakai, kembali = r["amount_applied"], r["amount_refunded"]
-    sd = status_detail_dp(st, dipakai, kembali)
-    # DP-POSISI (2 Nov 2026): position_text DIHITUNG dari keadaan SESUDAH (penentu sama dengan daftar/detail), cermin UMP
-    return {"exists": True, "status": st, "status_detail": sd, "position_text": status_text_um(sd), "amount": float(r["amount"] or 0),
-            "amount_applied": float(dipakai or 0), "amount_refunded": float(kembali or 0), "remaining": float(sisa)}
+    d = {"exists": True, "status": st, "status_detail": status_detail_dp(st, dipakai, kembali), "amount": float(r["amount"] or 0),
+         "amount_applied": float(dipakai or 0), "amount_refunded": float(kembali or 0), "remaining": float(sisa)}
+    d["position_text"] = status_text_um(d["status_detail"])  # DP-POSISI (2 Nov 2026): dari keadaan SESUDAH, penentu sama dengan daftar
+    return d
 
 
 def sisa_faktur_sesudah(aksi: str, p: dict, f0: dict) -> dict:
