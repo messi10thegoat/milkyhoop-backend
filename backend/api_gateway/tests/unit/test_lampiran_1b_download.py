@@ -426,11 +426,19 @@ async def test_exp_daftar_url_relatif_bukan_file_url(monkeypatch):
 
 def test_exp_buat_beban_menyambung_ke_pembentuk_lampiran():
     """Kontrak AST: respons POST /api/expenses membentuk lampiran lewat
-    _exp_lampiran_ke_respons(attachments, expense_id), bukan dict(a) mentah."""
+    _exp_lampiran_ke_respons(attachments, expense_id), bukan dict(a) mentah.
+    Isi create_expense diekstrak ke buat_biaya_inti (2 Nov 2026, Milkybook v2 catat biaya): kontrak diperiksa di inti,
+    dan create_expense wajib mendelegasikan ke inti itu."""
     src = Path(ex.__file__).read_text(encoding="utf-8")
-    fn = next(
-        n for n in ast.walk(ast.parse(src))
+    pohon = ast.parse(src)
+    rute = next(
+        n for n in ast.walk(pohon)
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "create_expense"
+    )
+    assert "return await buat_biaya_inti(conn, ctx, body)" in ast.unparse(rute)
+    fn = next(
+        n for n in ast.walk(pohon)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "buat_biaya_inti"
     )
     panggil = [
         n for n in ast.walk(fn)

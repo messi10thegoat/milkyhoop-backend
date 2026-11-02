@@ -1196,6 +1196,266 @@ async def get_expense_detail(request: Request, expense_id: UUID):
 # =============================================================================
 # CREATE EXPENSE
 # =============================================================================
+async def buat_biaya_inti(conn, ctx: dict, body: CreateExpenseRequest) -> dict:
+    """Inti POST /expenses (diekstrak apa adanya, 2 Nov 2026, Milkybook v2 catat biaya). WAJIB di dalam transaksi pemanggil
+    (advisory lock xact). ctx = {tenant_id, user_id}."""
+    # Law 13: Advisory lock to prevent concurrent expense creation
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"EXPENSE_CREATE:{ctx['tenant_id']}:{body.expense_date}",
+    )
+
+    # Law 5: Check accounting period is open
+    await check_period_is_open(conn, ctx["tenant_id"], body.expense_date)
+
+    # Generate expense number
+    expense_number = await conn.fetchval(
+        "SELECT generate_expense_number($1)", ctx["tenant_id"]
+    )
+
+    # Calculate totals
+    if body.is_itemized and body.line_items:
+        subtotal = sum(item.amount for item in body.line_items)
+    else:
+        subtotal = body.amount or 0
+
+    # Validate subtotal is positive
+    if subtotal <= 0:
+        raise HTTPException(
+            status_code=400, detail="Expense amount must be greater than 0"
+        )
+
+    tax_amount = (
+        Decimal(str(subtotal))
+        * Decimal(str(body.tax_rate or 0))
+        / Decimal("100")
+    ).quantize(Decimal("1"))
+    pph_amount = (
+        Decimal(str(subtotal))
+        * Decimal(str(body.pph_rate or 0))
+        / Decimal("100")
+    ).quantize(Decimal("1"))
+    total_amount = subtotal + tax_amount - pph_amount
+
+    # Get paid_through account info
+    paid_through = await conn.fetchrow(
+        """
+        SELECT ba.id, ba.account_name, ba.coa_id, coa.name as coa_name
+        FROM bank_accounts ba
+        LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
+        WHERE ba.id = $1 AND ba.tenant_id = $2
+    """,
+        str(body.paid_through_id),
+        ctx["tenant_id"],
+    )
+
+    if not paid_through:
+        raise HTTPException(
+            status_code=400, detail="Invalid paid_through account"
+        )
+
+    # Auto-set has_receipt if attachments provided
+    has_receipt = body.has_receipt or (
+        body.attachment_ids and len(body.attachment_ids) > 0
+    )
+
+    # Insert expense
+    expense_id = await conn.fetchval(
+        """
+        INSERT INTO expenses (
+            tenant_id, expense_number, expense_date,
+            paid_through_id, paid_through_name, paid_through_coa_id,
+            vendor_id, vendor_name,
+            account_id, account_name,
+            currency, subtotal,
+            tax_id, tax_name, tax_rate, tax_amount,
+            pph_type, pph_rate, pph_amount,
+            total_amount, is_itemized, status,
+            is_billable, billed_to_customer_id, reference, notes, has_receipt,
+            created_by
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24, $25, $26, $27, $28
+        ) RETURNING id
+    """,
+        ctx["tenant_id"],
+        expense_number,
+        body.expense_date,
+        str(body.paid_through_id),
+        paid_through["account_name"],
+        paid_through["coa_id"],
+        str(body.vendor_id) if body.vendor_id else None,
+        body.vendor_name,
+        str(body.account_id) if body.account_id else None,
+        body.account_name,
+        body.currency or "IDR",
+        subtotal,
+        str(body.tax_id) if body.tax_id else None,
+        body.tax_name,
+        Decimal(str(body.tax_rate or 0)),
+        tax_amount,
+        body.pph_type,
+        Decimal(str(body.pph_rate or 0)),
+        pph_amount,
+        total_amount,
+        body.is_itemized,
+        body.status,
+        body.is_billable,
+        str(body.billed_to_customer_id)
+        if body.billed_to_customer_id
+        else None,
+        body.reference,
+        body.notes,
+        has_receipt,
+        str(ctx["user_id"]),
+    )
+
+    # Insert line items if itemized
+    if body.is_itemized and body.line_items:
+        for idx, item in enumerate(body.line_items, 1):
+            await conn.execute(
+                """
+                INSERT INTO expense_items (
+                    tenant_id, expense_id, account_id, account_name,
+                    amount, notes, line_number
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                ctx["tenant_id"],
+                str(expense_id),
+                str(item.account_id),
+                item.account_name,
+                item.amount,
+                item.notes,
+                idx,
+            )
+
+    # Draf: TIDAK menjurnal dan TIDAK menyentuh saldo bank.
+    # Jurnal + transaksi bank lahir belakangan di /post.
+    if body.status == "posted":
+        # Create journal entry
+        journal_id = await create_expense_journal(
+            conn,
+            ctx["tenant_id"],
+            expense_id,
+            expense_number,
+            body.expense_date,
+            body.is_itemized,
+            body.account_id,
+            body.line_items,
+            subtotal,
+            tax_amount,
+            pph_amount,
+            paid_through["coa_id"],
+            body.tax_id,
+            pph_type=body.pph_type,
+            pph_rate=body.pph_rate,
+            vendor_id=body.vendor_id,
+        )
+
+        # Update expense with journal_id + mark accounting_status POSTED
+        await conn.execute(
+            """
+            UPDATE expenses
+            SET journal_id = $1, accounting_status = 'POSTED',
+                operational_status = 'PAID'
+            WHERE id = $2
+            """,
+            str(journal_id),
+            str(expense_id),
+        )
+
+        # Create bank transaction to update bank balance
+        import uuid as uuid_module
+
+        bank_tx_id = uuid_module.uuid4()
+        await conn.execute(
+            """
+            INSERT INTO bank_transactions (
+                id, tenant_id, bank_account_id, transaction_date,
+                transaction_type, amount, running_balance,
+                reference_type, reference_id, description,
+                payee_payer, created_by, journal_id
+            ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE', $6, $7, $8, $9, $10)
+            """,
+            bank_tx_id,
+            ctx["tenant_id"],
+            body.paid_through_id,
+            body.expense_date,
+            -total_amount,  # Negative = outflow
+            expense_id,
+            f"Expense: {expense_number}",
+            body.vendor_name or "Expense",
+            ctx["user_id"],
+            str(journal_id),
+        )
+
+    # Link attachments via document_attachments
+    if body.attachment_ids:
+        for doc_id in body.attachment_ids[:5]:  # Max 5 attachments
+            # Verify document exists and belongs to tenant
+            doc_exists = await conn.fetchval(
+                """
+                SELECT id FROM documents
+                WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+            """,
+                str(doc_id),
+                ctx["tenant_id"],
+            )
+
+            if doc_exists:
+                # Link document to expense
+                await conn.execute(
+                    """
+                    INSERT INTO document_attachments (
+                        tenant_id, document_id, entity_type, entity_id,
+                        attachment_type, display_order, attached_by
+                    ) VALUES ($1, $2, 'expense', $3, 'receipt', 0, $4)
+                    ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING
+                """,
+                    ctx["tenant_id"],
+                    str(doc_id),
+                    str(expense_id),
+                    str(ctx["user_id"]),
+                )
+
+    # Fetch created expense with attachment count
+    expense = await conn.fetchrow(
+        """
+        SELECT e.*,
+            (SELECT COUNT(*) FROM document_attachments WHERE entity_type = 'expense' AND entity_id = e.id) as attachment_count
+        FROM expenses e WHERE e.id = $1
+    """,
+        str(expense_id),
+    )
+
+    result_data = dict(expense)
+
+    # Fetch attachments with signed URLs
+    attachments = await conn.fetch(
+        """
+        SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
+               d.width, d.height, d.file_url, d.storage_type,
+               d.uploaded_at
+        FROM document_attachments da
+        JOIN documents d ON da.document_id = d.id
+        WHERE da.entity_type = 'expense' AND da.entity_id = $1
+        ORDER BY da.display_order
+    """,
+        str(expense_id),
+    )
+
+    result_data["attachments"] = _exp_lampiran_ke_respons(
+        attachments, expense_id
+    )
+
+    return {
+        "success": True,
+        "message": f"Expense {expense_number} created successfully",
+        "data": result_data,
+    }
+
+
 @router.post("", response_model=CreateExpenseResponse, status_code=201)
 async def create_expense(request: Request, body: CreateExpenseRequest):
     """
@@ -1219,261 +1479,7 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                # Law 13: Advisory lock to prevent concurrent expense creation
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"EXPENSE_CREATE:{ctx['tenant_id']}:{body.expense_date}",
-                )
-
-                # Law 5: Check accounting period is open
-                await check_period_is_open(conn, ctx["tenant_id"], body.expense_date)
-
-                # Generate expense number
-                expense_number = await conn.fetchval(
-                    "SELECT generate_expense_number($1)", ctx["tenant_id"]
-                )
-
-                # Calculate totals
-                if body.is_itemized and body.line_items:
-                    subtotal = sum(item.amount for item in body.line_items)
-                else:
-                    subtotal = body.amount or 0
-
-                # Validate subtotal is positive
-                if subtotal <= 0:
-                    raise HTTPException(
-                        status_code=400, detail="Expense amount must be greater than 0"
-                    )
-
-                tax_amount = (
-                    Decimal(str(subtotal))
-                    * Decimal(str(body.tax_rate or 0))
-                    / Decimal("100")
-                ).quantize(Decimal("1"))
-                pph_amount = (
-                    Decimal(str(subtotal))
-                    * Decimal(str(body.pph_rate or 0))
-                    / Decimal("100")
-                ).quantize(Decimal("1"))
-                total_amount = subtotal + tax_amount - pph_amount
-
-                # Get paid_through account info
-                paid_through = await conn.fetchrow(
-                    """
-                    SELECT ba.id, ba.account_name, ba.coa_id, coa.name as coa_name
-                    FROM bank_accounts ba
-                    LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
-                    WHERE ba.id = $1 AND ba.tenant_id = $2
-                """,
-                    str(body.paid_through_id),
-                    ctx["tenant_id"],
-                )
-
-                if not paid_through:
-                    raise HTTPException(
-                        status_code=400, detail="Invalid paid_through account"
-                    )
-
-                # Auto-set has_receipt if attachments provided
-                has_receipt = body.has_receipt or (
-                    body.attachment_ids and len(body.attachment_ids) > 0
-                )
-
-                # Insert expense
-                expense_id = await conn.fetchval(
-                    """
-                    INSERT INTO expenses (
-                        tenant_id, expense_number, expense_date,
-                        paid_through_id, paid_through_name, paid_through_coa_id,
-                        vendor_id, vendor_name,
-                        account_id, account_name,
-                        currency, subtotal,
-                        tax_id, tax_name, tax_rate, tax_amount,
-                        pph_type, pph_rate, pph_amount,
-                        total_amount, is_itemized, status,
-                        is_billable, billed_to_customer_id, reference, notes, has_receipt,
-                        created_by
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22, $23, $24, $25, $26, $27, $28
-                    ) RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    expense_number,
-                    body.expense_date,
-                    str(body.paid_through_id),
-                    paid_through["account_name"],
-                    paid_through["coa_id"],
-                    str(body.vendor_id) if body.vendor_id else None,
-                    body.vendor_name,
-                    str(body.account_id) if body.account_id else None,
-                    body.account_name,
-                    body.currency or "IDR",
-                    subtotal,
-                    str(body.tax_id) if body.tax_id else None,
-                    body.tax_name,
-                    Decimal(str(body.tax_rate or 0)),
-                    tax_amount,
-                    body.pph_type,
-                    Decimal(str(body.pph_rate or 0)),
-                    pph_amount,
-                    total_amount,
-                    body.is_itemized,
-                    body.status,
-                    body.is_billable,
-                    str(body.billed_to_customer_id)
-                    if body.billed_to_customer_id
-                    else None,
-                    body.reference,
-                    body.notes,
-                    has_receipt,
-                    str(ctx["user_id"]),
-                )
-
-                # Insert line items if itemized
-                if body.is_itemized and body.line_items:
-                    for idx, item in enumerate(body.line_items, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO expense_items (
-                                tenant_id, expense_id, account_id, account_name,
-                                amount, notes, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                            ctx["tenant_id"],
-                            str(expense_id),
-                            str(item.account_id),
-                            item.account_name,
-                            item.amount,
-                            item.notes,
-                            idx,
-                        )
-
-                # Draf: TIDAK menjurnal dan TIDAK menyentuh saldo bank.
-                # Jurnal + transaksi bank lahir belakangan di /post.
-                if body.status == "posted":
-                    # Create journal entry
-                    journal_id = await create_expense_journal(
-                        conn,
-                        ctx["tenant_id"],
-                        expense_id,
-                        expense_number,
-                        body.expense_date,
-                        body.is_itemized,
-                        body.account_id,
-                        body.line_items,
-                        subtotal,
-                        tax_amount,
-                        pph_amount,
-                        paid_through["coa_id"],
-                        body.tax_id,
-                        pph_type=body.pph_type,
-                        pph_rate=body.pph_rate,
-                        vendor_id=body.vendor_id,
-                    )
-
-                    # Update expense with journal_id + mark accounting_status POSTED
-                    await conn.execute(
-                        """
-                        UPDATE expenses
-                        SET journal_id = $1, accounting_status = 'POSTED',
-                            operational_status = 'PAID'
-                        WHERE id = $2
-                        """,
-                        str(journal_id),
-                        str(expense_id),
-                    )
-
-                    # Create bank transaction to update bank balance
-                    import uuid as uuid_module
-
-                    bank_tx_id = uuid_module.uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO bank_transactions (
-                            id, tenant_id, bank_account_id, transaction_date,
-                            transaction_type, amount, running_balance,
-                            reference_type, reference_id, description,
-                            payee_payer, created_by, journal_id
-                        ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE', $6, $7, $8, $9, $10)
-                        """,
-                        bank_tx_id,
-                        ctx["tenant_id"],
-                        body.paid_through_id,
-                        body.expense_date,
-                        -total_amount,  # Negative = outflow
-                        expense_id,
-                        f"Expense: {expense_number}",
-                        body.vendor_name or "Expense",
-                        ctx["user_id"],
-                        str(journal_id),
-                    )
-
-                # Link attachments via document_attachments
-                if body.attachment_ids:
-                    for doc_id in body.attachment_ids[:5]:  # Max 5 attachments
-                        # Verify document exists and belongs to tenant
-                        doc_exists = await conn.fetchval(
-                            """
-                            SELECT id FROM documents
-                            WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-                        """,
-                            str(doc_id),
-                            ctx["tenant_id"],
-                        )
-
-                        if doc_exists:
-                            # Link document to expense
-                            await conn.execute(
-                                """
-                                INSERT INTO document_attachments (
-                                    tenant_id, document_id, entity_type, entity_id,
-                                    attachment_type, display_order, attached_by
-                                ) VALUES ($1, $2, 'expense', $3, 'receipt', 0, $4)
-                                ON CONFLICT (document_id, entity_type, entity_id) DO NOTHING
-                            """,
-                                ctx["tenant_id"],
-                                str(doc_id),
-                                str(expense_id),
-                                str(ctx["user_id"]),
-                            )
-
-                # Fetch created expense with attachment count
-                expense = await conn.fetchrow(
-                    """
-                    SELECT e.*,
-                        (SELECT COUNT(*) FROM document_attachments WHERE entity_type = 'expense' AND entity_id = e.id) as attachment_count
-                    FROM expenses e WHERE e.id = $1
-                """,
-                    str(expense_id),
-                )
-
-                result_data = dict(expense)
-
-                # Fetch attachments with signed URLs
-                attachments = await conn.fetch(
-                    """
-                    SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                           d.width, d.height, d.file_url, d.storage_type,
-                           d.uploaded_at
-                    FROM document_attachments da
-                    JOIN documents d ON da.document_id = d.id
-                    WHERE da.entity_type = 'expense' AND da.entity_id = $1
-                    ORDER BY da.display_order
-                """,
-                    str(expense_id),
-                )
-
-                result_data["attachments"] = _exp_lampiran_ke_respons(
-                    attachments, expense_id
-                )
-
-                return {
-                    "success": True,
-                    "message": f"Expense {expense_number} created successfully",
-                    "data": result_data,
-                }
+                return await buat_biaya_inti(conn, ctx, body)
 
     except HTTPException:
         raise

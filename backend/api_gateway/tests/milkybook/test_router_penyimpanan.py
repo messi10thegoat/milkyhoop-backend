@@ -215,7 +215,8 @@ def test_pasang_bisa_diimpor_tanpa_db_redis_dan_rute_lengkap():
                      ("/sesi", "GET"), ("/sesi", "POST"), ("/sesi/{sesi_id}", "GET"), ("/sesi/{sesi_id}", "PATCH"),
                      ("/sesi/{sesi_id}/antre/{id_pesan}", "DELETE"),
                      ("/sesi/{sesi_id}/berhenti", "POST"), ("/sesi/{sesi_id}/pesan", "POST"),
-                     ("/v2/barang", "GET"), ("/v2/pelanggan", "GET"), ("/v2/penawaran", "POST"),
+                     ("/v2/barang", "GET"), ("/v2/biaya", "POST"), ("/v2/biaya/pratinjau", "GET"),
+                     ("/v2/pelanggan", "GET"), ("/v2/penawaran", "POST"),
                      ("/v2/percakapan", "GET"), ("/v2/percakapan", "POST"),
                      ("/v2/percakapan/{percakapan_id}", "GET"), ("/v2/percakapan/{percakapan_id}", "PUT"),
                      ("/v2/tafsir", "POST")]

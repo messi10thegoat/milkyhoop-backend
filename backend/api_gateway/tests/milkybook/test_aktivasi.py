@@ -23,7 +23,9 @@ def test_main_memasang_router_milkybook():
 
 IZIN_V2 = {"/api/milkybook/v2/pelanggan": ("customer", "R"),  # data master: izin modulnya sendiri
            "/api/milkybook/v2/barang": ("item", "R"),
-           "/api/milkybook/v2/penawaran": ("quote", "C")}  # buat penawaran; master baru dicek di handler
+           "/api/milkybook/v2/penawaran": ("quote", "C"),
+           "/api/milkybook/v2/biaya/pratinjau": ("expense", "R"),  # catat biaya: izin modul pengeluaran
+           "/api/milkybook/v2/biaya": ("expense", "C")}  # buat penawaran; master baru dicek di handler
 
 
 def test_setiap_rute_terpetakan_izin_quote_r_pola_pertama():

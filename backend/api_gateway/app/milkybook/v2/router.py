@@ -6,7 +6,7 @@ from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from . import buat_penawaran, cari_barang, cari_pelanggan, draf, tafsir
+from . import biaya, buat_penawaran, cari_barang, cari_pelanggan, draf, tafsir
 
 FLAG = "milkybook_v2"
 
@@ -82,5 +82,26 @@ def buat_router_v2(*, flag_fn: Callable, conn_fn: Callable, izin_fn: Callable,
         dep = tafsir_fn() if tafsir_fn else {"pemanggil": None, "audit": None, "batas_fn": lambda t: None}
         async with conn_fn() as conn:
             return await tafsir.tafsir(conn, user, body, **dep)
+
+    @r.get("/biaya/pratinjau")
+    async def pratinjau_biaya_v2(request: Request, untuk: str = Query("", max_length=100),
+                                 jumlah: Optional[int] = Query(None, gt=0, le=biaya.MAKS_JUMLAH)):
+        """Kartu tinjau catat biaya (02-ALUR §F): Dari/Akun belajar dari riwayat; baca saja."""
+        from ...utils.tanggal_tenant import tanggal_dokumen
+        user = await _pengguna(request)
+        async with conn_fn() as conn:
+            hari_ini = await tanggal_dokumen(conn, user["tenant_id"])
+            return await biaya.pratinjau(conn, user["tenant_id"], untuk, jumlah, hari_ini)
+
+    @r.post("/biaya")
+    async def catat_biaya_v2(request: Request, body: biaya.CatatBiaya, response: Response):
+        """Simpan kartu biaya = jalur POST /expenses yang sama (posted), X-Idempotency-Key wajib per kartu."""
+        from ...services import idem_buat
+        from ...utils.tanggal_tenant import tanggal_dokumen
+        user = await _pengguna(request)
+        kunci = idem_buat.kunci_dari(request)
+        async with conn_fn() as conn:
+            hari_ini = await tanggal_dokumen(conn, user["tenant_id"])
+            return await biaya.catat(conn, user, body, kunci, hari_ini, izin_fn=izin_fn, response=response)
 
     return r
