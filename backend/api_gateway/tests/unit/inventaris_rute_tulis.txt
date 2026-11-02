@@ -499,6 +499,7 @@ POST /api/quotes/{quote_id}/void
 POST /api/quotes/{quote_id}/void/preview
 POST /api/quotes/calculate
 POST /api/receive-payments
+POST /api/receive-payments/preview
 POST /api/receive-payments/preview-journal
 POST /api/receive-payments/{payment_id}/allocations/{allocation_id}/unapply
 POST /api/receive-payments/{payment_id}/post

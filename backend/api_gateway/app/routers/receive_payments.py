@@ -1298,11 +1298,15 @@ def tolak_sumber_deposit():
         "message": "Pembayaran dari uang muka tidak lewat Penerimaan. Gunakan Terapkan uang muka pada uang muka itu."})
 
 
-async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
-    """Inti POST /receive-payments (validasi -> INSERT draf + alokasi -> posting bila bukan draf), di
-    transaksi PEMANGGIL. SATU-SATUNYA definisi: dipakai rute create (dibungkus idempotency) DAN
-    POST /sales-orders/{id}/receive-payment/preview (transaksi SELALU di-ROLLBACK). Galat pertama -> 400.
-    Lock domain/idempotency tetap milik pemanggil."""
+def _KUNCI(kunci: bool) -> str:
+    return " FOR UPDATE" if kunci else ""
+
+
+async def _periksa_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest, kunci: bool = True) -> dict:
+    """U-P4b-1 (2 Nov 2026): PEMERIKSAAN buat penerimaan -- dipindah UTUH dari buat_penerimaan (SQL, urutan, galat sama;
+    kunci=True = FOR UPDATE persis seperti dulu). Galat pertama -> HTTPException 400 (sama). Dipakai buat_penerimaan
+    (kunci=True) DAN pratinjau READ ONLY (kunci=False, tanpa FOR UPDATE). Mengubah body seperti dulu (bank_account_id ->
+    CoA, nama terisi). -> nilai yang dipakai penulis."""
     if body.source_type == "deposit":  # U6: sebelum kueri/penulisan apa pun
         tolak_sumber_deposit()
     # Check if accounting period is open (only if not saving as draft)
@@ -1318,7 +1322,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         """
         SELECT id, account_code, name, account_type
         FROM chart_of_accounts
-        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+        WHERE id = $1 AND tenant_id = $2""" + _KUNCI(kunci) + """
     """,
         bank_account_uuid,
         ctx["tenant_id"],
@@ -1363,7 +1367,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
     customer = await conn.fetchrow(
         """
         SELECT id, nama FROM customers
-        WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+        WHERE id = $1 AND tenant_id = $2""" + _KUNCI(kunci) + """
     """,
         body.customer_id,
         ctx["tenant_id"],
@@ -1423,7 +1427,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
             """
             SELECT id, invoice_number, total_amount, status, customer_id
             FROM sales_invoices
-            WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+            WHERE id = $1 AND tenant_id = $2""" + _KUNCI(kunci) + """
         """,
             UUID(alloc.invoice_id),
             ctx["tenant_id"],
@@ -1474,6 +1478,21 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
             status_code=400,
             detail=f"Total alokasi {tg.rp(allocated_amount)} melebihi jumlah bayar {tg.rp(effective_amount)}.",
         )
+
+
+    return {"bank_account": bank_account, "metode": metode, "validated_allocations": validated_allocations,
+            "allocated_amount": allocated_amount, "unapplied_amount": unapplied_amount, "effective_amount": effective_amount}
+
+
+async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
+    """Inti POST /receive-payments (validasi -> INSERT draf + alokasi -> posting bila bukan draf), di
+    transaksi PEMANGGIL. SATU-SATUNYA definisi: dipakai rute create (dibungkus idempotency) DAN
+    POST /sales-orders/{id}/receive-payment/preview (transaksi SELALU di-ROLLBACK). Galat pertama -> 400.
+    Lock domain/idempotency tetap milik pemanggil."""
+    _cek = await _periksa_penerimaan(conn, ctx, body)  # U-P4b-1: pemeriksaan satu tempat (SQL & urutan sama)
+    bank_account, metode = _cek["bank_account"], _cek["metode"]
+    validated_allocations = _cek["validated_allocations"]
+    allocated_amount, unapplied_amount = _cek["allocated_amount"], _cek["unapplied_amount"]
 
     # Generate payment number
     payment_number = await conn.fetchval(
@@ -1562,6 +1581,108 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         result["message"] = "Receive payment created and posted"
 
     return result
+
+
+def _f_rp(v):
+    return float(v) if v is not None else None
+
+
+async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
+    """U-P4b-1 (2 Nov 2026, disetujui MASTER) -- penentu BUAT penerimaan BACA SAJA (tanpa kunci, tanpa tulis): pemeriksaan
+    YANG SAMA dengan buat_penerimaan (_periksa_penerimaan kunci=False; galat pertama -> blok, kalimat sama), baris jurnal posting
+    dari fungsi MURNI yang SAMA dengan _post_payment, cermin bank (rekening bank-tertaut), faktur sesudah
+    (pihak_helpers.status_bayar_faktur), nomor PERKIRAAN dari penghitung tabel (dibaca, tak dinaikkan). Law 1/16 (sisa dari
+    jurnal), 9/25 (Decimal), 27 (akun lewat peran), 29 (penyelesaian piutang)."""
+    from ..services.pihak_helpers import status_bayar_faktur
+    from ..services.role_resolver import AccountRoleUnmappedError
+    tid = ctx["tenant_id"]
+    body = body.model_copy(deep=True)  # pemeriksaan mengubah body (seperti penulis); salinan supaya pemanggil tak terpengaruh
+    hasil = {"blocks": [], "cek": None, "journals": [], "bank_transactions": [], "invoices": [], "payment_number": None,
+             "overpayment_deposit_number": None, "payment_method": None, "body": body}
+    try:
+        cek = await _periksa_penerimaan(conn, ctx, body, kunci=False)
+    except HTTPException as e:
+        d = e.detail
+        hasil["blocks"].append({"code": (d.get("code") if isinstance(d, dict) and d.get("code") else "RP_REJECTED"),
+                                "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
+        return hasil
+    hasil["cek"], hasil["payment_method"] = cek, cek["metode"]
+    th = await conn.fetchval("SELECT EXTRACT(YEAR FROM tanggal_bisnis($1))::int", tid)
+    sq = await conn.fetchrow("SELECT last_number, year FROM receive_payment_sequences WHERE tenant_id = $1", tid)
+    nomor = f"RCV-{th}-{((sq['last_number'] + 1) if (sq and sq['year'] == th) else 1):04d}"  # == generate_receive_payment_number
+    hasil["payment_number"] = nomor
+    for v in cek["validated_allocations"]:
+        sisa = Decimal(str(v["remaining_before"])) - Decimal(str(v["amount_applied"]))
+        hasil["invoices"].append({"invoice_id": str(v["invoice_id"]), "invoice_number": v["invoice_number"],
+                                  "remaining_before": _f_rp(v["remaining_before"]), "amount_applied": _f_rp(v["amount_applied"]),
+                                  "remaining_after": _f_rp(sisa if not body.save_as_draft else v["remaining_before"]),
+                                  "status_after": (status_bayar_faktur(v["invoice_amount"], sisa)[1] if not body.save_as_draft else None)})
+    if body.save_as_draft:
+        return hasil  # draf: nol jurnal / bank / uang muka
+    try:
+        akun_dp = await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+        akun_ar = await resolve_account_id_by_role(conn, tid, AccountRole.AR_TRADE)
+        akun_diskon = None
+        if body.discount_amount and body.discount_amount > 0:
+            akun_diskon = (UUID(body.discount_account_id) if body.discount_account_id
+                           else await resolve_account_id_by_role(conn, tid, AccountRole.REVENUE_SALES_DISCOUNT))
+    except AccountRoleUnmappedError as e:
+        hasil["blocks"].append({"code": "PERAN_AKUN_BELUM_DIPETAKAN", "message": str(e)})
+        return hasil
+    p = {"source_type": body.source_type, "bank_account_id": UUID(body.bank_account_id), "total_amount": body.total_amount,
+         "discount_amount": body.discount_amount, "allocated_amount": cek["allocated_amount"],
+         "unapplied_amount": cek["unapplied_amount"], "payment_number": nomor, "customer_name": body.customer_name}
+    baris = (_baris_debit_penerimaan(p, akun_dp) + (_baris_diskon_penerimaan(p, akun_diskon) if akun_diskon else [])
+             + _baris_piutang_penerimaan(p, akun_ar) + _baris_kelebihan_penerimaan(p, akun_dp))
+    akun = {r["id"]: r for r in await conn.fetch(
+        "SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        tid, list({b["account_id"] for b in baris if b["account_id"]}))}
+    hasil["journals"] = [{"journal_number": None, "source_type": "RECEIVE_PAYMENT", "journal_date": body.payment_date.isoformat(),
+                          "description": f"Penerimaan Pembayaran {nomor} - {body.customer_name}",
+                          "lines": [{"account_code": akun[b["account_id"]]["account_code"] if b["account_id"] in akun else None,
+                                     "account_name": akun[b["account_id"]]["name"] if b["account_id"] in akun else None,
+                                     "debit": _f_rp(b["debit"]), "credit": _f_rp(b["credit"])} for b in baris]}]
+    if body.source_type == "cash":
+        ba = await conn.fetchrow("SELECT id, account_name FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+                                 UUID(body.bank_account_id), tid)
+        if ba:  # == create_bank_transaction_for_journal di _post_payment (deposit, +total_amount)
+            hasil["bank_transactions"] = [{"bank_account": ba["account_name"], "amount": _f_rp(body.total_amount),
+                                           "transaction_type": "deposit"}]
+    if cek["unapplied_amount"] and cek["unapplied_amount"] > 0:  # == generate_customer_deposit_number(tid, 'OVP')
+        bl = await conn.fetchrow("SELECT TO_CHAR(tanggal_bisnis($1), 'YYYY-MM') AS ym, TO_CHAR(tanggal_bisnis($1), 'YYMM') AS yymm", tid)
+        last = await conn.fetchval("SELECT last_number FROM customer_deposit_sequences WHERE tenant_id = $1 AND year_month = $2",
+                                   tid, bl["ym"])
+        hasil["overpayment_deposit_number"] = f"OVP-{bl['yymm']}-{((last or 0) + 1):04d}"
+    return hasil
+
+
+@router.post("/preview")
+async def preview_create_receive_payment(request: Request, body: CreateReceivePaymentRequest):
+    """U-P4b-1 (2 Nov 2026): pratinjau BUAT penerimaan -- READ ONLY tanpa kunci, nol tulis; penentu = rencana_penerimaan_ro
+    (pemeriksaan + baris jurnal SAMA dengan POST /receive-payments). Bentuk = pola Pembayaran Keluar (POST /bill-payments/preview).
+    Nomor = PERKIRAAN (payment_number_estimated: true); nomor final terbit saat simpan."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            r = await rencana_penerimaan_ro(conn, ctx, body)
+    ok = not r["blocks"]
+    status = "draft" if body.save_as_draft else "posted"
+    return {"success": True, "data": {
+        "payment_id": None, "action": "create", "can_proceed": ok,
+        "blocks": r["blocks"],
+        "before": {"exists": False},
+        "after": ({"exists": True, "status": status, "payment_number": r["payment_number"], "total_amount": _f_rp(body.total_amount),
+                   "allocated_amount": _f_rp(r["cek"]["allocated_amount"]), "unapplied_amount": _f_rp(r["cek"]["unapplied_amount"]),
+                   "payment_method": r["payment_method"]} if r["cek"] else {"exists": False}),
+        "journals": r["journals"] if ok else [],
+        "bank_transactions": r["bank_transactions"] if ok else [],
+        "invoices": r["invoices"],
+        "overpayment_deposit_number": r["overpayment_deposit_number"] if ok else None,
+        "payment_number": r["payment_number"], "payment_number_estimated": True,
+        "payload": body.model_dump(mode="json") if ok else None, "preview": True}}
 
 
 @router.post("", response_model=ReceivePaymentResponse, status_code=201)
@@ -1953,6 +2074,58 @@ def _deposit_payment_method(rp_method: str) -> str:
     return m
 
 
+# ---- U-P4b-1 (2 Nov 2026): baris jurnal penerimaan dari fungsi MURNI, dipakai _post_payment DAN pratinjau READ ONLY.
+# Teks SQL dipertahankan PERSIS seperti sebelum ekstraksi (bukti setara: urutan SQL + argumen identik dasar vs cabang).
+_SQL_BARIS_DEBIT = """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+        """
+_SQL_BARIS_DEBIT_DISKON = """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, 0, $6)
+            """
+_SQL_BARIS_KREDIT = """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
+        """
+
+
+def _baris_debit_penerimaan(p, akun_uang_muka) -> list:
+    """Dr Kas/Bank (sumber tunai) ATAU Dr Uang Muka Pelanggan (sumber deposit) sebesar total_amount."""
+    if p["source_type"] == "cash":
+        return [{"account_id": p["bank_account_id"], "debit": p["total_amount"], "credit": 0,
+                 "memo": f"Terima Pembayaran - {p['payment_number']}"}]
+    return [{"account_id": akun_uang_muka, "debit": p["total_amount"], "credit": 0,
+             "memo": f"Aplikasi Deposit - {p['payment_number']}"}]
+
+
+def _baris_diskon_penerimaan(p, akun_diskon) -> list:
+    """Dr Potongan Penjualan sebesar discount_amount (hanya bila akunnya ada)."""
+    if not akun_diskon:
+        return []
+    return [{"account_id": akun_diskon, "debit": p["discount_amount"], "credit": 0,
+             "memo": f"Potongan Penjualan - {p['payment_number']}"}]
+
+
+def _baris_piutang_penerimaan(p, akun_piutang) -> list:
+    """Cr Piutang Usaha sebesar allocated_amount (> 0)."""
+    if not (p["allocated_amount"] and p["allocated_amount"] > 0):
+        return []
+    return [{"account_id": akun_piutang, "debit": 0, "credit": p["allocated_amount"],
+             "memo": f"Pelunasan Piutang - {p['customer_name']}"}]
+
+
+def _baris_kelebihan_penerimaan(p, akun_uang_muka) -> list:
+    """Cr Uang Muka Pelanggan sebesar unapplied_amount (> 0) -- kelebihan bayar."""
+    if not (p["unapplied_amount"] and p["unapplied_amount"] > 0):
+        return []
+    return [{"account_id": akun_uang_muka, "debit": 0, "credit": p["unapplied_amount"],
+             "memo": f"Uang Muka dari Overpayment - {p['customer_name']}"}]
+
+
 async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     """Internal function to post a payment to accounting."""
 
@@ -2021,37 +2194,16 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
 
     line_number = 1
 
-    # DEBIT side
-    if payment["source_type"] == "cash":
-        # Dr. Bank/Cash
+    # DEBIT side -- U-P4b-1: baris dari fungsi MURNI (SAMA dengan pratinjau); SQL + argumen + urutan = sebelumnya
+    for _b in _baris_debit_penerimaan(payment, deposit_account_id):
         await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-        """,
+            _SQL_BARIS_DEBIT,
             uuid_module.uuid4(),
             journal_id,
             line_number,
-            payment["bank_account_id"],
-            payment["total_amount"],
-            f"Terima Pembayaran - {payment['payment_number']}",
-        )
-        line_number += 1
-    else:
-        # Dr. Customer Deposit (source_type = 'deposit')
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-        """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            deposit_account_id,
-            payment["total_amount"],
-            f"Aplikasi Deposit - {payment['payment_number']}",
+            _b["account_id"],
+            _b["debit"],
+            _b["memo"],
         )
         line_number += 1
 
@@ -2067,55 +2219,45 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
                 conn, ctx["tenant_id"], AccountRole.REVENUE_SALES_DISCOUNT
             )
 
-        if discount_account:
+        for _b in _baris_diskon_penerimaan(payment, discount_account):
             await conn.execute(
-                """
-                INSERT INTO journal_lines (
-                    id, journal_id, line_number, account_id, debit, credit, memo
-                ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-            """,
+                _SQL_BARIS_DEBIT_DISKON,
                 uuid_module.uuid4(),
                 journal_id,
                 line_number,
-                discount_account,
-                payment["discount_amount"],
-                f"Potongan Penjualan - {payment['payment_number']}",
+                _b["account_id"],
+                _b["debit"],
+                _b["memo"],
             )
             line_number += 1
 
     # CREDIT side
     # Cr. Accounts Receivable (allocated amount)
-    if payment["allocated_amount"] and payment["allocated_amount"] > 0:
+    for _b in _baris_piutang_penerimaan(payment, ar_account_id):
         await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-        """,
+            _SQL_BARIS_KREDIT,
             uuid_module.uuid4(),
             journal_id,
             line_number,
-            ar_account_id,
-            payment["allocated_amount"],
-            f"Pelunasan Piutang - {payment['customer_name']}",
+            _b["account_id"],
+            _b["credit"],
+            _b["memo"],
         )
         line_number += 1
 
     # Cr. Customer Deposit (unapplied amount - overpayment)
     created_deposit_id = None
-    if payment["unapplied_amount"] and payment["unapplied_amount"] > 0:
+    _kelebihan = _baris_kelebihan_penerimaan(payment, deposit_account_id)
+    if _kelebihan:
+        _b = _kelebihan[0]
         await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-        """,
+            _SQL_BARIS_KREDIT,
             uuid_module.uuid4(),
             journal_id,
             line_number,
-            deposit_account_id,
-            payment["unapplied_amount"],
-            f"Uang Muka dari Overpayment - {payment['customer_name']}",
+            _b["account_id"],
+            _b["credit"],
+            _b["memo"],
         )
 
         # Auto-create customer deposit for overpayment

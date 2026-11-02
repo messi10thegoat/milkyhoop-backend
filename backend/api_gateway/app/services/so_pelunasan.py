@@ -202,44 +202,27 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
 
 
 async def _jalankan_inti(conn, ctx: dict, r: dict):
-    """Lapis 2 bersama (SO dan faktur): bila rencana bersih, payload lewat buat_penerimaan di savepoint, lalu sisa
-    sesudah dibaca. Penolakan inti -> blok RP_REJECTED. Mengubah r di tempat; kembalikan hasil atau None."""
-    from ..routers.receive_payments import buat_penerimaan
+    """Lapis 2 bersama (SO dan faktur) -- U-P4b-1 (2 Nov 2026, disetujui MASTER): BACA SAJA. Dulu payload dijalankan lewat
+    buat_penerimaan ASLI di savepoint (+ advisory RECEIVE_PAYMENT_CREATE, FOR UPDATE, kunci baris penghitung nomor) lalu
+    di-rollback; kini penentu YANG SAMA tanpa kunci/tulis (receive_payments.rencana_penerimaan_ro: pemeriksaan buat_penerimaan
+    + baris jurnal _post_payment). Penolakan pemeriksaan -> blok RP_REJECTED (kalimat inti apa adanya, galat pertama -- sama).
+    Mengubah r di tempat; kembalikan hasil atau None. Nomor = PERKIRAAN (penghitung tabel dibaca, tak dinaikkan)."""
+    from ..routers.receive_payments import rencana_penerimaan_ro
     from ..schemas.receive_payments import CreateReceivePaymentRequest
 
-    tid = ctx["tenant_id"]
     hasil = None
     if r["payload"] is not None:
-        # lock domain yang SAMA dengan rute create (serialkan dengan penerimaan nyata pelanggan ini)
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
-                           f"RECEIVE_PAYMENT_CREATE:{tid}:{r['payload']['customer_id']}")
-        try:
-            async with conn.transaction():  # savepoint: galat SQL inti tak meracuni transaksi luar
-                hasil = await buat_penerimaan(conn, ctx, CreateReceivePaymentRequest(**r["payload"]))
-                rp = await conn.fetchrow(
-                    """SELECT rp.payment_method, rp.created_deposit_id, cd.deposit_number
-                       FROM receive_payments rp LEFT JOIN customer_deposits cd ON cd.id = rp.created_deposit_id
-                       WHERE rp.id = $1 AND rp.tenant_id = $2""",
-                    UUID(hasil["data"]["id"]), tid,
-                )
-                sesudah = {}
-                ids = [f["invoice_id"] for f in r["invoices"]]
-                if ids:
-                    for x in await conn.fetch(
-                        """SELECT invoice_id, SUM(outstanding) AS outstanding FROM compute_ar_outstanding($1)
-                           WHERE invoice_id = ANY($2::uuid[]) GROUP BY invoice_id""", tid, ids,
-                    ):
-                        sesudah[str(x["invoice_id"])] = Decimal(str(x["outstanding"] or 0))
-                for f in r["invoices"]:
-                    f["remaining_after"] = sesudah.get(str(f["invoice_id"]), _NOL)  # tak ada baris = lunas
-                hasil = {**hasil["data"], "payment_method": rp["payment_method"],
-                         "overpayment_deposit_number": rp["deposit_number"]}
-        except HTTPException as e:
-            d = e.detail
-            r["blocks"].append({"code": "RP_REJECTED",
-                                "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
+        rr = await rencana_penerimaan_ro(conn, ctx, CreateReceivePaymentRequest(**r["payload"]))
+        if rr["blocks"]:
+            b = rr["blocks"][0]
+            r["blocks"].append({"code": "RP_REJECTED", "message": b["message"]})
             r["payload"] = None
-            hasil = None
+            return None
+        sesudah = {x["invoice_id"]: Decimal(str(x["remaining_after"])) for x in rr["invoices"]}
+        for f in r["invoices"]:
+            f["remaining_after"] = sesudah.get(str(f["invoice_id"]), f["remaining"])  # tak dialokasi = tak berubah
+        hasil = {"payment_number": rr["payment_number"], "payment_method": rr["payment_method"],
+                 "overpayment_deposit_number": rr["overpayment_deposit_number"]}
     return hasil
 
 
@@ -268,6 +251,7 @@ async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePa
         "payment_method": hasil["payment_method"] if hasil else None,
         "payment_date": r["payment_date"].isoformat(),
         "payment_number_preview": hasil["payment_number"] if hasil else None,
+        "payment_number_estimated": True,  # U-P4b-1: perkiraan dari penghitung (pratinjau baca saja)
         "deposits_unapplied": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
                                 "remaining": _f(x["remaining"])} for x in r["deposits_unapplied"]],
         "payload": r["payload"],
@@ -404,6 +388,7 @@ async def pratinjau_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SI
         "payment_method": hasil["payment_method"] if hasil else None,
         "payment_date": r["payment_date"].isoformat(),
         "payment_number_preview": hasil["payment_number"] if hasil else None,
+        "payment_number_estimated": True,  # U-P4b-1: perkiraan dari penghitung (pratinjau baca saja)
         "deposits_unapplied": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
                                 "remaining": _f(x["remaining"])} for x in r["deposits_unapplied"]],
         "payload": r["payload"],

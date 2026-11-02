@@ -1,0 +1,62 @@
+"""U-P4b-1 (2 Nov 2026; disetujui MASTER): pratinjau BUAT penerimaan READ ONLY tanpa kunci (POST /receive-payments/preview +
+pratinjau terima pembayaran SI/SO). Pemeriksaan = _periksa_penerimaan (dipindah utuh dari buat_penerimaan, FOR UPDATE hanya
+kunci=True); baris jurnal = fungsi MURNI yang dipakai _post_payment (teks SQL INSERT persis seperti sebelum ekstraksi)."""
+import inspect
+from decimal import Decimal
+
+from app.routers import receive_payments as RP
+from app.services import so_pelunasan as SP
+from app.routers import sales_invoices as SI
+from app.routers import sales_orders as SO
+
+P = {"source_type": "cash", "bank_account_id": "kas", "total_amount": Decimal("950"), "discount_amount": Decimal("50"),
+     "allocated_amount": Decimal("800"), "unapplied_amount": Decimal("200"), "payment_number": "RCV-1", "customer_name": "Toko"}
+
+
+def test_baris_murni_arah_dan_memo():
+    assert RP._baris_debit_penerimaan(P, "um") == [{"account_id": "kas", "debit": Decimal("950"), "credit": 0, "memo": "Terima Pembayaran - RCV-1"}]
+    assert RP._baris_debit_penerimaan({**P, "source_type": "deposit"}, "um")[0]["account_id"] == "um"
+    assert RP._baris_diskon_penerimaan(P, "dk") == [{"account_id": "dk", "debit": Decimal("50"), "credit": 0, "memo": "Potongan Penjualan - RCV-1"}]
+    assert RP._baris_diskon_penerimaan(P, None) == []
+    assert RP._baris_piutang_penerimaan(P, "ar") == [{"account_id": "ar", "debit": 0, "credit": Decimal("800"), "memo": "Pelunasan Piutang - Toko"}]
+    assert RP._baris_kelebihan_penerimaan(P, "um") == [{"account_id": "um", "debit": 0, "credit": Decimal("200"), "memo": "Uang Muka dari Overpayment - Toko"}]
+    assert RP._baris_piutang_penerimaan({**P, "allocated_amount": 0}, "ar") == [] and RP._baris_kelebihan_penerimaan({**P, "unapplied_amount": 0}, "um") == []
+
+
+def test_teks_sql_baris_persis_seperti_sebelum_ekstraksi():
+    assert RP._SQL_BARIS_DEBIT == ("\n            INSERT INTO journal_lines (\n                id, journal_id, line_number, account_id, debit, credit, memo"
+                                   "\n            ) VALUES ($1, $2, $3, $4, $5, 0, $6)\n        ")
+    assert RP._SQL_BARIS_KREDIT == ("\n            INSERT INTO journal_lines (\n                id, journal_id, line_number, account_id, debit, credit, memo"
+                                    "\n            ) VALUES ($1, $2, $3, $4, 0, $5, $6)\n        ")
+    assert RP._SQL_BARIS_DEBIT_DISKON == ("\n                INSERT INTO journal_lines (\n                    id, journal_id, line_number, account_id, debit, credit, memo"
+                                          "\n                ) VALUES ($1, $2, $3, $4, $5, 0, $6)\n            ")
+
+
+def test_penulis_memakai_pemeriksa_dan_baris_murni():
+    b = inspect.getsource(RP.buat_penerimaan)
+    assert "_cek = await _periksa_penerimaan(conn, ctx, body)" in b and "FOR UPDATE" not in b
+    p = inspect.getsource(RP._post_payment)
+    for f in ("_baris_debit_penerimaan(", "_baris_diskon_penerimaan(", "_baris_piutang_penerimaan(", "_baris_kelebihan_penerimaan("):
+        assert f in p, f
+    assert "INSERT INTO journal_lines" not in p  # teks SQL baris hanya di konstanta
+    k = inspect.getsource(RP._periksa_penerimaan)
+    assert k.count("_KUNCI(kunci)") == 3 and RP._KUNCI(True) == " FOR UPDATE" and RP._KUNCI(False) == ""
+
+
+def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
+    r = inspect.getsource(RP.rencana_penerimaan_ro)
+    assert "_periksa_penerimaan(conn, ctx, body, kunci=False)" in r and "buat_penerimaan(" not in r and "pg_advisory" not in r
+    assert "INSERT" not in r and "UPDATE " not in r and "generate_receive_payment_number" not in r
+    v = inspect.getsource(RP.preview_create_receive_payment)
+    assert "conn.transaction(readonly=True)" in v and "rencana_penerimaan_ro(conn, ctx, body)" in v
+    assert '"payment_number_estimated": True' in v
+    j = inspect.getsource(SP._jalankan_inti)
+    assert "rencana_penerimaan_ro(" in j and "buat_penerimaan" not in j and "pg_advisory" not in j
+    for mod, fn in ((SI, "preview_receive_payment_for_invoice"), (SO, "preview_receive_payment_from_order")):
+        assert "conn.transaction(readonly=True)" in inspect.getsource(getattr(mod, fn)), fn
+
+
+def test_nomor_perkiraan_rumus_sama_dengan_generator():
+    r = inspect.getsource(RP.rencana_penerimaan_ro)
+    assert "(sq['last_number'] + 1) if (sq and sq['year'] == th) else 1" in r and 'f"RCV-{th}-' in r
+    assert "OVP-{bl['yymm']}-{((last or 0) + 1):04d}" in r

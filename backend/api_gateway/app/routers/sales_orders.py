@@ -2141,7 +2141,7 @@ async def preview_receive_payment_from_order(
         from .receive_payments import _ensure_receive_payments_role_preconditions
         await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
         async with pool.acquire() as conn:
-            tr = conn.transaction()
+            tr = conn.transaction(readonly=True)  # U-P4b-1: pratinjau baca saja (penentu tanpa tulis)
             await tr.start()
             try:
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
