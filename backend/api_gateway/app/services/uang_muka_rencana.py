@@ -50,6 +50,13 @@ def _rencana_jurnal(source_type: str, description: str, journal_date, total, lin
             "lines": lines}
 
 
+def baris_terapkan(akun_dp, akun_ar, jumlah, label_k: str, nomor_faktur: str, nomor_dp: str) -> list:
+    """Baris jurnal DEPOSIT_APPLICATION (SATU penentu: penulis apply_deposit_core lewat rencana_terapkan DAN pratinjau terbit faktur
+    U-SI-TERBIT B1): Dr Kewajiban Uang Muka Pelanggan / Cr Piutang Usaha (penjaga #7)."""
+    return [(akun_dp, jumlah, 0, f"Aplikasi {label_k} - {nomor_faktur}"),
+            (akun_ar, 0, jumlah, f"Pelunasan dari Deposit - {nomor_dp}")]
+
+
 async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
     """Terapkan uang muka ke faktur (apply_deposit_core)."""
     CD, tid = _cd(), ctx["tenant_id"]
@@ -104,8 +111,7 @@ async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
             "invoice": invoice, "invoice_id": inv_id, "invoice_key": app.invoice_id, "amount": app.amount,
             "jurnal": _rencana_jurnal("DEPOSIT_APPLICATION", f"Apply Deposit {dep['deposit_number']} to {invoice['invoice_number']}",
                               application_date, app.amount,
-                              [(akun_dp, app.amount, 0, f"Aplikasi {label_k} - {invoice['invoice_number']}"),
-                               (akun_ar, 0, app.amount, f"Pelunasan dari Deposit - {dep['deposit_number']}")]),
+                              baris_terapkan(akun_dp, akun_ar, app.amount, label_k, invoice["invoice_number"], dep["deposit_number"])),
         })
     return {"dep": dep, "application_date": application_date, "total": total, "items": items}
 

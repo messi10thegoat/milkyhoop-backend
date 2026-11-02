@@ -25,6 +25,7 @@ from ..services.jatuh_tempo import hari_terlambat
 from ..services.pihak_helpers import segarkan_cache_piutang_faktur, pelanggan_kanonik_tenant
 from ..services.so_riwayat import catat_riwayat, riwayat_faktur
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting faktur (Law 12)
+from ..services import faktur_terbit_rencana as FTR  # U-SI-TERBIT B1: fungsi murni posting (penulis + pratinjau)
 from ..services import so_kirim as _so_kirim
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -2690,69 +2691,36 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             )
     line_number = 1
 
-    # Insert journal lines
-    # Line 1: Debit AR = total_amount (inclusive of tax)
-    if ar_account:
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, $5, 0, $6)
-            """,
-            uuid.uuid4(),
-            journal_id,
-            line_number,
-            ar_account["id"],
-            total_amount,
-            f"Piutang - {invoice_number}",
-        )
-        line_number += 1
-
-    # Line 2: Credit Unearned Revenue = subtotal (WITHOUT tax)
-    if unearned_account:
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid.uuid4(),
-            journal_id,
-            line_number,
-            unearned_account["id"],
-            subtotal_amount,
-            f"Pendapatan Diterima Dimuka - {invoice_number}",
-        )
-        line_number += 1
-
-    # Line 2b (V290): Credit Pendapatan Ongkos Kirim = ongkir (tanpa PPN-nya)
-    if shipping_amount > 0:
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid.uuid4(),
-            journal_id,
-            line_number,
-            shipping_rev_account,
-            shipping_amount,
-            f"Pendapatan Ongkos Kirim - {invoice_number}",
-        )
-        line_number += 1
-
-    # Line 3: Credit VAT Output = tax_amount (PPN Keluaran)
-    if tax_amount > 0 and vat_output_account:
-        await conn.execute(
-            """
-            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-            VALUES ($1, $2, $3, $4, 0, $5, $6)
-            """,
-            uuid.uuid4(),
-            journal_id,
-            line_number,
-            vat_output_account["id"],
-            tax_amount,
-            f"PPN Keluaran - {invoice_number}",
-        )
+    # Insert journal lines -- U-SI-TERBIT B1: baris dari SATU penentu (faktur_terbit_rencana.baris_jv, dipakai juga pratinjau
+    # READ ONLY): Dr Piutang = total · Cr Dimuka = total - pajak - ongkir · Cr Ongkos Kirim (V290) · Cr PPN Keluaran. SQL & urutan tetap.
+    for _b in FTR.baris_jv(total_amount, tax_amount, shipping_amount, ar_account["id"], unearned_account["id"],
+                           shipping_rev_account, vat_output_account["id"], invoice_number):
+        if _b["sisi"] == "D":
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, $5, 0, $6)
+                """,
+                uuid.uuid4(),
+                journal_id,
+                line_number,
+                _b["akun"],
+                _b["debit"],
+                _b["memo"],
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
+                VALUES ($1, $2, $3, $4, 0, $5, $6)
+                """,
+                uuid.uuid4(),
+                journal_id,
+                line_number,
+                _b["akun"],
+                _b["kredit"],
+                _b["memo"],
+            )
         line_number += 1
 
     # =============================================================
@@ -2869,42 +2837,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         invoice_id,
     )
 
-    tax_amount_total = _d(invoice.get("tax_amount", 0) or 0)
-    # V290: ongkir bukan bagian allocated_amount baris barang.
-    subtotal_after_discount = (
-        _d(invoice["total_amount"]) - tax_amount_total - _d(invoice.get("shipping_amount") or 0)
-    )
-
-    total_line_subtotals = Decimal("0")
-    for itm in items:
-        qty = _d(itm["quantity"])
-        price = _d(itm["unit_price"])
-        line_sub = _d(itm["jumlah_baris"]) if itm.get("jumlah_baris") is not None else qty * price  # V427
-        disc = _d(itm.get("discount_amount", 0))
-        line_sub -= disc
-        total_line_subtotals += line_sub
-
-    if total_line_subtotals > 0:
-        for i, itm in enumerate(items):
-            qty = _d(itm["quantity"])
-            price = _d(itm["unit_price"])
-            line_sub = (_d(itm["jumlah_baris"]) if itm.get("jumlah_baris") is not None else qty * price) \
-                - _d(itm.get("discount_amount", 0))  # V427
-            proportion = line_sub / total_line_subtotals
-            alloc = (proportion * subtotal_after_discount).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
-            items[i] = dict(itm)  # make mutable copy
-            items[i]["_allocated"] = alloc
-        # Baris terakhir menurut line_number menyerap sisa -- URUTAN YANG SAMA dengan kalkulator
-        # (sales_doc_calc.allocate, urutan permintaan = line_number). Dulu fetch tanpa ORDER BY:
-        # "terakhir" = urutan fisik baris, bisa beda baris dengan dpp tersimpan.
-        sum_others = sum(items[j]["_allocated"] for j in range(len(items) - 1))
-        items[-1]["_allocated"] = subtotal_after_discount - sum_others
-    else:
-        for i, itm in enumerate(items):
-            items[i] = dict(itm)
-            items[i]["_allocated"] = Decimal("0")
+    # U-SI-TERBIT B1: alokasi per baris dari SATU penentu (faktur_terbit_rencana.alokasi_baris == sales_doc_calc.allocate): dasar =
+    # total - pajak - ongkir (V290), proporsi subtotal baris (V427 jumlah_baris) - diskon, 0,01 HALF_UP, baris terakhir menyerap sisa.
+    _alokasi = FTR.alokasi_baris(items, invoice["total_amount"], invoice.get("tax_amount", 0) or 0, invoice.get("shipping_amount") or 0)
+    items = [dict(itm, _allocated=_a) for itm, _a in zip(items, _alokasi)]
 
     # Persist allocated_amount
     for itm in items:
@@ -2983,13 +2919,15 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     fulfillment_status = "not_applicable"
     revenue_status = "recognized"
 
-    if _alok["qty"] > Decimal("0") and has_inventory_items and all_have_cost and not inventory_items_for_fulfill:
+    # U-SI-TERBIT B1: cabang dari SATU penentu (dipakai juga pratinjau)
+    _cabang = FTR.pilih_cabang(_alok["qty"], has_inventory_items, all_have_cost, bool(inventory_items_for_fulfill), effective_policy)
+    if _cabang == FTR.CABANG_SJ_PENUH:
         # Semua barang ber-stok sudah terkirim lewat Surat Jalan dari pesanan; reklas HPP + pengakuan pendapatan sudah ditulis
         # oleh alokasi di atas (P2: pendapatan saat faktur). Nol keluar stok / HPP kedua.
         fulfillment_status = "fulfilled"
         revenue_status = "recognized"
 
-    elif has_inventory_items and all_have_cost and effective_policy == "delivery":
+    elif _cabang == FTR.CABANG_TANGGUH_KIRIM:
         # P4 DELIVERY MODE, sell-from-stock: DEFER. Route into the EXISTING
         # make-to-order deferred branch verbatim — billing journal already
         # credited Pendapatan Diterima Dimuka (2-10750/role) above; here we
@@ -2998,7 +2936,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         fulfillment_status = "pending"
         revenue_status = "deferred"
 
-    elif has_inventory_items and all_have_cost:
+    elif _cabang == FTR.CABANG_KIRIM_OTOMATIS:
         # SELL-FROM-STOCK: auto-fulfill (zero UX change)
         from hashlib import sha256
 
@@ -3042,7 +2980,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         fulfillment_status = "fulfilled"
         revenue_status = "recognized"
 
-    elif has_inventory_items and not all_have_cost:
+    elif _cabang == FTR.CABANG_TANGGUH_WAC0:
         # MAKE-TO-ORDER / degrade-to-defer: billing only, fulfill later.
         # WAC=0 on at least one tracked item -> revenue deferred (cannot post
         # COGS without a cost). P4: surface this to the user (was silent).
@@ -3064,17 +3002,16 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     f"(fulfill) untuk mengakui pendapatan & HPP."
                 )
 
-    else:
+    else:  # FTR.CABANG_JASA
         # SERVICE: no inventory items, recognize revenue immediately
-        total_service_revenue = sum(_d(itm["_allocated"]) for itm in items)
+        total_service_revenue = FTR.jumlah_recog_jasa([itm["_allocated"] for itm in items])
         if total_service_revenue > 0:
             unearned_id2 = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
             # Unit pendapatan jasa: cabang ini HANYA jalan utk faktur MURNI-JASA
             # (tanpa item inventory; faktur campur ditolak T206). Semua -> 4-10150.
             # KOREKSI item_type: non_inventory = BARANG non-stok (bukan jasa).
             # service -> 4-10150; goods/non_inventory/manual -> 4-10100.
-            _svc_rev = Decimal("0")
-            _goods_rev = Decimal("0")
+            _pasangan = []
             for _itm in items:
                 _a = _d(_itm["_allocated"])
                 if _a <= 0:
@@ -3087,10 +3024,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     )
                     if _pid else None
                 )
-                if _itype == "service":
-                    _svc_rev += _a
-                else:
-                    _goods_rev += _a
+                _pasangan.append((_a, _itype))
+            _goods_rev, _svc_rev = FTR.pecah_pendapatan(_pasangan)  # U-SI-TERBIT B1: satu penentu pecahan barang/jasa
             rev_j_id = uuid.uuid4()
             rev_trace = str(uuid.uuid4())
             # Service revenue-recognition journal number via self-healing
@@ -3119,6 +3054,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 float(total_service_revenue),
                 ctx["user_id"],
             )
+            _recog = FTR.baris_recog(total_service_revenue, _goods_rev, _svc_rev, unearned_id2,
+                                     f"Dimuka \u2192 Penjualan {invoice_number}", invoice_number)  # U-SI-TERBIT B1
             await conn.execute(
                 """
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
@@ -3126,16 +3063,14 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 """,
                 uuid.uuid4(),
                 rev_j_id,
-                unearned_id2,
-                float(total_service_revenue),
-                f"Dimuka \u2192 Penjualan {invoice_number}",
+                _recog[0]["akun"],
+                float(_recog[0]["debit"]),
+                _recog[0]["memo"],
             )
             _ln_rev = 2
-            for _isvc, _amt in ((False, _goods_rev), (True, _svc_rev)):
-                if _amt <= 0:
-                    continue
+            for _bk in _recog[1:]:
                 _racct = await resolve_line_revenue_account(
-                    conn, ctx["tenant_id"], is_service=_isvc
+                    conn, ctx["tenant_id"], is_service=_bk["jasa"]
                 )
                 await conn.execute(
                     """
@@ -3146,8 +3081,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                     rev_j_id,
                     _ln_rev,
                     _racct,
-                    float(_amt),
-                    f"Penjualan {invoice_number}",
+                    float(_bk["kredit"]),
+                    _bk["memo"],
                 )
                 _ln_rev += 1
             await conn.execute(
@@ -3186,8 +3121,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         _nt_total = sum((_d(i["_allocated"]) for i in _nt_items), Decimal("0"))
         if _nt_total > 0:
             _un_id = await _resolve_unearned_revenue(conn, ctx["tenant_id"])
-            _svc_r = Decimal("0")
-            _goods_r = Decimal("0")
+            _pasangan_nt = []
             for _itm in _nt_items:
                 _pid = _itm.get("item_id") or _itm.get("product_id")
                 _it = (
@@ -3196,10 +3130,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                         _pid, ctx["tenant_id"],
                     ) if _pid else None
                 )
-                if _it == "service":
-                    _svc_r += _d(_itm["_allocated"])
-                else:
-                    _goods_r += _d(_itm["_allocated"])
+                _pasangan_nt.append((_itm["_allocated"], _it))
+            _goods_r, _svc_r = FTR.pecah_pendapatan(_pasangan_nt)  # U-SI-TERBIT B1: satu penentu pecahan barang/jasa
             _rj = uuid.uuid4()
             _rt = str(uuid.uuid4())
             _rjn = await conn.fetchval(
@@ -3218,28 +3150,28 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 f"Revenue Recognition {invoice_number} (baris non-persediaan)",
                 invoice_id, _rt, float(_nt_total), ctx["user_id"],
             )
+            _recog_nt = FTR.baris_recog(_nt_total, _goods_r, _svc_r, _un_id,
+                                        f"Dimuka → Penjualan {invoice_number} (non-persediaan)", invoice_number)  # U-SI-TERBIT B1
             await conn.execute(
                 """
                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                 VALUES ($1,$2,1,$3,$4,0,$5)
                 """,
-                uuid.uuid4(), _rj, _un_id, float(_nt_total),
-                f"Dimuka → Penjualan {invoice_number} (non-persediaan)",
+                uuid.uuid4(), _rj, _recog_nt[0]["akun"], float(_recog_nt[0]["debit"]),
+                _recog_nt[0]["memo"],
             )
             _lnr = 2
-            for _isvc, _amt in ((False, _goods_r), (True, _svc_r)):
-                if _amt <= 0:
-                    continue
+            for _bk in _recog_nt[1:]:
                 _ra = await resolve_line_revenue_account(
-                    conn, ctx["tenant_id"], is_service=_isvc
+                    conn, ctx["tenant_id"], is_service=_bk["jasa"]
                 )
                 await conn.execute(
                     """
                     INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                     VALUES ($1,$2,$3,$4,0,$5,$6)
                     """,
-                    uuid.uuid4(), _rj, _lnr, _ra, float(_amt),
-                    f"Penjualan {invoice_number}",
+                    uuid.uuid4(), _rj, _lnr, _ra, float(_bk["kredit"]),
+                    _bk["memo"],
                 )
                 _lnr += 1
             await conn.execute(
@@ -5427,6 +5359,45 @@ async def preview_receive_payment_for_invoice(
     except Exception as e:
         logger.error(f"Error previewing receive payment for invoice {invoice_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal menampilkan pratinjau penerimaan.")
+
+
+@router.post("/{invoice_id}/post/preview")
+async def preview_post_invoice(request: Request, invoice_id: UUID,
+                               skip_deposit_ids: List[str] = Query(default=[], description="Berulang atau dipisah koma")):
+    """U-SI-TERBIT B1 (2 Nov 2026, disetujui MASTER) -- PRATINJAU TERBIT faktur draf, READ ONLY tanpa kunci/penomoran/tulis (pola FPB
+    POST /bills/{id}/post/preview). Penentu SAMA dengan penulis (faktur_terbit_rencana: baris_jv/alokasi_baris/pilih_cabang/
+    pecah_pendapatan/baris_recog; uang muka = plan_so_deposit_application + uang_muka_rencana.baris_terapkan). journal_number null.
+    complete=false: HPP/pengakuan barang terkirim (kirim otomatis / Surat Jalan dari pesanan) belum direncanakan (tahap B2) -- FE
+    WAJIB menampilkannya sebagai pratinjau SEBAGIAN. payload = null (POST /post tanpa badan wajib). 200 walau diblok."""
+    from ..services import faktur_terbit_rencana as _ftr
+    ctx = get_user_context(request)
+    _raw = skip_deposit_ids if isinstance(skip_deposit_ids, (list, tuple)) else []  # panggilan langsung: default = objek Query
+    _skip = [s.strip() for v in _raw for s in str(v).split(",") if s.strip()]
+    pool = await get_pool()
+    pra_blok = []
+    try:
+        await _ensure_role_preconditions(pool, ctx["tenant_id"])  # == POST /post (di luar transaksi)
+    except Exception as e:  # noqa: BLE001 -- penulis: galat ini -> 500 "Gagal memposting faktur."
+        pra_blok.append({"code": "PERAN_AKUN_BELUM_DIPETAKAN", "message": str(e), "status": 500})
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            r = await _ftr.rencana_terbit_ro(conn, ctx, invoice_id, _skip)
+        finally:
+            await tr.rollback()  # pratinjau tak pernah menulis
+    if r is None:
+        raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
+    blocks = pra_blok + r["blocks"]
+    inv = r["invoice"]
+    return {"success": True, "data": {
+        "invoice_id": str(invoice_id), "invoice_number": inv["invoice_number"], "action": "post",
+        "can_proceed": not blocks, "blocks": [{k: v for k, v in b.items() if k != "status"} for b in blocks],
+        "status_sesudah": "posted", "complete": r["complete"], "notes": r["notes"], "warnings": r["warnings"],
+        "journals": r["journals"], "deposit_applications": r["deposit_applications"],
+        "deposit_application_journals": r["deposit_application_journals"], "skip_deposit_ids": _skip,
+        "payload": None, "preview": True}}
 
 
 @router.post("/{invoice_id}/void/preview")

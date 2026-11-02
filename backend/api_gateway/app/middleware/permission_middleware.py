@@ -305,6 +305,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # harus terpetakan = izin rute tulisnya. Pola ber-$ dan DI ATAS prefiks ^/api/sales-orders (= C).
     (r"^/api/sales-invoices/[^/]+/receive-payment/preview$", ["POST"], "receive_payment", "C"),
     (r"^/api/sales-invoices/[^/]+/void/preview$", ["POST"], "sales_invoice", "V"),
+    (r"^/api/sales-invoices/[^/]+/post/preview$", ["POST"], "sales_invoice", "P"),  # U-SI-TERBIT B1: huruf == POST /post
     (r"^/api/sales-invoices/[^/]+/recognize-non-stock-revenue$", ["POST"], "sales_invoice", "P"),
     (r"^/api/sales-orders/[^/]+/receive-payment/preview$", ["POST"], "receive_payment", "C"),
     # Kirim barang SO menulis lewat _execute_fulfillment faktur = izin /sales-invoices/{id}/fulfill.

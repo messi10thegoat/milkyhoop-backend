@@ -530,6 +530,7 @@ POST /api/sales-invoices/{invoice_id}/attachments
 POST /api/sales-invoices/{invoice_id}/fulfill
 POST /api/sales-invoices/{invoice_id}/payments
 POST /api/sales-invoices/{invoice_id}/post
+POST /api/sales-invoices/{invoice_id}/post/preview
 POST /api/sales-invoices/{invoice_id}/void
 POST /api/sales-orders
 POST /api/sales-orders/calculate
