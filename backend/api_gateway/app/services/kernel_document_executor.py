@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from .resolve_account import resolve_accounts_by_codes
+from . import teks_galat as tg  # PERIODE-TEKS (2 Nov 2026)
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +493,7 @@ class KernelDocumentExecutor:
                 if not period_ok:
                     return await self._mark_failed(
                         conn, doc_uuid, tenant_id,
-                        f"Period is closed for date {journal_date}",
+                        tg.periode_tertutup(None, "CLOSED"),  # PERIODE-TEKS: alasan gagal intake = kalimat penentu (hanya teks)
                     )
 
                 # Resolve account codes (Law 27)

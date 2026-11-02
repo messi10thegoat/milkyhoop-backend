@@ -88,6 +88,22 @@ def test_pemindai_status_mentah_bisa_merah(tmp_path):
 
 def test_situs_periode_teks_memakai_penentu():
     harap = {"routers/vendor_deposits.py": 4, "routers/bank_transfers.py": 2, "routers/production.py": 2, "routers/journals.py": 4,
-             "services/uang_muka_vendor_rencana.py": 2, "services/nota_debit_rencana.py": 1, "services/reklas_kelas_beban.py": 2}
+             "services/uang_muka_vendor_rencana.py": 2, "services/nota_debit_rencana.py": 1, "services/reklas_kelas_beban.py": 2,
+             "services/kernel_document_executor.py": 1}
     for rel, n in harap.items():
         assert (APP / rel).read_text().count("tg.periode_tertutup(") >= n, rel
+
+
+def test_alasan_gagal_intake_periode_tertutup_kalimat_indonesia():
+    """Jalur dokumen masuk (kernel): periode tertutup -> _mark_failed(..., <alasan>) = kalimat penentu, bukan teks Inggris."""
+    src = (APP / "services/kernel_document_executor.py").read_text()
+    pohon = ast.parse(src)
+    alasan = []
+    for n in ast.walk(pohon):
+        if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.operand, ast.Name) \
+                and n.test.operand.id == "period_ok":
+            for m in ast.walk(n):
+                if isinstance(m, ast.Call) and getattr(m.func, "attr", None) == "_mark_failed":
+                    alasan.append(ast.unparse(m.args[-1]))
+    assert alasan == ["tg.periode_tertutup(None, 'CLOSED')"], alasan
+    assert tg.periode_tertutup(None, "CLOSED") == "Periode akuntansi sudah ditutup. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya."
