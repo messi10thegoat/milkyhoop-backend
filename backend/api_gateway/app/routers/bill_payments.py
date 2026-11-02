@@ -156,6 +156,20 @@ def _uang(v):
     return int(d) if d == d.to_integral_value() else float(d)
 
 
+def format_nomor_bayar(year_month: str, n: int) -> str:
+    """Format nomor Pembayaran Keluar PAY-YYYYMM-NNNN: SATU penentu untuk penulis (generate_payment_number) dan perkiraan pratinjau."""
+    return f"PAY-{year_month.replace('-', '')}-{n:04d}"
+
+
+async def perkiraan_nomor_bayar(conn, tenant_id: str) -> str:
+    """U-P4c: nomor yang AKAN diberikan generate_payment_number -- bulan & penghitung SAMA (bill_payment_sequences), dibaca TANPA
+    tulis/kunci. PERKIRAAN: penulis paralel bisa mengambilnya dulu (pola NetSuite; cermin _perkiraan_nomor_ovp RP)."""
+    year_month = (await tanggal_dokumen(conn, tenant_id)).strftime("%Y-%m")
+    last = await conn.fetchval("SELECT last_number FROM bill_payment_sequences WHERE tenant_id = $1 AND year_month = $2",
+                               tenant_id, year_month)
+    return format_nomor_bayar(year_month, (last or 0) + 1)
+
+
 async def generate_payment_number(conn, tenant_id: str) -> str:
     from datetime import datetime
 
@@ -170,7 +184,7 @@ async def generate_payment_number(conn, tenant_id: str) -> str:
             tenant_id,
             year_month,
         )
-        return f"PAY-{year_month.replace('-', '')}-{row['last_number']:04d}"
+        return format_nomor_bayar(year_month, row["last_number"])
     except Exception:
         return (
             f"PAY-{year_month.replace('-', '')}-{uuid_module.uuid4().hex[:6].upper()}"
@@ -480,10 +494,12 @@ async def preview_create_bill_payment(request: Request, payload: CreateBillPayme
         try:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             r = await BKR.rencana_bayar(conn, ctx, payload, pratinjau=True)
+            nomor = await perkiraan_nomor_bayar(conn, ctx["tenant_id"])  # U-P4c: perkiraan, nomor final terbit saat simpan
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     return {"success": True, "data": {
         "payment_id": None, "action": "create", "can_proceed": not r["blocks"],
+        "payment_number_preview": nomor, "payment_number_estimated": True,
         "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
         "bills": r["bills"], "pph": r.get("pph"), "payload": payload.model_dump(mode="json"), "preview": True}}

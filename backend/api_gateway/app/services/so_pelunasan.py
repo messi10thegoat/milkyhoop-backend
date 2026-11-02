@@ -222,8 +222,15 @@ async def _jalankan_inti(conn, ctx: dict, r: dict):
         for f in r["invoices"]:
             f["remaining_after"] = sesudah.get(str(f["invoice_id"]), f["remaining"])  # tak dialokasi = tak berubah
         hasil = {"payment_number": rr["payment_number"], "payment_method": rr["payment_method"],
-                 "overpayment_deposit_number": rr["overpayment_deposit_number"]}
+                 "overpayment_deposit_number": rr["overpayment_deposit_number"],
+                 # U-P4c (2 Nov 2026): jurnal + cermin bank dari penentu YANG SAMA (rencana_penerimaan_ro), bukan hitungan kedua
+                 "journals": rr["journals"], "bank_transactions": rr["bank_transactions"]}
     return hasil
+
+
+def _jurnal_bank(hasil) -> dict:
+    """U-P4c (aditif, pola /receive-payments/preview): journals[{journal_number: null, lines}] + bank_transactions[]; [] bila diblok."""
+    return {"journals": hasil["journals"] if hasil else [], "bank_transactions": hasil["bank_transactions"] if hasil else []}
 
 
 async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaymentPreviewRequest) -> dict:
@@ -255,6 +262,7 @@ async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePa
         "deposits_unapplied": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
                                 "remaining": _f(x["remaining"])} for x in r["deposits_unapplied"]],
         "payload": r["payload"],
+        **_jurnal_bank(hasil),
     }
 
 
@@ -392,4 +400,5 @@ async def pratinjau_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SI
         "deposits_unapplied": [{"deposit_id": x["deposit_id"], "deposit_number": x["deposit_number"],
                                 "remaining": _f(x["remaining"])} for x in r["deposits_unapplied"]],
         "payload": r["payload"],
+        **_jurnal_bank(hasil),
     }
