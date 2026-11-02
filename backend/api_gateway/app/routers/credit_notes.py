@@ -1208,6 +1208,7 @@ async def _pratinjau_dua_bentuk(conn, ctx: dict, body) -> dict:
         data["ok"] = data["can_save"] = not data["blocks"]
         if data["blocks"]:
             data["payload"] = None
+        NKR.alias_buat_nd(data, data.get("stock") or [])  # U-P6: alias ikut keadaan sesudah blok rakit
         data["lines"] = rakit["lines"]
         return data
     try:
@@ -1238,6 +1239,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         # 30 Sep (diukur di uji nyata WORKSPACE, CN-2609-0030): NK bertaut faktur LANGSUNG memotong sisa tagihan saat diposting.
         sisa = await conn.fetchval(_SQL_SISA, tid, faktur["id"])
     nomor, jurnal, stok, kredit = None, [], [], None
+    stok_nd = []  # U-P6: baris restock bentuk ND
     if not blocks:
         try:
             await periksa_tautan_baris_faktur(conn, tid, faktur["id"] if faktur else None, [i.model_dump() for i in body.items])
@@ -1270,6 +1272,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
             for x in rp["restock"]:
                 per[x["nama"]] = per.get(x["nama"], Decimal("0")) + Decimal(str(x["qty"]))
             stok = [{"product_name": n, "quantity": float(q)} for n, q in sorted(per.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))]
+            stok_nd = NKR.stok_bentuk_nd(rp["restock"])
             if rp["kelebihan"] > 0:
                 kredit = {"deposit_number": None, "amount": float(rp["kelebihan"])}
             if faktur is not None:
@@ -1277,6 +1280,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         except HTTPException as e:
             blocks.append({"code": "CN_REJECTED", "message": _pesan_galat(e)})
             nomor, jurnal, stok, kredit, sisa_sesudah = None, [], [], None, None
+            stok_nd = []
     ok = not blocks
     if ok and kredit:
         notes.append(NKR.catatan_kelebihan_nk(kredit["amount"]))
@@ -1284,7 +1288,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         notes.append({"code": "CN_REDUCES_INVOICE",
                       "message": f"Sesudah diposting, sisa tagihan {faktur['invoice_number']} menjadi "
                                  f"{tg.rp(sisa_sesudah)} (dari {tg.rp(sisa)})."})
-    return {
+    return NKR.alias_buat_nd({
         "ok": ok,
         "can_save": ok,
         "blocks": blocks,
@@ -1307,7 +1311,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
         "customer_credit_on_post": kredit if ok else None,
         "stock_returned_on_post": stok if ok else [],
         "payload": body.model_dump(mode="json") if ok else None,
-    }
+    }, stok_nd)
 
 
 class CreditNoteFromInvoiceLine(BaseModel):
