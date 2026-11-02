@@ -51,7 +51,7 @@ def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
     assert "conn.transaction(readonly=True)" in v and "rencana_penerimaan_ro(conn, ctx, body)" in v
     assert '"payment_number_estimated": True' in v
     j = inspect.getsource(SP._jalankan_inti)
-    assert "rencana_penerimaan_ro(" in j and "buat_penerimaan" not in j and "pg_advisory" not in j
+    assert "rencana_penerimaan_ro(" in j and "buat_penerimaan(" not in j and "pg_advisory_xact_lock(" not in j  # panggilan, bukan docstring
     for mod, fn in ((SI, "preview_receive_payment_for_invoice"), (SO, "preview_receive_payment_from_order")):
         assert "conn.transaction(readonly=True)" in inspect.getsource(getattr(mod, fn)), fn
 
