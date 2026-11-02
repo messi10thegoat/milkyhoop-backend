@@ -1,5 +1,5 @@
 """U-BP-NOMOR (2 Nov 2026, disetujui MASTER): PERKIRAAN nomor jurnal berikutnya untuk pratinjau -- rumus PERSIS fungsi DB
-get_next_journal_number(p_tenant_id, p_prefix, p_date) TANPA menulis/mengunci:
+penomoran jurnal (get_next_journal_number; argumen tenant, awalan, tanggal) TANPA menulis/mengunci. Modul ini TIDAK menerbitkan nomor:
   yymm   = to_char(COALESCE(p_date, tanggal_bisnis(tenant)), 'YYMM'); year/month dari tanggal yang sama
   actual = MAX sufiks angka journal_number '^<prefix>-<yymm>-[0-9]+$' di journal_entries tenant
   n      = GREATEST(COALESCE(journal_number_sequences.last_number, 0) + 1, actual + 1)   (baris baru: GREATEST(1, actual + 1) -- sama)
@@ -22,5 +22,5 @@ SELECT $2 || '-' || k.yymm || '-' || lpad(GREATEST(COALESCE(s.last_number, 0) + 
 
 
 async def perkiraan_nomor_jurnal(conn, tenant_id: str, prefix: str, tanggal: Optional[date] = None) -> str:
-    """Nomor yang AKAN diberikan get_next_journal_number(tenant, prefix, tanggal) -- dibaca saja (SELECT), tanpa kunci."""
+    """Nomor yang AKAN diberikan fungsi DB penomoran jurnal untuk (tenant, awalan, tanggal) -- dibaca saja (SELECT), tanpa kunci."""
     return await conn.fetchval(SQL_PERKIRAAN_NOMOR_JURNAL, tenant_id, prefix, tanggal)
