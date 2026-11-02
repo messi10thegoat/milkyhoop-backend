@@ -55,6 +55,9 @@ def test_periksa_sisa_draf_blok_dan_kunci(monkeypatch):
 def test_rute_posting_dan_pratinjau_memakai_penentu_yang_sama():
     r = inspect.getsource(RP.post_receive_payment)
     assert r.index("_periksa_sisa_draf(conn, ctx[\"tenant_id\"], payment_id, kunci=True)") < r.index("_post_payment(conn, ctx, payment_id)")
+    # blok pertama WAJIB menghentikan posting dengan 400 berkalimat (S1: cek tanpa raise -> merah di unit, bukan hanya nyata)
+    i = r.index("_blok_sisa = await _periksa_sisa_draf(")
+    assert 'if _blok_sisa:\n                    raise HTTPException(status_code=400, detail=_blok_sisa[0]["message"])' in r[i:i + 400]
     assert "_periksa_sisa_draf(conn, tid, payment_id, kunci=False)" in inspect.getsource(RP._pratinjau_draf_penerimaan)
 
 
