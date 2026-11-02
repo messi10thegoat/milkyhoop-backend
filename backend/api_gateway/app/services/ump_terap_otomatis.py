@@ -3,8 +3,8 @@
 plan_so_deposit_application :300). Cermin SI APA ADANYA (putusan MASTER):
 - (a) GAGAL: satu penerapan galat -> SELURUH posting FPB batal (tanpa try; Law 23). Yang tak layak DILEWATI di perencana
   (planned 0 + skip_reason), bukan ditangkap saat terap.
-- (b) TANGGAL penerapan = tanggal FPB (issue_date), sama dengan SI memakai invoice_date; periode diperiksa inti terapkan.
-  max(tanggal faktur, tanggal uang muka) = putusan terpisah untuk SI + U-B sekaligus (belum diputuskan).
+- (b) TANGGAL penerapan = max(tanggal FPB, tanggal uang muka) -- TGL-UM, putusan LANGSUNG pemilik 2 Nov untuk SI + U-B sekaligus
+  (services/tanggal_uang_muka); periode diperiksa inti terapkan.
 - (c) vendor uang muka beda -> dilewati ("Vendor uang muka berbeda dengan vendor faktur."); tanpa medan mata uang (IDR).
 Tautan PO tagihan = bills.purchase_order_id ATAU PO dari baris (bill_items.purchase_order_item_id) -- predikat SAMA dengan
 tagihan_daftar (bundel PO). Uang muka: bertaut salah satu PO itu, status terbit (posted/partial), FIFO tanggal lalu nomor; sisa =
@@ -13,6 +13,7 @@ turunan JURNAL (UMV.sisa_jurnal, Law 1/16); jatah = min(sisa, sisa tagihan tersi
 from decimal import Decimal
 from uuid import UUID
 
+from . import tanggal_uang_muka as TUM
 from . import uang_muka_vendor as UMV
 from .uang_muka_vendor_rencana import STATUS_TERBIT
 
@@ -121,7 +122,7 @@ async def terapkan_otomatis(conn, ctx: dict, bill_id, tanggal=None, skip_ids=())
     tid = ctx["tenant_id"]
     if not await po_tagihan(conn, tid, bill_id):
         return []
-    if tanggal is None:  # (b) cermin SI: tanggal penerapan = tanggal faktur
+    if tanggal is None:  # (b) tanggal faktur; per uang muka = max(tanggal faktur, tanggal uang muka) (TGL-UM, putusan pemilik 2 Nov)
         tanggal = await conn.fetchval("SELECT issue_date FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tid)
     outstanding = await get_bill_remaining_from_journal(conn, tid, bill_id)
     diterapkan = []
@@ -129,7 +130,8 @@ async def terapkan_otomatis(conn, ctx: dict, bill_id, tanggal=None, skip_ids=())
         if p["planned_amount"] <= 0:
             continue
         res = await terapkan_uang_muka_inti(conn, ctx, UUID(p["deposit_id"]),
-                                            ApplyDepositRequest(bill_id=bill_id, amount=p["planned_amount"], applied_date=tanggal))
+                                            ApplyDepositRequest(bill_id=bill_id, amount=p["planned_amount"],
+                                                                applied_date=TUM.tanggal_terap_otomatis(tanggal, p["deposit_date"])))
         diterapkan.append({"deposit_id": p["deposit_id"], "deposit_number": p["deposit_number"], "amount": p["planned_amount"],
                            "application_id": str(res.application_id), "journal_id": str(res.journal_id)})
     return diterapkan

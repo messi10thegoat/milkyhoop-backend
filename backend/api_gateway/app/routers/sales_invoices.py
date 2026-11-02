@@ -311,6 +311,7 @@ async def _auto_apply_so_deposits(conn, ctx, invoice_id, application_date, skip_
     deposit module's own (plan_so_deposit_application + apply_deposit_core). Returns the
     applications made."""
     from types import SimpleNamespace
+    from ..services import tanggal_uang_muka as TUM
     from .customer_deposits import (
         apply_deposit_core, plan_so_deposit_application, get_invoice_remaining_from_journal,
     )
@@ -325,7 +326,8 @@ async def _auto_apply_so_deposits(conn, ctx, invoice_id, application_date, skip_
             conn, ctx, UUID(p["deposit_id"]),
             SimpleNamespace(
                 applications=[SimpleNamespace(invoice_id=str(invoice_id), amount=p["planned_amount"])],
-                application_date=application_date,
+                # TGL-UM (putusan pemilik 2 Nov): max(tanggal faktur, tanggal DP) -- tak pernah sebelum uangnya ada
+                application_date=TUM.tanggal_terap_otomatis(application_date, p["deposit_date"]),
             ),
         )
         applied.append({"deposit_id": p["deposit_id"], "deposit_number": p["deposit_number"],

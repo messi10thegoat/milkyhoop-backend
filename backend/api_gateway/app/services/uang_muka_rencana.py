@@ -13,8 +13,10 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from . import teks_galat as tg
+from . import tanggal_uang_muka as TUM
 from .bank_sync import JENIS_PEMBALIK
 from .deposit_jenis import label_deposit
+from .galat_berkode import GalatBerkode
 from .pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
 from .role_resolver import AccountRole, resolve_account_id_by_role
 from .status_uang_muka import status_detail_dp
@@ -72,6 +74,8 @@ async def rencana_terapkan(conn, ctx: dict, deposit_id, body) -> dict:
             detail=f"Nilai penerapan {CD._rp_dp(total)} melebihi sisa {(await label_deposit(conn, tid, deposit_id)).lower()} {CD._rp_dp(remaining)}.",
         )
     application_date = body.application_date or await CD.tanggal_dokumen(conn, tid)
+    if TUM.sebelum_uang_muka(application_date, dep.get("deposit_date")):  # TGL-UM (putusan pemilik 2 Nov): tolak, bukan geser
+        raise GalatBerkode(400, TUM.KODE, TUM.kalimat(dep["deposit_number"], application_date, dep.get("deposit_date")), field=TUM.MEDAN_DP)
     akun_dp = await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
     akun_ar = await resolve_account_id_by_role(conn, tid, AccountRole.AR_TRADE)
     await CD._assert_ar_side_is_ar_trade(conn, tid, akun_ar)

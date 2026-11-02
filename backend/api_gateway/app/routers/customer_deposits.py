@@ -2682,7 +2682,8 @@ async def _pratinjau_dp(ctx: dict, deposit_id, aksi: str, body) -> dict:
             try:
                 p = await _RENCANA_DP[aksi](conn, ctx, deposit_id, body)
             except HTTPException as e:
-                blok.append(_blok_dp(f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
+                # GalatBerkode (mis. TANGGAL_SEBELUM_UANG_MUKA, TGL-UM 2 Nov) membawa kodenya sendiri; HTTPException biasa -> kode umum lama
+                blok.append(_blok_dp(getattr(e, "code", None) or f"{aksi.upper()}_REJECTED", e.status_code, e.detail))
         jadi = p is not None
         jurnal, bank = await UMR.jurnal_dan_bank(conn, tid, aksi, p) if jadi else ([], [])
         sesudah = await UMR.keadaan_sesudah(conn, tid, deposit_id, aksi, p) if jadi else sebelum

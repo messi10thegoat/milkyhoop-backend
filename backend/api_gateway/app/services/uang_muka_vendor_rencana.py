@@ -18,6 +18,7 @@ from . import po_daftar as PD
 from . import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from . import uang_muka_po as UPO  # UMP-PO U-A (2 Nov 2026): plafon UMP ber-PO <= sisa PO (cermin plafon DP)
 from . import uang_muka_vendor as UMV
+from . import tanggal_uang_muka as TUM  # TGL-UM (2 Nov 2026)
 from . import uang_muka_vendor_daftar as UMD
 from .role_resolver import AccountRole
 
@@ -220,6 +221,8 @@ async def rencana_terapkan(conn, ctx, vd, body, hari_ini, pratinjau: bool = Fals
         if jumlah > sisa_t:
             bloks.append(blok("MELEBIHI_SISA_TAGIHAN", f"Jumlah melebihi sisa tagihan. Sisa tagihan: {sisa_t}"))
     tgl = body.applied_date or hari_ini
+    if TUM.sebelum_uang_muka(tgl, vd.get("deposit_date")):  # TGL-UM (putusan pemilik 2 Nov): tolak berkalimat, bukan geser
+        bloks.append(blok(TUM.KODE, TUM.kalimat(vd["deposit_number"], tgl, vd.get("deposit_date"))))
     ap = await _akun(conn, tid, AccountRole.AP_TRADE, bloks)
     um = await _akun(conn, tid, AccountRole.AP_PREPAID, bloks)
     await _periode(conn, tid, tgl, bloks)
