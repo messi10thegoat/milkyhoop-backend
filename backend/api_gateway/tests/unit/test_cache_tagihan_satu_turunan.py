@@ -16,7 +16,7 @@ from app.services import pihak_helpers as PH
 APP = Path(__file__).resolve().parents[2] / "app"
 PENULIS = {
     "routers/bill_payments.py": ["create_bill_payment", "post_bill_payment", "void_bill_payment"],
-    "routers/vendor_deposits.py": ["apply_vendor_deposit"],
+    "routers/vendor_deposits.py": ["terapkan_uang_muka_inti"],  # UMP-PO U-B: penulis kini inti (dipindah utuh dari rute; retarget OK MASTER 2 Nov)
     # U3a (22 Okt 2026): terapkan/lepas nota debit pindah ke services/nota_debit (router mendelegasikan; dicek test_nota_debit_u3a)
     "services/nota_debit.py": ["terapkan_nota_debit", "lepas_nota_debit"],
     "services/bills_service.py": ["record_payment"],

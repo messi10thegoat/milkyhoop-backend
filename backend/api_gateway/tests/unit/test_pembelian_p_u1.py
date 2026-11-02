@@ -271,7 +271,7 @@ def test_refund_melebihi_sisa_jurnal_ditolak(monkeypatch, peran):
 
 
 def test_apply_dan_refund_memakai_kunci_saldo_yang_sama():
-    for fn in (VD.apply_vendor_deposit, VD.refund_vendor_deposit):
+    for fn in (VD.terapkan_uang_muka_inti, VD.refund_vendor_deposit):  # UMP-PO U-B: penulis kini inti (dipindah utuh dari rute; retarget OK MASTER 2 Nov)
         assert "VENDOR_DEPOSIT_SALDO:{deposit_id}" in inspect.getsource(fn)
 
 

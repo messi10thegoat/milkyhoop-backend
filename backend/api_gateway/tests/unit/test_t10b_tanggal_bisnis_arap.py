@@ -50,7 +50,7 @@ FUNGSI = {
 # Default saat klien kosong: tanggal bisnis HANYA boleh jadi cabang cadangan.
 DEFAULT_KLIEN = {
     "routers/credit_notes.py": ["apply_nota_kredit_core"],
-    "routers/vendor_deposits.py": ["apply_vendor_deposit"],
+    "routers/vendor_deposits.py": ["terapkan_uang_muka_inti"],  # UMP-PO U-B: penulis kini inti (dipindah utuh dari rute; retarget OK MASTER 2 Nov)
     "routers/vendor_credits.py": ["apply_vendor_credit"],
     "routers/sales_orders.py": ["_buat_faktur_dari_so"],
     "routers/proformas.py": ["create_proforma"],
