@@ -95,3 +95,22 @@ def test_baris_terapkan_satu_penentu_penulis_dp():
     assert UMR.baris_terapkan("DP", "AR", D("200"), "Uang Muka", "INV-1", "DP-1") == [
         ("DP", D("200"), 0, "Aplikasi Uang Muka - INV-1"), ("AR", 0, D("200"), "Pelunasan dari Deposit - DP-1")]
     assert "baris_terapkan(akun_dp, akun_ar, app.amount, label_k" in inspect.getsource(UMR.rencana_terapkan)
+
+
+def test_penulis_alokasi_hanya_dari_penentu():
+    # S5 (hanya tertangkap SETARA) -> tes unit (aturan MASTER): alokasi penulis = keluaran alokasi_baris APA ADANYA
+    s = inspect.getsource(SI._internal_post_invoice)
+    assert '_alokasi = FTR.alokasi_baris(items, invoice["total_amount"], invoice.get("tax_amount", 0) or 0, invoice.get("shipping_amount") or 0)' in s
+    assert "    items = [dict(itm, _allocated=_a) for itm, _a in zip(items, _alokasi)]\n" in s
+    pohon = ast.parse(s.lstrip())
+    tugas_kw = [n for n in ast.walk(pohon) if isinstance(n, ast.keyword) and n.arg == "_allocated"]
+    tugas_sub = [n for n in ast.walk(pohon) if isinstance(n, (ast.Assign, ast.AugAssign))
+                 and any(isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) and t.slice.value == "_allocated"
+                         for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))]
+    assert len(tugas_kw) == 1 and not tugas_sub
+
+
+def test_alokasi_sepertiga_sisa_ke_baris_terakhir():
+    items = [{"quantity": 1, "unit_price": D("10000"), "discount_amount": 0, "jumlah_baris": None} for _ in range(3)]
+    a = F.alokasi_baris(items, D("29999"), 0, 0)
+    assert a == [D("9999.67"), D("9999.67"), D("9999.66")] and sum(a) == D("29999")
