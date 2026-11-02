@@ -111,16 +111,19 @@ def test_ump_otomatis_memakai_max(monkeypatch):
 
 
 # ---- MANUAL DP (penentu SATU tulis + pratinjau) ----
+PELANGGAN = str(uuid.uuid4())
+
+
 class ConnDP:
     async def fetchrow(self, sql, *a):
-        return {"invoice_number": "INV-1", "customer_id": "c1"}
+        return {"invoice_number": "INV-1", "customer_id": PELANGGAN}
 
     async def fetchval(self, sql, *a):
         return None
 
 
 def _dp_manual(monkeypatch, tgl_terap):
-    dep = {"id": uuid.uuid4(), "status": "posted", "customer_id": "c1", "deposit_number": "DEP-1", "deposit_date": D2,
+    dep = {"id": uuid.uuid4(), "status": "posted", "customer_id": PELANGGAN, "deposit_number": "DEP-1", "deposit_date": D2,
            "amount_applied": 0, "amount_refunded": 0}
 
     async def um(conn, tid, did):
@@ -132,7 +135,6 @@ def _dp_manual(monkeypatch, tgl_terap):
     async def akun(*a, **k):
         raise RuntimeError("LEWAT-PENJAGA-TANGGAL")
     monkeypatch.setattr(UMR, "_uang_muka", um)
-    monkeypatch.setattr(UMR, "pastikan_pihak_sama", lambda *a, **k: None)
     monkeypatch.setattr(CD, "compute_deposit_remaining", sisa)
     monkeypatch.setattr(UMR, "resolve_account_id_by_role", akun)
     body = SimpleNamespace(applications=[SimpleNamespace(invoice_id=str(uuid.uuid4()), amount=Decimal("10"))], application_date=tgl_terap)
