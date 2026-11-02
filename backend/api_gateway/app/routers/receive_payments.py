@@ -2983,7 +2983,7 @@ async def preview_void_receive_payment(
     """PRATINJAU void pembayaran -- U-P4a (2 Nov 2026, disetujui MASTER): transaksi READ ONLY TANPA kunci, penulis TIDAK
     dijalankan. Penentu = _rencana_void_pembayaran(kunci=False) (urutan + kalimat blok == /void); efek dihitung dari fungsi
     MURNI yang SAMA dengan penulis: _baris_balik (jurnal pembalik + jurnal lepas LPS), pihak_helpers.status_bayar_faktur
-    (status faktur sesudah, == segarkan_cache_piutang_faktur), cermin bank = -nominal asli (== create_reversal_bank_transaction).
+    (status faktur sesudah, == segarkan_cache_piutang_faktur), cermin bank = -nominal asli (== helper pembalik bank penulis).
     Respons: kunci LAMA tetap persis (can_void, journal_lines, invoices_reopened, bank_reversal, …) + kunci pola Pembayaran
     Keluar (action, can_proceed, before/after, journals[], bank_transactions[], invoices, payload)."""
     from ..services.bank_sync import JENIS_PEMBALIK
