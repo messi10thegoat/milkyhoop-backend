@@ -34,8 +34,19 @@ def test_baris_half_up_dan_sen_terjaga():
 
 
 def test_baris_diskon_nominal_dibatasi_subtotal():
-    b = PH.hitung_baris({"quantity": 1, "unit_price": 100, "discount_amount": 500, "tax_rate": 11})
+    # U-SI-LAW (putusan pemilik B1 + MASTER: PO simetris; retarget disetujui MASTER): penulis MENOLAK (dulu potong diam-diam);
+    # pratinjau (tolak=False) tetap memotong angka tampil seperti dulu sambil blok menolak.
+    import pytest
+    from app.services.galat_berkode import GalatBerkode
+    it = {"quantity": 1, "unit_price": 100, "discount_amount": 500, "tax_rate": 11}
+    with pytest.raises(GalatBerkode) as e:
+        PH.hitung_baris(it)
+    assert (e.value.status_code, e.value.code, e.value.field, e.value.detail) == (
+        400, "DISKON_BARIS_MELEBIHI", "discount_amount", "Diskon baris Rp 500 melebihi nilai baris Rp 100.")
+    b = PH.hitung_baris(it, tolak=False)
     assert b["discount_amount"] == D("100.00") and b["total"] == D("0.00") and b["tax_amount"] == D("0.00")
+    # syarat MASTER: angka terpotong di pratinjau HANYA bersama blok berkalimat SAMA dengan galat penulis (pratinjau == tulis)
+    assert PH.blok_diskon_baris([it]) == [{"code": "DISKON_BARIS_MELEBIHI", "message": e.value.detail, "status": 400}]
 
 
 def test_header_diskon_pajak_header_tersimpan_bukan_ditimpa():
