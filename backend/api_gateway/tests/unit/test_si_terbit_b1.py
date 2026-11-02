@@ -42,7 +42,7 @@ def test_pilih_cabang_urutan_penulis():
 
 
 def test_pecahan_dan_recog():
-    assert F.pecah_pendapatan([(D("100"), "service"), (D("50"), "goods"), (D("-5"), "service"), (D("7"), None)]) == (D("57"), D("100"))
+    assert F.pecah_pendapatan([(D("100"), "service"), (D("50"), "goods"), (D("-5"), "service"), (D("7"), None)]) == (D("57"), D("95"))  # U-SI-LAW (putusan pemilik): -5 masuk ember jasa, Σ kredit == Σ alokasi
     assert F.jumlah_recog_jasa([D("100"), D("-5")]) == D("95")                     # perilaku lama dipertahankan (tiket terpisah)
     r = F.baris_recog(D("150"), D("50"), D("100"), "DM", "Dimuka", "INV-9")
     assert [(x["akun"], x["debit"], x["kredit"], x["jasa"]) for x in r] == [("DM", D("150"), 0, None), (None, 0, D("50"), False),
