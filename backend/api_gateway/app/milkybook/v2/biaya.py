@@ -18,11 +18,13 @@ from uuid import UUID
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from ...services.role_resolver import AccountRole
 from .cari_barang import rupiah
+
+PERAN_BEBAN_LAIN = AccountRole.EXPENSE_OTHER  # V471: semai 5-20900 semua tenant; tanpa pemetaan = kosong (bukan galat)
 
 HARI_RIWAYAT = 90
 PERAN_KAS = ("CASH_PETTY", "CASH_GENERAL")  # urutan = prioritas
-PERAN_BEBAN_LAIN = "EXPENSE_OTHER"  # belum di katalog/CHECK V149: tanpa pemetaan = kosong (bukan galat)
 MAKS_PILIHAN = 6
 MAKS_JUMLAH = 10_000_000_000
 PREFIX_IDEM = "MB2_EXPENSE_CREATE"

@@ -290,3 +290,9 @@ def test_rute_flag_mati_404(monkeypatch):
     assert c.get("/v2/biaya/pratinjau").status_code == 404
     assert c.post("/v2/biaya", json={"untuk": "x", "jumlah": 1, "dari_id": KAS, "akun_id": AKUN}).status_code == 404
     assert t == {}
+
+
+def test_peran_beban_lain_dari_katalog_dan_disemai_v471():
+    from app.services import role_resolver as RR
+    assert B.PERAN_BEBAN_LAIN == RR.AccountRole.EXPENSE_OTHER == "EXPENSE_OTHER"
+    assert "EXPENSE_OTHER" in RR._CATALOG and "EXPENSE_OTHER" in RR.PERAN_SEMAI
