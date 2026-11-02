@@ -21,6 +21,26 @@ def test_v472_aditif():
         assert larangan not in s.upper(), larangan
 
 
+# Kata yang DITOLAK /root/apply_mig.sh (memindai teks MENTAH, termasuk komentar): kendali transaksi + CONCURRENTLY.
+# 2 Nov 2026: komentar V472 menyebut "CONCURRENTLY" -> apply_mig RC=10, nol perubahan. Tes lama membuang komentar dulu -> lolos.
+DITOLAK_ALAT = re.compile(r"CONCURRENTLY|\bBEGIN\s*;|\bCOMMIT\s*;|\bROLLBACK\s*;|START\s+TRANSACTION", re.I)
+
+
+def _ditolak_alat(teks):
+    return DITOLAK_ALAT.findall(teks)
+
+
+def test_v472_mentah_lolos_pemindai_apply_mig():
+    for n in ("V472__grn_sj_vendor.sql", "V472__grn_sj_vendor_ROLLBACK.sql"):
+        assert _ditolak_alat((MIG / n).read_text()) == [], n
+
+
+def test_pemindai_alat_bisa_merah():
+    assert _ditolak_alat("-- Indeks biasa (apply_mig menolak CONCURRENTLY; tabel kecil).\nCREATE INDEX x ON t (a);")
+    assert _ditolak_alat("BEGIN;\nALTER TABLE t ADD COLUMN c int;\nCOMMIT;")
+    assert not _ditolak_alat("-- tanpa kata terlarang\nCREATE INDEX x ON t (a);")
+
+
 def test_v472_rollback_membalik():
     r = _sql("V472__grn_sj_vendor_ROLLBACK.sql")
     i, c, k = (r.index("DROP INDEX IF EXISTS idx_goods_receipts_sj_vendor"),
