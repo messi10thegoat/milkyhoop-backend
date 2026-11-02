@@ -93,7 +93,7 @@ class _C:
         self.tx, self.q, self.tulis = [], [], []
         self.inti_jalan = False
 
-    def transaction(self):
+    def transaction(self, **kw):  # U-P4b-1: rute pratinjau membuka transaksi readonly=True
         return _Tx(self)
 
     async def execute(self, sql, *a):
@@ -156,14 +156,24 @@ def pasang(monkeypatch):
         monkeypatch.setattr(CD, "linked_so_deposits", dps)
         monkeypatch.setattr(CD, "compute_deposit_remaining", sisa_dp)
 
-        async def buat(conn, ctx, body):
+        async def rencana(conn, ctx, body):
+            # U-P4b-1 (retarget disetujui MASTER): penentu BACA SAJA rencana_penerimaan_ro menggantikan penulis
+            # buat_penerimaan-lalu-rollback; fake meniru keluarannya (sisa sesudah dari penentu, galat -> blok).
             tangkap["body"] = body
             conn.inti_jalan = True
             if inti:
-                return await inti(conn, ctx, body)
-            return {"data": {"id": str(UUID(int=5)), "payment_number": "RCV-2609-0009",
-                             "allocated_amount": sum(a.amount_applied for a in body.allocations)}}
-        monkeypatch.setattr(RP, "buat_penerimaan", buat)
+                try:
+                    await inti(conn, ctx, body)
+                except HTTPException as e:
+                    return {"blocks": [{"code": "RP_REJECTED", "message": e.detail}], "invoices": []}
+            ss = c.sisa_sesudah
+            return {"blocks": [], "payment_number": "RCV-2609-0009", "payment_method": "bank_transfer",
+                    "overpayment_deposit_number": conn.ovp,
+                    "invoices": [{"invoice_id": a.invoice_id,
+                                  "remaining_after": float(ss.get(UUID(a.invoice_id), Decimal("0")) if ss is not None
+                                                           else c.sisa.get(UUID(a.invoice_id), Decimal("0")) - a.amount_applied)}
+                                 for a in body.allocations]}
+        monkeypatch.setattr(RP, "rencana_penerimaan_ro", rencana)
 
         async def prasyarat(*a, **k):
             return None
@@ -211,12 +221,12 @@ async def test_bawaan_lunasi_semua_tertua_dulu_payload_ke_inti(pasang):
     assert d["payload"]["customer_id"] == str(CUST) and d["payload"]["payment_date"] == "2026-09-29"
     assert [(a.invoice_id, a.amount_applied) for a in b.allocations] == [(str(I1), Decimal("300000")), (str(I2), Decimal("500000"))]
     assert b.total_amount == Decimal("800000") and b.save_as_draft is False
-    assert c.tx == ["start", "sp", "sp-release", "rollback"]
+    assert c.tx == ["start", "rollback"]  # U-P4b-1: tanpa savepoint penulis (penentu baca saja)
 
 
 @pytest.mark.asyncio
 async def test_sebagian_dan_sisa_sesudah_dari_ledger_bukan_rencana(pasang):
-    # sisa sesudah DIBACA ulang dari compute_ar_outstanding setelah inti (bukan remaining - applied)
+    # U-P4b-1: sisa sesudah DISALURKAN dari penentu (rencana_penerimaan_ro = sisa jurnal - alokasi; nyata == compute sesudah buat)
     pasang(_C(sisa_sesudah={I2: Decimal("349999")}))
     d = await _pv(amount=Decimal("450000"))
     assert [(x["applied"], x["remaining_after"]) for x in d["invoices"]] == [(300000.0, 0.0), (150000.0, 349999.0)]
@@ -284,7 +294,7 @@ async def test_penolakan_inti_jadi_blok_dan_payload_dicabut(pasang):
     d = await _pv()
     assert d["can_save"] is False and d["payload"] is None
     assert d["blocks"] == [{"code": "RP_REJECTED", "message": "Allocation (500000) exceeds invoice remaining (400000)"}]
-    assert c.tx == ["start", "sp", "sp-rollback", "rollback"]
+    assert c.tx == ["start", "rollback"]  # U-P4b-1: penolakan penentu tanpa savepoint penulis
 
 
 @pytest.mark.asyncio

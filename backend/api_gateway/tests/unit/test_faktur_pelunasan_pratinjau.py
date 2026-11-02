@@ -79,7 +79,7 @@ class _C:
                      "account_number": "123", "account_type": "bank", "is_active": True, "is_default": True}] if rek else []
         self.tx, self.inti = [], False
 
-    def transaction(self):
+    def transaction(self, **kw):  # U-P4b-1: rute pratinjau membuka transaksi readonly=True
         return _Tx(self)
 
     async def execute(self, sql, *a):
@@ -134,14 +134,19 @@ def pasang(monkeypatch):
         monkeypatch.setattr(CD, "linked_so_deposits", dps)
         monkeypatch.setattr(CD, "compute_deposit_remaining", sisa_dp)
 
-        async def buat(conn, ctx, body):
+        async def rencana(conn, ctx, body):
+            # U-P4b-1 (retarget disetujui MASTER): penentu BACA SAJA rencana_penerimaan_ro menggantikan buat_penerimaan
             tangkap["body"] = body
             tangkap["tx"] = list(conn.tx)
             conn.inti = True
             if inti_gagal:
-                raise HTTPException(400, inti_gagal)
-            return {"data": {"id": str(UUID(int=5)), "payment_number": "RCV-2026-0040"}}
-        monkeypatch.setattr(RP, "buat_penerimaan", buat)
+                return {"blocks": [{"code": "RP_REJECTED", "message": inti_gagal}], "invoices": []}
+            ss = c.sisa_sesudah
+            return {"blocks": [], "payment_number": "RCV-2026-0040", "payment_method": "bank_transfer", "overpayment_deposit_number": None,
+                    "invoices": [{"invoice_id": a.invoice_id,
+                                  "remaining_after": float(ss.get(INV, Decimal("0")) if ss is not None else c.sisa - a.amount_applied)}
+                                 for a in body.allocations]}
+        monkeypatch.setattr(RP, "rencana_penerimaan_ro", rencana)
 
         async def pra(*a, **k):
             return None
@@ -169,7 +174,7 @@ async def test_bawaan_lunasi_sisa_lewat_inti_lalu_rollback(pasang):
     assert d["payment_number_preview"] == "RCV-2026-0040" and d["payment_method"] == "bank_transfer"
     assert RP.CreateReceivePaymentRequest(**d["payload"]) == pasang.tangkap["body"]
     assert d["payload"]["allocations"] == [{"invoice_id": str(INV), "amount_applied": "300000"}]
-    assert pasang.tangkap["tx"][-1] == "sp" and c.tx == ["start", "sp", "sp-release", "rollback"]
+    assert pasang.tangkap["tx"] == ["start"] and c.tx == ["start", "rollback"]  # U-P4b-1: tanpa savepoint penulis
 
 
 @pytest.mark.asyncio

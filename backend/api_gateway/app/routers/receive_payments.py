@@ -1609,7 +1609,7 @@ async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentReque
     hasil["cek"], hasil["payment_method"] = cek, cek["metode"]
     th = await conn.fetchval("SELECT EXTRACT(YEAR FROM tanggal_bisnis($1))::int", tid)
     sq = await conn.fetchrow("SELECT last_number, year FROM receive_payment_sequences WHERE tenant_id = $1", tid)
-    nomor = f"RCV-{th}-{((sq['last_number'] + 1) if (sq and sq['year'] == th) else 1):04d}"  # == generate_receive_payment_number
+    nomor = f"RCV-{th}-{((sq['last_number'] + 1) if (sq and sq['year'] == th) else 1):04d}"  # rumus SAMA dengan fungsi DB penomoran RCV (penghitung tabel, dibaca)
     hasil["payment_number"] = nomor
     for v in cek["validated_allocations"]:
         sisa = Decimal(str(v["remaining_before"])) - Decimal(str(v["amount_applied"]))

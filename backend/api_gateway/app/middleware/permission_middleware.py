@@ -187,6 +187,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/receive-payments/summary$", ["GET"], "receive_payment", "R"),
     (r"^/api/receive-payments$", ["GET"], "receive_payment", "R"),
     (r"^/api/receive-payments$", ["POST"], "receive_payment", "C"),
+    (r"^/api/receive-payments/preview$", ["POST"], "receive_payment", "C"),  # U-P4b-1: pratinjau buat = izin buat
     (r"^/api/receive-payments/[^/]+$", ["GET"], "receive_payment", "R"),
     (r"^/api/receive-payments/[^/]+$", ["PATCH", "PUT"], "receive_payment", "U"),
     (r"^/api/receive-payments/[^/]+$", ["DELETE"], "receive_payment", "D"),
