@@ -71,7 +71,9 @@ def test_pratinjau_baca_saja_tanpa_kunci_penulis_penomoran():
     for terlarang in ("terbitkan_faktur", "_internal_post_invoice", "apply_deposit_core", "_execute_fulfillment",
                       "alokasikan_saat_faktur", "get_next_journal_number", "execute"):
         assert terlarang not in panggil, terlarang
-    sql = [n.value.upper() for n in ast.walk(pohon) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    fn = pohon.body[0]
+    doc = fn.body[0].value if isinstance(fn.body[0], ast.Expr) and isinstance(fn.body[0].value, ast.Constant) else None
+    sql = [n.value.upper() for n in ast.walk(pohon) if isinstance(n, ast.Constant) and isinstance(n.value, str) and n is not doc]
     sql += [F.SQL_ITEMS.upper(), F.SQL_SJ_MUNGKIN.upper()]
     for frasa in ("INSERT ", "UPDATE ", "DELETE ", "FOR UPDATE", "PG_ADVISORY", "GET_NEXT_JOURNAL_NUMBER"):
         assert not any(frasa in q for q in sql), frasa
