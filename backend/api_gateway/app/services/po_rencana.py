@@ -180,7 +180,8 @@ def rencana_hapus(po) -> dict:
 
 
 # ---------------------------------------------------------------- terima
-async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini, kunci: bool = True) -> dict:
+async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini, kunci: bool = True, notes: Optional[str] = None,
+                         sj_vendor: Optional[str] = None) -> dict:
     """items: [{po_item_id, quantity_received}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks, baris[], nilai_diterima (penerimaan ini),
     amount_received_sesudah, status_sesudah, payload}. Aturan & urutan = /receive."""
     bloks = []
@@ -223,6 +224,11 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
               "akan_diterima": akan.get(str(r["id"]), NOL)} for r in semua]
     payload = {"receive_date": receive_date.isoformat(),
                "items": [{"po_item_id": k, "quantity_received": str(v)} for k, v in akan.items() if v > NOL]}
+    # GRN-SJ-VENDOR (2 Nov 2026): payload = badan /receive LENGKAP (catatan + No. SJ vendor); tanpa nilai = kunci tak ditambahkan
+    if notes is not None:
+        payload["notes"] = notes
+    if sj_vendor is not None:
+        payload["vendor_delivery_note"] = sj_vendor
     return {"blocks": bloks, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
             # (D) PO yang sudah ditagih: status penagihan tetap (penerimaan tak menurunkannya; po_daftar.sinkron_tagih -- tagih menang)
             "status_sesudah": po["status"] if aturan_d else ("received" if lengkap else "partial_received"), "payload": payload, "akan": akan,

@@ -43,7 +43,7 @@ def _bentuk(gr, items=None) -> dict:
            "status": gr["status"], "position_text": "Dibatalkan" if gr["status"] == "void" else "Diterima",
            "journal_id": str(gr["journal_id"]) if gr.get("journal_id") else None,
            "reversal_journal_id": str(gr["reversal_journal_id"]) if gr.get("reversal_journal_id") else None,
-           "amount": _uang(gr.get("amount")), "notes": gr.get("notes"),
+           "amount": _uang(gr.get("amount")), "notes": gr.get("notes"), "vendor_delivery_note": gr.get("vendor_delivery_note"),
            "voided_at": gr["voided_at"].isoformat() if gr.get("voided_at") else None, "voided_reason": gr.get("voided_reason")}
     if "qty_dasar" in gr.keys():  # SERAGAM: medan turunan (SQL_HEADER membawa kolom GD.sql_kolom)
         out.update(GD.medan(gr))
