@@ -1329,6 +1329,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                 _r = await NDR.rencana_posting(conn, ctx, vc)
                 ap_account_id, purchase_return_account_id, potongan = _r["ap"], _r["akun_kredit"], _r["potongan"]
                 _gudang_nd = {str(k["item_row_id"]): k["gudang_id"] for k in _r["keluar"]}  # ND-GUDANG: gudang asal (penentu SATU)
+                _qty_nd = {str(k["item_row_id"]): k["qty"] for k in _r["keluar"]}  # QTY-DASAR R2: qty SATUAN DASAR dari penentu yang sama
 
                 # Generate journal number
                 import uuid as uuid_module
@@ -1419,7 +1420,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                         product_code=product["item_code"],
                         product_name=product["nama_produk"],
                         warehouse_id=wh_id,
-                        quantity=float(item["quantity"]),
+                        quantity=float(_qty_nd.get(str(item["id"]), item["quantity"])),
                         source_type="VENDOR_CREDIT",
                         source_id=vendor_credit_id,
                         source_number=vc["credit_number"],

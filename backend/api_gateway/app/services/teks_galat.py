@@ -167,3 +167,9 @@ def satuan_tak_terkonversi(satuan, nama, dasar) -> str:
 def satuan_belum_didukung(aksi, satuan, dasar) -> str:
     """QTY-DASAR R1 (kalimat MASTER): jalur KELUAR menolak satuan selain dasar sampai konversinya terpasang (R2)."""
     return f"{aksi} dengan satuan {satuan} belum didukung; pakai {dasar}."
+
+
+def stok_kurang_satuan(nama, gudang, tersedia, dasar, jumlah, satuan, jumlah_dasar) -> str:
+    """QTY-DASAR R2 (kalimat OK MASTER): stok kurang untuk baris bersatuan BUKAN dasar -- angka dalam dasar + padanannya."""
+    return (f"Stok {nama} di {gudang or 'gudang'} hanya {qty(tersedia)} {dasar}, diminta {qty(jumlah)} {satuan} "
+            f"(= {qty(jumlah_dasar)} {dasar}).")

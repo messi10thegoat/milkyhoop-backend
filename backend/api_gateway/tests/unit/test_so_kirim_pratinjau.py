@@ -146,6 +146,14 @@ class _C:
             return [{"soi_id": k, "q": v} for k, v in self.draf_qty.items()]
         if "FROM sales_order_items WHERE sales_order_id" in sql:
             return [{"id": s["id"], "quantity": s["quantity"]} for s in self.soi]
+        # QTY-DASAR R2 (retarget OK MASTER 3 Nov): penentu satuan (services/satuan_dasar) -- kamus kosong, barang bersatuan dasar "pcs",
+        # tanpa konversi -> baris "pcs" faktor 1, angka identik dengan sebelumnya
+        if "FROM product_units" in sql:
+            return []
+        if "FROM unit_conversions" in sql:
+            return []
+        if "COALESCE(NULLIF(base_unit, ''), satuan) AS dasar" in sql:
+            return [{"id": i, "nama_produk": "Barang", "dasar": "pcs"} for i in a[1]]
         raise AssertionError(sql[:80])
 
     async def fetchval(self, sql, *a):

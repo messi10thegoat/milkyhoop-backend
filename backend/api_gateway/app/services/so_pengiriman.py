@@ -287,12 +287,17 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
     # stok per barang DIJUMLAH lintas faktur (inti memeriksa per baris -> faktur kedua bisa lolos rencana palsu)
     if gudang:
         per_barang = {}
+        # QTY-DASAR R2: stok dibandingkan dalam SATUAN DASAR -- qty baris faktur dikonversi (penentu SATU; satuan tanpa konversi
+        # diblok oleh inti yang dijalankan pratinjau ini, jadi di sini dipakai apa adanya)
+        from . import satuan_dasar as SD
+        ktx_sd = await SD.muat(conn, tid, [a["b"]["item_id"] for a in alokasi if a["b"]["dilacak"] and SD.normal(a["b"].get("unit"))])
         for a in alokasi:
             b = a["b"]
             if b["dilacak"]:
                 x = per_barang.setdefault(b["item_id"], {"qty": _NOL, "nama": b["nama_produk"] or b["description"],
                                                          "soi": []})
-                x["qty"] += a["qty"]
+                h_sd = SD.hitung(ktx_sd, b["item_id"], b.get("unit"), a["qty"], "konversi")
+                x["qty"] += a["qty"] if h_sd["blok"] else h_sd["qty_dasar"]
                 if b["sales_order_item_id"] and str(b["sales_order_item_id"]) not in x["soi"]:
                     x["soi"].append(str(b["sales_order_item_id"]))
         for pid, x in per_barang.items():

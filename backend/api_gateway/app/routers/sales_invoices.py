@@ -915,6 +915,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
 
             has_inventory_items = True
             qty = Decimal(str(it.get("quantity") or it.get("qty") or 0))
+            # QTY-DASAR R2: HPP & stok dalam SATUAN DASAR (penentu SATU == _execute_fulfillment); tanpa konversi -> peringatan berkalimat
+            from ..services import satuan_dasar as _SD
+            _h_sd = _SD.hitung(await _SD.muat(conn, ctx["tenant_id"], [item_id] if _SD.normal(it.get("unit")) else []), item_id,
+                               it.get("unit"), qty, "konversi")
+            if _h_sd["blok"]:
+                warnings.append(_h_sd["blok"]["message"])
+            else:
+                qty = _h_sd["qty_dasar"]
 
             wac = await conn.fetchval(
                 "SELECT get_weighted_average_cost($1, $2)", ctx["tenant_id"], item_id
@@ -2025,10 +2033,12 @@ async def _execute_fulfillment(
         # posting auto-fulfill). Kalimat sama dengan rute lama.
         if warehouse_id is None:
             raise HTTPException(400, "Gudang wajib dipilih.")
-        # QTY-DASAR R1: jalur KELUAR menolak satuan selain dasar (SATUAN_BELUM_DIDUKUNG) sampai R2 memasang konversinya -- tak ada
-        # keadaan campur (masuk dikonversi, keluar mentah). Satu pagar untuk SEMUA pemanggil (/fulfill, kirim SO + pratinjaunya, auto-fulfill).
+        # QTY-DASAR R2: satuan dokumen -> SATUAN DASAR (penentu SATU; tanpa konversi -> 400 SATUAN_TAK_TERKONVERSI). Cek stok, kartu,
+        # batch, dan HPP dalam DASAR (WAC dasar x qty dasar, Rule 3); fulfilled_qty / pendapatan tetap qty DOKUMEN. Semua pemanggil
+        # (/fulfill, kirim SO + pratinjaunya, auto-fulfill) lewat sini.
         from ..services import satuan_dasar as _SD
-        await _SD.qty_dasar(conn, tenant_id, product_id, inv_item.get("unit"), req_qty, "tolak", "Pengiriman")
+        _qd = await _SD.qty_dasar(conn, tenant_id, product_id, inv_item.get("unit"), req_qty, "konversi")
+        qd, _f = _qd["qty_dasar"], _qd["faktor"]
 
         # 3. Availability gate ONLY (read-only).
         # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger
@@ -2046,7 +2056,11 @@ async def _execute_fulfillment(
             warehouse_id,
             tenant_id,
         )
-        if available_stock is None or Decimal(str(available_stock)) < req_qty:
+        if available_stock is None or Decimal(str(available_stock)) < qd:
+            if _f != _SD.SATU:
+                _gn = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, tenant_id)
+                raise HTTPException(409, tg.stok_kurang_satuan(description, _gn, Decimal(str(available_stock or 0)), _qd["satuan_dasar"],
+                                                              req_qty, inv_item.get("unit"), qd))
             raise HTTPException(409, f"Stok {description} tidak cukup")
 
         # 4. Get WAC
@@ -2059,8 +2073,10 @@ async def _execute_fulfillment(
                 f"WAC = 0 untuk '{description}'. Catat penerimaan barang terlebih dahulu.",
             )
         avg_cost = Decimal(str(avg_cost))
-        line_cogs = _r2d(avg_cost * req_qty)
+        line_cogs = _r2d(avg_cost * qd)  # QTY-DASAR R2: HPP = WAC dasar x qty dasar; jurnal HPP dari total (bukan biaya x qty dokumen)
         total_cogs += line_cogs
+        # biaya per satuan DOKUMEN (presisi penuh, Law 9/25) untuk baris kirim/alokasi SJ; satuan dasar = WAC apa adanya (perilaku lama)
+        biaya_dok = avg_cost if _f == _SD.SATU else line_cogs / req_qty
 
         # 5. Revenue rounding safe
         remaining_rev = allocated - recognized_so_far
@@ -2082,7 +2098,7 @@ async def _execute_fulfillment(
                 "invoice_item_id": inv_item_id,
                 "product_id": product_id,
                 "quantity": req_qty,
-                "unit_cost": avg_cost,
+                "unit_cost": biaya_dok,
                 "total_cost": line_cogs,
                 "batch_id": req.get("batch_id"),
                 "notes": notes,
@@ -2094,7 +2110,7 @@ async def _execute_fulfillment(
                 "item_id": str(product_id),
                 "description": description,
                 "quantity": req_qty,
-                "unit_cost": avg_cost,
+                "unit_cost": biaya_dok,
                 "total_cost": line_cogs,
             }
         )
@@ -2103,7 +2119,7 @@ async def _execute_fulfillment(
         current_balance = await conn.fetchval(
             "SELECT get_inventory_balance($1, $2)", tenant_id, product_id
         )
-        new_balance = Decimal(str(current_balance or 0)) - req_qty
+        new_balance = Decimal(str(current_balance or 0)) - qd
 
         # Get product info for ledger
         product_info = await conn.fetchrow(
@@ -2123,19 +2139,24 @@ async def _execute_fulfillment(
                 tenant_id,
                 product_id,
                 warehouse_id,
-                req_qty,
+                qd,
             )
             if fefo_batches:
                 total_allocated_batch = sum(
                     Decimal(str(r["quantity_to_use"])) for r in fefo_batches
                 )
-                if total_allocated_batch >= req_qty:
+                if total_allocated_batch >= qd:
                     batch_id = fefo_batches[0]["batch_id"]
                 else:
                     raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
             else:
                 raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
 
+        # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE);
+        # baris dasar = pernyataan lama persis
+        _kol_sd = ", transaction_unit, transaction_quantity, conversion_factor" if _f != _SD.SATU else ""
+        _nil_sd = ", $16, $17, $18" if _f != _SD.SATU else ""
+        _arg_sd = (inv_item.get("unit"), str(req_qty), str(_f)) if _f != _SD.SATU else ()
         await conn.execute(
             """
             INSERT INTO inventory_ledger (
@@ -2144,14 +2165,14 @@ async def _execute_fulfillment(
                 source_type, source_id, source_number,
                 quantity_in, quantity_out, quantity_balance,
                 unit_cost, total_cost, average_cost,
-                created_by, notes, warehouse_id, batch_id
+                created_by, notes, warehouse_id, batch_id""" + _kol_sd + """
             ) VALUES (
                 $1, $2, $3, $4,
                 'SALE', $5,
                 'INVOICE_FULFILLMENT', $6, $7,
                 0, $8, $9,
                 $10, $11, $10,
-                $12, $13, $14, $15
+                $12, $13, $14, $15""" + _nil_sd + """
             )
         """,
             tenant_id,
@@ -2161,7 +2182,7 @@ async def _execute_fulfillment(
             fulfillment_date,
             invoice_id,
             invoice_number,
-            str(req_qty),
+            str(qd),
             str(new_balance),
             str(avg_cost),
             str(line_cogs),
@@ -2169,6 +2190,7 @@ async def _execute_fulfillment(
             f"Fulfillment: {invoice_number}",
             warehouse_id,
             batch_id,
+            *_arg_sd,
         )
 
         # Batch deduction (if batch tracking)
@@ -2183,13 +2205,13 @@ async def _execute_fulfillment(
                 warehouse_id,
             )
 
-            if bws_row is None or Decimal(str(bws_row["available_quantity"])) < req_qty:
+            if bws_row is None or Decimal(str(bws_row["available_quantity"])) < qd:
                 available = (
                     Decimal(str(bws_row["available_quantity"])) if bws_row else 0
                 )
                 raise HTTPException(
                     400,
-                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(req_qty)}.",
+                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(qd)}.",
                 )
 
             await conn.execute(
@@ -2201,7 +2223,7 @@ async def _execute_fulfillment(
             """,
                 batch_id,
                 warehouse_id,
-                req_qty,
+                qd,
             )
 
             await conn.execute(

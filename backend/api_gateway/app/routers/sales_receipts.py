@@ -340,12 +340,17 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                     if prod_row and prod_row["purchase_price"]
                     else Decimal("0")
                 )
-                item_total_cost = (Decimal(str(item.quantity)) * unit_cost).quantize(
+                track_inventory = prod_row["track_inventory"] if prod_row else True
+                # QTY-DASAR R2: kasir = jalur KELUAR -> qty dokumen ke SATUAN DASAR (penentu SATU; tanpa konversi -> 400 sebelum tulis apa
+                # pun); biaya per satuan dasar x qty dasar, kartu dalam dasar
+                from ..services import satuan_dasar as _SD
+                _qd = (await _SD.qty_dasar(conn, ctx["tenant_id"], item.item_id, getattr(item, "unit", None), item.quantity, "konversi")
+                       if warehouse_id and track_inventory and item.item_id else {"qty_dasar": Decimal(str(item.quantity)), "faktor": _SD.SATU})
+                item_total_cost = (_qd["qty_dasar"] * unit_cost).quantize(
                     Decimal("0.01")
                 )
                 item_code_from_db = prod_row["item_code"] if prod_row else None
                 item_name_from_db = prod_row["nama_produk"] if prod_row else None
-                track_inventory = prod_row["track_inventory"] if prod_row else True
 
                 processed_items.append(
                     {
@@ -358,6 +363,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         "item_name_from_db": item_name_from_db,
                         "track_inventory": track_inventory,
                         "item_type": (prod_row["item_type"] if prod_row else None),
+                        "qty_dasar": _qd["qty_dasar"],
                     }
                 )
 
@@ -385,14 +391,6 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
             # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
             await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
-            # QTY-DASAR R1: kasir = jalur KELUAR -> baris ber-stok wajib satuan dasar (SATUAN_BELUM_DIDUKUNG) sampai R2; sebelum tulis apa pun
-            if warehouse_id:
-                from ..services import satuan_dasar as _SD
-                _bs = await _SD.blok_baris(conn, ctx["tenant_id"], [
-                    {"product_id": it["item_id"], "unit": it.get("unit"), "quantity": it["quantity"]}
-                    for it in processed_items if it.get("track_inventory", True) and it.get("item_id")], "tolak", "Penjualan")
-                if _bs:
-                    _SD.tolak_bila({"blok": _bs[0]})
 
             # Create receipt header
             receipt_row = await conn.fetchrow(
@@ -486,7 +484,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         ctx["tenant_id"],
                         item["item_id"],
                     )
-                    new_balance = current_balance - item["quantity"]
+                    new_balance = current_balance - item["qty_dasar"]
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
@@ -509,7 +507,7 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         item.get("item_name_from_db") or item.get("item_name"),
                         body.receipt_date,
                         receipt_id,
-                        item["quantity"],
+                        item["qty_dasar"],
                         new_balance,
                         item["unit_cost"],
                         item["total_cost"],
@@ -978,7 +976,9 @@ async def void_sales_receipt(
                         ctx["tenant_id"],
                         item["item_id"],
                     )
-                    new_balance = current_balance + item["quantity"]
+                    from ..services import satuan_dasar as _SD  # QTY-DASAR R2: pembalik dalam SATUAN DASAR (penentu SAMA dengan jual)
+                    _qdv = await _SD.qty_dasar(conn, ctx["tenant_id"], item["item_id"], item.get("unit"), item["quantity"], "konversi")
+                    new_balance = current_balance + _qdv["qty_dasar"]
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
@@ -1001,7 +1001,7 @@ async def void_sales_receipt(
                         prod_info["nama_produk"] if prod_info else item["item_name"],
                         void_date,
                         receipt_id,
-                        item["quantity"],
+                        _qdv["qty_dasar"],
                         new_balance,
                         item["unit_cost"],
                         item["total_cost"],

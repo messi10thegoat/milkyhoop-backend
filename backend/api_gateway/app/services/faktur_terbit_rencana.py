@@ -230,10 +230,10 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
         complete = False
         if not inv["warehouse_id"] and await GB.bawaan(conn, tid) is None:
             blok(SI.KODE_GUDANG_WAJIB_POSTING, SI.PESAN_GUDANG_WAJIB_POSTING, 400, "warehouse_id")
-        # QTY-DASAR R1: kirim otomatis = jalur KELUAR -> == pagar _execute_fulfillment (satuan selain dasar ditolak sampai R2)
+        # QTY-DASAR R2: kirim otomatis = jalur KELUAR -> == pagar _execute_fulfillment (satuan tanpa konversi ditolak)
         from . import satuan_dasar as SD
         for x in await SD.blok_baris(conn, tid, [{"product_id": it["item_id"], "unit": it.get("unit"), "quantity": it["quantity"]}
-                                                  for it in items if it["id"] in untuk_kirim], "tolak", "Pengiriman"):
+                                                  for it in items if it["id"] in untuk_kirim], "konversi"):
             blok(x["code"], x["message"], x["status"])
     if cabang == CABANG_TANGGUH_WAC0:
         for it in items:

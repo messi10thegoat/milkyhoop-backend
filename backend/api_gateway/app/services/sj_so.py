@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from . import pengiriman_serah as serah_mod
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
+from . import teks_galat as tg  # QTY-DASAR R2: kalimat stok bersatuan bukan dasar
 from .role_resolver import AccountRole, resolve_account_id_by_role
 from .so_riwayat import catat_riwayat
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -267,7 +268,7 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             blocks.append(_blok("SJ_SO_PERIODE_TUTUP", msg))
 
     lines, total_nilai = [], _NOL
-    from . import satuan_dasar as SD  # QTY-DASAR R1: SJ = jalur KELUAR -> satuan selain dasar ditolak sampai R2 (tak ada keadaan campur)
+    from . import satuan_dasar as SD  # QTY-DASAR R2: SJ = jalur KELUAR -> qty dokumen dikonversi ke SATUAN DASAR (stok, kartu, HPP)
     ktx_sd = await SD.muat(conn, tid, [peta[x]["item_id"] for x in diminta if peta[x]["stok"] and peta[x]["item_id"] and SD.normal(peta[x]["unit"])])
     for bid, qty in diminta.items():
         b = peta[bid]
@@ -279,7 +280,8 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
               "unit_cost": _NOL, "value": _NOL, "available": None, "item_code": b["item_code"],
               "invoiced_quantity": faktur.get(bid, {}).get("q", _NOL)}
         if b["stok"]:
-            h_sd = SD.hitung(ktx_sd, b["item_id"], b["unit"], qty, "tolak", "Pengiriman")
+            h_sd = SD.hitung(ktx_sd, b["item_id"], b["unit"], qty, "konversi")
+            ln["qty_dasar"], ln["faktor"] = h_sd["qty_dasar"], h_sd["faktor"]
             if h_sd["blok"]:
                 blocks.append(_blok(h_sd["blok"]["code"], h_sd["blok"]["message"], h_sd["blok"]["status"], bid))
             if b["batch"] or b["serial"]:
@@ -288,8 +290,10 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             wac = Decimal(str(await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tid, b["item_id"]) or 0))
             if wac <= _NOL:
                 blocks.append(_blok("SJ_SO_WAC_NOL", f"Biaya rata-rata {nama} belum ada (0); catat penerimaan barang dulu.", 409, bid))
-            ln["unit_cost"] = wac
-            ln["value"] = _r2(qty * wac)
+            ln["wac"] = wac
+            ln["value"] = _r2(ln["qty_dasar"] * wac)  # HPP = WAC dasar x qty dasar (Rule 3)
+            # biaya per satuan DOKUMEN (presisi penuh) untuk baris SJ/alokasi faktur; satuan dasar = WAC apa adanya (perilaku lama)
+            ln["unit_cost"] = wac if ln["faktor"] == SD.SATU else (ln["value"] / qty if qty else _NOL)
             total_nilai += ln["value"]
             if gudang is not None:
                 if kunci:
@@ -298,9 +302,11 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
                     "SELECT COALESCE((SELECT available_quantity FROM warehouse_stock WHERE tenant_id = $1 AND warehouse_id = $2 "
                     "AND item_id = $3" + (" FOR UPDATE" if kunci else "") + "), 0)", tid, gudang["id"], b["item_id"])))
                 ln["available"] = avail
-                if avail < qty:
+                if avail < ln["qty_dasar"]:
                     blocks.append(_blok("SJ_SO_STOK_TIDAK_CUKUP",
-                                        f"Stok {nama} di {gudang['name']} hanya {avail:f}, diminta {qty:f}.", 409, bid))
+                                        f"Stok {nama} di {gudang['name']} hanya {avail:f}, diminta {qty:f}." if ln["faktor"] == SD.SATU
+                                        else tg.stok_kurang_satuan(nama, gudang["name"], avail, h_sd["satuan_dasar"], qty, b["unit"], ln["qty_dasar"]),
+                                        409, bid))
         lines.append(ln)
     if not lines and not any(b["code"] != "SJ_SO_STATUS_TIDAK_BOLEH" for b in blocks):
         blocks.append(_blok("SJ_SO_TANPA_SISA", "Tidak ada barang yang tersisa untuk dikirim di pesanan ini."))
@@ -391,13 +397,16 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
             l["unit_cost"], l["value"])
         if l["stok"]:   # kartu keluar (trigger ledger -> warehouse_stock; Inventory Rule 1: tak ada UPDATE langsung)
             saldo = Decimal(str(await conn.fetchval("SELECT get_inventory_balance($1, $2)", tid, UUID(l["item_id"])) or 0))
+            qd, f = l.get("qty_dasar", l["quantity"]), l.get("faktor", Decimal("1"))  # QTY-DASAR R2: kartu dalam SATUAN DASAR
+            sd_kol, sd_nil, sd_arg = ((", transaction_unit, transaction_quantity, conversion_factor", ", $17, $18, $19", (l["unit"], l["quantity"], f))
+                                      if f != Decimal("1") else ("", "", ()))
             await conn.execute(
                 """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
                                                  source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
-                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id)
-                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16)""",
-                tid, UUID(l["item_id"]), l["item_code"] or "", l["name"], tgl, SUMBER, fid, nomor, l["quantity"],
-                saldo - l["quantity"], l["unit_cost"], l["value"], jid, uid, f"Surat Jalan {nomor}", gudang_id)
+                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id""" + sd_kol + """)
+                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16""" + sd_nil + """)""",
+                tid, UUID(l["item_id"]), l["item_code"] or "", l["name"], tgl, SUMBER, fid, nomor, qd,
+                saldo - qd, l.get("wac", l["unit_cost"]), l["value"], jid, uid, f"Surat Jalan {nomor}", gudang_id, *sd_arg)
     if r.get("serah") is not None:   # SJ + serah + resi: SATU transaksi (Law 23); nol UPDATE ke SJ
         await serah_mod.tulis(conn, tid, uid, fid, r["serah"])
     await catat_riwayat(conn, tid, "invoice_fulfillments", fid, nomor, "SURAT_JALAN_SO_DIBUAT", uid,

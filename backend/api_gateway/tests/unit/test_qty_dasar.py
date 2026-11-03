@@ -163,13 +163,18 @@ JALUR = [
     ("routers/bills.py", "calculate_bill_totals", "konversi"),
     ("routers/credit_notes.py", "posting_nota_kredit", "konversi"),
     ("services/nota_kredit_rencana.py", "_rencana_restock_nk", "konversi"),
-    # KELUAR (tolak sampai R2) + jalur lama tanpa helper WAC
-    ("routers/sales_invoices.py", "_execute_fulfillment", "tolak"),
-    ("services/faktur_terbit_rencana.py", "rencana_terbit_ro", "tolak"),
-    ("services/sj_so.py", "rencana", "tolak"),
-    ("routers/sales_receipts.py", "create_sales_receipt", "tolak"),
-    ("services/nota_debit_gudang.py", "rencana_keluar", "tolak"),
-    ("services/kernel_document_executor.py", "_create_inventory_movements", "tolak"),
+    # KELUAR (R2: konversi; R1 dulu tolak) + jalur lama
+    ("routers/sales_invoices.py", "_execute_fulfillment", "konversi"),
+    ("routers/sales_invoices.py", "preview_journal", "konversi"),
+    ("services/faktur_terbit_rencana.py", "rencana_terbit_ro", "konversi"),
+    ("services/sj_so.py", "rencana", "konversi"),
+    ("services/so_pengiriman.py", "rencana_kirim_so", "konversi"),
+    ("routers/sales_receipts.py", "create_sales_receipt", "konversi"),
+    ("routers/sales_receipts.py", "void_sales_receipt", "konversi"),
+    ("services/nota_debit_gudang.py", "rencana_keluar", "konversi"),
+    ("services/kernel_document_executor.py", "_create_inventory_movements", "konversi"),
+    ("routers/credit_notes.py", "_alokasi_sj_dasar", "konversi"),
+    # tetap TOLAK: penjualan lama /api/transactions + produksi (PARKIR, putusan MASTER)
     ("routers/transactions.py", "_create_pos_inventory_and_journals", "tolak"),
     ("routers/production.py", "issue_materials", "tolak"),
     ("routers/production.py", "report_output", "tolak"),
@@ -237,12 +242,16 @@ async def test_asal_retur_nd_tautan_grn_dalam_satuan_dasar_lewat_rasio_kartu():
 
 class KonND:
     """rencana_keluar ND tanpa tagihan asal: gudang bawaan + baris barang ber-stok bersatuan Karton (berkonversi)."""
-    def __init__(self):
-        self.galat = []
+    def __init__(self, stok=0):
+        self.galat, self.stok = [], stok
 
     async def fetchval(self, sql, *a):
         if "FROM warehouses" in sql:
             return "G1"
+        if "FROM warehouse_stock" in sql:
+            return self.stok
+        if "FROM warehouses" in sql or "name FROM" in sql:
+            return "Gudang Utama"
         return 0
 
     async def fetchrow(self, sql, *a):
@@ -263,14 +272,22 @@ class Bl:
 
 
 @pytest.mark.asyncio
-async def test_nd_karton_ditolak_belum_didukung_walau_berkonversi_dan_tak_ikut_keluar():
+async def test_nd_karton_dikonversi_ke_dasar_dan_ikut_keluar_dua_belas():
+    """R2 (dulu R1: ditolak SATUAN_BELUM_DIDUKUNG): ND Karton berkonversi -> keluar qty DASAR 12; botol tetap 1; tanpa konversi -> blok."""
     from app.services import nota_debit_gudang as NG
     bl = Bl()
-    k = await NG.rencana_keluar(KonND(), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "Karton"}], False, bl)
-    assert k == [] and bl.isi == [("SATUAN_BELUM_DIDUKUNG", 400, "Retur dengan satuan Karton belum didukung; pakai Botol.")]
+    k = await NG.rencana_keluar(KonND(stok=100), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "Karton"}], False, bl)
+    assert bl.isi == [] and [x["qty"] for x in k] == [Decimal("12")]
     bl2 = Bl()
-    k2 = await NG.rencana_keluar(KonND(), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "botol"}], False, bl2)
-    assert not any(c == "SATUAN_BELUM_DIDUKUNG" for c, _, _ in bl2.isi) and len(k2) == 1
+    k2 = await NG.rencana_keluar(KonND(stok=100), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "botol"}], False, bl2)
+    assert bl2.isi == [] and [x["qty"] for x in k2] == [Decimal("1")]
+    bl3 = Bl()
+    k3 = await NG.rencana_keluar(KonND(stok=100), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "Lusin"}], False, bl3)
+    assert k3 == [] and [c for c, _, _ in bl3.isi] == ["SATUAN_TAK_TERKONVERSI"]
+    bl4 = Bl()  # stok dibandingkan dalam DASAR: 1 karton = 12 > stok 10 -> stok kurang
+    await NG.rencana_keluar(KonND(stok=10), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "Karton"}], False, bl4)
+    assert [c for c, _, _ in bl4.isi] == ["ND_STOK_KURANG"]
+
 
 
 
@@ -280,3 +297,62 @@ def test_posting_fpb_membaca_satuan_baris_tagihan():
     sql = [n.value for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and "FROM bill_items bi" in n.value
            and "track_inventory" in n.value]
     assert sql and all("bi.unit," in " ".join(s.split()) for s in sql), sql
+
+
+
+class KonAlok:
+    async def fetch(self, sql, *a):
+        return await Kon().fetch(sql, *a)
+
+
+@pytest.mark.asyncio
+async def test_alokasi_sj_ke_faktur_dikonversi_ke_dasar_untuk_biaya_retur_nk():
+    """MASTER R2 #1: retur NK silang satuan -- alokasi SJ (satuan baris faktur) jadi qty DASAR; biaya per dasar = total / qty dasar."""
+    from app.routers import credit_notes as CN
+    rows = [{"warehouse_id": "G1", "quantity": Decimal("1"), "total_cost": Decimal("14814.84"), "unit": "Karton"},
+            {"warehouse_id": "G1", "quantity": Decimal("3"), "total_cost": Decimal("3703.71"), "unit": "Botol"}]
+    out = await CN._alokasi_sj_dasar(KonAlok(), T, P_MINYAK, rows)
+    assert [x["q_dasar"] for x in out] == [Decimal("12"), Decimal("3")]
+    assert out[0]["total_cost"] / out[0]["q_dasar"] == Decimal("14814.84") / 12
+    lama = await CN._alokasi_sj_dasar(KonAlok(), T, P_MINYAK, [{"warehouse_id": "G1", "quantity": Decimal("2"), "total_cost": 1, "unit": "Lusin"}])
+    assert lama[0]["q_dasar"] == Decimal("2")  # alokasi lama tanpa konversi = 1:1 (dulu ditulis begitu)
+
+
+def _src(rel, nama):
+    return ast.unparse(_fungsi(rel, nama))
+
+
+def test_pengiriman_faktur_stok_kartu_hpp_dalam_dasar_biaya_dokumen_presisi_penuh():
+    src = _src("routers/sales_invoices.py", "_execute_fulfillment")
+    for frag in ("Decimal(str(available_stock)) < qd", "line_cogs = _r2d(avg_cost * qd)", "biaya_dok = avg_cost if _f == _SD.SATU else line_cogs / req_qty",
+                 "new_balance = Decimal(str(current_balance or 0)) - qd", "str(qd)", "'unit_cost': biaya_dok"):
+        assert frag in src, frag
+    assert "line_cogs = _r2d(avg_cost * req_qty)" not in src
+
+
+def test_biaya_per_satuan_dokumen_presisi_penuh_tanpa_selisih_sen():
+    """MASTER R2 #2: WAC tak bulat, 1 & 3 karton: HPP = round(WAC x qty dasar, 2) -- kartu, baris kirim, dan jurnal memakai TOTAL ini;
+    biaya per satuan dokumen (presisi penuh) x qty dokumen, dibulatkan 2dp, kembali == HPP (tak ada selisih sen)."""
+    from decimal import ROUND_HALF_UP
+    wac = Decimal("1234.567")
+    for karton in (Decimal("1"), Decimal("3"), Decimal("7")):
+        hpp = (wac * karton * 12).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        biaya_dok = hpp / karton
+        assert (biaya_dok * karton).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == hpp
+    src = _src("routers/sales_invoices.py", "_execute_fulfillment")
+    assert "total_cogs += line_cogs" in src and "'total_cost': line_cogs" in src  # jurnal/baris dari TOTAL, bukan biaya x qty
+
+
+def test_sj_kasir_nd_direct_action_rencana_kirim_memakai_qty_dasar():
+    sj = _src("services/sj_so.py", "rencana")
+    assert "ln['value'] = _r2(ln['qty_dasar'] * wac)" in sj and "avail < ln['qty_dasar']" in sj
+    tl = _src("services/sj_so.py", "tulis")
+    assert "saldo - qd" in tl
+    ks = _src("routers/sales_receipts.py", "create_sales_receipt")
+    assert "current_balance - item['qty_dasar']" in ks and "_qd['qty_dasar'] * unit_cost" in ks
+    vc = _src("routers/vendor_credits.py", "post_vendor_credit")
+    assert "_qty_nd.get(str(item['id'])" in vc
+    da = _src("services/kernel_document_executor.py", "_create_inventory_movements")
+    assert "quantity, unit_cost = (_qd['qty_dasar'], unit_cost / _qd['faktor'])" in da
+    rk = _src("services/so_pengiriman.py", "rencana_kirim_so")
+    assert "h_sd['qty_dasar']" in rk

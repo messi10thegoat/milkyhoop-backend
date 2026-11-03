@@ -1796,6 +1796,20 @@ PENANDA_CN_HPP_ASLI = "cn-hpp-asli-dari-keluar-faktur"
 _SUMBER_KELUAR_FAKTUR = ("SALES_INVOICE", "INVOICE_FULFILLMENT")
 
 
+async def _alokasi_sj_dasar(conn, tenant_id, product_id, rows) -> list:
+    """QTY-DASAR R2: qty alokasi SJ->faktur tercatat dalam satuan BARIS FAKTUR; dikonversi ke SATUAN DASAR (penentu SATU) supaya sebanding
+    dengan kartu INVOICE_FULFILLMENT (dasar) dan qty retur NK (dasar) -> biaya retur = total biaya / qty dasar keluar x qty dasar retur.
+    Satuan tanpa konversi (hanya mungkin untuk alokasi lama sebelum R2, yang dulu ditulis 1:1) -> faktor 1."""
+    from ..services import satuan_dasar as SD
+    ktx = await SD.muat(conn, tenant_id, [product_id] if any(SD.normal(r["unit"]) for r in rows) else [])
+    out = []
+    for r in rows:
+        h = SD.hitung(ktx, product_id, r["unit"], r["quantity"], "konversi")
+        out.append({"warehouse_id": r["warehouse_id"], "total_cost": r["total_cost"],
+                    "q_dasar": r["quantity"] if h["blok"] else h["qty_dasar"]})
+    return out
+
+
 async def _keluar_faktur_untuk_retur(conn, tenant_id, invoice_id, product_id, credit_note_id):
     """(sisa_qty, unit_cost, warehouse_id) keluarnya barang dari faktur asal.
 
@@ -1819,17 +1833,17 @@ async def _keluar_faktur_untuk_retur(conn, tenant_id, invoice_id, product_id, cr
     # R1 irisan 2 (T1/T2): barang yang dikirim lewat Surat Jalan dari pesanan tercatat di kartu dengan source_id = id SJ (bukan id
     # faktur). Dari faktur ini, "keluar"-nya = alokasi aktif (qty x biaya snapshot SJ), gudang = gudang SJ.
     rows = list(rows) + [
-        {"warehouse_id": e["warehouse_id"], "quantity_in": Decimal("0"), "quantity_out": e["quantity"],
-         "unit_cost": (Decimal(str(e["total_cost"])) / Decimal(str(e["quantity"]))) if Decimal(str(e["quantity"])) > 0 else Decimal("0")}
-        for e in await conn.fetch(
-            """SELECT f.warehouse_id, a.quantity, a.total_cost
+        {"warehouse_id": e["warehouse_id"], "quantity_in": Decimal("0"), "quantity_out": e["q_dasar"],
+         "unit_cost": (Decimal(str(e["total_cost"])) / Decimal(str(e["q_dasar"]))) if Decimal(str(e["q_dasar"])) > 0 else Decimal("0")}
+        for e in await _alokasi_sj_dasar(conn, tenant_id, product_id, await conn.fetch(
+            """SELECT f.warehouse_id, a.quantity, a.total_cost, sii.unit
                FROM sj_faktur_alokasi a
                JOIN invoice_fulfillment_items ifi ON ifi.id = a.fulfillment_item_id
                JOIN invoice_fulfillments f ON f.id = ifi.fulfillment_id AND f.tenant_id = a.tenant_id
                JOIN sales_invoice_items sii ON sii.id = a.invoice_item_id
                WHERE sii.invoice_id = $1 AND a.tenant_id = $2 AND a.voided_at IS NULL AND ifi.product_id = $3
                  AND a.total_cost > 0""",
-            invoice_id, tenant_id, product_id)
+            invoice_id, tenant_id, product_id))
     ]
     keluar_qty = Decimal("0")
     keluar_biaya = Decimal("0")
