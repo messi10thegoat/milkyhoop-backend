@@ -90,12 +90,27 @@ class _Ctx:
 
 
 class FakeConn:
+    """Rute lama /bills/{id}/pdf memakai cetak_bill.lengkapi_cetak_bill (PDF keluarga 3 Nov 2026): kop, kontak vendor,
+    No. PO (fetchval), riwayat pelunasan (fetch), zona tenant (fetchval). Dijawab per pola SQL; pola lain = galat."""
     async def execute(self, sql, *args):
         return None
 
     async def fetchrow(self, sql, *args):
-        return {"display_name": "Kaos Biru", "address": None, "phone": None,
-                "logo_url": None}
+        if 'FROM "Tenant"' in sql:
+            return {"display_name": "Kaos Biru", "address": None, "phone": None, "logo_url": None, "tax_id": None}
+        if "FROM vendors" in sql:
+            return None
+        raise AssertionError("fetchrow tak dikenal: " + sql[:80])
+
+    async def fetchval(self, sql, *args):
+        if "JOIN purchase_orders po ON po.id = b.purchase_order_id" in sql or 'SELECT timezone FROM "Tenant"' in sql:
+            return None
+        raise AssertionError("fetchval tak dikenal: " + sql[:80])
+
+    async def fetch(self, sql, *args):
+        if "WITH pd_bayar AS" in sql:
+            return []
+        raise AssertionError("fetch tak dikenal: " + sql[:80])
 
 
 class FakePool:

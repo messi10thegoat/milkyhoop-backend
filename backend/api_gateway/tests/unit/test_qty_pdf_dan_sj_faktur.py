@@ -32,7 +32,9 @@ def test_filter_qty_terdaftar_dan_merender():
 
 
 BERKAS_QTY = {"delivery_note.html": 1, "sales_invoice.html": 2, "sales_invoice_b.html": 1, "proforma.html": 1,
-              "quote.html": 1, "credit_note.html": 1, "bill_invoice.html": 2}
+              "quote.html": 1, "credit_note.html": 1,
+              # PDF keluarga 3 Nov 2026 (putusan MASTER): FPB satu tabel kerangka PO -- kolom farmasi dibuang (dulu 2 tabel = 2 sel)
+              "bill_invoice.html": 1}
 
 
 @pytest.mark.parametrize("nama,n", sorted(BERKAS_QTY.items()))
