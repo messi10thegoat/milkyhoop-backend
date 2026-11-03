@@ -56,7 +56,7 @@ def test_vendor_nonaktif_kalimat_sama_dengan_pelanggan():
     assert e.value.detail == 'Nama vendor "PT B" sudah dipakai vendor nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain.'
     with pytest.raises(GalatBerkode) as e:
         _j(VU.tolak_nama_dipakai(Conn({"id": uuid.uuid4(), "is_active": True}), T, "PT B"))
-    assert e.value.detail == 'Nama vendor "PT B" sudah dipakai vendor lain.'
+    assert e.value.detail == 'Nama vendor "PT B" sudah dipakai vendor lain. Gunakan nama lain.'
 
 
 def test_pemindai_tanpa_saring_aktif_di_kedua_penentu_nama():

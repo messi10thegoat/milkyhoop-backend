@@ -73,7 +73,7 @@ def test_badan_galat_berkode_persis_dan_detail_string():
 def test_nama_vendor_dipakai_aktif_409_persis():
     c = Conn({"id": uuid.uuid4(), "is_active": True})
     g = _galat(VU.tolak_nama_dipakai(c, T, "PT Maju"))
-    m = 'Nama vendor "PT Maju" sudah dipakai vendor lain.'
+    m = 'Nama vendor "PT Maju" sudah dipakai vendor lain. Gunakan nama lain.'
     assert g.status_code == 409 and g.badan() == {"detail": m, "code": "NAMA_VENDOR_DIPAKAI", "message": m, "field": "name"}
     sql, a = c.q[0]
     assert "tenant_id = $1 AND name = $2" in sql and "is_active =" not in sql and a == (T, "PT Maju", None)
@@ -89,7 +89,7 @@ def test_kode_vendor_dipakai_predikat_indeks_dan_kecuali():
     kid = uuid.uuid4()
     c = Conn({"id": uuid.uuid4(), "is_active": True})
     g = _galat(VU.tolak_kode_dipakai(c, T, "V0007", kecuali_id=kid))
-    m = 'Kode vendor "V0007" sudah dipakai vendor lain.'
+    m = 'Kode vendor "V0007" sudah dipakai vendor lain. Gunakan kode lain.'
     assert g.badan() == {"detail": m, "code": "KODE_VENDOR_DIPAKAI", "message": m, "field": "code"}
     sql, a = c.q[0]
     assert "code = $2 AND code IS NOT NULL" in sql and "id <> $3::uuid" in sql and a == (T, "V0007", str(kid))

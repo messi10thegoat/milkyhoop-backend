@@ -8,6 +8,7 @@
 Galat = 409 GalatBerkode {detail, code, message, field} (VENDOR-DUPLIKAT 1 Nov 2026: satu bentuk dengan vendor; detail
 string supaya pembaca detail-string FE menampilkan kalimat; WORKSPACE memetakan code -> medan).
 """
+from . import teks_galat as tg
 from .galat_berkode import GalatBerkode
 
 KODE_NAMA = "NAMA_PELANGGAN_DIPAKAI"
@@ -22,9 +23,7 @@ async def tolak_nama_dipakai(conn, tenant_id: str, nama, kecuali_id=None) -> Non
            AND ($3::uuid IS NULL OR id <> $3::uuid) ORDER BY is_active DESC LIMIT 1""",
         tenant_id, nama, None if kecuali_id is None else str(kecuali_id))
     if r:
-        pesan = ("sudah dipakai pelanggan lain. Gunakan nama lain." if r["is_active"]
-                 else "sudah dipakai pelanggan nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain.")
-        raise GalatBerkode(409, KODE_NAMA, f"Nama pelanggan \"{nama}\" {pesan}", "name")
+        raise GalatBerkode(409, KODE_NAMA, tg.sudah_dipakai("pelanggan", "nama", nama, r["is_active"]), "name")
 
 
 async def tolak_nomor_dipakai(conn, tenant_id: str, nomor, kecuali_id=None) -> None:
@@ -35,4 +34,4 @@ async def tolak_nomor_dipakai(conn, tenant_id: str, nomor, kecuali_id=None) -> N
            AND ($3::uuid IS NULL OR id <> $3::uuid) LIMIT 1""",
         tenant_id, nomor, None if kecuali_id is None else str(kecuali_id))
     if ada:
-        raise GalatBerkode(409, KODE_NOMOR, f"Kode pelanggan \"{nomor}\" sudah dipakai pelanggan lain. Gunakan kode lain.", "code")
+        raise GalatBerkode(409, KODE_NOMOR, tg.sudah_dipakai("pelanggan", "kode", nomor), "code")

@@ -164,7 +164,19 @@ def _sesudah_nk(sebelum: dict, cn, d_terapkan, d_kembali, faktur_baru) -> dict:
     st = status_nk_sesudah(cn["status"], cn["total_amount"], dipakai, kembali)
     sisa = R.sisa_kredit_nk(st, cn["total_amount"], dipakai, kembali, faktur_baru)
     return {**sebelum, "status": st, "status_detail": R.status_detail_nk(st, dipakai, kembali),
-            "amount_applied": float(dipakai), "amount_refunded": float(kembali), "remaining": float(sisa)}
+            "amount_applied": float(dipakai), "amount_refunded": float(kembali), "remaining": float(sisa),
+            "original_invoice_id": faktur_baru}
+
+
+def teks_keadaan_nk(k: dict) -> dict:
+    """before/after pratinjau aksi NK: + status_text, sisa_keadaan dari penentu YANG SAMA dengan daftar/detail
+    (nota_kredit_daftar.status_text_nk / keadaan_nk; NK bertaut 'posted' -> Terpakai). ADITIF, kunci lama tetap."""
+    from .nota_kredit_daftar import keadaan_nk, status_text_nk
+    if k.get("exists", True) and k.get("status"):
+        fid = k.get("original_invoice_id")
+        k["status_text"] = status_text_nk(k["status"], k["status_detail"], fid)
+        k["sisa_keadaan"] = keadaan_nk(k["status"], k["status_detail"], fid)
+    return k
 
 
 # ---- U-P6 (2 Nov 2026): kunci bentuk Nota Debit (ADITIF; kunci lama tetap). Alias dihitung dari nilai YANG SAMA, bukan penentu kedua.
@@ -249,6 +261,7 @@ async def pratinjau_aksi_nk(conn, ctx: dict, cn_id, aksi: str, body) -> dict:
                     "balance_after": float(Decimal(str(s0)) - Decimal(str(body.amount))) if bisa else s0,
                     "bank_transactions": baris_bank}
     for k in (sebelum, sesudah):
+        teks_keadaan_nk(k)
         k.pop("original_invoice_id", None)
     if aksi == "unapply":
         payload = {"reason": (body or "").strip() or None}
@@ -547,6 +560,7 @@ async def pratinjau_post_void_nk(conn, ctx: dict, cn_id, aksi: str, alasan) -> d
         if fid is not None and f0 is not None:
             f1 = float(Decimal(str(f0)) + await kredit_piutang_nk(conn, tid, cn_id))
     for k in (sebelum, sesudah):
+        teks_keadaan_nk(k)
         k.pop("original_invoice_id", None)
     return alias_aksi_nd({"credit_note_id": str(cn_id), "action": aksi, "can_proceed": bisa, "blocks": bl.respons(),
                           "before": sebelum, "after": sesudah, "journals": jurnal,

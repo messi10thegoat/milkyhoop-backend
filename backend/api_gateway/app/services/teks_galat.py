@@ -120,6 +120,16 @@ def diskon_baris_melebihi(diskon, nilai) -> str:
     return f"Diskon baris {rp(diskon)} melebihi nilai baris {rp(nilai)}."
 
 
+def sudah_dipakai(pihak: str, medan: str, nilai, aktif: bool = True) -> str:
+    """Kalimat bentrok master data, SATU untuk pelanggan dan vendor (3 Nov 2026):
+    aktif   : 'Nama vendor "PT A" sudah dipakai vendor lain. Gunakan nama lain.'
+    nonaktif: 'Nama vendor "PT A" sudah dipakai vendor nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain.'"""
+    awal = f'{medan.capitalize()} {pihak} "{nilai}" sudah dipakai {pihak}'
+    if aktif:
+        return f"{awal} lain. Gunakan {medan} lain."
+    return f"{awal} nonaktif — aktifkan lagi dari Kontak atau gunakan {medan} lain."
+
+
 def periode_tertutup(nama, status) -> str:
     """'Periode Okt 2026 sudah ditutup. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya.'"""
     kata = _PERIODE.get(str(status or "").upper(), "ditutup")

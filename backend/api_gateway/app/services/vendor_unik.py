@@ -5,15 +5,11 @@
 - KODE: dijaga DB lewat indeks unik parsial (code IS NOT NULL); predikat sama.
 Galat = 409 GalatBerkode {detail, code, message, field}; pemegang nonaktif disebut di kalimatnya.
 """
+from . import teks_galat as tg
 from .galat_berkode import GalatBerkode
 
 KODE_NAMA = "NAMA_VENDOR_DIPAKAI"
 KODE_KODE = "KODE_VENDOR_DIPAKAI"
-
-
-def _pemegang(aktif) -> str:
-    # NAMA-NONAKTIF (2 Nov 2026): kalimat nonaktif SAMA dengan pelanggan_unik
-    return "vendor lain" if aktif else "vendor nonaktif — aktifkan lagi dari Kontak atau gunakan nama lain"
 
 
 async def tolak_nama_dipakai(conn, tenant_id: str, nama, kecuali_id=None) -> None:
@@ -24,7 +20,7 @@ async def tolak_nama_dipakai(conn, tenant_id: str, nama, kecuali_id=None) -> Non
            AND ($3::uuid IS NULL OR id <> $3::uuid) LIMIT 1""",
         tenant_id, nama, None if kecuali_id is None else str(kecuali_id))
     if r:
-        raise GalatBerkode(409, KODE_NAMA, f"Nama vendor \"{nama}\" sudah dipakai {_pemegang(r['is_active'])}.", "name")
+        raise GalatBerkode(409, KODE_NAMA, tg.sudah_dipakai("vendor", "nama", nama, r["is_active"]), "name")
 
 
 async def tolak_kode_dipakai(conn, tenant_id: str, kode, kecuali_id=None) -> None:
@@ -35,4 +31,4 @@ async def tolak_kode_dipakai(conn, tenant_id: str, kode, kecuali_id=None) -> Non
            AND ($3::uuid IS NULL OR id <> $3::uuid) LIMIT 1""",
         tenant_id, kode, None if kecuali_id is None else str(kecuali_id))
     if r:
-        raise GalatBerkode(409, KODE_KODE, f"Kode vendor \"{kode}\" sudah dipakai {_pemegang(r['is_active'])}.", "code")
+        raise GalatBerkode(409, KODE_KODE, tg.sudah_dipakai("vendor", "kode", kode, r["is_active"]), "code")
