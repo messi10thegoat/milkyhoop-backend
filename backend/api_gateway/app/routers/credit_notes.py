@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from uuid import UUID
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import teks_galat as tg
+from ..services import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from ..services import nota_kredit_rencana as NKR
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal posting = nomor NK
 from ..services.pihak_helpers import (
@@ -1914,7 +1915,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
         ctx["tenant_id"],
         journal_number,
         cn["credit_note_date"],
-        f"Credit Note {cn['credit_note_number']} - {cn['customer_name']}",
+        TJ.nk(cn['credit_note_number'], cn['customer_name']),
         credit_note_id,
         str(trace_id),
         total_amount,
@@ -2230,7 +2231,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             ctx["tenant_id"],
             companion_number,
             cn["credit_note_date"],
-            f"COGS reversal {cn['credit_note_number']} - {cn['customer_name']}",
+            TJ.nk_hpp(cn['credit_note_number']),
             credit_note_id,
             companion_total_cost,
             ctx["user_id"],
@@ -2755,7 +2756,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
         ctx["tenant_id"],
         journal_number,
         body.refund_date,
-        f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
+        TJ.nk_refund(cn['credit_note_number'], cn['customer_name']),
         credit_note_id,
         str(trace_id),
         body.amount,
@@ -2806,7 +2807,7 @@ async def refund_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, body) -
             reference_type="CREDIT_NOTE_REFUND",
             reference_id=refund_id,
             reference_number=body.reference,
-            description=f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
+            description=TJ.nk_refund(cn['credit_note_number'], cn['customer_name']),
             payee_payer=cn["customer_name"],
             created_by=ctx["user_id"],
         )
@@ -2952,7 +2953,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
             reversal_journal_id,
             ctx["tenant_id"],
             journal_number,
-            f"Void {cn['credit_note_number']} - {cn['customer_name']}",
+            TJ.nk_batal(cn['credit_note_number'], cn['customer_name']),
             credit_note_id,
             cn["journal_id"],
             cn["total_amount"],
@@ -3044,7 +3045,7 @@ async def void_nota_kredit_core(conn, ctx: dict, credit_note_id: UUID, reason: s
             companion_rev_id,
             ctx["tenant_id"],
             companion_rev_number,
-            f"Void COGS companion {cn['credit_note_number']}",
+            TJ.nk_batal_hpp(cn['credit_note_number']),
             credit_note_id,
             companion["id"],
             companion["total_debit"],

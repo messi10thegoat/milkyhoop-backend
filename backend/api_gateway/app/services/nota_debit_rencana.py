@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 from . import nota_debit as ND
 from . import teks_galat as tg
+from . import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from .role_resolver import AccountRole, PESAN_NON_PKP_PEMBELIAN, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
 
 NOL = Decimal("0")
@@ -138,7 +139,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     if ap and akun_kredit:
         try:
             baris = await baris_posting_nd(conn, tid, vc, ap, akun_kredit, potongan)
-            jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT", f"Vendor Credit {vc['credit_number']} - {vc['vendor_name']}", vc["credit_date"],
+            jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT", TJ.nd(vc['credit_number'], vc['vendor_name']), vc["credit_date"],
                                         [b[:4] for b in baris]))
         except HTTPException as e:
             bl.galat("NON_PKP", e.status_code, e.detail)
@@ -171,7 +172,7 @@ async def rencana_hpp(conn, tid: str, vc, items: Optional[list] = None) -> tuple
         if total > 0:
             akun = await resolve_inventory_accounts(conn, tid, p["id"])
             if akun["cogs_account_id"] and akun["inventory_account_id"]:
-                jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_COGS", f"HPP {vc['credit_number']}", vc["credit_date"],
+                jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_COGS", TJ.nd_hpp(vc['credit_number']), vc["credit_date"],
                                             [(akun["cogs_account_id"], total, 0, "HPP Barang Dagang"),
                                              (akun["inventory_account_id"], 0, total, "Persediaan Barang Dagang")]))
     return jurnal, stok
@@ -274,7 +275,7 @@ async def rencana_kembali(conn, ctx, vc_id, body, pratinjau: bool = False) -> di
     if not pratinjau:
         return hasil
     ap = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
-    jurnal = [await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_REFUND", f"Refund Received {vc['credit_number']} - {vc['vendor_name']}", body.refund_date,
+    jurnal = [await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_REFUND", TJ.nd_refund(vc['credit_number'], vc['vendor_name']), body.refund_date,
                             baris_refund_nd(akun_id, ap, body.amount, vc["credit_number"]))] if akun_id and ap else []
     bank = []
     if body.bank_account_id and akun_id:
@@ -323,13 +324,13 @@ async def rencana_batal(conn, ctx, vc_id, alasan: Optional[str], pratinjau: bool
     jurnal = []
     if vc["journal_id"]:
         asli = await conn.fetch("SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1", vc["journal_id"])
-        jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT", f"Void {vc['credit_number']} - {vc['vendor_name']}", hari_ini,
+        jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT", TJ.nd_batal(vc['credit_number'], vc['vendor_name']), hari_ini,
                                     [(b["account_id"], b["credit"], b["debit"], f"Reversal - {b['memo'] or ''}") for b in asli]))
         for j in await conn.fetch(
                 """SELECT id FROM journal_entries WHERE tenant_id = $1 AND source_type = 'VENDOR_CREDIT_COGS' AND source_id = $2
                    AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL ORDER BY created_at""", tid, vc_id):
             bj = await conn.fetch("SELECT account_id, debit, credit, memo FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", j["id"])
-            jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_COGS", f"Void HPP nota debit {vc['credit_number']}", hari_ini,
+            jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_COGS", TJ.nd_batal_hpp(vc['credit_number']), hari_ini,
                                         [(b["account_id"], b["credit"], b["debit"], f"Pembalik - {b['memo'] or ''}") for b in bj]))
     hasil.update({"journals": jurnal, "bank_transactions": [], "bills": [], "stock": []})
     return hasil

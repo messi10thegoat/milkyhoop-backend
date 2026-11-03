@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from . import teks_galat as tg
+from . import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from . import audit_dokumen as _ad  # AUDIT: jejak terap/lepas ND (Law 12)
 from .tagihan_daftar import sisa_tagihan_jurnal  # satu sumber (compute_ap_rincian); dipakai di modul ini + router
 
@@ -144,7 +145,7 @@ async def balik_hpp_stok_pajak(conn, ctx: dict, vc, tanggal) -> int:
             """INSERT INTO journal_entries (id, tenant_id, journal_number, journal_date, description, source_type, source_id, reversal_of_id,
                                             status, total_debit, total_credit, created_by)
                VALUES ($1, $2, $3, $4, $5, 'VENDOR_CREDIT_COGS', $6, $7, 'DRAFT', $8, $8, $9)""",
-            rev, tid, nomor, tanggal, f"Void HPP nota debit {vc['credit_number']}", vc["id"], j["id"], j["total_debit"], ctx["user_id"])
+            rev, tid, nomor, tanggal, TJ.nd_batal_hpp(vc['credit_number']), vc["id"], j["id"], j["total_debit"], ctx["user_id"])
         for idx, ln in enumerate(await conn.fetch("SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number", j["id"]), 1):
             await conn.execute(
                 "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",

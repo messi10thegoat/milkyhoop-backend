@@ -36,6 +36,7 @@ from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP (simetri
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
+from ..services import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal posting = nomor ND
 from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
@@ -1354,7 +1355,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                     ctx["tenant_id"],
                     journal_number,
                     vc["credit_date"],
-                    f"Vendor Credit {vc['credit_number']} - {vc['vendor_name']}",
+                    TJ.nd(vc['credit_number'], vc['vendor_name']),
                     vendor_credit_id,
                     total_amount,
                     ctx["user_id"],
@@ -1656,7 +1657,7 @@ async def receive_refund(
                     ctx["tenant_id"],
                     journal_number,
                     body.refund_date,
-                    f"Refund Received {vc['credit_number']} - {vc['vendor_name']}",
+                    TJ.nd_refund(vc['credit_number'], vc['vendor_name']),
                     vendor_credit_id,
                     body.amount,
                     ctx["user_id"],
@@ -1838,7 +1839,7 @@ async def void_vendor_credit(
                         reversal_journal_id,
                         ctx["tenant_id"],
                         journal_number,
-                        f"Void {vc['credit_number']} - {vc['vendor_name']}",
+                        TJ.nd_batal(vc['credit_number'], vc['vendor_name']),
                         vendor_credit_id,
                         vc["journal_id"],
                         vc["total_amount"],

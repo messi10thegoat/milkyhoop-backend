@@ -13,6 +13,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from . import teks_galat as tg
+from . import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from .nota_debit_rencana import Blok, _tampil
 from .pihak_helpers import faktur_tenant_untuk_pelanggan, pastikan_cn_muat_faktur
 
@@ -245,7 +246,7 @@ async def pratinjau_aksi_nk(conn, ctx: dict, cn_id, aksi: str, body) -> dict:
             sesudah = _sesudah_nk(sebelum, cn, 0, Decimal(str(body.amount)), cn["original_invoice_id"])
             ar = await R.resolve_account_id(conn, tid, R.AR_ACCOUNT_CODE)
             jurnal = [{"journal_number": None, "source_type": "CREDIT_NOTE_REFUND",
-                       "description": f"Refund {cn['credit_note_number']} - {cn['customer_name']}",
+                       "description": TJ.nk_refund(cn['credit_note_number'], cn['customer_name']),
                        "journal_date": body.refund_date.isoformat(),
                        "lines": await _tampil(conn, tid, baris_refund_nk(ar, r["akun"], body.amount, cn["credit_note_number"]))}]
         if r["akun"] is not None:
@@ -525,12 +526,12 @@ async def pratinjau_post_void_nk(conn, ctx: dict, cn_id, aksi: str, alasan) -> d
     if bisa and aksi == "post":
         akun = r["akun"]
         jurnal.append({"journal_number": None, "source_type": "CREDIT_NOTE",
-                       "description": f"Credit Note {cn['credit_note_number']} - {cn['customer_name']}",
+                       "description": TJ.nk(cn['credit_note_number'], cn['customer_name']),
                        "journal_date": cn["credit_note_date"].isoformat(),
                        "lines": await _tampil(conn, tid, baris_posting_nk(cn, akun, r["u"], r["subtotal"], r["pajak"], r["porsi_ar"], r["kelebihan"]))})
         if r["restock"]:
             jurnal.append({"journal_number": None, "source_type": "CREDIT_NOTE_COGS",
-                           "description": f"COGS reversal {cn['credit_note_number']} - {cn['customer_name']}",
+                           "description": TJ.nk_hpp(cn['credit_note_number']),
                            "journal_date": cn["credit_note_date"].isoformat(), "lines": await _tampil(conn, tid, baris_hpp_nk(cn, r["restock"]))})
         st = "posted"
         sisa = R.sisa_kredit_nk(st, cn["total_amount"], cn["amount_applied"], cn["amount_refunded"], cn["original_invoice_id"])
@@ -544,13 +545,13 @@ async def pratinjau_post_void_nk(conn, ctx: dict, cn_id, aksi: str, alasan) -> d
         sesudah = {"exists": False}
     elif bisa and aksi == "void":
         if cn["journal_id"]:
-            jurnal.append(await _jurnal_balik_nk(conn, tid, cn["journal_id"], f"Void {cn['credit_note_number']} - {cn['customer_name']}",
+            jurnal.append(await _jurnal_balik_nk(conn, tid, cn["journal_id"], TJ.nk_batal(cn['credit_note_number'], cn['customer_name']),
                                                  "CREDIT_NOTE", r["hari_ini"]))
         kom = await conn.fetchrow(
             """SELECT id FROM journal_entries WHERE tenant_id = $1 AND source_type = 'CREDIT_NOTE_COGS' AND source_id = $2
                AND status = 'POSTED' AND reversed_by_id IS NULL LIMIT 1""", tid, cn_id)
         if kom:
-            jurnal.append(await _jurnal_balik_nk(conn, tid, kom["id"], f"Void COGS companion {cn['credit_note_number']}", "CREDIT_NOTE_COGS",
+            jurnal.append(await _jurnal_balik_nk(conn, tid, kom["id"], TJ.nk_batal_hpp(cn['credit_note_number']), "CREDIT_NOTE_COGS",
                                                  r["hari_ini"]))
         sesudah = {**sebelum, "status": "void", "status_detail": R.status_detail_nk("void", cn["amount_applied"], cn["amount_refunded"]),
                    "remaining": 0.0}
