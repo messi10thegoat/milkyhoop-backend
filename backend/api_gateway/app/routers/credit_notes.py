@@ -2096,7 +2096,10 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
         if not product or not product["track_inventory"]:
             continue
 
-        qty_dec = Decimal(str(item["quantity"]))
+        # QTY-DASAR R1: retur masuk dalam SATUAN DASAR (penentu SATU; == pratinjau nota_kredit_rencana._rencana_restock_nk)
+        from ..services import satuan_dasar as SD
+        _qd = await SD.qty_dasar(conn, ctx["tenant_id"], product["id"], item.get("unit"), item["quantity"], "konversi")
+        qty_dec = _qd["qty_dasar"]
         if cn["original_invoice_id"]:
             # HPP + gudang ASLI dari keluarnya barang lewat faktur asal.
             asal = await _keluar_faktur_untuk_retur(
@@ -2146,7 +2149,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             product_code=product["item_code"],
             product_name=product["nama_produk"],
             warehouse_id=wh_id,
-            quantity=float(item["quantity"]),
+            quantity=float(qty_dec),
             unit_cost=float(unit_cost_val),
             source_type="CREDIT_NOTE",
             source_id=credit_note_id,
@@ -2155,6 +2158,8 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             notes=f"Restock from Credit Note {cn['credit_note_number']}",
             movement_date=cn["credit_note_date"],
             movement_type="SALES_RETURN",  # #37 (dulu default 'PURCHASE')
+            **({"transaction_unit": item.get("unit"), "transaction_quantity": Decimal(str(item["quantity"])),
+                "conversion_factor": _qd["faktor"]} if _qd["faktor"] != SD.SATU else {}),
         )
 
         if line_cost > 0:

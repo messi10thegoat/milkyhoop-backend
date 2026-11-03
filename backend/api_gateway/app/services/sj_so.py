@@ -267,6 +267,8 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             blocks.append(_blok("SJ_SO_PERIODE_TUTUP", msg))
 
     lines, total_nilai = [], _NOL
+    from . import satuan_dasar as SD  # QTY-DASAR R1: SJ = jalur KELUAR -> satuan selain dasar ditolak sampai R2 (tak ada keadaan campur)
+    ktx_sd = await SD.muat(conn, tid, [peta[x]["item_id"] for x in diminta if peta[x]["stok"] and peta[x]["item_id"] and SD.normal(peta[x]["unit"])])
     for bid, qty in diminta.items():
         b = peta[bid]
         nama = b["nama_produk"] or b["description"]
@@ -277,6 +279,9 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
               "unit_cost": _NOL, "value": _NOL, "available": None, "item_code": b["item_code"],
               "invoiced_quantity": faktur.get(bid, {}).get("q", _NOL)}
         if b["stok"]:
+            h_sd = SD.hitung(ktx_sd, b["item_id"], b["unit"], qty, "tolak", "Pengiriman")
+            if h_sd["blok"]:
+                blocks.append(_blok(h_sd["blok"]["code"], h_sd["blok"]["message"], h_sd["blok"]["status"], bid))
             if b["batch"] or b["serial"]:
                 blocks.append(_blok("SJ_SO_BATCH_SERIAL_BELUM_DIDUKUNG",
                                     f"{nama} dilacak per batch/serial; belum didukung di Surat Jalan tanpa faktur.", 409, bid))

@@ -182,6 +182,9 @@ async def _create_pos_inventory_and_journals(
                         continue
 
                     qty = item["quantity"]
+                    # QTY-DASAR R1: penjualan = jalur KELUAR -> satuan selain dasar ditolak sampai R2 (penentu SATU; transaksi batal utuh)
+                    from ..services.satuan_dasar import qty_dasar as _qty_dasar
+                    await _qty_dasar(conn, tenant_id, product_id, item.get("unit"), qty, "tolak", "Penjualan")
                     # Law 25: Decimal instead of float
                     unit_cost = Decimal(
                         str(item.get("purchase_price") or item.get("unit_cost") or 0)
