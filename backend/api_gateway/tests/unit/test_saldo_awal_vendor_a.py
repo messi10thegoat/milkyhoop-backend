@@ -66,7 +66,7 @@ def test_blok_posting_peran_debit_modal_dan_tanpa_pajak(monkeypatch):
     monkeypatch.setattr(RR, "resolve_account_id_by_role", res)
     monkeypatch.setattr(RR, "resolve_account_id_by_role_if_pkp", vat)
     monkeypatch.setattr(TA, "periode_tertutup", buka)
-    bill = {"id": "b1", "status_v2": "draft", "issue_date": None, "tax_amount": 0}
+    bill = {"id": "b1", "status_v2": "draft", "issue_date": None, "tax_amount": 0, "grand_total": 100000}  # SI-FPB-RP0: medan yang selalu dibawa pemanggil produksi
     bloks, akun = asyncio.run(TA.blok_posting(_K(True), "t", bill))
     assert not bloks and akun["debit_role"] == RR.AccountRole.EQUITY_OPENING_BALANCE and akun["debit"] == f"akun-{RR.AccountRole.EQUITY_OPENING_BALANCE}"
     bloks, _ = asyncio.run(TA.blok_posting(_K(True), "t", {**bill, "tax_amount": 1100}))

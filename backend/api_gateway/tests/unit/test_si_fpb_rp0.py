@@ -108,12 +108,18 @@ def test_penulis_fpb_tolak_sebelum_tulis_tagihan():
 
 
 def test_kalimat_hanya_dari_satu_fungsi():
-    """Tak ada kalimat 'bernilai Rp 0' tulisan tangan di luar teks_galat."""
+    """Tak ada konstanta kalimat tolak Rp 0 tulisan tangan di luar teks_galat (AST: konstanta string, node docstring dikecualikan)."""
     import pathlib
     akar = pathlib.Path(DN.__file__).resolve().parents[1]
-    liar = [str(f.relative_to(akar)) for f in akar.rglob("*.py") if "bernilai Rp 0" in f.read_text() and f.name != "teks_galat.py"
-            and f.name != "dokumen_nol.py"]
-    assert liar == []
+    liar = []
+    for f in akar.rglob("*.py"):
+        pohon = ast.parse(f.read_text())
+        doc = {id(n.body[0].value) for n in ast.walk(pohon) if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+               and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+        for n in ast.walk(pohon):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in doc and "Isi harga atau hapus diskon" in n.value:
+                liar.append(f"{f.relative_to(akar)}:{n.lineno}")
+    assert liar and all(x.startswith("services/teks_galat.py:") for x in liar), liar
 
 
 def test_saldo_awal_vendor_nol_tak_sampai_post_bill():
