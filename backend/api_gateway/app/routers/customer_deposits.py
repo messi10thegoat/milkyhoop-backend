@@ -2850,7 +2850,7 @@ async def _isi_pratinjau_buat_dp(conn, ctx: dict, body, r: dict) -> dict:
     """Bentuk respons pratinjau BUAT dari hasil penentu (rencana_buat_dp). Jurnal = RENCANA tanpa nomor; nomor uang muka PERKIRAAN."""
     from ..services import kode_order as _KO
     from ..services.proforma_aksi import proforma_lunas
-    from ..services.proforma_terbayar import terbayar_proforma
+    from ..services.proforma_terbayar import ringkasan_pembayaran_so, ringkasan_pesanan, terbayar_proforma
     tid = ctx["tenant_id"]
     ok = not r["blocks"]
     jumlah = Decimal(str(body.amount))
@@ -2884,9 +2884,14 @@ async def _isi_pratinjau_buat_dp(conn, ctx: dict, body, r: dict) -> dict:
                                  r["order_id"], tid)
         if so:
             sebelum = Decimal(str(await received_total_for_order(conn, tid, r["order_id"])))
+            # "DP diterima" detail SO (payment_summary, turunan jurnal: hanya uang muka TERPOSTING) -- angka yang SAMA dilihat pengguna
+            dp0 = Decimal(str(ringkasan_pembayaran_so(so["total_amount"], (await ringkasan_pesanan(conn, tid, [r["order_id"]]))[r["order_id"]])
+                              ["dp_received_amount"]))
             order = {"sales_order_id": str(r["order_id"]), "order_number": so["order_number"],
                      "total_amount": float(so["total_amount"] or 0),
                      "received_before": float(sebelum), "received_after": float(sebelum + jumlah),  # plafon: draf ikut menahan
+                     "dp_received_amount_before": float(dp0),
+                     "dp_received_amount_after": float(dp0 + jumlah if status == "posted" else dp0),  # draf belum berjurnal
                      "dp_required": float(so["dp_amount"]) if so["dp_amount"] is not None else None}
     proforma = None  # INFO saja (bukan blok; MASTER 3 Nov): sisa proforma sebelum -> sesudah
     if body.proforma_id and r["order_id"]:

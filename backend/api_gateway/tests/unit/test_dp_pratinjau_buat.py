@@ -325,6 +325,14 @@ def _isi_palsu(monkeypatch):
 
     async def tgl(conn, tid):
         return date(2026, 11, 3)
+
+    async def ringkas(conn, tid, so_ids):
+        assert so_ids == [SO]
+        r = {k: Decimal("0") for k in ("tertutup", "invoiced", "invoice_settled", "invoice_outstanding", "credit_note",
+                                        "dp_received", "dp_applied", "dp_refunded", "dp_unapplied")}
+        r["dp_received"] = Decimal("75000")
+        return {SO: r}
+    monkeypatch.setattr(PT, "ringkasan_pesanan", ringkas)
     monkeypatch.setattr(PT, "terbayar_proforma", terbayar)
     monkeypatch.setattr(KO, "perkiraan_spk", spk)
     monkeypatch.setattr(CD, "tanggal_dokumen", tgl)
@@ -352,7 +360,8 @@ async def test_isi_pratinjau_posting_jurnal_bank_pesanan_proforma_kode(_isi_pals
                                          "credit": 200000.0}]}]
     assert d["bank_transactions"] == [{"bank_account": "BCA Operasional", "amount": 200000.0, "transaction_type": "deposit"}]
     assert d["order"] == {"sales_order_id": str(SO), "order_number": "SO-2611-0001", "total_amount": 1000000.0,
-                          "received_before": 50000.0, "received_after": 250000.0, "dp_required": 300000.0}
+                          "received_before": 50000.0, "received_after": 250000.0,
+                          "dp_received_amount_before": 75000.0, "dp_received_amount_after": 275000.0, "dp_required": 300000.0}
     assert d["proforma"] == {"proforma_id": str(PF), "proforma_number": "PRO-2611-0001", "amount": 500000.0, "paid_before": 100000.0,
                              "remaining_before": 400000.0, "remaining_after": 200000.0, "paid_off_before": False, "estimated": True}
     assert d["order_code_preview"] == {"order_code": "SPK-2611-005", "issued": True}
@@ -366,6 +375,8 @@ async def test_isi_pratinjau_draf_tanpa_jurnal_sisa_proforma_tetap(_isi_palsu):
     assert d["journals"] == [] and d["bank_transactions"] == []
     assert d["after"]["status"] == "draft" and d["after"]["remaining"] == 0.0
     assert d["proforma"]["remaining_after"] == d["proforma"]["remaining_before"] == 400000.0
+    assert d["order"]["dp_received_amount_after"] == d["order"]["dp_received_amount_before"] == 75000.0  # draf belum berjurnal
+    assert d["order"]["received_after"] == d["order"]["received_before"] + 200000.0  # plafon: draf menahan
     assert d["order_code_preview"] is None
 
 
