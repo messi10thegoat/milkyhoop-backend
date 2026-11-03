@@ -972,7 +972,14 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
                      AND ($3::uuid IS NULL OR cn.id <> $3::uuid)""", r["id"], tenant_id, UUID(str(kecuali_cn)) if kecuali_cn else None)],
                         Decimal("0"))
             bisa = max(dasar(r["unit"], r["quantity"]) - sudah, Decimal("0"))
-            minta = sum([dasar(u, q) for u, q in satuan_nk[str(r["id"])]], Decimal("0"))
+            minta = sum([dasar(u, q) for u, q in satuan_nk.get(str(r["id"]), [])], Decimal("0"))
+            if minta > bisa:  # kalimat MENYEBUT satuan (MASTER 3 Nov): "diminta 3 Botol, sisa 12 Botol dari 1 Karton"
+                d = ktx["barang"].get(str(r["item_id"]), {}).get("dasar") or ""
+                lebih.append({"original_invoice_item_id": str(r["id"]), "description": r["description"], "requested": float(minta),
+                              "creditable": float(bisa), "unit": d,
+                              "teks": f"{r['description'] or '-'} (diminta {tg.qty(minta)} {d}, sisa {tg.qty(bisa)} {d} dari "
+                                      f"{tg.qty(r['quantity'])} {r['unit']})"})
+                continue
         if minta > bisa:
             lebih.append({"original_invoice_item_id": str(r["id"]), "description": r["description"],
                           "requested": float(minta), "creditable": float(bisa)})
@@ -980,7 +987,7 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
         raise HTTPException(status_code=400, detail={
             "code": "CN_QTY_EXCEEDS_CREDITABLE",
             "message": "Melebihi yang masih bisa dinotakan: " + ", ".join(
-                f"{x['description'] or '-'} (diminta {x['requested']:g}, sisa {x['creditable']:g})" for x in lebih) + ".",
+                x.get("teks") or f"{x['description'] or '-'} (diminta {x['requested']:g}, sisa {x['creditable']:g})" for x in lebih) + ".",
             "lines": lebih})
 
 

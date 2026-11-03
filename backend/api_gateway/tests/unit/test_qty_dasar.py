@@ -383,6 +383,7 @@ async def test_nk_silang_satuan_batas_bisa_dinotakan_dalam_dasar():
     with pytest.raises(HTTPException) as e:
         await CN.periksa_bisa_dinotakan(KonCN(), T, fk, [{"original_invoice_item_id": str(bi), "quantity": 13, "unit": "Botol"}], kunci=False)
     assert e.value.detail["code"] == "CN_QTY_EXCEEDS_CREDITABLE"
+    assert e.value.detail["message"] == "Melebihi yang masih bisa dinotakan: Minyak (diminta 13 Botol, sisa 12 Botol dari 1 Karton)."
     with pytest.raises(HTTPException):  # sudah 10 Botol lewat NK lain: sisa 2 dasar, retur 1 Karton (12) ditolak
         await CN.periksa_bisa_dinotakan(KonCN([{"unit": "Botol", "quantity": Decimal("10")}]), T, fk,
                                          [{"original_invoice_item_id": str(bi), "quantity": 1, "unit": "Karton"}], kunci=False)

@@ -43,6 +43,10 @@ class DBFaktur(DB):
             return self.keluar
         if "FROM sj_faktur_alokasi" in s:   # R1 irisan 2 (T2): tak ada alokasi Surat Jalan pada skenario retur klasik
             return []
+        # QTY-DASAR R2 (retarget OK MASTER 3 Nov): rencana posting NK kini membaca satuan baris NK (pencocokan pola tabel + kolom,
+        # bukan teks utuh); unit None = satuan dasar -> jalur lama persis
+        if "FROM credit_note_items" in s and "unit" in s and "original_invoice_item_id" in s and "credit_note_id = $1" in s:
+            return [{"quantity": i.get("quantity"), "unit": None, "original_invoice_item_id": i.get("original_invoice_item_id")} for i in self.items]
         return await super().fetch(sql, *a)
 
     async def fetchval(self, sql, *a):

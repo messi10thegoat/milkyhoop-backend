@@ -320,9 +320,9 @@ async def rencana_posting_nk(conn, ctx: dict, cn_id, pratinjau: bool = False, ma
             await bl.coba("CN_FAKTUR_ASAL", R.pastikan_potongan_muat_sisa(conn, tid, faktur_asal, cn["total_amount"], cn["reason"]))
             await bl.coba("CN_FAKTUR_ASAL", R.periksa_bisa_dinotakan(
                 conn, tid, faktur_asal["id"],
-                [{"quantity": r["quantity"], "original_invoice_item_id": r["original_invoice_item_id"]} for r in baris_nk]
-                if baris_nk is not None else [dict(r) for r in await conn.fetch(
-                    "SELECT quantity, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", cn_id)],
+                [{"quantity": r["quantity"], "unit": r.get("unit"), "original_invoice_item_id": r["original_invoice_item_id"]} for r in baris_nk]
+                if baris_nk is not None else [dict(r) for r in await conn.fetch(  # QTY-DASAR R2: unit ikut (batas silang satuan dalam dasar)
+                    "SELECT quantity, unit, original_invoice_item_id FROM credit_note_items WHERE credit_note_id = $1", cn_id)],
                 kecuali_cn=cn_id, kunci=not pratinjau))
     hasil["faktur_asal"] = faktur_asal
     r = await conn.fetchrow("SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
