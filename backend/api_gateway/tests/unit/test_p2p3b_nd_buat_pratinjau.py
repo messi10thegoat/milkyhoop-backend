@@ -108,9 +108,10 @@ def test_hitungan_penyusun_sama_dengan_rumus_lama():
 
 
 def test_rencana_hpp_memakai_baris_maya_bila_ada():
-    s = _src(NDR.rencana_hpp)
-    assert "items if items is not None else await conn.fetch(\"SELECT * FROM vendor_credit_items" in s
-    assert "hpp, stok = await rencana_hpp(conn, tid, vc, items)" in _src(NDR.rencana_posting)
+    # ND-GUDANG (OK MASTER): baris maya kini diteruskan rencana_posting -> NG.rencana_keluar -> rencana_hpp(keluar); maksud SAMA
+    s = _src(NDR.rencana_posting)
+    assert "items if items is not None else await conn.fetch(" in s and "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1" in s
+    assert "hpp, stok = await rencana_hpp(conn, tid, vc, keluar)" in s
 
 
 class _ConnTagihanLain(_Conn):

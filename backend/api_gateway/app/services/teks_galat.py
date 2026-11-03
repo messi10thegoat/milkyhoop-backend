@@ -136,6 +136,22 @@ def faktur_nol(jenis: str) -> str:
     return f"{dok} bernilai Rp 0 tidak bisa diterbitkan. Isi harga atau hapus diskon."
 
 
+def nd_barang_belum_masuk(nama, nomor_tagihan) -> str:
+    """ND-GUDANG (pola NK 'belum pernah dikirim lewat faktur'): retur barang yang tak pernah masuk lewat tagihan asal."""
+    return (f"Barang {nama} belum pernah masuk lewat tagihan {nomor_tagihan or ''}".rstrip()
+            + ", jadi tidak bisa diretur ke vendor. Pilih alasan selain 'Retur barang' bila ini koreksi nilai.")
+
+
+def nd_retur_melebihi(nama, jumlah, sisa) -> str:
+    """ND-GUDANG (pola NK 'melebihi yang terkirim dan belum diretur')."""
+    return f"Retur {nama} {qty(jumlah)} melebihi yang masuk dan belum diretur ({qty(sisa)})."
+
+
+def nd_stok_kurang(nama, gudang, stok, jumlah) -> str:
+    """ND-GUDANG: stok gudang asal tak cukup (dulu 500 chk_ws_quantity)."""
+    return f"Stok {nama} di {gudang or 'gudang'} tinggal {qty(stok)}; retur {qty(jumlah)} tidak bisa diposting."
+
+
 def periode_tertutup(nama, status) -> str:
     """'Periode Okt 2026 sudah ditutup. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya.'"""
     kata = _PERIODE.get(str(status or "").upper(), "ditutup")

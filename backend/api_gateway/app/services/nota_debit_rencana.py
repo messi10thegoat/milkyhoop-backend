@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from . import nota_debit as ND
 from . import teks_galat as tg
 from . import teks_jurnal as TJ  # TEKS-JURNAL-NKND
+from . import nota_debit_gudang as NG  # ND-GUDANG
 from .role_resolver import AccountRole, PESAN_NON_PKP_PEMBELIAN, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
 
 NOL = Decimal("0")
@@ -132,7 +133,11 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     if not ap or not akun_kredit:
         bl.galat("PERAN_AKUN_BELUM_DIPETAKAN", 500, "Akun hutang / retur / diskon pembelian belum dipetakan.")
     await periode_terbuka(conn, tid, vc["credit_date"], bl)
-    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan}
+    # ND-GUDANG: gudang asal + sisa retur + stok (penulis: kunci tagihan asal + FOR UPDATE stok) -- penentu SATU dgn pratinjau
+    keluar = [] if potongan else await NG.rencana_keluar(
+        conn, tid, vc, items if items is not None else await conn.fetch(
+            "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1 ORDER BY line_number", vc["id"]), kunci=not pratinjau, bl=bl)
+    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan, "keluar": keluar}
     if not pratinjau:
         return hasil
     jurnal, stok = [], []
@@ -144,7 +149,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
         except HTTPException as e:
             bl.galat("NON_PKP", e.status_code, e.detail)
     if not potongan:
-        hpp, stok = await rencana_hpp(conn, tid, vc, items)
+        hpp, stok = await rencana_hpp(conn, tid, vc, keluar)
         jurnal += hpp
     tag = []
     if vc["original_bill_id"] and sisa_t is not None:
@@ -154,21 +159,18 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     return hasil
 
 
-async def rencana_hpp(conn, tid: str, vc, items: Optional[list] = None) -> tuple:
-    """Rencana jurnal HPP + gerak stok retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound."""
+async def rencana_hpp(conn, tid: str, vc, keluar: list) -> tuple:
+    """Rencana jurnal HPP + gerak stok retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound.
+    keluar = NG.rencana_keluar (gudang asal; ND-GUDANG) -- gudang SAMA dengan penulis. Biaya = WAC saat ini (putusan B, Rule 3)."""
     from .inventory_helpers import get_cost_for_sale, resolve_inventory_accounts
     jurnal, stok = [], []
-    wh = await conn.fetchval("SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1", tid)
-    for it in (items if items is not None else await conn.fetch("SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1", vc["id"])):
-        if not it["item_id"] or not wh:
-            continue
-        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", it["item_id"])
-        if not p or not p["track_inventory"]:
-            continue
+    for k in keluar:
+        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
         biaya = await get_cost_for_sale(conn, tid, p["id"])
-        total = int(float(it["quantity"]) * float(biaya["unit_cost"]))
-        stok.append({"product_id": str(p["id"]), "product": p["nama_produk"], "quantity": float(it["quantity"]),
-                     "unit_cost": _f(biaya["unit_cost"]), "total_cost": total, "cost_source": biaya["cost_source"]})
+        total = int(float(k["qty"]) * float(biaya["unit_cost"]))
+        stok.append({"product_id": str(p["id"]), "product": p["nama_produk"], "quantity": float(k["qty"]),
+                     "unit_cost": _f(biaya["unit_cost"]), "total_cost": total, "cost_source": biaya["cost_source"],
+                     "warehouse_id": str(k["gudang_id"]), "warehouse": k["gudang"]})
         if total > 0:
             akun = await resolve_inventory_accounts(conn, tid, p["id"])
             if akun["cogs_account_id"] and akun["inventory_account_id"]:

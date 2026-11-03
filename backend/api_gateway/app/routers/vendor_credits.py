@@ -1328,6 +1328,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                 # (dibukukan? <= sisa) · status draf · akun peran · pagar potongan PPN (409) · akun dipetakan · periode
                 _r = await NDR.rencana_posting(conn, ctx, vc)
                 ap_account_id, purchase_return_account_id, potongan = _r["ap"], _r["akun_kredit"], _r["potongan"]
+                _gudang_nd = {str(k["item_row_id"]): k["gudang_id"] for k in _r["keluar"]}  # ND-GUDANG: gudang asal (penentu SATU)
 
                 # Generate journal number
                 import uuid as uuid_module
@@ -1405,10 +1406,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                     if not product or not product["track_inventory"]:
                         continue
 
-                    wh_id = await conn.fetchval(
-                        "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
-                        ctx["tenant_id"],
-                    )
+                    wh_id = _gudang_nd.get(str(item["id"]))
                     if not wh_id:
                         continue
 
