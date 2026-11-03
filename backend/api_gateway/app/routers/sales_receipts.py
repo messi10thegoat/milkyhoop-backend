@@ -385,6 +385,14 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
             # Pelanggan WAJIB milik tenant ini (30 Sep 2026)
             await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
+            # QTY-DASAR R1: kasir = jalur KELUAR -> baris ber-stok wajib satuan dasar (SATUAN_BELUM_DIDUKUNG) sampai R2; sebelum tulis apa pun
+            if warehouse_id:
+                from ..services import satuan_dasar as _SD
+                _bs = await _SD.blok_baris(conn, ctx["tenant_id"], [
+                    {"product_id": it["item_id"], "unit": it.get("unit"), "quantity": it["quantity"]}
+                    for it in processed_items if it.get("track_inventory", True) and it.get("item_id")], "tolak", "Penjualan")
+                if _bs:
+                    _SD.tolak_bila({"blok": _bs[0]})
 
             # Create receipt header
             receipt_row = await conn.fetchrow(

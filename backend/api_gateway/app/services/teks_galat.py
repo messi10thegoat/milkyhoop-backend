@@ -157,3 +157,13 @@ def periode_tertutup(nama, status) -> str:
     kata = _PERIODE.get(str(status or "").upper(), "ditutup")
     awal = f"Periode {nama}" if nama else "Periode akuntansi"
     return f"{awal} sudah {kata}. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya."
+
+
+def satuan_tak_terkonversi(satuan, nama, dasar) -> str:
+    """QTY-DASAR: satuan dokumen tanpa konversi ke satuan dasar barang (dulu dianggap 1:1 diam -> stok & HPP salah)."""
+    return f"Satuan {satuan} untuk {nama} belum punya konversi ke {dasar}. Atur konversinya di Barang › Satuan."
+
+
+def satuan_belum_didukung(aksi, satuan, dasar) -> str:
+    """QTY-DASAR R1 (kalimat MASTER): jalur KELUAR menolak satuan selain dasar sampai konversinya terpasang (R2)."""
+    return f"{aksi} dengan satuan {satuan} belum didukung; pakai {dasar}."

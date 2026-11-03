@@ -110,7 +110,7 @@ def baris_recog(debit, barang, jasa, akun_dimuka, memo_debit: str, nomor: str) -
 
 # ---------------------------------------------------------------- perencana pratinjau READ ONLY
 SQL_ITEMS = """
-        SELECT id, item_id, item_code, description, quantity, unit_price,
+        SELECT id, item_id, item_code, description, quantity, unit, unit_price,
                batch_id, batch_no, exp_date, discount_amount, jumlah_baris
         FROM sales_invoice_items
         WHERE invoice_id = $1
@@ -230,6 +230,11 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
         complete = False
         if not inv["warehouse_id"] and await GB.bawaan(conn, tid) is None:
             blok(SI.KODE_GUDANG_WAJIB_POSTING, SI.PESAN_GUDANG_WAJIB_POSTING, 400, "warehouse_id")
+        # QTY-DASAR R1: kirim otomatis = jalur KELUAR -> == pagar _execute_fulfillment (satuan selain dasar ditolak sampai R2)
+        from . import satuan_dasar as SD
+        for x in await SD.blok_baris(conn, tid, [{"product_id": it["item_id"], "unit": it.get("unit"), "quantity": it["quantity"]}
+                                                  for it in items if it["id"] in untuk_kirim], "tolak", "Pengiriman"):
+            blok(x["code"], x["message"], x["status"])
     if cabang == CABANG_TANGGUH_WAC0:
         for it in items:
             if not it.get("item_id"):

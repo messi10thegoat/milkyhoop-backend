@@ -53,7 +53,21 @@ from .role_resolver import (  # noqa: E402
     PESAN_NON_PKP_PEMBELIAN,
 )
 from .role_precondition import assert_required_roles_for_path  # noqa: E402
-from .unit_helpers import convert_to_base_unit  # noqa: E402
+from . import satuan_dasar as SD  # noqa: E402  QTY-DASAR R1 (menggantikan unit_helpers.convert_to_base_unit di jalur stok)
+from .galat_berkode import GalatBerkode  # noqa: E402
+
+
+async def blok_satuan_buat(conn, tenant_id: str, items: list) -> list:
+    """QTY-DASAR R1: blok satuan baris BER-STOK badan buat tagihan (POST /bills/v2 posted == /bills/calculate posted). Barang ber-stok =
+    item_type 'goods' + track_inventory (aturan SAMA dengan loop stok create_bill_v2)."""
+    ids = [str(i.get("product_id")) for i in items if i.get("product_id")]
+    if not ids:
+        return []
+    stok = {str(r["id"]) for r in await conn.fetch(
+        """SELECT id FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND item_type = 'goods' AND COALESCE(track_inventory, true)""",
+        tenant_id, ids)}
+    return await SD.blok_baris(conn, tenant_id, [{"product_id": str(i["product_id"]), "unit": i.get("unit"), "quantity": i.get("qty") or i.get("quantity")}
+                                                  for i in items if i.get("product_id") and str(i["product_id"]) in stok], "konversi")
 
 # Fase D2.3: required role mappings for bills_service posting paths
 # (create_bill -> post_bill -> void_bill, plus pay_bill helper).
@@ -2563,6 +2577,10 @@ class BillsService:
                 status = request.get("status", "draft")
                 if status == "posted":  # SI-FPB-RP0: tolak SEBELUM tulis tagihan (raise -> transaksi batal: nomor & vendor baru ikut batal)
                     DN.tolak_faktur_nol("bill", _h["akhir"]["grand_total"], "grand_total")
+                    # QTY-DASAR R1: satuan baris ber-stok wajib berkonversi (== /bills/calculate status posted, fungsi blok SAMA)
+                    _bs = await blok_satuan_buat(conn, tenant_id, items)
+                    if _bs:
+                        raise GalatBerkode(_bs[0]["status"], _bs[0]["code"], _bs[0]["message"])
                 issue_date = request.get("issue_date") or await tanggal_dokumen(
                     conn, tenant_id
                 )
@@ -2998,7 +3016,7 @@ class BillsService:
                         # Get bill items with product details
                         bill_items_for_inv = await conn.fetch(
                             """
-                            SELECT bi.product_id, bi.quantity, bi.unit_price, bi.description,
+                            SELECT bi.product_id, bi.quantity, bi.unit, bi.unit_price, bi.description,
                                    bi.batch_no, bi.exp_date,
                                    p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                                    p.track_batches
@@ -3026,9 +3044,11 @@ class BillsService:
                                 continue
 
                             product_id = inv_item["product_id"]
-                            quantity = Decimal(str(inv_item["quantity"]))
-                            unit_cost = Decimal(str(inv_item["unit_price"]))
-                            total_cost = quantity * unit_cost
+                            # QTY-DASAR R1: kartu stok + WAC dalam satuan DASAR (penentu SATU; blok sudah ditolak sebelum tulis)
+                            _qdv2 = await SD.qty_dasar(conn, tenant_id, product_id, inv_item["unit"], inv_item["quantity"], "konversi")
+                            quantity = _qdv2["qty_dasar"]
+                            total_cost = Decimal(str(inv_item["quantity"])) * Decimal(str(inv_item["unit_price"]))
+                            unit_cost = SD.biaya_dasar(total_cost, quantity) if _qdv2["faktor"] != SD.SATU else Decimal(str(inv_item["unit_price"]))
                             # WAC computed by record_inventory_inbound below
                             # (CANONICAL source — milkyhoop-inventory Rule 3,
                             # L09 convergence). Batch resolution runs first so
@@ -3122,6 +3142,8 @@ class BillsService:
                                 movement_date=issue_date,
                                 journal_id=journal_id,
                                 batch_id=batch_id,
+                                **({"transaction_unit": inv_item["unit"], "transaction_quantity": Decimal(str(inv_item["quantity"])),
+                                    "conversion_factor": _qdv2["faktor"]} if _qdv2["faktor"] != SD.SATU else {}),
                             )
 
                             logger.info(
@@ -3500,13 +3522,10 @@ class BillsService:
                     product_id = item["product_id"]
                     transaction_quantity_3 = Decimal(str(item["quantity"]))
                     transaction_unit_3 = item.get("unit")
-                    base_qty_3, conversion_factor_3 = await convert_to_base_unit(
-                        conn,
-                        tenant_id,
-                        product_id,
-                        transaction_quantity_3,
-                        transaction_unit_3,
-                    )
+                    # QTY-DASAR R1: penentu SATU (services/satuan_dasar; == tagihan_aksi.blok_posting / pratinjau). Satuan tanpa
+                    # konversi kini DITOLAK berkalimat (dulu unit_helpers menganggap 1:1 diam -> stok & HPP salah).
+                    _qd3 = await SD.qty_dasar(conn, tenant_id, product_id, transaction_unit_3, transaction_quantity_3, "konversi")
+                    base_qty_3, conversion_factor_3 = _qd3["qty_dasar"], _qd3["faktor"]
                     quantity = base_qty_3
                     unit_cost_raw_3 = Decimal(str(item["unit_price"]))
                     total_cost = transaction_quantity_3 * unit_cost_raw_3

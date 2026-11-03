@@ -1901,6 +1901,9 @@ async def issue_materials(
                             hari_ini,
                         )
 
+                    # QTY-DASAR R1: pengeluaran bahan = jalur KELUAR -> satuan selain dasar ditolak sampai R2 (transaksi batal utuh)
+                    from ..services.satuan_dasar import qty_dasar as _qty_dasar
+                    await _qty_dasar(conn, ctx["tenant_id"], mat.product_id, mat.unit, mat.quantity, "tolak", "Pengeluaran bahan")
                     total_issued_cost += issue_cost
                     ledger_rows.append(
                         {
@@ -2911,6 +2914,10 @@ async def report_output(
                         record_inventory_inbound,
                     )
 
+                    # QTY-DASAR R1: barang jadi masuk tanpa konversi di jalur ini -> satuan WO selain dasar ditolak (bukan 1:1 diam)
+                    from ..services.satuan_dasar import qty_dasar as _qty_dasar
+                    await _qty_dasar(conn, ctx["tenant_id"], order["product_id"], order.get("unit"), body.good_quantity, "tolak",
+                                     "Penerimaan produksi")
                     await record_inventory_inbound(
                         conn,
                         tenant_id=ctx["tenant_id"],

@@ -244,6 +244,12 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
         if vat is None:
             bloks.append(blok("NON_PKP_PPN", PESAN_NON_PKP_PEMBELIAN))
     bloks += DN.blok_faktur_nol("bill", bill["grand_total"])  # SI-FPB-RP0: == create_bill_v2 posted (fungsi tolak sama)
+    # QTY-DASAR R1: baris BER-STOK (goods + track_inventory, == loop stok post_bill) wajib bersatuan dasar atau berkonversi
+    from . import satuan_dasar as SD
+    stok = [] if awal else await conn.fetch(  # tagihan pembuka saldo awal: debit Modal, tanpa gerak stok -> tak membaca baris produk
+        """SELECT bi.product_id, bi.unit, bi.quantity FROM bill_items bi JOIN products p ON p.id = bi.product_id AND p.tenant_id = $2
+           WHERE bi.bill_id = $1 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true) ORDER BY bi.line_number""", bill["id"], tid)
+    bloks += [blok(x["code"], x["message"]) for x in await SD.blok_baris(conn, tid, [dict(r) for r in stok], "konversi")]
     if not ap:
         bloks.append(blok("AKUN_AP_HILANG", "Akun AP_TRADE tidak ter-resolve"))
     if not debit:

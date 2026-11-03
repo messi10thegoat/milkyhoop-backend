@@ -889,6 +889,11 @@ class KernelDocumentExecutor:
             quantity = Decimal(str(mv.get("quantity", "0")))
             direction = mv.get("direction", "IN").upper()
             unit_cost = Decimal(str(mv.get("unit_price", "0")))
+            # QTY-DASAR R1: jalur lama ini menulis kartu stok mentah (tanpa helper WAC) -> satuan selain dasar DITOLAK, masuk maupun keluar,
+            # sampai R2 (penentu SATU; produk baru dari _find_or_create_product bersatuan dasar = satuan dokumen -> lolos)
+            from .satuan_dasar import qty_dasar as _qty_dasar
+            await _qty_dasar(conn, tenant_id, product_uuid, mv.get("unit"), quantity, "tolak",
+                             "Pengiriman" if direction == "OUT" else "Penerimaan")
 
             quantity_in = quantity if direction == "IN" else Decimal("0")
             quantity_out = quantity if direction == "OUT" else Decimal("0")

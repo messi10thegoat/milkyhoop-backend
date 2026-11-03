@@ -42,7 +42,11 @@ class _K:
         raise AssertionError(sql[:60])
 
     async def fetch(self, sql, *a):
-        raise AssertionError("tagihan pembuka tak membaca baris produk")
+        # QTY-DASAR R1 (retarget OK MASTER 3 Nov): tagihan BIASA kini membaca baris ber-stok untuk blok satuan (blok_posting);
+        # maksud tes dipertahankan -- tagihan PEMBUKA tetap tak boleh membaca baris produk.
+        if self.pembuka:
+            raise AssertionError("tagihan pembuka tak membaca baris produk")
+        return []
 
 
 def test_hitung_debit_tagihan_pembuka_satu_baris_modal():

@@ -26,8 +26,12 @@ async def asal_retur(conn, tid: str, bill_id, product_id, nd_id) -> Optional[dic
                GROUP BY warehouse_id""", tid, bill_id, product_id):
         per[r["warehouse_id"]] = per.get(r["warehouse_id"], NOL) + Decimal(str(r["q"]))
     for r in await conn.fetch(
-            """SELECT g.warehouse_id, COALESCE(SUM(l.quantity), 0) AS q FROM goods_receipt_bill_links l
+            # QTY-DASAR R1: qty tautan = satuan dokumen (PO); dikali rasio kartu stok baris GRN (quantity_in dasar / qty GRN) supaya
+            # sebanding dengan kartu BILL & qty ND (keduanya satuan dasar). GRN lama (1:1) -> rasio 1; tanpa baris kartu -> 1.
+            """SELECT g.warehouse_id, COALESCE(SUM(l.quantity * COALESCE(il.quantity_in / NULLIF(gi.quantity, 0), 1)), 0) AS q
+               FROM goods_receipt_bill_links l
                JOIN bill_items bi ON bi.id = l.bill_item_id JOIN goods_receipt_items gi ON gi.id = l.goods_receipt_item_id
+               LEFT JOIN inventory_ledger il ON il.id = gi.inventory_ledger_id
                JOIN goods_receipts g ON g.id = gi.goods_receipt_id AND g.tenant_id = $1
                WHERE bi.bill_id = $2 AND COALESCE(bi.product_id, gi.item_id) = $3 AND l.status = 'active' AND l.kind <> 'legacy'
                  AND g.status <> 'void' AND gi.ber_stok GROUP BY g.warehouse_id""", tid, bill_id, product_id):
@@ -59,6 +63,12 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
         if not p or not p["track_inventory"]:
             continue
         nama = p["nama_produk"] or p["item_code"]
+        # QTY-DASAR R1: ND = jalur KELUAR -> satuan selain dasar ditolak sampai R2 (penentu SATU; penulis + pratinjau)
+        from . import satuan_dasar as SD
+        h_sd = SD.hitung(await SD.muat(conn, tid, [p["id"]] if SD.normal(it.get("unit")) else []), p["id"], it.get("unit"), it["quantity"], "tolak", "Retur")
+        if h_sd["blok"]:
+            bl.galat(h_sd["blok"]["code"], h_sd["blok"]["status"], h_sd["blok"]["message"])
+            continue
         qty = Decimal(str(it["quantity"]))
         if vc["original_bill_id"]:
             if p["id"] not in asal_cache:

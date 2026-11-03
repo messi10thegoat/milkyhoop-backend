@@ -1944,7 +1944,7 @@ async def _execute_fulfillment(
         inv_item = await conn.fetchrow(
             """
             SELECT id, item_id, description, quantity, fulfilled_qty,
-                   allocated_amount, recognized_amount, perlu_kirim
+                   allocated_amount, recognized_amount, perlu_kirim, unit
             FROM sales_invoice_items WHERE id=$1 AND invoice_id=$2 FOR UPDATE
         """,
             inv_item_id,
@@ -2025,6 +2025,10 @@ async def _execute_fulfillment(
         # posting auto-fulfill). Kalimat sama dengan rute lama.
         if warehouse_id is None:
             raise HTTPException(400, "Gudang wajib dipilih.")
+        # QTY-DASAR R1: jalur KELUAR menolak satuan selain dasar (SATUAN_BELUM_DIDUKUNG) sampai R2 memasang konversinya -- tak ada
+        # keadaan campur (masuk dikonversi, keluar mentah). Satu pagar untuk SEMUA pemanggil (/fulfill, kirim SO + pratinjaunya, auto-fulfill).
+        from ..services import satuan_dasar as _SD
+        await _SD.qty_dasar(conn, tenant_id, product_id, inv_item.get("unit"), req_qty, "tolak", "Pengiriman")
 
         # 3. Availability gate ONLY (read-only).
         # warehouse_stock is a DERIVED CACHE owned by the AFTER-INSERT trigger

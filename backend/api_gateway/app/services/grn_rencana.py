@@ -26,6 +26,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
+from . import satuan_dasar as SD  # QTY-DASAR R1 (3 Nov 2026): stok masuk dalam SATUAN DASAR barang
 
 NOL = Decimal("0")
 SEN = Decimal("0.01")
@@ -131,7 +132,7 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
     peta = {str(r["id"]): r for r in terima["semua"]}
     ids = [peta[k]["id"] for k in akan if k in peta]
     detail = {str(r["id"]): r for r in await conn.fetch(
-        """SELECT poi.id, poi.item_id, poi.quantity, poi.subtotal, poi.discount_amount, poi.description,
+        """SELECT poi.id, poi.item_id, poi.quantity, poi.subtotal, poi.discount_amount, poi.description, poi.unit,
                   p.kode_produk, p.nama_produk, p.item_type, p.track_inventory
            FROM purchase_order_items poi LEFT JOIN products p ON p.id = poi.item_id AND p.tenant_id = $1
            WHERE poi.po_id = $2 AND poi.id = ANY($3::uuid[])""", tenant_id, po["id"], ids)} if ids else {}
@@ -145,6 +146,13 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
         baris.append({"po_item_id": pid, "item_id": r["item_id"], "kode": r["kode_produk"], "nama": r["nama_produk"] or r["description"],
                       "qty": qty, "harga_satuan": hs, "nilai": r2(qty * hs), "ber_stok": stok})
     stok_baris = [b for b in baris if b["ber_stok"]]
+    if stok_baris:  # QTY-DASAR: satuan PO -> satuan dasar (konversi barang); tanpa konversi = blok berkalimat (dulu 1:1 diam)
+        ktx = await SD.muat(conn, tenant_id, [b["item_id"] for b in stok_baris if SD.normal(detail[b["po_item_id"]]["unit"])])
+        for b in stok_baris:
+            h = SD.hitung(ktx, b["item_id"], detail[b["po_item_id"]]["unit"], b["qty"], "konversi")
+            b["faktor"], b["satuan"] = h["faktor"], h["satuan"]
+            if h["blok"] and not any(x["message"] == h["blok"]["message"] for x in bloks):
+                bloks.append(blok(h["blok"]["code"], h["blok"]["message"], h["blok"]["status"]))
     gudang = None
     if stok_baris:
         gudang = await _gudang(conn, tenant_id, warehouse_id, po.get("warehouse_id"))
@@ -267,9 +275,11 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
             await baris_grn(b, b["qty"], b["nilai"], b["ber_stok"], None)
             continue
         if p["qty_stok"] > NOL:  # (D) stok masuk qty bukan-legacy @ harga terima; tautan tagih_dulu ke baris ini
+            f = b.get("faktor") or SD.SATU  # QTY-DASAR: kartu stok + WAC dalam satuan dasar; dokumen GRN tetap satuan PO
             ledger = (await record_inventory_inbound(
-                conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"], b["harga_satuan"], SUMBER, gid, nomor, uid,
-                f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid))["ledger_id"]
+                conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"] * f, b["harga_satuan"] / f, SUMBER, gid, nomor, uid,
+                f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid,
+                **({"transaction_unit": b["satuan"], "transaction_quantity": p["qty_stok"], "conversion_factor": f} if f != SD.SATU else {})))["ledger_id"]
             gi = await baris_grn(b, p["qty_stok"], p["nilai_stok"], True, ledger)
             for x in p["pasangan"]:
                 await tautan(gi, x["bill_item_id"], x["qty"], x["nilai_terima"], x["selisih"], "tagih_dulu", x["nilai_tagih"])

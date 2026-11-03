@@ -383,7 +383,14 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
         product = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", item["item_id"])
         if not product or not product["track_inventory"]:
             continue
-        qty = Decimal(str(item["quantity"]))
+        # QTY-DASAR R1: == penulis (satuan_dasar mode konversi; blok berkalimat sama)
+        from . import satuan_dasar as SD
+        h = SD.hitung(await SD.muat(conn, tid, [product["id"]] if SD.normal(item.get("unit")) else []), product["id"], item.get("unit"),
+                      item["quantity"], "konversi")
+        if h["blok"]:
+            bl.galat(h["blok"]["code"], h["blok"]["status"], h["blok"]["message"])
+            continue
+        qty = h["qty_dasar"]
         if cn["original_invoice_id"]:
             asal = await R._keluar_faktur_untuk_retur(conn, tid, cn["original_invoice_id"], product["id"], cn["id"])
             nama = product["nama_produk"] or product["item_code"]
