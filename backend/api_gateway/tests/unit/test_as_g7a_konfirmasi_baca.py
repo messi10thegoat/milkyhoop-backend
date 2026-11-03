@@ -114,9 +114,13 @@ async def test_paritas_perkiraan_sama_dengan_penerbit(monkeypatch, seq, terpakai
 
 
 def test_aturan_lompat_satu_fungsi_dipakai_penerbit_dan_perkiraan():
-    for fn in (KO._terbitkan_inti, KO.perkiraan):
+    # DP-PRATINJAU (3 Nov 2026, retarget OK MASTER): penghitung-baca perkiraan pindah ke _intip_berikutnya, dipakai perkiraan()
+    # DAN perkiraan_spk() -- aturan lompat tetap SATU fungsi (_kode_terpakai) untuk penerbit dan semua perkiraan.
+    for fn in (KO._terbitkan_inti, KO._intip_berikutnya):
         src = inspect.getsource(fn)
         assert "_kode_terpakai(" in src and "order_code = $2" not in src, fn.__name__
+    for fn in (KO.perkiraan, KO.perkiraan_spk):
+        assert "_intip_berikutnya(" in inspect.getsource(fn), fn.__name__
 
 
 @pytest.mark.asyncio

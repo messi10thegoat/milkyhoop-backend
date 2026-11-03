@@ -28,7 +28,8 @@ JALUR = [
     ("quotes.py", "buat_penawaran_inti", "INSERT INTO quotes"),  # 1 Nov 2026: inti bersama POST /quotes + Milkybook v2
     ("quotes.py", "_ubah_penawaran", "UPDATE quotes"),
     ("receive_payments.py", "update_receive_payment", "UPDATE receive_payments"),
-    ("customer_deposits.py", "create_customer_deposit", "INSERT INTO customer_deposits"),
+    # DP-PRATINJAU (3 Nov 2026, retarget OK MASTER): pemeriksaan di penentu bersama rencana_buat_dp -> mode "penentu"
+    ("customer_deposits.py", "create_customer_deposit", "INSERT INTO customer_deposits", "penentu"),
     ("customer_deposits.py", "_ubah_dp", "UPDATE customer_deposits"),  # AS-G10: PATCH + pratinjau ubah memakai _ubah_dp
     ("cheques.py", "receive_cheque", "INSERT INTO cheques"),
     ("sales_receipts.py", "create_sales_receipt", "INSERT INTO sales_receipts"),
@@ -50,6 +51,17 @@ def _fungsi(berkas, nama):
 @pytest.mark.parametrize("berkas,nama,tulis,mode", [j if len(j) == 4 else (*j, "sebelum") for j in JALUR])
 def test_pemeriksaan_satu_tenant_sebelum_tulis(berkas, nama, tulis, mode):
     fn, src = _fungsi(berkas, nama)
+    if mode == "penentu":  # penulis -> penentu bersama SEBELUM tulis; penentu memeriksa; penulis menyimpan hasil KANONIK penentu
+        pen, _ = _fungsi(berkas, "rencana_buat_dp")
+        assert [c for c in ast.walk(pen) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "pelanggan_kanonik_tenant"]
+        cek = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "rencana_buat_dp"]
+        assert 'pelanggan_dp = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split()) or \
+            'pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split())
+        ins = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)
+               and tulis in " ".join(str(n.args[0].value).split())]
+        assert cek and ins and min(cek) < min(n.lineno for n in ins), f"{berkas}:{nama}: penentu SESUDAH '{tulis}'"
+        assert ast.unparse(ins[0].args[3]) == "pelanggan_dp", "kolom customer_id harus pelanggan KANONIK dari penentu"
+        return
     cek = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "pelanggan_kanonik_tenant"]
     assert cek, f"{berkas}:{nama} menulis customer_id tanpa pelanggan_kanonik_tenant"
     baris_tulis = [n.lineno for n in ast.walk(fn) if isinstance(n, (ast.Constant, ast.JoinedStr))

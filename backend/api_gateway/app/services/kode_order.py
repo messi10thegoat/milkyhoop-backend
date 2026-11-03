@@ -218,6 +218,11 @@ async def perkiraan(conn, tenant_id: str, so, tanggal: date, pemicu: str, dipesa
     s = await muat_setelan(conn, tenant_id)
     if not s["enabled"] or pemicu != "so_confirmed" or s["trigger"] != "so_confirmed":
         return None
+    return await _intip_berikutnya(conn, tenant_id, s, tanggal, dipesan)
+
+
+async def _intip_berikutnya(conn, tenant_id: str, s: dict, tanggal: date, dipesan: Optional[dict] = None) -> str:
+    """Kode berikutnya dari penghitung (rumus SAMA dengan _terbitkan_inti: lompati yang terpakai) -- BACA SAJA, tanpa kunci."""
     pk = kunci_periode(s["reset"], tanggal)
     seq = await conn.fetchval("SELECT last_seq FROM order_code_counters WHERE tenant_id = $1 AND period_key = $2",
                               tenant_id, pk) or 0
@@ -299,6 +304,25 @@ async def terbitkan_spk(conn, tenant_id: str, so_id, tanggal: date, aktor) -> di
                 "message": f"Pesanan berstatus {tg.status_id('so', so['status'])} tidak bisa diberi {s['label']}."}
     kode = await _terbitkan_inti(conn, tenant_id, so_id, tanggal, s, "manual", aktor, {"trigger": "terbitkan_spk"})
     return {"status": 200, "order_code": kode, "issued": True, "label": s["label"]}
+
+
+async def perkiraan_spk(conn, tenant_id: str, so_id, tanggal: date) -> dict:
+    """DP-PRATINJAU (3 Nov 2026): yang AKAN dihasilkan terbitkan_spk untuk SO ini -- BACA SAJA (tanpa kunci advisory, tanpa
+    menaikkan penghitung). Syarat SAMA dengan terbitkan_spk: setelan mati -> issued False (penulis menangkap KodeOrderGalat,
+    uang muka tetap tercatat); SO berkode -> kode itu, issued False; status di luar STATUS_BOLEH_SPK -> None. PERKIRAAN.
+    -> {order_code: str|None, issued: bool}"""
+    s = await muat_setelan(conn, tenant_id)
+    if not s["enabled"]:
+        return {"order_code": None, "issued": False}
+    so = await conn.fetchrow(
+        "SELECT id, status, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
+    if not so:
+        return {"order_code": None, "issued": False}
+    if so["order_code"]:
+        return {"order_code": so["order_code"], "issued": False}
+    if so["status"] not in STATUS_BOLEH_SPK:
+        return {"order_code": None, "issued": False}
+    return {"order_code": await _intip_berikutnya(conn, tenant_id, s, tanggal), "issued": True}
 
 
 async def terbitkan_berikutnya(conn, tenant_id: str, so_id, tanggal: date, aktor) -> dict:

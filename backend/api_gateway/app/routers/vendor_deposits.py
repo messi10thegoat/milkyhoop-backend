@@ -1423,13 +1423,25 @@ def _jawab(deposit_id, aksi: str, r: dict, payload) -> dict:
         "bank_transactions": r["bank_transactions"], "bills": r["bills"], "payload": payload, "preview": True}}
 
 
+async def perkiraan_nomor_umv(conn, tid: str) -> str:
+    """Nomor uang muka vendor BERIKUTNYA -- rumus SAMA dengan generate_vendor_deposit_number (penghitung SATU baris per tenant,
+    tahun dari tanggal bisnis); dibaca, TAK dinaikkan. PERKIRAAN: penulis paralel bisa mengambilnya dulu."""
+    th = await conn.fetchval("SELECT TO_CHAR(tanggal_bisnis($1), 'YYYY')", tid)
+    last = await conn.fetchval("SELECT last_number FROM vendor_deposit_sequences WHERE tenant_id = $1", tid)
+    return f"VD-{th}-{((last or 0) + 1):05d}"
+
+
 @router.post("/preview")
 async def preview_create_vendor_deposit(request: Request, data: VendorDepositCreate):
     """Pratinjau BUAT (badan = POST /vendor-deposits). simpan_dan_posting=true -> + rencana jurnal posting. Blok: vendor/PO/rekening/
     periode/peran akun. Nominal >0 & <=2 desimal dijaga skema (422)."""
     async def isi(conn, ctx):
         r = await R.rencana_buat(conn, ctx, data, pratinjau=True)  # READ ONLY: plafon PO dibaca tanpa kunci
-        return _jawab(None, "create", r, data.model_dump(mode="json"))
+        j = _jawab(None, "create", r, data.model_dump(mode="json"))
+        ok = j["data"]["can_proceed"]  # DP-PRATINJAU (3 Nov 2026): nomor PERKIRAAN, simetri /customer-deposits/preview
+        j["data"]["deposit_number_preview"] = await perkiraan_nomor_umv(conn, ctx["tenant_id"]) if ok else None
+        j["data"]["deposit_number_estimated"] = ok
+        return j
     return await _baca_pratinjau(request, isi)
 
 

@@ -89,14 +89,19 @@ def _fn(nama):
 
 
 def test_create_memanggil_validasi_sebelum_insert():
-    fn = _fn("create_customer_deposit")
-    p = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "validasi_proforma_dp"]
+    # DP-PRATINJAU (3 Nov 2026, retarget OK MASTER): validasi dipanggil SEKALI di penentu bersama rencana_buat_dp (pelanggan
+    # KANONIK, bukan isian mentah); penulis memanggil penentu SEBELUM INSERT dan tak memvalidasi sendiri.
+    pen = _fn("rencana_buat_dp")
+    p = [c for c in ast.walk(pen) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "validasi_proforma_dp"]
     assert len(p) == 1
-    assert [ast.unparse(x) for x in p[0].args] == ["conn", "ctx['tenant_id']", "body.proforma_id",
-                                                  "body.sales_order_id", "pelanggan_dp"]
+    assert [ast.unparse(x) for x in p[0].args] == ["conn", "tid", "body.proforma_id", "body.sales_order_id", "pelanggan_dp"]
+    fn = _fn("create_customer_deposit")
+    assert not [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "validasi_proforma_dp"]
+    r = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "rencana_buat_dp"]
+    assert len(r) == 1 and [ast.unparse(x) for x in r[0].args] == ["conn", "ctx", "body"] and not r[0].keywords
     ins = min(c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and c.args
               and isinstance(c.args[0], ast.Constant) and "INSERT INTO customer_deposits" in str(c.args[0].value))
-    assert p[0].lineno < ins
+    assert r[0].lineno < ins
 
 
 def test_patch_tak_menerima_proforma_id():
