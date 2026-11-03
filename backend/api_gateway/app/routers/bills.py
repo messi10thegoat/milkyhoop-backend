@@ -49,7 +49,7 @@ from ..schemas.bills import (
 )
 
 # Import calculator for preview endpoint
-from ..services.bills_service import PESAN_TAGIHAN_TAK_ADA, BillCalculator
+from ..services.bills_service import PESAN_TAGIHAN_TAK_ADA, BillCalculator, NomorTerpakai, PESAN_NOMOR_TERPAKAI
 from ..services.tax_factor import resolve_dpp_factor
 from ..services.role_resolver import (  # noqa: E402
     AccountRole,
@@ -1217,6 +1217,10 @@ async def create_bill(request: Request, body: CreateBillRequest):
 
     except HTTPException:
         raise
+    except NomorTerpakai as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(status_code=409, detail=PESAN_NOMOR_TERPAKAI)
     except Exception as e:
         logger.error(f"Error creating bill: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat faktur pembelian.")
@@ -1735,12 +1739,12 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: 
 
     except HTTPException:
         raise
+    except NomorTerpakai as e:
+        raise HTTPException(status_code=409, detail=str(e))   # nomor manual sudah dipakai = konflik, bukan isian salah (3 Nov 2026)
     except asyncpg.exceptions.UniqueViolationError as e:
         logger.error(f"Duplicate bill: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail="Nomor faktur sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk auto-generate.",
-        )
+        # balapan serentak nomor yang sama: UNIQUE (tenant, invoice_number) = penegak akhir -> 409
+        raise HTTPException(status_code=409, detail=PESAN_NOMOR_TERPAKAI)
     except asyncpg.exceptions.ForeignKeyViolationError as e:
         logger.error(f"Foreign key error: {e}")
         raise HTTPException(

@@ -71,6 +71,8 @@ class CreatePurchaseOrderRequest(BaseModel):
     """Request body for creating a purchase order (draft)."""
     vendor_id: Optional[str] = Field(None, description="Vendor UUID")
     vendor_name: str = Field(..., min_length=1, max_length=255)
+    # Nomor manual (3 Nov 2026): kosong/absen = otomatis (generate_purchase_order_number melompati terpakai); terpakai -> 409
+    po_number: Optional[str] = Field(None, max_length=50, description="Nomor PO manual; kosong = otomatis")
     po_date: date
     expected_date: Optional[date] = Field(None, description="Expected delivery date")
     ship_to_address: Optional[str] = None
@@ -87,6 +89,11 @@ class CreatePurchaseOrderRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError('Nama vendor wajib diisi.')
         return v.strip()
+
+    @field_validator('po_number')
+    @classmethod
+    def rapikan_po_number(cls, v):
+        return (v.strip() or None) if isinstance(v, str) else v
 
 
 class UpdatePurchaseOrderRequest(BaseModel):

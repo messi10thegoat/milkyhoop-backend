@@ -459,6 +459,25 @@ async def hapus_draf_tagihan_core(conn, tenant_id: str, bill_id, user_id=None) -
             f"memiliki referensi terkait: {fk_err.detail or str(fk_err)}")})
     return {"id": str(bill_id), "invoice_number": bill["invoice_number"]}, berkas
 
+
+PESAN_NOMOR_TERPAKAI = "Nomor faktur sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk auto-generate."
+
+
+async def nomor_tagihan(conn, tenant_id: str, manual, sql_generator: str) -> str:
+    """Nomor tagihan SATU aturan (create v1 + v2; 3 Nov 2026): manual = trim, sudah dipakai di tenant ini -> NomorTerpakai
+    (router -> 409); kosong -> generator DB yang MELOMPATI nomor terpakai (migrasi V475). UNIQUE (tenant, invoice_number) tetap
+    penegak akhir untuk balapan serentak (UniqueViolation -> 409 di router)."""
+    nomor = (manual or "").strip() if isinstance(manual, str) else manual
+    if nomor:
+        if await conn.fetchval("SELECT 1 FROM bills WHERE tenant_id = $1 AND invoice_number = $2", tenant_id, nomor):
+            raise NomorTerpakai(PESAN_NOMOR_TERPAKAI)
+        return nomor
+    return await conn.fetchval(sql_generator, tenant_id)
+
+
+class NomorTerpakai(Exception):
+    """Nomor dokumen manual sudah dipakai -> 409 (bukan 400)."""
+
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
 
@@ -1021,12 +1040,9 @@ class BillsService:
                     f"BILL_CREATE:{bill_uuid}",
                 )
 
-                # 1. Generate invoice number if not provided
-                invoice_number = request.get("invoice_number")
-                if not invoice_number:
-                    invoice_number = await conn.fetchval(
-                        "SELECT generate_bill_number($1, 'BILL')", tenant_id
-                    )
+                # 1. Nomor: manual (trim, terpakai -> 409) atau otomatis yang melompati terpakai (nomor_tagihan, satu aturan)
+                invoice_number = await nomor_tagihan(conn, tenant_id, request.get("invoice_number"),
+                                                     "SELECT generate_bill_number($1, 'BILL')")
 
                 # 2. Get vendor name
                 vendor_name = request.get("vendor_name")
@@ -2502,12 +2518,9 @@ class BillsService:
                 if _bloks:
                     return {"success": False, "message": _bloks[0]["message"], "data": None}
 
-                # 1. Generate invoice number if not provided
-                invoice_number = request.get("invoice_number")
-                if not invoice_number:
-                    invoice_number = await conn.fetchval(
-                        "SELECT generate_purchase_bill_number($1)", tenant_id
-                    )
+                # 1. Nomor: manual (trim, terpakai -> 409) atau otomatis yang melompati terpakai (nomor_tagihan, satu aturan)
+                invoice_number = await nomor_tagihan(conn, tenant_id, request.get("invoice_number"),
+                                                     "SELECT generate_purchase_bill_number($1)")
 
                 # 2. Resolve vendor (auto-create if needed)
                 vendor_id = request.get("vendor_id")

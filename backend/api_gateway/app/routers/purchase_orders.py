@@ -67,6 +67,8 @@ from ..schemas.purchase_orders import (
 )
 
 logger = logging.getLogger(__name__)
+PESAN_PO_TERPAKAI = "Nomor PO sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk nomor otomatis."
+
 router = APIRouter()
 
 # Connection pool
@@ -731,9 +733,16 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
                 vendor = await _vendor_tenant(conn, ctx["tenant_id"], body.vendor_id)
 
-                po_number = await conn.fetchval(
-                    "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
-                )
+                # Nomor: manual (sudah dipakai -> 409) atau otomatis yang melompati terpakai (migrasi V475). UNIQUE = penegak akhir.
+                if body.po_number:
+                    if await conn.fetchval("SELECT 1 FROM purchase_orders WHERE tenant_id = $1 AND po_number = $2",
+                                           ctx["tenant_id"], body.po_number):
+                        raise HTTPException(status_code=409, detail=PESAN_PO_TERPAKAI)
+                    po_number = body.po_number
+                else:
+                    po_number = await conn.fetchval(
+                        "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
+                    )
 
                 baris = [PH.hitung_baris(item.model_dump()) for item in body.items]
                 tot = PH.hitung_header(baris, body.discount_percent, body.discount_amount, body.tax_rate)
@@ -787,6 +796,8 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
     except HTTPException:
         raise
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(status_code=409, detail=PESAN_PO_TERPAKAI)   # balapan serentak nomor manual yang sama
     except Exception as e:
         logger.error(f"Error creating purchase order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat pesanan pembelian.")
