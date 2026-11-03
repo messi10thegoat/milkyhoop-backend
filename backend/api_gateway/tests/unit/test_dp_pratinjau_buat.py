@@ -82,6 +82,8 @@ class Kon:
 @pytest.fixture(autouse=True)
 def _palsu(monkeypatch):
     async def diterima(conn, tid, so_id, exclude_id=None):
+        if getattr(conn, "peran_hilang", False):  # == uang_muka_pesanan: neto uang muka dari akun peran CUSTOMER_DEPOSIT_LIABILITY
+            raise AccountRoleUnmappedError("CUSTOMER_DEPOSIT_LIABILITY")
         return float(conn.sudah)
 
     async def peran(conn, tid, role):
@@ -398,3 +400,18 @@ async def test_isi_pratinjau_terblok_tanpa_nomor_tanpa_jurnal(_isi_palsu):
     assert set(d["blocks"][0]) == {"code", "message"}
     assert d["deposit_number_preview"] is None and d["deposit_number_estimated"] is False
     assert d["journals"] == [] and d["bank_transactions"] == []
+
+
+@pytest.mark.asyncio
+async def test_peran_hilang_ber_so_pratinjau_tetap_200_berblok_tanpa_info_pesanan(_isi_palsu):
+    """Nyata SETARA 3 Nov: plafon (neto uang muka) juga butuh akun peran -> dulu info pesanan pratinjau jatuh 500 mentah."""
+    k = Kon()
+    k.peran_hilang = True
+    d = await _isi(k, proforma_id=str(PF), auto_post=False)
+    assert [b["code"] for b in d["blocks"]] == ["ACCOUNT_DEFAULT_UNMAPPED"] and d["can_proceed"] is False
+    assert d["order"] is None and d["proforma"] is None and d["deposit_number_preview"] is None
+    k2 = Kon()
+    k2.peran_hilang = True
+    with pytest.raises(HTTPException) as e:  # penulis: galat pertama (di plafon) == 422 berkalimat, sama dengan blok
+        await CD.rencana_buat_dp(k2, CTX, badan(auto_post=False))
+    assert e.value.status_code == 422 and e.value.detail["message"] == d["blocks"][0]["message"]

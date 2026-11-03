@@ -1119,7 +1119,8 @@ async def rencana_buat_dp(conn, ctx: dict, body, pratinjau: bool = False) -> dic
             e = galat_peran_dp()
             if not pratinjau:
                 raise e
-            blok.append(_blok_dp("ACCOUNT_DEFAULT_UNMAPPED", e.status_code, e.detail))
+            if not any(b["code"] == "ACCOUNT_DEFAULT_UNMAPPED" for b in blok):  # plafon (neto uang muka) & posting: satu blok
+                blok.append(_blok_dp("ACCOUNT_DEFAULT_UNMAPPED", e.status_code, e.detail))
         return None
 
     async def _so_wajib():
@@ -2878,36 +2879,44 @@ async def _isi_pratinjau_buat_dp(conn, ctx: dict, body, r: dict) -> dict:
     after = {"exists": True, "status": status, "status_detail": sd, "amount": float(jumlah), "amount_applied": 0.0,
              "amount_refunded": 0.0, "remaining": float(jumlah) if status == "posted" else 0.0,
              "position_text": _umd.status_text_um(sd)}
-    order = None
-    if r["order_id"]:
-        so = await conn.fetchrow("SELECT order_number, total_amount, dp_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
-                                 r["order_id"], tid)
-        if so:
-            sebelum = Decimal(str(await received_total_for_order(conn, tid, r["order_id"])))
-            # "DP diterima" detail SO (payment_summary, turunan jurnal: hanya uang muka TERPOSTING) -- angka yang SAMA dilihat pengguna
-            dp0 = Decimal(str(ringkasan_pembayaran_so(so["total_amount"], (await ringkasan_pesanan(conn, tid, [r["order_id"]]))[r["order_id"]])
-                              ["dp_received_amount"]))
-            order = {"sales_order_id": str(r["order_id"]), "order_number": so["order_number"],
-                     "total_amount": float(so["total_amount"] or 0),
-                     "received_before": float(sebelum), "received_after": float(sebelum + jumlah),  # plafon: draf ikut menahan
-                     "dp_received_amount_before": float(dp0),
-                     "dp_received_amount_after": float(dp0 + jumlah if status == "posted" else dp0),  # draf belum berjurnal
-                     "dp_required": float(so["dp_amount"]) if so["dp_amount"] is not None else None}
-    proforma = None  # INFO saja (bukan blok; MASTER 3 Nov): sisa proforma sebelum -> sesudah
-    if body.proforma_id and r["order_id"]:
-        try:
-            pf = await conn.fetchrow("SELECT id, proforma_number, amount, status FROM proformas WHERE id = $1 AND tenant_id = $2",
-                                     UUID(body.proforma_id), tid)
-        except ValueError:
-            pf = None
-        if pf:
-            bayar = Decimal(str(((await terbayar_proforma(conn, tid, [r["order_id"]])).get(pf["id"]) or {}).get("paid") or 0))
-            nominal = Decimal(str(pf["amount"] or 0))
-            sisa0 = max(Decimal("0"), nominal - bayar)
-            proforma = {"proforma_id": str(pf["id"]), "proforma_number": pf["proforma_number"], "amount": float(nominal),
-                        "paid_before": float(bayar), "remaining_before": float(sisa0),
-                        "remaining_after": float(max(Decimal("0"), sisa0 - jumlah) if status == "posted" else sisa0),
-                        "paid_off_before": proforma_lunas(nominal, bayar), "estimated": True}
+
+    async def info_pesanan():
+        order = None
+        if r["order_id"]:
+            so = await conn.fetchrow("SELECT order_number, total_amount, dp_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                     r["order_id"], tid)
+            if so:
+                sebelum = Decimal(str(await received_total_for_order(conn, tid, r["order_id"])))
+                # "DP diterima" detail SO (payment_summary, turunan jurnal: hanya uang muka TERPOSTING) -- angka yang SAMA dilihat pengguna
+                dp0 = Decimal(str(ringkasan_pembayaran_so(so["total_amount"], (await ringkasan_pesanan(conn, tid, [r["order_id"]]))[r["order_id"]])
+                                  ["dp_received_amount"]))
+                order = {"sales_order_id": str(r["order_id"]), "order_number": so["order_number"],
+                         "total_amount": float(so["total_amount"] or 0),
+                         "received_before": float(sebelum), "received_after": float(sebelum + jumlah),  # plafon: draf ikut menahan
+                         "dp_received_amount_before": float(dp0),
+                         "dp_received_amount_after": float(dp0 + jumlah if status == "posted" else dp0),  # draf belum berjurnal
+                         "dp_required": float(so["dp_amount"]) if so["dp_amount"] is not None else None}
+        proforma = None  # INFO saja (bukan blok; MASTER 3 Nov): sisa proforma sebelum -> sesudah
+        if body.proforma_id and r["order_id"]:
+            try:
+                pf = await conn.fetchrow("SELECT id, proforma_number, amount, status FROM proformas WHERE id = $1 AND tenant_id = $2",
+                                         UUID(body.proforma_id), tid)
+            except ValueError:
+                pf = None
+            if pf:
+                bayar = Decimal(str(((await terbayar_proforma(conn, tid, [r["order_id"]])).get(pf["id"]) or {}).get("paid") or 0))
+                nominal = Decimal(str(pf["amount"] or 0))
+                sisa0 = max(Decimal("0"), nominal - bayar)
+                proforma = {"proforma_id": str(pf["id"]), "proforma_number": pf["proforma_number"], "amount": float(nominal),
+                            "paid_before": float(bayar), "remaining_before": float(sisa0),
+                            "remaining_after": float(max(Decimal("0"), sisa0 - jumlah) if status == "posted" else sisa0),
+                            "paid_off_before": proforma_lunas(nominal, bayar), "estimated": True}
+        return order, proforma
+
+    try:
+        order, proforma = await info_pesanan()
+    except AccountRoleUnmappedError:  # plafon/terbayar butuh akun peran uang muka; sudah dilaporkan sebagai blok ACCOUNT_DEFAULT_UNMAPPED
+        order, proforma = None, None
     kode = None
     if body.terbitkan_kode_order:  # == penulis: hanya bila ada SO acuan; gagal/mati -> uang muka tetap tercatat, issued false
         kode = (await _KO.perkiraan_spk(conn, tid, r["order_id"], await tanggal_dokumen(conn, tid)) if r["order_id"]
