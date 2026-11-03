@@ -356,3 +356,33 @@ def test_sj_kasir_nd_direct_action_rencana_kirim_memakai_qty_dasar():
     assert "quantity, unit_cost = (_qd['qty_dasar'], unit_cost / _qd['faktor'])" in da
     rk = _src("services/so_pengiriman.py", "rencana_kirim_so")
     assert "h_sd['qty_dasar']" in rk
+
+
+
+class KonCN:
+    """periksa_bisa_dinotakan: baris faktur 1 Karton (Karton = 12 Botol); NK lain tak ada."""
+    def __init__(self, sudah_lain=()):
+        self.sudah_lain = list(sudah_lain)
+
+    async def fetch(self, sql, *a):
+        q = " ".join(sql.split())
+        if "FROM sales_invoice_items sii JOIN sales_invoices si" in q:
+            return [{"id": a[0][0], "description": "Minyak", "quantity": Decimal("1"), "unit": "Karton", "item_id": P_MINYAK,
+                     "ada_beda_satuan": bool(self.sudah_lain), "sudah": sum((x["quantity"] for x in self.sudah_lain), Decimal("0"))}]
+        if "SELECT cni.unit, cni.quantity FROM credit_note_items" in q:
+            return self.sudah_lain
+        return await Kon().fetch(sql, *a)
+
+
+@pytest.mark.asyncio
+async def test_nk_silang_satuan_batas_bisa_dinotakan_dalam_dasar():
+    """MASTER R2 #1: jual 1 Karton, retur 3 Botol -> lolos (3 <= 12 dasar); 13 Botol -> CN_QTY_EXCEEDS_CREDITABLE; NK Botol lain ikut dihitung."""
+    from app.routers import credit_notes as CN
+    bi, fk = uuid.uuid4(), uuid.uuid4()
+    await CN.periksa_bisa_dinotakan(KonCN(), T, fk, [{"original_invoice_item_id": str(bi), "quantity": 3, "unit": "Botol"}], kunci=False)
+    with pytest.raises(HTTPException) as e:
+        await CN.periksa_bisa_dinotakan(KonCN(), T, fk, [{"original_invoice_item_id": str(bi), "quantity": 13, "unit": "Botol"}], kunci=False)
+    assert e.value.detail["code"] == "CN_QTY_EXCEEDS_CREDITABLE"
+    with pytest.raises(HTTPException):  # sudah 10 Botol lewat NK lain: sisa 2 dasar, retur 1 Karton (12) ditolak
+        await CN.periksa_bisa_dinotakan(KonCN([{"unit": "Botol", "quantity": Decimal("10")}]), T, fk,
+                                         [{"original_invoice_item_id": str(bi), "quantity": 1, "unit": "Karton"}], kunci=False)

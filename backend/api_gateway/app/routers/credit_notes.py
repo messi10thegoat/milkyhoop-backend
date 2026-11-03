@@ -932,17 +932,22 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
     tak boleh melebihi yang masih bisa dinotakan = qty faktur - SIGMA qty NK tak-void lain yang bertaut ke baris itu
     (draf ikut dihitung; NK ini sendiri dikecualikan). NK lama tanpa tautan tak dihitung per baris; penjaga tingkat
     faktur (pastikan_cn_muat_faktur) tetap. Diserialkan per faktur (kunci CN_FAKTUR) oleh pemanggil lewat fungsi ini."""
-    per = {}
+    per, satuan_nk = {}, {}
     for i in items:
         k = i.get("original_invoice_item_id")
         if k:
             per[str(k).lower()] = per.get(str(k).lower(), Decimal("0")) + Decimal(str(i.get("quantity") or 0))
+            satuan_nk.setdefault(str(k).lower(), []).append((i.get("unit"), Decimal(str(i.get("quantity") or 0))))
     if not per or not faktur_id:
         return
     if kunci:  # kunci=False: pratinjau READ ONLY (NK-RENCANA-B) -- pemeriksaan SAMA tanpa kunci CN_FAKTUR
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CN_FAKTUR:{tenant_id}:{faktur_id}")
     rows = await conn.fetch(
-        """SELECT sii.id, sii.description, sii.quantity,
+        """SELECT sii.id, sii.description, sii.quantity, sii.unit, sii.item_id,
+                  EXISTS(SELECT 1 FROM credit_note_items c2 JOIN credit_notes n2 ON n2.id = c2.credit_note_id
+                         WHERE c2.original_invoice_item_id = sii.id AND n2.tenant_id = $3 AND n2.status <> 'void'
+                           AND ($4::uuid IS NULL OR n2.id <> $4::uuid)
+                           AND lower(trim(COALESCE(c2.unit, ''))) NOT IN ('', lower(trim(COALESCE(sii.unit, ''))))) AS ada_beda_satuan,
                   COALESCE((SELECT SUM(cni.quantity) FROM credit_note_items cni
                             JOIN credit_notes cn ON cn.id = cni.credit_note_id
                             WHERE cni.original_invoice_item_id = sii.id AND cn.tenant_id = $3
@@ -951,9 +956,23 @@ async def periksa_bisa_dinotakan(conn, tenant_id: str, faktur_id, items: list, k
            WHERE sii.id = ANY($1::uuid[]) AND si.id = $2 AND si.tenant_id = $3""",
         [UUID(k) for k in per], UUID(str(faktur_id)), tenant_id, UUID(str(kecuali_cn)) if kecuali_cn else None)
     lebih = []
+    from ..services import satuan_dasar as SD
     for r in rows:
         bisa = max(Decimal(str(r["quantity"])) - Decimal(str(r["sudah"])), Decimal("0"))
         minta = per.get(str(r["id"]), Decimal("0"))
+        lain = [x for x in satuan_nk.get(str(r["id"]), []) if SD.normal(x[0]) and SD.normal(x[0]) != SD.normal(r["unit"])]
+        if (lain or r.get("ada_beda_satuan")) and r["item_id"]:
+            # QTY-DASAR R2 (retur silang satuan, MASTER 3 Nov): satuan NK beda dengan satuan baris faktur -> aturan yang SAMA dalam SATUAN
+            # DASAR (penentu SATU): sisa = qty faktur - SIGMA NK lain tak-void, keduanya dikonversi; satuan sama = jalur lama persis di atas
+            ktx = await SD.muat(conn, tenant_id, [r["item_id"]])
+            dasar = lambda u, q: SD.tolak_bila(SD.hitung(ktx, r["item_id"], u, q, "konversi"))["qty_dasar"]  # noqa: E731
+            sudah = sum([dasar(x["unit"], x["quantity"]) for x in await conn.fetch(
+                """SELECT cni.unit, cni.quantity FROM credit_note_items cni JOIN credit_notes cn ON cn.id = cni.credit_note_id
+                   WHERE cni.original_invoice_item_id = $1 AND cn.tenant_id = $2 AND cn.status <> 'void'
+                     AND ($3::uuid IS NULL OR cn.id <> $3::uuid)""", r["id"], tenant_id, UUID(str(kecuali_cn)) if kecuali_cn else None)],
+                        Decimal("0"))
+            bisa = max(dasar(r["unit"], r["quantity"]) - sudah, Decimal("0"))
+            minta = sum([dasar(u, q) for u, q in satuan_nk[str(r["id"])]], Decimal("0"))
         if minta > bisa:
             lebih.append({"original_invoice_item_id": str(r["id"]), "description": r["description"],
                           "requested": float(minta), "creditable": float(bisa)})
