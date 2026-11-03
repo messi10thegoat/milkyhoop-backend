@@ -16,8 +16,7 @@ def test_baris_jv_dimuka_selalu_ongkir_ppn_bila_ada():
         ("AR", D("1137000"), 0, "D"), ("DM", 0, D("1000000"), "K"), ("ONG", 0, D("27000"), "K"), ("PPN", 0, D("110000"), "K")]
     assert [x["memo"] for x in b] == ["Piutang - INV-1", "Pendapatan Diterima Dimuka - INV-1", "Pendapatan Ongkos Kirim - INV-1",
                                       "PPN Keluaran - INV-1"]
-    t = F.baris_jv(D("0"), 0, 0, "AR", "DM", None, None, "X")
-    assert [x["akun"] for x in t] == ["AR", "DM"] and t[1]["kredit"] == 0       # Dimuka SELALU, walau 0
+    assert F.baris_jv(D("0"), 0, 0, "AR", "DM", None, None, "X") == []          # SI-FPB-RP0 (OK MASTER): baris Rp 0 dilewati (dulu jl_has_amount 500)
     assert sum(x["debit"] for x in b) == sum(x["kredit"] for x in b)              # Law 4
 
 

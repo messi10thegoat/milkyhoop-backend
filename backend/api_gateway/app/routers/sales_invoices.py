@@ -17,6 +17,7 @@ from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services.galat_berkode import GalatBerkode
+from ..services.dokumen_nol import tolak_faktur_nol  # SI-FPB-RP0
 
 # AUTO-FULFILL-GUDANG (2 Nov 2026): posting faktur ber-stok yang auto-kirim tanpa gudang faktur & tanpa gudang bawaan jelas.
 KODE_GUDANG_WAJIB_POSTING = "GUDANG_WAJIB"
@@ -586,6 +587,8 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             raise HTTPException(status_code=422, detail=str(_e))
         async with _pool.acquire() as _conn:
             await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], res["tax_amount"])
+        if body.auto_post:  # SI-FPB-RP0: == penulis (create auto_post -> _internal_post_invoice)
+            tolak_faktur_nol("si", res["total_amount"])
         return {
             "success": True,
             "data": {
@@ -2591,6 +2594,8 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Non-PKP + PPN: tolak SEBELUM tulis apa pun (AR, jurnal). Jalur langsung, SO->INV, quote->INV
     # semuanya bermuara di sini.
     await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], invoice["tax_amount"])
+    # SI-FPB-RP0 (putusan pemilik 3 Nov): faktur Rp 0 ditolak berkalimat SEBELUM tulis (dulu jurnal Rp 0 -> jl_has_amount -> 500)
+    tolak_faktur_nol("si", total_amount)
 
     # Create AR record
     ar_id = await conn.fetchval(

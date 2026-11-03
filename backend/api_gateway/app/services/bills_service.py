@@ -102,6 +102,7 @@ from ..utils.money import cents_to_decimal_string  # noqa: E402
 from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 
 from . import tagihan_aksi as TA  # noqa: E402  penentu aksi detail SATU (post/void/delete + pratinjau)
+from . import dokumen_nol as DN  # noqa: E402  SI-FPB-RP0
 from . import tagihan_rencana as TR  # noqa: E402  penentu hitung + blok SATU (create/update v2, /calculate, edit/preview)
 from . import tagihan_daftar as TD  # noqa: E402  PEMBELIAN-SERAGAM (1): uang+keadaan tagihan dari compute_ap_rincian (V440)
 
@@ -2560,6 +2561,8 @@ class BillsService:
 
                 # 4. Determine status and dates
                 status = request.get("status", "draft")
+                if status == "posted":  # SI-FPB-RP0: tolak SEBELUM tulis tagihan (raise -> transaksi batal: nomor & vendor baru ikut batal)
+                    DN.tolak_faktur_nol("bill", _h["akhir"]["grand_total"], "grand_total")
                 issue_date = request.get("issue_date") or await tanggal_dokumen(
                     conn, tenant_id
                 )

@@ -8,6 +8,8 @@ B2 (tahap berikut): kirim-otomatis (HPP + pengakuan barang) dan alokasi Surat Ja
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
+from . import dokumen_nol as DN  # SI-FPB-RP0
+
 NOL = Decimal("0")
 SEN = Decimal("0.01")
 
@@ -27,7 +29,8 @@ def _d(v) -> Decimal:
 
 def baris_jv(total, pajak, ongkir, akun_ar, akun_dimuka, akun_ongkir, akun_ppn, nomor: str) -> list:
     """Baris jurnal tagihan (INVOICE) berurutan == line_number 1..n: Dr Piutang = total · Cr Pendapatan Diterima Dimuka =
-    total - pajak - ongkir (SELALU, walau 0) · Cr Pendapatan Ongkos Kirim bila ongkir > 0 (V290) · Cr PPN Keluaran bila pajak > 0.
+    total - pajak - ongkir · Cr Pendapatan Ongkos Kirim bila ongkir > 0 (V290) · Cr PPN Keluaran bila pajak > 0. Baris bernilai Rp 0
+    DILEWATI (SI-FPB-RP0: pagar DB jl_has_amount menolaknya -> faktur hanya ongkir/pajak dulu 500; jurnal tetap seimbang).
     -> [{akun, debit, kredit, memo, sisi}] (sisi 'D'/'K' = bentuk INSERT penulis)."""
     total, pajak, ongkir = _d(total), _d(pajak), _d(ongkir)
     out = [{"akun": akun_ar, "debit": total, "kredit": NOL, "memo": f"Piutang - {nomor}", "sisi": "D"},
@@ -36,7 +39,7 @@ def baris_jv(total, pajak, ongkir, akun_ar, akun_dimuka, akun_ongkir, akun_ppn, 
         out.append({"akun": akun_ongkir, "debit": NOL, "kredit": ongkir, "memo": f"Pendapatan Ongkos Kirim - {nomor}", "sisi": "K"})
     if pajak > 0:
         out.append({"akun": akun_ppn, "debit": NOL, "kredit": pajak, "memo": f"PPN Keluaran - {nomor}", "sisi": "K"})
-    return out
+    return [b for b in out if b["debit"] != 0 or b["kredit"] != 0]
 
 
 def alokasi_baris(items: list, total, pajak, ongkir) -> list:
@@ -180,6 +183,8 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
         await tolak_ppn_bila_non_pkp(conn, tid, inv["tax_amount"])
     except HTTPException as e:
         blok("NON_PKP", _pesan(e.detail), e.status_code)
+    for b0 in DN.blok_faktur_nol("si", inv["total_amount"]):  # SI-FPB-RP0: == penulis _internal_post_invoice
+        blok(b0["code"], b0["message"])
     total, pajak, ongkir = _d(inv["total_amount"]), _d(inv["tax_amount"] or 0), _d(inv["shipping_amount"] or 0)
     akun_ar = akun_dimuka = akun_ppn = akun_ongkir = None
     try:

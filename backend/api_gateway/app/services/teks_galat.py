@@ -130,6 +130,12 @@ def sudah_dipakai(pihak: str, medan: str, nilai, aktif: bool = True) -> str:
     return f"{awal} nonaktif — aktifkan lagi dari Kontak atau gunakan {medan} lain."
 
 
+def faktur_nol(jenis: str) -> str:
+    """'Faktur penjualan bernilai Rp 0 tidak bisa diterbitkan. Isi harga atau hapus diskon.' (SI-FPB-RP0, satu kalimat SI + FPB)"""
+    dok = {"si": "Faktur penjualan", "bill": "Faktur pembelian"}[jenis]
+    return f"{dok} bernilai Rp 0 tidak bisa diterbitkan. Isi harga atau hapus diskon."
+
+
 def periode_tertutup(nama, status) -> str:
     """'Periode Okt 2026 sudah ditutup. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya.'"""
     kata = _PERIODE.get(str(status or "").upper(), "ditutup")

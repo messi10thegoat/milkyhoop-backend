@@ -1920,6 +1920,9 @@ async def calculate_bill_totals(request: Request, body: CalculateBillRequestV2):
             async with conn.transaction(readonly=True):
                 bloks = await TR.blok_buat(conn, ctx["tenant_id"], req)
                 h = await TR.hitung(conn, ctx["tenant_id"], req)
+        if req.get("status") == "posted":  # SI-FPB-RP0: == create_bill_v2 posted
+            from ..services.dokumen_nol import blok_faktur_nol
+            bloks = bloks + blok_faktur_nol("bill", h["akhir"]["grand_total"])
         j = TR.hitung_json(req, h)
         kepala = {k: j[k] for k in ("subtotal", "item_discount_total", "invoice_discount_total", "cash_discount_total", "dpp", "tax_amount", "grand_total")}
         return {"success": True, "calculation": kepala,

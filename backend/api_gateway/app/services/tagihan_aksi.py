@@ -10,6 +10,7 @@ Blok: {"code", "message"}. Semua kueri berpagar tenant."""
 from decimal import Decimal
 from typing import Optional
 from . import teks_galat as tg  # 6a
+from . import dokumen_nol as DN  # SI-FPB-RP0
 
 NOL = Decimal("0")
 
@@ -242,6 +243,7 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
         vat = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT)
         if vat is None:
             bloks.append(blok("NON_PKP_PPN", PESAN_NON_PKP_PEMBELIAN))
+    bloks += DN.blok_faktur_nol("bill", bill["grand_total"])  # SI-FPB-RP0: == create_bill_v2 posted (fungsi tolak sama)
     if not ap:
         bloks.append(blok("AKUN_AP_HILANG", "Akun AP_TRADE tidak ter-resolve"))
     if not debit:
