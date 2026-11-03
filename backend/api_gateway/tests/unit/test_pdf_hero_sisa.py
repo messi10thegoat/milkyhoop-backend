@@ -40,16 +40,27 @@ def _bill(total, paid):
             "items": [{"product_name": "Kain", "qty": 1, "price": total, "total": total}]}
 
 
-@pytest.mark.parametrize("total,paid,hero", [
-    (2421900, 2421900, "Rp 0"),              # LUNAS -> nol, bukan total
-    (2421900, 421900, "Rp 2.000.000"),       # sebagian -> sisa
-    (630000, 0, "Rp 630.000"),               # belum dibayar -> total
+@pytest.mark.parametrize("total,paid,status,stempel", [
+    (2421900, 2421900, "Lunas", "LUNAS"),                              # LUNAS -> status + stempel, BUKAN "Rp 0" / jatuh tempo
+    (2421900, 421900, "Sebagian dibayar &middot; sisa Rp 2.000.000", None),
+    (630000, 0, "Belum dibayar", None),
 ])
-def test_hero_faktur_pembelian_sisa(tangkap, total, paid, hero):
-    PS.get_pdf_service().generate_bill_pdf(_bill(total, paid))
-    assert _hero(tangkap["isi"]) == hero
+def test_faktur_pembelian_status_bukan_angka_sisa(tangkap, total, paid, status, stempel):
+    """PDF keluarga (3 Nov 2026, temuan pemilik BILL-2611-0005 "Rp 0 / Jatuh tempo"): FPB = kerangka PO tanpa angka besar;
+    keadaan = faktur_cetak.keadaan_cetak YANG SAMA dgn faktur penjualan. Tujuan tes 26 Sep tetap: tagihan lunas TIDAK tampil
+    seolah masih ditagih."""
+    from app.services import faktur_cetak as FC
+    b = _bill(total, paid)
+    b["grand_total"] = b["amount"] = total
+    b["cetak"] = FC.keadaan_cetak({"status": "posted", "total_amount": total, "amount_paid": paid, "amount_due": total - paid,
+                                   "due_date": b["due_date"]}, date(2026, 9, 20), [])
+    PS.get_pdf_service().generate_bill_pdf(b)
+    isi = tangkap["isi"]
+    assert 'class="hero' not in isi
+    assert re.search(r"<b>Status</b><span>\s*" + re.escape(status), isi), status
+    assert ('stempel-teks">' + stempel) in isi if stempel else 'class="stempel' not in isi
     # baris Total di ringkasan tetap nominal penuh
-    assert re.search(r"Total\s*</td>\s*<td[^>]*>\s*Rp\s*" + re.escape(f"{total:,}".replace(",", ".")), tangkap["isi"])
+    assert re.search(r'class="tot"><span>Total</span><span>Rp ' + re.escape(f"{total:,}".replace(",", ".")), isi)
 
 
 def _proforma(amount, paid):

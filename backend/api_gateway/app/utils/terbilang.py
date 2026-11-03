@@ -55,3 +55,16 @@ def terbilang(n) -> str:
             )
 
     return _to_words(n).strip() + " Rupiah"
+
+
+def terbilang_rupiah(nilai) -> str:
+    """Terbilang NOMINAL dokumen (PDF keluarga 3 Nov 2026): Decimal/str/float -> kata, sen ikut bila ada
+    ("Seratus Rupiah Lima Puluh Sen"). Pembulatan ke sen ROUND_HALF_UP (Law 9); bagian rupiah = terbilang() di atas."""
+    from decimal import ROUND_HALF_UP, Decimal
+    d = Decimal(str(nilai or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    tanda, d = ("Minus ", -d) if d < 0 else ("", d)
+    rupiah, sen = int(d), int((d - int(d)) * 100)
+    teks = terbilang(rupiah)
+    if sen:
+        teks += " " + terbilang(sen).replace(" Rupiah", " Sen")
+    return tanda + teks

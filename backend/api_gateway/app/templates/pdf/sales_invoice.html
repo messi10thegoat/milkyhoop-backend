@@ -16,6 +16,10 @@
   .meta-table { border-spacing: 20px 3px !important; }
   .summary { margin-bottom: 18px !important; }
   .notes-section { margin-bottom: 10px !important; }
+  /* PDF keluarga (3 Nov 2026): terbilang di bawah ringkasan + tanda tangan penjual (pola PO/penawaran) */
+  .terbilang { text-align: right; font-style: italic; font-size: 9pt; margin: -10px 0 14px auto; max-width: 60%; }
+  .ttd { margin: 18px 0 0 auto; width: 220px; text-align: right; font-size: 9.5pt; break-inside: avoid; }
+  .ttd .garis { border-top: 1px solid #1a1a1a; margin-top: 40px; padding-top: 4px; }
 </style>
 </head>
 <body>
@@ -37,7 +41,6 @@
     <div class="header">
         <div>
             <h1 class="doc-title">Faktur Penjualan</h1>
-            <div class="doc-subtitle">Invoice</div>
         </div>
         {% if invoice.tenant and invoice.tenant.logo_data %}
         <img src="{{ invoice.tenant.logo_data }}" class="company-logo" alt="">
@@ -115,11 +118,11 @@
             {% elif c.jenis == 'lunas' %}
             <div class="hero-due">Dibayar lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}</div>
             {% elif c.jenis == 'terlambat' %}
-            <div class="hero-due">Lewat jatuh tempo {{ invoice.due_date | date_id }} &middot; terlambat {{ c.hari_terlambat }} hari</div>
+            <div class="hero-due">Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari</div>
             {% elif c.jenis == 'sebagian' %}
-            <div class="hero-due">{% if invoice.due_date %}Jatuh tempo {{ invoice.due_date | date_id }} &middot; {% endif %}sudah dibayar Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}</div>
-            {% elif invoice.due_date %}
-            <div class="hero-due">Jatuh tempo {{ invoice.due_date | date_id }}{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}</div>
+            <div class="hero-due">Sudah dibayar Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}</div>
+            {% elif c.hari_lagi is not none %}
+            <div class="hero-due">{% if c.hari_lagi == 0 %}Jatuh tempo hari ini{% else %}{{ c.hari_lagi }} hari lagi{% endif %}</div>
             {% endif %}
         </div>
         {% if c.stempel %}
@@ -132,9 +135,6 @@
     {% else %}
     <div class="hero">
         <div class="hero-amount">Rp {{ due_amount | rupiah(invoice.has_cents) }}</div>
-        {% if invoice.due_date %}
-        <div class="hero-due">Jatuh tempo {{ invoice.due_date | date_id }}</div>
-        {% endif %}
     </div>
     {% endif %}
 
@@ -337,6 +337,8 @@
             {% endif %}
         </table>
     </div>
+    {# di LUAR .summary (flex rata kanan): di dalamnya terbilang menggeser tabel ringkasan ke kiri #}
+    <div class="terbilang">{{ (invoice.total_amount or invoice.amount or invoice.grand_total) | terbilang }}</div>
 
     {% if c and c.riwayat %}
     <div class="notes-section riwayat">
@@ -375,6 +377,12 @@
         <div class="notes-text">{{ invoice.notes }}</div>
     </div>
     {% endif %}
+
+    <div class="ttd">
+        <div>Hormat kami,</div>
+        {% if invoice.tenant and invoice.tenant.name %}<div>{{ invoice.tenant.name }}</div>{% endif %}
+        <div class="garis"></div>
+    </div>
 
     <!-- 7. Footer -->
     <div class="footer-line">

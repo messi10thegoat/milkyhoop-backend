@@ -24,6 +24,26 @@ def alamat_vendor(v) -> str | None:
     return "\n".join(baris) or None
 
 
+async def kontak_vendor(conn, tid: str, vendor_id) -> dict:
+    """Kontak vendor untuk dokumen Pembelian (PO, Faktur Pembelian) -- SATU fungsi (PDF keluarga 3 Nov 2026).
+    -> {nama, alamat, telepon, npwp}; vendor absen / bukan milik tenant -> semua None. Tenant SELALU eksplisit."""
+    v = await conn.fetchrow(
+        """SELECT name, address, city, province, postal_code, phone, mobile_phone, email, tax_id
+           FROM vendors WHERE id = $1 AND tenant_id = $2""", vendor_id, tid) if vendor_id else None
+    if not v:
+        return {"nama": None, "alamat": None, "telepon": None, "npwp": None}
+    return {"nama": v["name"], "alamat": alamat_vendor(v), "telepon": v["phone"] or v["mobile_phone"],
+            "npwp": (v["tax_id"] or "").strip() or None}
+
+
+def alamat_gudang(w) -> str | None:
+    """Alamat gudang tujuan PO (kirim ke): jalan, kota (bagian kosong dilewati)."""
+    if not w:
+        return None
+    baris = [x.strip() for x in (w.get("warehouse_address"), w.get("warehouse_city")) if x and x.strip()]
+    return "\n".join(baris) or None
+
+
 def label_pajak(tax_rate) -> str:
     try:
         t = float(tax_rate or 0)
@@ -37,14 +57,12 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
     from .pdf_service import PDFService
     tid = ctx["tenant_id"]
     po = await conn.fetchrow(
-        """SELECT po.*, w.name AS warehouse_name
+        """SELECT po.*, w.name AS warehouse_name, w.address AS warehouse_address, w.city AS warehouse_city
            FROM purchase_orders po LEFT JOIN warehouses w ON w.id = po.warehouse_id AND w.tenant_id = po.tenant_id
            WHERE po.id = $1 AND po.tenant_id = $2""", po_id, tid)
     if not po:
         raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-    vendor = await conn.fetchrow(
-        """SELECT name, address, city, province, postal_code, phone, mobile_phone, email, tax_id
-           FROM vendors WHERE id = $1 AND tenant_id = $2""", po["vendor_id"], tid) if po["vendor_id"] else None
+    vendor = await kontak_vendor(conn, tid, po["vendor_id"])
     items = await conn.fetch(
         """SELECT description, item_code, quantity, unit, unit_price, discount_percent, discount_amount, subtotal, total
            FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number, created_at, id""", po["id"])
@@ -59,11 +77,12 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
         "id": str(po["id"]), "po_number": po["po_number"], "status": po["status"],
         "po_date": _tgl(po["po_date"]), "expected_date": _tgl(po["expected_date"]),
         "ref_no": po["ref_no"], "ship_to_address": po["ship_to_address"], "warehouse_name": po["warehouse_name"],
+        "warehouse_alamat": alamat_gudang(po),
         "notes": po["notes"], "cancelled_at": po["cancelled_at"], "cancelled_reason": po["cancelled_reason"],
-        "vendor_name": (vendor["name"] if vendor else None) or po["vendor_name"],
-        "vendor_alamat": alamat_vendor(vendor),
-        "vendor_telepon": (vendor["phone"] or vendor["mobile_phone"]) if vendor else None,
-        "vendor_npwp": vendor["tax_id"] if vendor else None,
+        "vendor_name": vendor["nama"] or po["vendor_name"],
+        "vendor_alamat": vendor["alamat"],
+        "vendor_telepon": vendor["telepon"],
+        "vendor_npwp": vendor["npwp"],
         "items": baris,
         "subtotal": po["subtotal"], "discount_percent": po["discount_percent"], "discount_amount": po["discount_amount"],
         "tax_amount": po["tax_amount"], "label_pajak": label_pajak(po["tax_rate"]), "total_amount": po["total_amount"],

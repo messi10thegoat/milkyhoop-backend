@@ -159,6 +159,9 @@ class PDFService:
         self.jinja_env.filters["date_id"] = self.format_date_indonesian
         self.jinja_env.filters["date_full"] = self.format_date_full
         self.jinja_env.filters["date_short"] = self.format_date_short
+        # PDF keluarga (3 Nov 2026): terbilang SATU sumber (utils.terbilang) untuk semua templat
+        from ..utils.terbilang import terbilang_rupiah
+        self.jinja_env.filters["terbilang"] = terbilang_rupiah
 
     @classmethod
     def format_date_short(cls, date_value: Any) -> str:
@@ -419,8 +422,8 @@ class PDFService:
         return self.tulis_pdf(self.render_bill(bill))
 
     def render_bill(self, bill: Dict[str, Any]) -> Render:
-        """Faktur Pembelian (P2P cetak, 25 Okt 2026): konteks = BillsService.get_bill_v2(_conn) + bill["tenant"].
-        Gaya = faktur penjualan (CSS_DOKUMEN + font Inter berkas; dulu invoice.css saja -> jatuh ke DejaVu)."""
+        """Faktur Pembelian (P2P cetak, 25 Okt 2026): konteks = cetak_bill.lengkapi_cetak_bill (get_bill_v2 + kop + kontak vendor +
+        No. PO + syarat + keadaan_cetak). PDF keluarga 3 Nov 2026: kerangka & gaya PO (CSS_PENAWARAN), dulu invoice.css."""
         status = bill.get("status", "draft")
         html_content = self.jinja_env.get_template("bill_invoice.html").render(
             bill=bill,
@@ -430,7 +433,7 @@ class PDFService:
             draf=str(status).lower() == "draft",
             draf_keterangan="Belum diposting",
         )
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        return Render(html_content, CSS_PENAWARAN, font=True)
 
     @staticmethod
     def _label_terms(invoice: Dict[str, Any]) -> str:
@@ -562,6 +565,7 @@ class PDFService:
             "name": tenant_info.get("name"),
             "address": tenant_info.get("address"),
             "phone": tenant_info.get("phone"),
+            "npwp": tenant_info.get("npwp"),   # PDF keluarga 3 Nov 2026 (muat_kop: "Tenant".tax_id)
             "logo_base64": tenant_info.get("logo_data"),
         }
         html_content = template.render(

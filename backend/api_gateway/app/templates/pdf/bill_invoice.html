@@ -1,247 +1,174 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Faktur {{ bill.invoice_number or '-' }}</title>
+<head><meta charset="UTF-8"><title>Faktur Pembelian {{ bill.invoice_number or '-' }}</title>
 <style>
-/* Bill-specific: pharma column widths (only applied when pharma data exists) */
-.bill-table thead th { font-size: 8pt; }
-.bill-table tbody td { font-size: 9pt; }
-.bill-table .col-desc   { width: 28%; text-align: left; }
-.bill-table .col-unit   { width: 7%; text-align: center; }
-.bill-table .col-batch  { width: 10%; text-align: center; }
-.bill-table .col-exp    { width: 9%; text-align: center; }
-.bill-table .col-qty    { width: 7%; text-align: center; }
-.bill-table .col-disc   { width: 7%; text-align: center; }
-.bill-table .col-bonus  { width: 7%; text-align: center; }
-.bill-table .col-price  { width: 13%; text-align: right; }
-.bill-table .col-amount { width: 12%; text-align: right; }
+/* FPB (PDF keluarga 3 Nov 2026): kerangka & gaya PO (penawaran.css); stempel status = pola faktur penjualan (invoice.css,
+   nilai disalin): satu-satunya teks berwarna. */
+.kepala-status { position: relative; }
+.stempel { position: absolute; right: 0; top: 0; transform: rotate(-8deg); border: 2.2px solid; border-radius: 8px;
+           padding: 4px 14px 5px 14px; text-align: center; opacity: .85; }
+.stempel-teks { font-size: 22px; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
+.stempel-kecil { font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+.stempel-lunas { color: #4F6B2E; border-color: #4F6B2E; }
+.stempel-terlambat { color: #A3402F; border-color: #A3402F; }
+.stempel-batal { color: #8E3B2E; border-color: #8E3B2E; }
+.coret { text-decoration: line-through; color: #8E8E89; }
+.rw td { padding: 6px 0; font-size: 12px; }
+/* .akhir penawaran.css = satu blok tak terpecah; di FPB hanya ringkasan + TTD yang utuh (riwayat/catatan boleh mengalir,
+   dulu seluruh blok terdorong ke halaman 2). WeasyPrint: width max-content = auto -> garis TTD selebar halaman -> lebar tetap. */
+.akhir { break-inside: auto; }
+.sum, .sign { break-inside: avoid; }
+.penutup { display: grid; grid-template-columns: 1fr 220px; gap: 32px; margin-top: 18px; align-items: start; break-inside: avoid; }
+.penutup .blk { margin-top: 0; }
+.sign { width: 220px; margin: 0; }
+.sign .garis { border-top: 1px solid #1A1A1A; margin-top: 40px; padding-top: 4px; }
 </style>
+{% set c = bill.cetak %}
+{% if c and c.jenis == 'batal' %}
+<style>
+@page { @top-right { content: "DIBATALKAN"; font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: #8E3B2E; } }
+@page :first { @top-right { content: none; } }
+</style>
+{% endif %}
 </head>
+{#
+  PDF Faktur Pembelian -- PDF keluarga (3 Nov 2026, putusan MASTER): kerangka purchase_order.html / penawaran.css (dokumen
+  Pembelian satu rupa). Konteks = services/cetak_bill.lengkapi_cetak_bill (get_bill_v2 + kop + kontak vendor + No. PO +
+  syarat bayar + keadaan_cetak SAMA dgn faktur penjualan). Tanpa angka besar (pola PO): status di kepala + stempel
+  LUNAS/TERLAMBAT/BATAL; tagihan lunas TIDAK lagi tampil "Rp 0 / Jatuh tempo" (temuan pemilik BILL-2611-0005).
+  Kolom farmasi (Satuan/Batch/Exp/Bonus) dibuang: satuan ikut Qty, batch/exp/bonus = baris kecil di deskripsi bila ada.
+#}
 <body>
-{% include "_partials/tanda_batal.html" %}
 {% include "_partials/tanda_draf.html" %}
-<div class="invoice">
+{% if not c %}{% include "_partials/tanda_batal.html" %}{% endif %}
+<div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
+<div class="doc">
+{% set uang = bill.has_cents %}
+{% set total = bill.grand_total or bill.amount or 0 %}
+{% set v = bill.vendor_kontak or {} %}
 
-    <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">Faktur Pembelian</h1>
-        </div>
-        {% if bill.tenant and bill.tenant.logo_data %}
-        <img src="{{ bill.tenant.logo_data }}" class="company-logo" alt="">
-        {% endif %}
-    </div>
+<header>
+  <div><h1>Faktur Pembelian</h1></div>
+  {% if bill.tenant and bill.tenant.logo_data %}<img class="logo" src="{{ bill.tenant.logo_data }}" alt="">{% endif %}
+</header>
 
-    <!-- 2. Meta -->
-    <div class="meta-block">
-        <table class="meta-table">
-            <tr>
-                <td class="meta-label">Nomor faktur</td>
-                <td class="meta-value">{{ bill.invoice_number or '-' }}</td>
-            </tr>
-            <tr>
-                <td class="meta-label">Tanggal</td>
-                <td class="meta-value">{{ (bill.issue_date or bill.bill_date) | date_id }}</td>
-            </tr>
-            <tr>
-                <td class="meta-label">Jatuh tempo</td>
-                <td class="meta-value">{{ bill.due_date | date_id }}</td>
-            </tr>
-            {% if bill.ref_no %}
-            <tr>
-                <td class="meta-label">Referensi</td>
-                <td class="meta-value">{{ bill.ref_no }}</td>
-            </tr>
-            {% endif %}
-        </table>
-    </div>
+<div class="kepala-status">
+<div class="meta">
+  <b>Nomor</b><span>{{ bill.invoice_number or '-' }}</span>
+  <b>Tanggal</b><span>{{ (bill.issue_date or bill.bill_date) | date_id }}</span>
+  {% if bill.due_date %}<b>Jatuh tempo</b><span>{{ bill.due_date | date_id }}</span>{% endif %}
+  {% if bill.syarat_bayar %}<b>Syarat bayar</b><span>{{ bill.syarat_bayar }}</span>{% endif %}
+  {% if bill.ref_no %}<b>No. faktur vendor</b><span>{{ bill.ref_no }}</span>{% endif %}
+  {% if bill.po_number %}<b>No. PO</b><span>{{ bill.po_number }}</span>{% endif %}
+  {% if c %}<b>Status</b><span>
+    {%- if c.jenis == 'batal' -%}Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %}
+    {%- elif c.jenis == 'draf' -%}Draf
+    {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}
+    {%- elif c.jenis == 'terlambat' -%}Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari
+    {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar &middot; sisa Rp {{ bill.amount_due | rupiah(uang) }}
+    {%- else -%}Belum dibayar{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}
+    {%- endif -%}</span>{% endif %}
+</div>
+{% if c and c.stempel %}
+<div class="stempel stempel-{{ c.jenis }}">
+  <div class="stempel-teks">{{ c.stempel }}</div>
+  <div class="stempel-kecil">{% if c.jenis == 'lunas' %}{{ c.tanggal_lunas | date_id | upper }}{% elif c.jenis == 'terlambat' %}{{ c.hari_terlambat }} HARI{% elif c.tanggal_batal %}{{ c.tanggal_batal | date_id | upper }}{% endif %}</div>
+</div>
+{% endif %}
+</div>
 
-    <!-- 3. Parties -->
-    <div class="parties">
-        <div class="party">
-            <div class="party-label">Dari</div>
-            <div class="party-name">{{ bill.vendor.name if bill.vendor else (bill.vendor_name or '-') }}</div>
-            {% if bill.vendor and bill.vendor.address %}
-            <div class="party-detail">{{ bill.vendor.address }}</div>
-            {% endif %}
-        </div>
-        {% if bill.tenant %}
-        <div class="party">
-            <div class="party-label">Kepada</div>
-            <div class="party-name">{{ bill.tenant.name }}</div>
-            {% if bill.tenant.address %}
-            <div class="party-detail">{{ bill.tenant.address }}</div>
-            {% endif %}
-        </div>
-        {% endif %}
-    </div>
+<div class="parties">
+  <div>
+    <b>Dari</b>
+    <div>{{ v.nama or (bill.vendor.name if bill.vendor else bill.vendor_name) or '-' }}</div>
+    {% if v.alamat %}<div class="mut pre">{{ v.alamat }}</div>{% endif %}
+    {% if v.telepon %}<div class="mut">{{ v.telepon }}</div>{% endif %}
+    {% if v.npwp %}<div class="mut">NPWP {{ v.npwp }}</div>{% endif %}
+  </div>
+  <div>
+    <b>Kepada</b>
+    <div>{{ bill.tenant.name if bill.tenant else '' }}</div>
+    {% if bill.tenant and bill.tenant.address %}<div class="mut pre">{{ bill.tenant.address }}</div>{% endif %}
+    {% if bill.tenant and bill.tenant.phone %}<div class="mut">{{ bill.tenant.phone }}</div>{% endif %}
+    {% if bill.tenant and bill.tenant.npwp %}<div class="mut">NPWP {{ bill.tenant.npwp }}</div>{% endif %}
+  </div>
+</div>
 
-    <!-- 4. Hero Amount -->
-    {% set bill_total = bill.amount or bill.grand_total or 0 %}
-    {# Hero = SISA TAGIHAN (pola faktur penjualan). 26 Sep 2026: dulu total -> tagihan LUNAS tampil
-       "Rp <total> / Jatuh tempo" di kepala walau Sisa tagihan Rp 0. #}
-    {% set bill_hero = bill.amount_due if bill.amount_due is defined and bill.amount_due is not none else bill_total %}
-    <div class="hero">
-        <div class="hero-amount">Rp {{ bill_hero | currency }}</div>
-        {% if bill.due_date %}
-        <div class="hero-due">Jatuh tempo {{ bill.due_date | date_id }}</div>
-        {% endif %}
-    </div>
+{% set ns = namespace(disk=false) %}
+{% for item in bill["items"] %}{% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.disk = true %}{% endif %}{% endfor %}
+<table>
+  {% if ns.disk %}
+  <colgroup><col style="width:42%"><col style="width:14%"><col style="width:10%"><col style="width:16%"><col style="width:18%"></colgroup>
+  {% else %}
+  <colgroup><col style="width:52%"><col style="width:14%"><col style="width:16%"><col style="width:18%"></colgroup>
+  {% endif %}
+  <thead><tr><th>Deskripsi</th><th class="r">Qty</th>{% if ns.disk %}<th class="r">Diskon</th>{% endif %}<th class="r">Harga satuan</th><th class="r">Jumlah</th></tr></thead>
+  <tbody>
+  {% for item in bill["items"] %}
+    <tr>
+      <td><div>{{ item.product_name or item.description or '-' }}</div>
+        {%- set rinci = [] -%}
+        {%- if item.batch_no %}{% set _ = rinci.append('Batch ' ~ item.batch_no) %}{% endif -%}
+        {%- if item.exp_date %}{% set _ = rinci.append('Exp ' ~ item.exp_date) %}{% endif -%}
+        {%- if item.bonus_qty and item.bonus_qty|float > 0 %}{% set _ = rinci.append('Bonus ' ~ (item.bonus_qty | qty)) %}{% endif -%}
+        {% if rinci %}<div class="dt">{{ rinci | join(' · ') }}</div>{% endif %}</td>
+      <td class="r">{{ (item.qty or item.quantity) | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+      {% if ns.disk %}<td class="r">{% if item.discount_percent and item.discount_percent|float > 0 %}{{ "%g" % (item.discount_percent|float) }}%{% else %}-{% endif %}</td>{% endif %}
+      <td class="r">Rp {{ (item.price or item.unit_price) | rupiah(uang) }}</td>
+      <td class="r">Rp {{ (item.total or item.subtotal) | rupiah(uang) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 
-    <div style="height: 28px;"></div>
-
-    <!-- 5. Line Items — detect pharma columns -->
-    {% set ns = namespace(has_unit=false, has_batch=false, has_exp=false, has_disc=false, has_bonus=false) %}
-    {% for item in bill["items"] %}
-        {% if item.unit %}{% set ns.has_unit = true %}{% endif %}
-        {% if item.batch_no %}{% set ns.has_batch = true %}{% endif %}
-        {% if item.exp_date %}{% set ns.has_exp = true %}{% endif %}
-        {% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.has_disc = true %}{% endif %}
-        {% if item.bonus_qty and item.bonus_qty|int > 0 %}{% set ns.has_bonus = true %}{% endif %}
-    {% endfor %}
-
-    {% set has_pharma = ns.has_unit or ns.has_batch or ns.has_exp or ns.has_bonus %}
-
-    {% if has_pharma %}
-    <!-- Pharma layout: separate columns for unit/batch/exp/disc/bonus -->
-    <table class="items-table bill-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Deskripsi</th>
-                {% if ns.has_unit %}<th class="col-unit">Satuan</th>{% endif %}
-                {% if ns.has_batch %}<th class="col-batch">Batch</th>{% endif %}
-                {% if ns.has_exp %}<th class="col-exp">Exp</th>{% endif %}
-                <th class="col-qty">Qty</th>
-                {% if ns.has_disc %}<th class="col-disc">Disk%</th>{% endif %}
-                {% if ns.has_bonus %}<th class="col-bonus">Bonus</th>{% endif %}
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in bill["items"] %}
-            <tr>
-                <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
-                {% if ns.has_unit %}<td class="col-unit">{{ item.unit or '-' }}</td>{% endif %}
-                {% if ns.has_batch %}<td class="col-batch">{{ item.batch_no or '-' }}</td>{% endif %}
-                {% if ns.has_exp %}<td class="col-exp">{{ item.exp_date or '-' }}</td>{% endif %}
-                <td class="col-qty text-center">{{ (item.qty or item.quantity) | qty }}</td>
-                {% if ns.has_disc %}<td class="col-disc text-center">{{ item.discount_percent|default(0) }}%</td>{% endif %}
-                {% if ns.has_bonus %}<td class="col-bonus text-center">{{ item.bonus_qty|default(0) }}</td>{% endif %}
-                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <!-- Standard layout: 4 columns (no pharma data) -->
-    <table class="items-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Deskripsi</th>
-                <th class="col-qty">Qty</th>
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in bill["items"] %}
-            <tr>
-                <td class="col-desc">{{ item.product_name or item.description or '-' }}</td>
-                <td class="col-qty">{{ (item.qty or item.quantity) | qty }}</td>
-                <td class="col-price">Rp {{ (item.price or item.unit_price) | currency }}</td>
-                <td class="col-amount">Rp {{ (item.total or item.subtotal) | currency }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="akhir">
+  <div class="sum">
+    <div><span>Subtotal</span><span>Rp {{ bill.subtotal | rupiah(uang) }}</span></div>
+    {% if bill.invoice_discount_total and bill.invoice_discount_total|float > 0 %}<div><span>Diskon faktur</span><span>-Rp {{ bill.invoice_discount_total | rupiah(uang) }}</span></div>{% endif %}
+    {% if bill.cash_discount_total and bill.cash_discount_total|float > 0 %}<div><span>Diskon tunai</span><span>-Rp {{ bill.cash_discount_total | rupiah(uang) }}</span></div>{% endif %}
+    {# Tarif nominal: kepala -> mayoritas baris -> efektif dari DPP (sama dgn templat lama) #}
+    {% set trs = namespace(rate=0, mixed=false, found=false) %}
+    {% if bill.tax_rate and bill.tax_rate|float > 0 %}{% set trs.rate = bill.tax_rate|float %}{% set trs.found = true %}
+    {% else %}{% for it in bill["items"] %}{% set r = (it.tax_rate or 0)|float %}{% if r > 0 %}{% if not trs.found %}{% set trs.rate = r %}{% set trs.found = true %}{% elif r != trs.rate %}{% set trs.mixed = true %}{% endif %}{% endif %}{% endfor %}{% endif %}
+    {% if not trs.found and bill.tax_amount and bill.dpp and bill.dpp|float > 0 %}{% set trs.rate = ((bill.tax_amount|float / bill.dpp|float) * 100)|round(2) %}{% set trs.found = true %}{% endif %}
+    {% if bill.tax_amount and bill.tax_amount|float > 0 %}
+    {% if bill.dpp %}<div><span>DPP</span><span>Rp {{ bill.dpp | rupiah(uang) }}</span></div>{% endif %}
+    <div><span>{% if trs.found and not trs.mixed %}PPN {{ trs.rate|round(0)|int }}%{% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</span><span>Rp {{ bill.tax_amount | rupiah(uang) }}</span></div>
     {% endif %}
-
-    <!-- 6. Summary -->
-    <div class="summary">
-        <table class="summary-table">
-            <tr>
-                <td class="label">Subtotal</td>
-                <td class="value">Rp {{ bill.subtotal | currency }}</td>
-            </tr>
-            {% if bill.item_discount_total and bill.item_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon item</td>
-                <td class="value">-Rp {{ bill.item_discount_total | currency }}</td>
-            </tr>
-            {% endif %}
-            {% if bill.invoice_discount_total and bill.invoice_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon faktur</td>
-                <td class="value">-Rp {{ bill.invoice_discount_total | currency }}</td>
-            </tr>
-            {% endif %}
-            {% if bill.cash_discount_total and bill.cash_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon tunai</td>
-                <td class="value">-Rp {{ bill.cash_discount_total | currency }}</td>
-            </tr>
-            {% endif %}
-            {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
-            {% set trs = namespace(rate=0, mixed=false, found=false) %}
-            {% if bill.tax_rate and bill.tax_rate|float > 0 %}
-                {% set trs.rate = bill.tax_rate|float %}
-                {% set trs.found = true %}
-            {% else %}
-                {% for it in bill["items"] %}
-                    {% set r = (it.tax_rate or 0)|float %}
-                    {% if r > 0 %}
-                        {% if not trs.found %}
-                            {% set trs.rate = r %}
-                            {% set trs.found = true %}
-                        {% elif r != trs.rate %}
-                            {% set trs.mixed = true %}
-                        {% endif %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
-            {% if not trs.found and bill.tax_amount and bill.dpp and bill.dpp|float > 0 %}
-                {% set trs.rate = ((bill.tax_amount|float / bill.dpp|float) * 100)|round(2) %}
-                {% set trs.found = true %}
-            {% endif %}
-            {% if bill.tax_amount and bill.tax_amount|float > 0 %}
-            <tr>
-                <td class="label">DPP</td>
-                <td class="value">Rp {{ bill.dpp | currency }}</td>
-            </tr>
-            <tr>
-                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
-                <td class="value">Rp {{ bill.tax_amount | currency }}</td>
-            </tr>
-            {% endif %}
-            <tr class="total-row">
-                <td class="label">Total</td>
-                <td class="value">Rp {{ bill_total | currency }}</td>
-            </tr>
-            {% if bill.amount_paid and bill.amount_paid|float > 0 %}
-            <tr class="paid-row">
-                <td class="label">Dibayar</td>
-                <td class="value">Rp {{ bill.amount_paid | currency }}</td>
-            </tr>
-            <tr class="due-row">
-                <td class="label">Sisa tagihan</td>
-                <td class="value">Rp {{ bill.amount_due | currency }}</td>
-            </tr>
-            {% endif %}
-        </table>
-    </div>
-
-    {% if bill.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ bill.notes }}</div>
-    </div>
+    <div class="tot"><span>Total</span><span{% if c and c.jenis == 'batal' %} class="coret"{% endif %}>Rp {{ total | rupiah(uang) }}</span></div>
+    {% if not (c and c.jenis in ('batal', 'draf')) and bill.amount_paid and bill.amount_paid|float > 0 %}
+    <div><span>Dibayar</span><span>Rp {{ bill.amount_paid | rupiah(uang) }}</span></div>
+    <div><b>Sisa tagihan</b><b>Rp {{ bill.amount_due | rupiah(uang) }}</b></div>
     {% endif %}
+    <div class="terb">{{ total | terbilang }}</div>
+  </div>
 
-    <!-- 7. Footer -->
-    <div class="footer-line">
-        Dicetak {{ generated_at | date_id }}
-    </div>
+  {% if c and c.riwayat %}
+  <div class="blk"><b>Riwayat pembayaran</b>
+    <table class="rw" style="margin-top:4px">
+      <colgroup><col style="width:18%"><col style="width:40%"><col style="width:22%"><col style="width:20%"></colgroup>
+      {% for h in c.riwayat %}
+      <tr><td>{{ h.tanggal | date_id }}</td><td>{{ h.jenis }}{% if h.metode %} &middot; {{ h.metode }}{% endif %}</td><td class="mut">{{ h.nomor }}</td><td class="r">Rp {{ h.jumlah | rupiah(uang) }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {# Catatan + tanda tangan SEBARIS (hemat satu blok; dulu TTD sendirian di halaman 2 untuk 3 baris + riwayat) #}
+  <div class="penutup">
+  <div>
+  {% if c and c.jenis == 'batal' %}
+  <div class="blk"><b>Catatan</b><div class="mut">Faktur ini telah dibatalkan dan tidak berlaku sebagai tagihan.{% if batal and batal.alasan %} Alasan: {{ batal.alasan }}{% endif %}</div></div>
+  {% elif bill.notes %}<div class="blk"><b>Catatan</b><div class="mut pre">{{ bill.notes }}</div></div>{% endif %}
+  </div>
+
+  <div class="sign">
+    <div>Diterima oleh,</div>
+    {% if bill.tenant and bill.tenant.name %}<div>{{ bill.tenant.name }}</div>{% endif %}
+    <div class="garis"></div>
+  </div>
+  </div>
+</div>
 
 </div>
 </body>

@@ -12,8 +12,6 @@ from uuid import UUID
 from datetime import date, datetime, timedelta
 from io import BytesIO
 import logging
-import base64
-from pathlib import Path as _Path
 import asyncpg
 
 from ..services.nama_pengguna import nama_pengguna, nama_untuk
@@ -1140,39 +1138,10 @@ async def get_bill_pdf(
         # Fetch tenant info for PDF header
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-            tenant_row = await conn.fetchrow(
-                'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-                ctx["tenant_id"],
-            )
-            tenant_info = (
-                {
-                    "name": tenant_row["display_name"]
-                    if tenant_row
-                    else ctx["tenant_id"],
-                    "address": tenant_row["address"] if tenant_row else None,
-                    "phone": tenant_row["phone"] if tenant_row else None,
-                    "logo_url": tenant_row["logo_url"] if tenant_row else None,
-                }
-                if tenant_row
-                else {"name": ctx["tenant_id"]}
-            )
-
-            # Resolve logo to base64 data URI
-            _logo_data = None
-            _logo_fn = tenant_info.get("logo_url")
-            if _logo_fn:
-                _logo_path = (
-                    _Path(__file__).parent.parent / "static" / "logos" / _logo_fn
-                )
-                if _logo_path.exists():
-                    with open(_logo_path, "rb") as _lf:
-                        _logo_data = f"data:image/png;base64,{base64.b64encode(_lf.read()).decode()}"
-            tenant_info["logo_data"] = _logo_data
-
-        bill["tenant"] = tenant_info
+            # PDF keluarga (3 Nov 2026): kop + kontak vendor + No. PO + syarat + keadaan cetak = SATU pelengkap
+            # (services/cetak_bill.lengkapi_cetak_bill, sama dgn /api/documents/bill) -- dulu kop dirakit di sini
+            from ..services.cetak_bill import lengkapi_cetak_bill
+            bill = await lengkapi_cetak_bill(conn, ctx["tenant_id"], bill)
 
         # Generate PDF
         pdf_service = get_pdf_service()

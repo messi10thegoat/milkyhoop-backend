@@ -131,7 +131,9 @@ def test_terlambat_stempel_hari():
 
 def test_sebagian_riwayat_dp_dan_rekening():
     h = _html(_inv(paid=1500000), [DP])
-    assert _hero(h)[:2] == ("Sisa tagihan", "Rp 1.470.000") and "sudah dibayar Rp 1.500.000" in _hero(h)[2]
+    # PDF keluarga 3 Nov 2026: baris hero TANPA "Jatuh tempo <tgl>" (sudah di meta -> dulu tercetak dua kali)
+    assert _hero(h)[:2] == ("Sisa tagihan", "Rp 1.470.000") and "Sudah dibayar Rp 1.500.000" in _hero(h)[2]
+    assert "Jatuh tempo" not in _hero(h)[2]
     assert "Riwayat Pembayaran" in h and "UM-2609-0012" in h and "Uang muka &middot; Transfer BCA" in h
     assert "Rekening Pembayaran" in h and 'class="stempel' not in h
 

@@ -124,7 +124,8 @@ def _html(**k):
 
 def test_render_isi_dan_tanpa_stempel_saat_hidup():
     h = _html()
-    for teks in ("Pesanan Pembelian", "PO-2610-0001", "CV Tekstil", "NPWP 01.234", "Kain katun", "Diskon 10%", "Pajak 11%",
+    # PDF keluarga 3 Nov 2026: diskon baris = KOLOM "Diskon" (seragam FPB), bukan baris kecil "Diskon 10%"
+    for teks in ("Pesanan Pembelian", "PO-2610-0001", "CV Tekstil", "NPWP 01.234", "Kain katun", '<th class="r">Diskon</th>', ">10%</td>", "Pajak 11%",
                  "Rp 210.900", "Kirim pagi", "Gudang Utama", "REF-9"):
         assert teks in h, teks
     assert "DIBATALKAN" not in h and "Belum dikirim ke vendor" not in h

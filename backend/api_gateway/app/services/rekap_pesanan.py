@@ -31,10 +31,12 @@ def _d(v) -> Decimal:
 
 
 async def muat_kop(conn, tenant_id: str) -> dict:
-    """Kop usaha (nama/alamat/telepon/logo) -- bentuk SAMA dengan pemuat PDF lain."""
-    row = await conn.fetchrow('SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1', tenant_id)
+    """Kop usaha (nama/alamat/telepon/NPWP/logo) -- bentuk SAMA dengan pemuat PDF lain. npwp = "Tenant".tax_id (profil, V211;
+    PDF keluarga 3 Nov 2026); kosong = tak dicetak."""
+    row = await conn.fetchrow('SELECT display_name, address, phone, logo_url, tax_id FROM "Tenant" WHERE id = $1', tenant_id)
     info = {"name": row["display_name"] if row else tenant_id, "address": row["address"] if row else None,
-            "phone": row["phone"] if row else None, "logo_url": row["logo_url"] if row else None}
+            "phone": row["phone"] if row else None, "logo_url": row["logo_url"] if row else None,
+            "npwp": ((row.get("tax_id") or "").strip() or None) if row else None}
     logo = None
     if info["logo_url"]:
         p = Path(__file__).parent.parent / "static" / "logos" / info["logo_url"]
