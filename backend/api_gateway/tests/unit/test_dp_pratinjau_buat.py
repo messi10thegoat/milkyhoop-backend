@@ -140,15 +140,17 @@ async def test_pratinjau_blok_pertama_sama_persis_dengan_galat_penulis(nama):
 @pytest.mark.asyncio
 async def test_peran_hilang_penulis_dan_pratinjau_status_dan_kalimat_sama_dengan_handler_global():
     """MASTER 3 Nov (opsi A): 422 ACCOUNT_DEFAULT_UNMAPPED berkalimat handler main.py di KEDUA jalur (dulu penulis 500 umum)."""
-    from app import main as M
-    import inspect
     k = Kon()
     k.peran_hilang = True
     with pytest.raises(HTTPException) as e:
         await CD.rencana_buat_dp(k, CTX, badan())
     assert e.value.status_code == 422
     assert e.value.detail == {"error_code": "ACCOUNT_DEFAULT_UNMAPPED", "message": CD.AKUN_DEFAULT_BELUM_DIATUR}
-    assert CD.AKUN_DEFAULT_BELUM_DIATUR.split(" Atur")[0] in inspect.getsource(M._account_role_unmapped_handler)
+    # kalimat == handler global main.py (dibaca lewat AST, tanpa mengimpor app.main yang butuh konfigurasi LLM/Redis)
+    src = (Path(CD.__file__).resolve().parents[1] / "main.py").read_text()
+    h = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_account_role_unmapped_handler")
+    teks = "".join(n.value for n in ast.walk(h) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    assert CD.AKUN_DEFAULT_BELUM_DIATUR in teks and "ACCOUNT_DEFAULT_UNMAPPED" in teks and "status_code=422" in ast.unparse(h)
     k2 = Kon()
     k2.peran_hilang = True
     r = await CD.rencana_buat_dp(k2, CTX, badan(), pratinjau=True)
