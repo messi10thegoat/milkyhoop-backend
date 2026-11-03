@@ -175,17 +175,25 @@ async def test_sales_order_eksplisit_tidak_query_proforma():
 
 
 async def test_pagar_dipanggil_di_create_sebelum_insert():
-    kode = ROUTER_SRC
-    # Jangkar = PEMANGGILAN pagar di dalam handler (indentasi 16 spasi),
-    # BUKAN baris def-nya dan BUKAN baris resolve_order_id_for_deposit:
-    # sabotase S7 pernah menyisakan resolve saja dan lolos HIJAU PALSU.
-    i_guard = kode.find("\n                await assert_deposit_within_order_total(")
-    i_resolve = kode.find("_guard_order_id = await resolve_order_id_for_deposit")
-    i_insert = kode.find("INSERT INTO customer_deposits")
-    assert i_guard != -1, "pagar tidak DIPANGGIL di handler create"
-    assert i_resolve != -1, "SO acuan tidak diturunkan di handler create"
-    assert i_insert != -1
-    assert i_resolve < i_guard < i_insert, "pagar harus dievaluasi SEBELUM INSERT"
+    # DP-PRATINJAU (3 Nov 2026, retarget OK MASTER): pagar dipanggil di penentu bersama rencana_buat_dp (AST, bukan jangkar
+    # teks). Jangkar = PEMANGGILAN pagar, BUKAN def-nya dan BUKAN resolve_order_id_for_deposit: sabotase S7 pernah menyisakan
+    # resolve saja dan lolos HIJAU PALSU. Penulis memanggil penentu SEBELUM INSERT dan memakai SO acuan dari penentu.
+    import ast
+    pohon = ast.parse(ROUTER_SRC)
+    fn = {n.name: n for n in ast.walk(pohon) if isinstance(n, ast.AsyncFunctionDef)}
+    pen = fn["rencana_buat_dp"]
+    panggil = lambda f, nama: [c for c in ast.walk(f) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == nama]  # noqa: E731
+    guard, resolve = panggil(pen, "assert_deposit_within_order_total"), panggil(pen, "resolve_order_id_for_deposit")
+    assert guard, "pagar tidak DIPANGGIL di penentu create"
+    assert resolve, "SO acuan tidak diturunkan di penentu create"
+    assert resolve[0].lineno < guard[0].lineno, "SO acuan harus diturunkan sebelum pagar"
+    assert [ast.unparse(k.value) for k in guard[0].keywords if k.arg == "kunci"] == ["not pratinjau"], "penulis WAJIB mengunci SO"
+    cr = fn["create_customer_deposit"]
+    rb = panggil(cr, "rencana_buat_dp")
+    ins = [c.lineno for c in ast.walk(cr) if isinstance(c, ast.Call) and c.args and isinstance(c.args[0], ast.Constant)
+           and "INSERT INTO customer_deposits" in str(c.args[0].value)]
+    assert rb and ins and rb[0].lineno < min(ins), "pagar harus dievaluasi SEBELUM INSERT"
+    assert '_guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"]' in " ".join(ast.get_source_segment(ROUTER_SRC, cr).split())
 
 
 async def test_sales_order_tidak_ada_ditolak():

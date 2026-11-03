@@ -313,6 +313,7 @@ POST /api/currencies
 POST /api/currencies/exchange-rates
 POST /api/currencies/{currency_id}/set-base
 POST /api/customer-deposits
+POST /api/customer-deposits/preview
 POST /api/customer-deposits/{deposit_id}/applications/{application_id}/reverse
 POST /api/customer-deposits/{deposit_id}/applications/{application_id}/reverse/preview
 POST /api/customer-deposits/{deposit_id}/apply

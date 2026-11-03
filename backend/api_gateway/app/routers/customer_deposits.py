@@ -80,6 +80,7 @@ from ..schemas.customer_deposits import (
 )
 from ..services.role_resolver import (
     AccountRole,
+    AccountRoleUnmappedError,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,  # FIX_P1_DEPOSIT 2026-06-16 (d)
 )
@@ -942,7 +943,7 @@ SO_TAK_TERIMA_DP = ("draft", "cancelled", "completed")
 
 
 async def assert_deposit_within_order_total(
-    conn, tenant_id: str, sales_order_id, amount: float, exclude_id=None
+    conn, tenant_id: str, sales_order_id, amount: float, exclude_id=None, kunci: bool = True
 ) -> None:
     """Pagar plafon. Deposit TANPA Sales Order tidak terkena pagar (tak ada
     acuan) — itu perilaku sah hari ini dan sengaja dibiarkan lolos."""
@@ -955,8 +956,7 @@ async def assert_deposit_within_order_total(
         """
         SELECT order_number, total_amount, status FROM sales_orders
         WHERE id = $1 AND tenant_id = $2
-        FOR UPDATE
-        """,
+        """ + ("FOR UPDATE" if kunci else ""),  # DP-PRATINJAU: pratinjau READ ONLY membaca tanpa kunci baris
         sales_order_id,
         tenant_id,
     )
@@ -1036,6 +1036,138 @@ def _tolak_bila_maksud_beda(lama, body):
         )
 
 
+# =============================================================================
+# DP-PRATINJAU (3 Nov 2026): PENENTU BUAT uang muka pelanggan -- SATU sumber untuk POST /customer-deposits dan
+# POST /customer-deposits/preview (kembar /vendor-deposits/preview).
+#   pratinjau=False (penulis): galat PERTAMA di-raise APA ADANYA -- urutan, kode HTTP, dan kalimat sama dengan sebelum unit ini;
+#                              baris SO dikunci (FOR UPDATE, C7).
+#   pratinjau=True: SEMUA blok dikumpulkan; transaksi READ ONLY, tanpa kunci (SO dibaca tanpa FOR UPDATE).
+# Cek posting (periode Law 5, peran akun Law 27) untuk auto_post kini dijalankan SEBELUM INSERT -- transaksi yang sama, jadi
+# respons penulis tak berubah (dulu di _post_deposit sesudah INSERT, lalu seluruhnya di-rollback). _post_deposit tetap memegang
+# ceknya sendiri untuk POST /{id}/post.
+# =============================================================================
+DP_WAJIB_LEWAT_SO = "Uang muka wajib lewat SO. Jadikan penawaran pesanan dulu."
+AKUN_DEFAULT_BELUM_DIATUR = "Akun default untuk posting ini belum diatur. Atur di Pengaturan \u2192 Akun Default."  # == handler main.py
+
+
+def galat_peran_dp() -> HTTPException:
+    """Peran akun belum dipetakan -> 422 ACCOUNT_DEFAULT_UNMAPPED, bentuk + kalimat PERSIS handler global main.py (MASTER 3 Nov,
+    opsi A). Dulu `except Exception` penulis menelannya jadi 500 "Gagal membuat uang muka pelanggan." sebelum handler terjangkau."""
+    return HTTPException(status_code=422, detail={"error_code": "ACCOUNT_DEFAULT_UNMAPPED", "message": AKUN_DEFAULT_BELUM_DIATUR})
+# kode stabil untuk galat penulis yang detail-nya kalimat polos (detail penulis TIDAK diubah)
+_KODE_KALIMAT_BUAT = {
+    DP_WAJIB_LEWAT_SO: "DP_WAJIB_LEWAT_SO",
+    "Rekening pembayaran tidak ditemukan.": "AKUN_TIDAK_DITEMUKAN",
+    "Rekening pembayaran harus akun Kas/Bank.": "AKUN_BUKAN_KAS_BANK",
+    "Pesanan penjualan tidak ditemukan.": "SO_TIDAK_DITEMUKAN",
+    "Pelanggan tidak valid; pilih pelanggan dari daftar": "PELANGGAN_TIDAK_VALID",
+    "Pelanggan tidak ditemukan": "PELANGGAN_TIDAK_DITEMUKAN",
+}
+
+
+def tolak_dp_tanpa_so(body) -> None:
+    """2 Okt 2026 (putusan pemilik): uang muka WAJIB lewat SO (pola NetSuite customer deposit) -- penawaran saja tak boleh
+    menampung DP. Diukur: DP ber-quote_id tanpa SO yang hidup = 0 (kaos 7 semuanya void)."""
+    if body.quote_id and not body.sales_order_id and not body.proforma_id:
+        raise HTTPException(status_code=422, detail=DP_WAJIB_LEWAT_SO)
+
+
+async def _akun_terima_dp(conn, tid: str, account_id):
+    account = await conn.fetchrow(
+        """
+        SELECT id, account_code, account_type FROM chart_of_accounts
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        UUID(account_id),
+        tid,
+    )
+    if not account:
+        raise HTTPException(status_code=400, detail="Rekening pembayaran tidak ditemukan.")
+    if account["account_type"] != "ASSET":
+        raise HTTPException(status_code=400, detail="Rekening pembayaran harus akun Kas/Bank.")
+    return account
+
+
+async def _periode_buat_dp(conn, tid: str, tanggal) -> None:
+    """Law 5 -- kalimat + kode HTTP SAMA dengan _post_deposit."""
+    tutup = await _periode_tutup(conn, tid, tanggal)
+    if tutup:
+        raise HTTPException(status_code=400, detail=tg.periode_tertutup(None, tutup))
+
+
+async def rencana_buat_dp(conn, ctx: dict, body, pratinjau: bool = False) -> dict:
+    """-> {blocks, pelanggan_dp, order_id, jenis, akun_dp}. Urutan = urutan penulis lama: SO-wajib, rekening, SO (status + plafon),
+    pelanggan, proforma, [auto_post] periode, peran akun."""
+    tid = ctx["tenant_id"]
+    blok = []
+
+    async def cek(kode: str, fn, pesan_nilai: str = None):
+        try:
+            return await fn()
+        except HTTPException as e:
+            if not pratinjau:
+                raise
+            d = e.detail
+            pesan = d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))
+            kd = (d.get("code") or d.get("error_code") if isinstance(d, dict) else None) or _KODE_KALIMAT_BUAT.get(pesan, kode)
+            blok.append(_blok_dp(kd, e.status_code, d))
+        except ValueError:  # id bukan UUID: penulis jatuh ke 500 umum (perilaku lama); pratinjau menamai medannya
+            if not pratinjau:
+                raise
+            blok.append(_blok_dp(kode, 400, pesan_nilai))
+        except AccountRoleUnmappedError:
+            e = galat_peran_dp()
+            if not pratinjau:
+                raise e
+            blok.append(_blok_dp("ACCOUNT_DEFAULT_UNMAPPED", e.status_code, e.detail))
+        return None
+
+    async def _so_wajib():
+        tolak_dp_tanpa_so(body)
+
+    await cek("DP_WAJIB_LEWAT_SO", _so_wajib)
+    await cek("AKUN_TIDAK_DITEMUKAN", lambda: _akun_terima_dp(conn, tid, body.account_id), "Rekening pembayaran tidak ditemukan.")
+
+    # T203 (B-01): plafon uang muka per Sales Order. Akumulasi DP non-'void' + DP baru ini tidak boleh melewati nilai SO.
+    # DP bertahap TETAP diizinkan -- yang dibatasi totalnya.
+    order_id = await cek("SO_TIDAK_DITEMUKAN", lambda: resolve_order_id_for_deposit(
+        conn, tid,
+        UUID(body.sales_order_id) if body.sales_order_id else None,
+        UUID(body.proforma_id) if body.proforma_id else None,
+    ), "Pesanan penjualan tidak ditemukan.")
+    await cek("PLAFON_SO_TERLAMPAUI", lambda: assert_deposit_within_order_total(
+        conn, tid, order_id, body.amount, kunci=not pratinjau))
+
+    # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026: dulu body mentah tanpa
+    # validasi -- sumber data kotor yang sama dgn nota kredit).
+    n_blok = len(blok)
+    pelanggan_dp = await cek("PELANGGAN_TIDAK_VALID", lambda: pelanggan_kanonik_tenant(conn, tid, body.customer_id))
+    pelanggan_gagal = len(blok) > n_blok  # hanya mungkin di pratinjau (penulis sudah me-raise)
+    # proforma yang ditunjuk: tenant + SO + pelanggan sama, status issued (422 bila tidak)
+    await cek("PROFORMA_TIDAK_VALID", lambda: validasi_proforma_dp(conn, tid, body.proforma_id, body.sales_order_id, pelanggan_dp))
+    if pelanggan_gagal:  # pratinjau: pelanggan tak sah sudah diblok -> "proforma beda pelanggan" dari pembanding kosong = blok palsu
+        blok[:] = [b for b in blok if b["code"] != "PROFORMA_BEDA_PELANGGAN"]
+
+    # V422 (DEPOSIT-JENIS): eksplisit menang; absen -> purpose proforma yang ditunjuk -> 'DP'. Label saja.
+    jenis = body.jenis
+    if jenis is None:
+        purpose_pf = None
+        if body.proforma_id and not blok:
+            purpose_pf = await conn.fetchval(
+                "SELECT purpose FROM proformas WHERE id = $1 AND tenant_id = $2",
+                UUID(body.proforma_id), tid,
+            )
+        jenis = jenis_dari_purpose(purpose_pf)
+
+    akun_dp = None
+    if body.auto_post:
+        await cek("PERIOD_CLOSED", lambda: _periode_buat_dp(conn, tid, body.deposit_date))
+        # Fase C1.4: Resolve CUSTOMER_DEPOSIT_LIABILITY via role mapping (Law 27).
+        akun_dp = await cek("ACCOUNT_DEFAULT_UNMAPPED", lambda: resolve_account_id_by_role(
+            conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY))
+    return {"blocks": blok, "pelanggan_dp": pelanggan_dp, "order_id": order_id, "jenis": jenis, "akun_dp": akun_dp}
+
+
 @router.post("", response_model=CustomerDepositResponse, status_code=201)
 async def create_customer_deposit(request: Request, body: CreateCustomerDepositRequest):
     """
@@ -1059,10 +1191,7 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
         from ..services.idem_buat import kunci_dari as _kunci_dari
         body.idempotency_key = _kunci_dari(request, body.idempotency_key)
 
-        # 2 Okt 2026 (putusan pemilik): uang muka WAJIB lewat SO (pola NetSuite customer deposit) -- penawaran saja
-        # tak boleh menampung DP. Diukur: DP ber-quote_id tanpa SO yang hidup = 0 (kaos 7 semuanya void).
-        if body.quote_id and not body.sales_order_id and not body.proforma_id:
-            raise HTTPException(status_code=422, detail="Uang muka wajib lewat SO. Jadikan penawaran pesanan dulu.")
+        tolak_dp_tanpa_so(body)  # sebelum idempotensi, seperti sebelumnya (penentu memeriksanya lagi)
 
         pool = await get_pool()
 
@@ -1117,56 +1246,9 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                             },
                         }
 
-                # Validate account exists and is asset type
-                account = await conn.fetchrow(
-                    """
-                    SELECT id, account_code, account_type FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    UUID(body.account_id),
-                    ctx["tenant_id"],
-                )
-
-                if not account:
-                    raise HTTPException(
-                        status_code=400, detail="Rekening pembayaran tidak ditemukan."
-                    )
-
-                if account["account_type"] != "ASSET":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Rekening pembayaran harus akun Kas/Bank.",
-                    )
-
-                # T203 (B-01): plafon uang muka per Sales Order. Akumulasi
-                # DP non-'void' + DP baru ini tidak boleh melewati nilai SO.
-                # DP bertahap TETAP diizinkan — yang dibatasi totalnya.
-                _guard_order_id = await resolve_order_id_for_deposit(
-                    conn,
-                    ctx["tenant_id"],
-                    UUID(body.sales_order_id) if body.sales_order_id else None,
-                    UUID(body.proforma_id) if body.proforma_id else None,
-                )
-                await assert_deposit_within_order_total(
-                    conn, ctx["tenant_id"], _guard_order_id, body.amount
-                )
-
-                # Pelanggan yang diisi harus ada di tenant ini; ditulis sebagai UUID kanonik (13 Sep 2026:
-                # dulu body mentah tanpa validasi -- sumber data kotor yang sama dgn nota kredit).
-                pelanggan_dp = await pelanggan_kanonik_tenant(conn, ctx["tenant_id"], body.customer_id)
-                # proforma yang ditunjuk: tenant + SO + pelanggan sama, status issued (422 bila tidak)
-                await validasi_proforma_dp(conn, ctx["tenant_id"], body.proforma_id, body.sales_order_id, pelanggan_dp)
-
-                # V422 (DEPOSIT-JENIS): eksplisit menang; absen -> purpose proforma yang ditunjuk -> 'DP'. Label saja.
-                jenis_simpan = body.jenis
-                if jenis_simpan is None:
-                    purpose_pf = None
-                    if body.proforma_id:
-                        purpose_pf = await conn.fetchval(
-                            "SELECT purpose FROM proformas WHERE id = $1 AND tenant_id = $2",
-                            UUID(body.proforma_id), ctx["tenant_id"],
-                        )
-                    jenis_simpan = jenis_dari_purpose(purpose_pf)
+                # DP-PRATINJAU: penentu SAMA dengan POST /customer-deposits/preview; galat pertama di-raise apa adanya
+                rb = await rencana_buat_dp(conn, ctx, body)
+                _guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]
 
                 # Generate deposit number
                 dep_number = await conn.fetchval(
@@ -2753,6 +2835,102 @@ async def preview_edit_customer_deposit(request: Request, deposit_id: UUID, body
         "blocks": [{"code": b["code"], "message": b["message"]} for b in blok],
         "before": sebelum, "after": sesudah, "changes": ubah, "journals": [], "bank_transactions": [], "invoices": [],
         "payload": body.model_dump(mode="json", exclude_unset=True), "preview": True}}
+
+
+async def perkiraan_nomor_dp(conn, tid: str, awalan: str = "DEP") -> str:
+    """Nomor uang muka BERIKUTNYA -- rumus SAMA dengan generate_customer_deposit_number (penghitung per tenant + bulan tanggal
+    bisnis, dipakai bersama OVP/LPS); dibaca, TAK dinaikkan. PERKIRAAN: penulis paralel bisa mengambilnya dulu."""
+    bl = await conn.fetchrow("SELECT TO_CHAR(tanggal_bisnis($1), 'YYYY-MM') AS ym, TO_CHAR(tanggal_bisnis($1), 'YYMM') AS yymm", tid)
+    last = await conn.fetchval("SELECT last_number FROM customer_deposit_sequences WHERE tenant_id = $1 AND year_month = $2",
+                               tid, bl["ym"])
+    return f"{awalan}-{bl['yymm']}-{((last or 0) + 1):04d}"
+
+
+async def _isi_pratinjau_buat_dp(conn, ctx: dict, body, r: dict) -> dict:
+    """Bentuk respons pratinjau BUAT dari hasil penentu (rencana_buat_dp). Jurnal = RENCANA tanpa nomor; nomor uang muka PERKIRAAN."""
+    from ..services import kode_order as _KO
+    from ..services.proforma_aksi import proforma_lunas
+    from ..services.proforma_terbayar import terbayar_proforma
+    tid = ctx["tenant_id"]
+    ok = not r["blocks"]
+    jumlah = Decimal(str(body.amount))
+    status = "posted" if body.auto_post else "draft"
+    nomor = await perkiraan_nomor_dp(conn, tid) if ok else None
+    jurnal, bank = [], []
+    if ok and body.auto_post:
+        akun = {a["id"]: a for a in await conn.fetch(
+            "SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+            tid, [UUID(body.account_id), r["akun_dp"]])}
+        def baris(aid, debit, kredit):
+            a = akun.get(aid)
+            return {"account_code": a["account_code"] if a else None, "account_name": a["name"] if a else None,
+                    "debit": float(debit), "credit": float(kredit)}
+        # == _post_deposit: Dr akun kas/bank pilihan / Cr CUSTOMER_DEPOSIT_LIABILITY; deskripsi sama
+        jurnal = [{"journal_number": None, "source_type": "CUSTOMER_DEPOSIT", "journal_date": body.deposit_date.isoformat(),
+                   "description": f"Customer Deposit {nomor} - {body.customer_name}",
+                   "lines": [baris(UUID(body.account_id), jumlah, 0), baris(r["akun_dp"], 0, jumlah)]}]
+        # == cermin bank _post_deposit: reverse-lookup rekening dari CoA yang DIDEBIT (FIX_R9_DEP_MIRROR)
+        ba = await conn.fetchrow("SELECT account_name FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2",
+                                 UUID(body.account_id), tid)
+        if ba:
+            bank = [{"bank_account": ba["account_name"], "amount": float(jumlah), "transaction_type": "deposit"}]
+    sd = status_detail_dp(status, 0, 0)
+    after = {"exists": True, "status": status, "status_detail": sd, "amount": float(jumlah), "amount_applied": 0.0,
+             "amount_refunded": 0.0, "remaining": float(jumlah) if status == "posted" else 0.0,
+             "position_text": _umd.status_text_um(sd)}
+    order = None
+    if r["order_id"]:
+        so = await conn.fetchrow("SELECT order_number, total_amount, dp_amount FROM sales_orders WHERE id = $1 AND tenant_id = $2",
+                                 r["order_id"], tid)
+        if so:
+            sebelum = Decimal(str(await received_total_for_order(conn, tid, r["order_id"])))
+            order = {"sales_order_id": str(r["order_id"]), "order_number": so["order_number"],
+                     "total_amount": float(so["total_amount"] or 0),
+                     "received_before": float(sebelum), "received_after": float(sebelum + jumlah),  # plafon: draf ikut menahan
+                     "dp_required": float(so["dp_amount"]) if so["dp_amount"] is not None else None}
+    proforma = None  # INFO saja (bukan blok; MASTER 3 Nov): sisa proforma sebelum -> sesudah
+    if body.proforma_id and r["order_id"]:
+        try:
+            pf = await conn.fetchrow("SELECT id, proforma_number, amount, status FROM proformas WHERE id = $1 AND tenant_id = $2",
+                                     UUID(body.proforma_id), tid)
+        except ValueError:
+            pf = None
+        if pf:
+            bayar = Decimal(str(((await terbayar_proforma(conn, tid, [r["order_id"]])).get(pf["id"]) or {}).get("paid") or 0))
+            nominal = Decimal(str(pf["amount"] or 0))
+            sisa0 = max(Decimal("0"), nominal - bayar)
+            proforma = {"proforma_id": str(pf["id"]), "proforma_number": pf["proforma_number"], "amount": float(nominal),
+                        "paid_before": float(bayar), "remaining_before": float(sisa0),
+                        "remaining_after": float(max(Decimal("0"), sisa0 - jumlah) if status == "posted" else sisa0),
+                        "paid_off_before": proforma_lunas(nominal, bayar), "estimated": True}
+    kode = None
+    if body.terbitkan_kode_order:  # == penulis: hanya bila ada SO acuan; gagal/mati -> uang muka tetap tercatat, issued false
+        kode = (await _KO.perkiraan_spk(conn, tid, r["order_id"], await tanggal_dokumen(conn, tid)) if r["order_id"]
+                else {"order_code": None, "issued": False})
+    return {
+        "deposit_id": None, "action": "create", "can_proceed": ok,
+        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "before": {"exists": False}, "after": after,
+        "deposit_number_preview": nomor, "deposit_number_estimated": ok,
+        "journals": jurnal, "bank_transactions": bank, "invoices": [],
+        "order": order, "proforma": proforma, "order_code_preview": kode,
+        "payload": body.model_dump(mode="json"), "preview": True}
+
+
+@router.post("/preview")
+async def preview_create_customer_deposit(request: Request, body: CreateCustomerDepositRequest):
+    """DP-PRATINJAU (3 Nov 2026): pratinjau BUAT uang muka pelanggan (badan = POST /customer-deposits, 422 skema sama). READ ONLY
+    tanpa kunci, nol tulis; penentu = rencana_buat_dp (SAMA dengan penulis, yang memanggilnya lagi di bawah kunci). SEMUA blok,
+    kalimat penulis. auto_post -> + rencana jurnal (Dr Kas/Bank / Cr Uang Muka Pelanggan) + cermin bank. Nomor = PERKIRAAN."""
+    ctx = await _ctx_pratinjau(request)
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute(f"SET LOCAL app.tenant_id = '{tid}'")
+            r = await rencana_buat_dp(conn, ctx, body, pratinjau=True)
+            data = await _isi_pratinjau_buat_dp(conn, ctx, body, r)
+    return {"success": True, "data": data}
 
 
 class PratinjauReverseDp(BaseModel):

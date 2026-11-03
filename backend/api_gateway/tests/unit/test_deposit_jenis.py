@@ -107,11 +107,15 @@ def _rata(f):
 
 
 def test_create_simpan_jenis_eksplisit_menang_lalu_purpose_lalu_dp():
+    # DP-PRATINJAU (3 Nov 2026, retarget OK MASTER): penentu jenis pindah ke rencana_buat_dp (SATU sumber penulis + pratinjau);
+    # penulis menyimpan hasil penentu. Urutan: eksplisit -> purpose proforma -> 'DP'.
+    pen = _rata(CD.rencana_buat_dp)
+    urut = ["jenis = body.jenis", "if jenis is None:", "SELECT purpose FROM proformas WHERE id = $1 AND tenant_id = $2",
+            "jenis = jenis_dari_purpose(purpose_pf)"]
+    assert all(u in pen for u in urut), [u for u in urut if u not in pen]
+    assert [pen.index(u) for u in urut] == sorted(pen.index(u) for u in urut)
     src = _rata(CD.create_customer_deposit)
-    assert "jenis_simpan = body.jenis" in src
-    assert "if jenis_simpan is None:" in src
-    assert "SELECT purpose FROM proformas WHERE id = $1 AND tenant_id = $2" in src
-    assert "jenis_simpan = jenis_dari_purpose(purpose_pf)" in src
+    assert 'jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]' in src
     m = re.search(r"INSERT INTO customer_deposits \((.*?)\) VALUES \((.*?)\) RETURNING", src)
     kolom = [k.strip() for k in m.group(1).split(",")]
     nilai = [v.strip() for v in m.group(2).split(",")]
