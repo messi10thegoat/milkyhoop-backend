@@ -19,8 +19,8 @@ TID, BILL, G1, G2, P = "t", uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4
 
 
 def test_kalimat_persis_pola_nk():
-    assert tg.nd_barang_belum_masuk("Kaos", "PB-1") == ("Barang Kaos belum pernah masuk lewat tagihan PB-1, jadi tidak bisa diretur ke vendor. "
-                                                       "Pilih alasan selain 'Retur barang' bila ini koreksi nilai.")
+    # FE ND hanya punya jenis Retur barang (CONVERSATIONAL/MASTER 3 Nov) -> kalimat tak menunjuk alasan lain
+    assert tg.nd_barang_belum_masuk("Kaos", "PB-1") == "Barang Kaos belum pernah masuk lewat tagihan PB-1, jadi tidak bisa diretur ke vendor."
     assert tg.nd_retur_melebihi("Kaos", D("3"), D("2")) == "Retur Kaos 3 melebihi yang masuk dan belum diretur (2)."
     assert tg.nd_stok_kurang("Kaos", "Gudang B", D("1"), D("2")) == "Stok Kaos di Gudang B tinggal 1; retur 2 tidak bisa diposting."
 

@@ -139,7 +139,7 @@ def faktur_nol(jenis: str) -> str:
 def nd_barang_belum_masuk(nama, nomor_tagihan) -> str:
     """ND-GUDANG (pola NK 'belum pernah dikirim lewat faktur'): retur barang yang tak pernah masuk lewat tagihan asal."""
     return (f"Barang {nama} belum pernah masuk lewat tagihan {nomor_tagihan or ''}".rstrip()
-            + ", jadi tidak bisa diretur ke vendor. Pilih alasan selain 'Retur barang' bila ini koreksi nilai.")
+            + ", jadi tidak bisa diretur ke vendor.")
 
 
 def nd_retur_melebihi(nama, jumlah, sisa) -> str:
