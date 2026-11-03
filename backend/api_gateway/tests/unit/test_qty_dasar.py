@@ -271,3 +271,12 @@ async def test_nd_karton_ditolak_belum_didukung_walau_berkonversi_dan_tak_ikut_k
     bl2 = Bl()
     k2 = await NG.rencana_keluar(KonND(), T, {"original_bill_id": None, "id": None}, [{"item_id": P_MINYAK, "quantity": 1, "unit": "botol"}], False, bl2)
     assert not any(c == "SATUAN_BELUM_DIDUKUNG" for c, _, _ in bl2.isi) and len(k2) == 1
+
+
+
+def test_posting_fpb_membaca_satuan_baris_tagihan():
+    """Nyata 3 Nov: kueri baris post_bill tak memilih bi.unit -> item.get('unit') selalu None -> konversi TAK PERNAH jalan (sejak awal)."""
+    fn = _fungsi("services/bills_service.py", "post_bill")
+    sql = [n.value for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str) and "FROM bill_items bi" in n.value
+           and "track_inventory" in n.value]
+    assert sql and all("bi.unit," in " ".join(s.split()) for s in sql), sql

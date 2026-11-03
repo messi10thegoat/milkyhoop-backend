@@ -3493,7 +3493,7 @@ class BillsService:
                 # 10. Inventory ledger updates (for tracked goods)
                 bill_items = await conn.fetch(
                     """
-                    SELECT bi.id, bi.product_id, bi.quantity, bi.unit_price, bi.description,
+                    SELECT bi.id, bi.product_id, bi.quantity, bi.unit, bi.unit_price, bi.description,
                            bi.batch_no, bi.exp_date,
                            p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                            p.track_batches
