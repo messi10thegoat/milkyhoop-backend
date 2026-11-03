@@ -398,13 +398,17 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
         if l["stok"]:   # kartu keluar (trigger ledger -> warehouse_stock; Inventory Rule 1: tak ada UPDATE langsung)
             saldo = Decimal(str(await conn.fetchval("SELECT get_inventory_balance($1, $2)", tid, UUID(l["item_id"])) or 0))
             qd, f = l.get("qty_dasar", l["quantity"]), l.get("faktor", Decimal("1"))  # QTY-DASAR R2: kartu dalam SATUAN DASAR
-            sd_kol, sd_nil, sd_arg = ((", transaction_unit, transaction_quantity, conversion_factor", ", $17, $18, $19", (l["unit"], l["quantity"], f))
-                                      if f != Decimal("1") else ("", "", ()))
-            await conn.execute(
+            sd_arg = (l["unit"], l["quantity"], f) if f != Decimal("1") else ()
+            await conn.execute(  # DUA pernyataan STATIS utuh (penjaga kolom-hantu membaca teks SQL); satuan dasar = pernyataan lama persis
                 """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
                                                  source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
-                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id""" + sd_kol + """)
-                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16""" + sd_nil + """)""",
+                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id)
+                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16)""" if f == Decimal("1") else
+                """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
+                                                 source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
+                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id,
+                                                 transaction_unit, transaction_quantity, conversion_factor)
+                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16, $17, $18, $19)""",
                 tid, UUID(l["item_id"]), l["item_code"] or "", l["name"], tgl, SUMBER, fid, nomor, qd,
                 saldo - qd, l.get("wac", l["unit_cost"]), l["value"], jid, uid, f"Surat Jalan {nomor}", gudang_id, *sd_arg)
     if r.get("serah") is not None:   # SJ + serah + resi: SATU transaksi (Law 23); nol UPDATE ke SJ

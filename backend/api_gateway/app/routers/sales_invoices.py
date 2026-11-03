@@ -2152,10 +2152,8 @@ async def _execute_fulfillment(
             else:
                 raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
 
-        # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE);
-        # baris dasar = pernyataan lama persis
-        _kol_sd = ", transaction_unit, transaction_quantity, conversion_factor" if _f != _SD.SATU else ""
-        _nil_sd = ", $16, $17, $18" if _f != _SD.SATU else ""
+        # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE).
+        # DUA pernyataan STATIS utuh (penjaga kolom-hantu membaca teks SQL); baris dasar = pernyataan lama persis.
         _arg_sd = (inv_item.get("unit"), str(req_qty), str(_f)) if _f != _SD.SATU else ()
         await conn.execute(
             """
@@ -2165,14 +2163,30 @@ async def _execute_fulfillment(
                 source_type, source_id, source_number,
                 quantity_in, quantity_out, quantity_balance,
                 unit_cost, total_cost, average_cost,
-                created_by, notes, warehouse_id, batch_id""" + _kol_sd + """
+                created_by, notes, warehouse_id, batch_id
             ) VALUES (
                 $1, $2, $3, $4,
                 'SALE', $5,
                 'INVOICE_FULFILLMENT', $6, $7,
                 0, $8, $9,
                 $10, $11, $10,
-                $12, $13, $14, $15""" + _nil_sd + """
+                $12, $13, $14, $15
+            )
+        """ if _f == _SD.SATU else """
+            INSERT INTO inventory_ledger (
+                tenant_id, product_id, product_code, product_name,
+                movement_type, movement_date,
+                source_type, source_id, source_number,
+                quantity_in, quantity_out, quantity_balance,
+                unit_cost, total_cost, average_cost,
+                created_by, notes, warehouse_id, batch_id, transaction_unit, transaction_quantity, conversion_factor
+            ) VALUES (
+                $1, $2, $3, $4,
+                'SALE', $5,
+                'INVOICE_FULFILLMENT', $6, $7,
+                0, $8, $9,
+                $10, $11, $10,
+                $12, $13, $14, $15, $16, $17, $18
             )
         """,
             tenant_id,
