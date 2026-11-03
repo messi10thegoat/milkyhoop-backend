@@ -177,7 +177,8 @@ async def test_pelanggan_tak_sah_berproforma_blok_kalimat_penulis_tanpa_blok_pro
 async def test_draf_tanpa_auto_post_tak_memeriksa_periode_dan_peran():
     k = Kon(periode="CLOSED")
     k.peran_hilang = True
-    r = await CD.rencana_buat_dp(k, CTX, badan(auto_post=False), pratinjau=True)
+    # tanpa SO: plafon (yang membaca neto uang muka lewat akun peran) tak terlibat -> hanya cek POSTING yang diuji di sini
+    r = await CD.rencana_buat_dp(k, CTX, badan(auto_post=False, sales_order_id=None), pratinjau=True)
     assert r["blocks"] == [] and r["akun_dp"] is None
     assert not any("fiscal_periods" in q for q in k.sql)
 
