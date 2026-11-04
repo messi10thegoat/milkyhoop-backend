@@ -50,8 +50,8 @@
     <div>{{ invoice.customer_name or '' }}</div>
     {% if invoice.customer_address %}<div>{{ invoice.customer_address }}</div>{% endif %}
     {% if invoice.customer_phone %}<div>Phone : {{ invoice.customer_phone }}</div>{% endif %}
-    {# Acuan selalu menampilkan baris TAX (NPWP pelanggan), terisi atau tidak. #}
-    <div>TAX : {{ invoice.customer_npwp or '' }}</div>
+    {# NPWP pelanggan HANYA bila terisi (putusan pemilik 4 Nov 2026; dulu baris "TAX : " kosong selalu tercetak, pola acuan lama) #}
+    {% if invoice.customer_npwp %}<div>TAX : {{ invoice.customer_npwp }}</div>{% endif %}
   </div>
   <table class="meta">
     <tr><td class="meta-k">Invoice No.</td><td class="meta-v">{{ invoice.invoice_number or '' }}</td></tr>

@@ -219,3 +219,12 @@ def test_kop_tenant_satu_pemuat_satu_pembentuk():
             assert '"static" / "logos"' not in t and not re.search(r'logo_url[^\n]*FROM "Tenant"', t), f.name
     src = (app / "services" / "pdf_service.py").read_text()
     assert src.count('tenant_info.get("logo_data")') == 1 and src.count("company = self._usaha(tenant_info)") == 7
+
+
+@pytest.mark.parametrize("npwp", [None, "", "01.234.567.8-901.000"])
+def test_si_templat_b_baris_tax_hanya_bila_npwp_pelanggan(npwp):
+    """Putusan pemilik 4 Nov 2026: baris "TAX : <NPWP pelanggan>" templat B hanya bila NPWP terisi (dulu "TAX : " kosong selalu)."""
+    inv = {"invoice_number": "INV-1", "status": "posted", "tenant": {"name": "U", "is_pkp": False}, "customer_name": "A", "customer_npwp": npwp,
+           "items": [], "subtotal": 0, "total_amount": 0, "amount_due": 0}
+    h = PS.get_pdf_service().render_sales_invoice(inv, template="b").html
+    assert h.count("TAX :") == (1 if npwp else 0) and (not npwp or f"TAX : {npwp}" in h), npwp
