@@ -36,6 +36,13 @@ async def main():
     CU.get_pool = _pool
     VE.get_pool = _pool
     req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": T, "user_id": None, "role": "OWNER"}), headers={})
+    # izin BACA: permintaan tiruan tanpa PolicyEngine -> boleh_baca menolak semua; OWNER nyata lolos semua modul. Diatur eksplisit:
+    from app.services import dashboard_izin as DI
+    tolak = set()
+
+    async def boleh(request, modul):
+        return modul not in tolak
+    DI.boleh_baca = boleh
     async with pool.acquire() as c:
         cek(await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', T) == 1, "tenant kaos ada")
     hasil, lama = {}, (json.load(open(f"{OUT}/lama.json")) if MODE == "BARU" else {})
@@ -85,6 +92,17 @@ async def main():
             at = [e["at"] for e in h["events"]]
             cek(len(h["events"]) == min(n_act, 500) and at == sorted(at, reverse=True) and not h.get("omitted"),
                 f"K4 {jenis} {i['name']}: history {len(h['events'])} == activity {n_act}, terbaru dulu")
+            # izin: satu modul dokumen ditolak -> event dokumennya hilang + omitted berisi modul itu
+            modul = "receive_payment" if jenis == "customer" else "send_payment"
+            tolak.add(modul)
+            if jenis == "customer":
+                h2 = (await CU.get_customer_history(req, i["id"], limit=500))["data"]
+            else:
+                h2 = (await VE.get_vendor_history(req, UUID(i["id"]), limit=500))["data"]
+            tolak.discard(modul)
+            hilang = [e for e in h["events"] if e["dokumen"] and e["dokumen"]["tipe"] in ("receive_payment", "payment_out")]
+            cek(h2.get("omitted") == [modul] and len(h2["events"]) == len(h["events"]) - len(hilang),
+                f"K4 {jenis} {i['name']}: tanpa izin {modul} -> {len(hilang)} event disaring + omitted")
     await pool.close()
     print(f"SELESAI BARU: {len(gagal)} gagal")
     return 1 if gagal else 0
