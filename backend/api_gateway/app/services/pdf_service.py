@@ -562,6 +562,12 @@ class PDFService:
         """
         return self.tulis_pdf(self.render_quote(quote_data, tenant_info))
 
+    @staticmethod
+    def _usaha(tenant_info: dict) -> dict:
+        """Kop usaha untuk templat (`company`) SATU pembentuk -- tenant_info = rekap_pesanan.muat_kop."""
+        return {"name": tenant_info.get("name"), "address": tenant_info.get("address"), "phone": tenant_info.get("phone"),
+                "npwp": tenant_info.get("npwp"), "logo_base64": tenant_info.get("logo_data")}
+
     def render_quote(self, quote_data, tenant_info) -> Render:
         template = self.jinja_env.get_template("quote.html")
 
@@ -570,13 +576,7 @@ class PDFService:
         status_label = self.STATUS_LABELS.get(status, status.upper())
 
         # Build company context matching template variable name
-        company = {
-            "name": tenant_info.get("name"),
-            "address": tenant_info.get("address"),
-            "phone": tenant_info.get("phone"),
-            "email": tenant_info.get("email"),
-            "logo_base64": tenant_info.get("logo_data"),
-        }
+        company = self._usaha(tenant_info)
 
         # Render HTML
         from .penawaran_cetak import siapkan
@@ -595,13 +595,7 @@ class PDFService:
     def render_purchase_order(self, po_data, tenant_info) -> Render:
         """PDF Pesanan Pembelian (22 Okt 2026): kerangka & gaya penawaran (CSS_PENAWARAN). Konteks = services/po_cetak.muat_pdf_po."""
         template = self.jinja_env.get_template("purchase_order.html")
-        company = {
-            "name": tenant_info.get("name"),
-            "address": tenant_info.get("address"),
-            "phone": tenant_info.get("phone"),
-            "npwp": tenant_info.get("npwp"),   # PDF keluarga 3 Nov 2026 (muat_kop: "Tenant".tax_id)
-            "logo_base64": tenant_info.get("logo_data"),
-        }
+        company = self._usaha(tenant_info)
         html_content = template.render(
             po=po_data,
             company=company,
@@ -649,13 +643,7 @@ class PDFService:
         status = proforma_data.get("status", "draft")
         status_label = self.STATUS_LABELS.get(status, str(status).upper())
 
-        company = {
-            "name": tenant_info.get("name"),
-            "address": tenant_info.get("address"),
-            "phone": tenant_info.get("phone"),
-            "email": tenant_info.get("email"),
-            "logo_base64": tenant_info.get("logo_data"),
-        }
+        company = self._usaha(tenant_info)
 
         html_content = template.render(
             proforma=proforma_data,
@@ -904,9 +892,7 @@ class PDFService:
     def render_credit_note(self, credit_note_data: dict, tenant_info: dict) -> Render:
         """Nota Kredit (U5-B) -- konteks dari services/nota_kredit_dokumen.muat_pdf_nota_kredit. Gaya = proforma/faktur
         (CSS_DOKUMEN + font Inter berkas); tanda DIBATALKAN / DRAF memakai partial yang sama."""
-        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
-                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
-                   "logo_base64": tenant_info.get("logo_data")}
+        company = self._usaha(tenant_info)
         status = str(credit_note_data.get("status") or "draft").lower()
         html_content = self.jinja_env.get_template("credit_note.html").render(
             credit_note=credit_note_data, company=company, generated_at=datetime.now(),
@@ -926,9 +912,7 @@ class PDFService:
 
     def render_rekap_pesanan(self, rekap: dict, tenant_info: dict) -> Render:
         """Rekap Pesanan (P3 SO-dokumen) -- konteks dari services/rekap_pesanan.muat_rekap_pesanan."""
-        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
-                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
-                   "logo_base64": tenant_info.get("logo_data")}
+        company = self._usaha(tenant_info)
         html_content = self.jinja_env.get_template("rekap_pesanan.html").render(
             rekap=rekap, company=company, generated_at=datetime.now())
         return Render(html_content, CSS_DOKUMEN, font=True)
@@ -955,13 +939,7 @@ class PDFService:
         template = self.jinja_env.get_template("kwitansi.html")
 
         # Build company context matching template variable name
-        company = {
-            "name": tenant_info.get("name"),
-            "address": tenant_info.get("address"),
-            "phone": tenant_info.get("phone"),
-            "email": tenant_info.get("email"),
-            "logo_base64": tenant_info.get("logo_data"),
-        }
+        company = self._usaha(tenant_info)
 
         # PDF seragam 4 Nov 2026: sen ikut (dulu filter currency membulatkan + terbilang memotong) -> has_cents dari angka pemuat
         uang = self.money_has_cents(*[receipt_data.get(k) for k in ("amount", "remaining", "order_total", "dp_received_total", "order_remaining")])
@@ -983,8 +961,7 @@ class PDFService:
 
     def render_goods_receipt(self, gr_data: dict, tenant_info: dict) -> Render:
         """Penerimaan Barang (25 Okt 2026) -- kembaran render_delivery_note (kerangka SAMA, arah masuk). Konteks = services/cetak_goods_receipt."""
-        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
-                   "phone": tenant_info.get("phone"), "logo_base64": tenant_info.get("logo_data")}
+        company = self._usaha(tenant_info)
         html_content = self.jinja_env.get_template("goods_receipt.html").render(
             gr=gr_data, company=company, generated_at=datetime.now(), batal=self._tanda_batal(gr_data))
         return Render(html_content, CSS_DOKUMEN, font=True)

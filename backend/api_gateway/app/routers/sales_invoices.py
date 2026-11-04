@@ -5863,8 +5863,6 @@ from ..services.pdf_service import (
     pilih_template,
 )  # noqa: E402  # pre-existing mid-file import
 from ..services.storage_service import get_storage_service  # noqa: E402  # pre-existing mid-file import
-import base64  # noqa: E402  # pre-existing mid-file import
-from pathlib import Path as _Path  # noqa: E402  # pre-existing mid-file import
 
 
 @router.get("/{invoice_id}/delete-impact")
@@ -6091,61 +6089,10 @@ async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
     from ..utils.tanggal_tenant import zona_tenant as _zona_tenant
     _zona_cetak = await _zona_tenant(conn, ctx["tenant_id"])
 
-    # Fetch tenant info for PDF header
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url, tax_id, is_pkp, '
-        'workshop_address, signatory_name, '
-        'pdf_template FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
-    tenant_info = (
-        {
-            "name": tenant_row["display_name"]
-            if tenant_row
-            else ctx["tenant_id"],
-            "address": tenant_row["address"] if tenant_row else None,
-            "phone": tenant_row["phone"] if tenant_row else None,
-            "logo_url": tenant_row["logo_url"] if tenant_row else None,
-            # NPWP tenant. `tax_id` adalah kolom yang SUDAH ADA dan
-            # sudah ditulis /api/tenant/profile — sengaja TIDAK
-            # menambah kolom `npwp` baru (dua sumber kebenaran untuk
-            # satu nomor pajak).
-            "tax_id": tenant_row["tax_id"] if tenant_row else None,
-            # Menentukan apakah baris "Tax 11%" tampil di template B.
-            # Non-PKP yang menampilkan "Tax 0" menyiratkan ia memungut
-            # pajak nol, bukan tidak memungut.
-            "is_pkp": bool(tenant_row["is_pkp"]) if tenant_row else False,
-            # V239. Kosong = barisnya tidak dicetak sama sekali;
-            # baris berlabel tanpa isi terbaca seperti data yang
-            # HILANG, bukan medan yang belum dipakai.
-            "workshop_address": (
-                tenant_row["workshop_address"] if tenant_row else None
-            ),
-            "signatory_name": (
-                tenant_row["signatory_name"] if tenant_row else None
-            ),
-        }
-        if tenant_row
-        else {
-            "name": ctx["tenant_id"],
-            "address": None,
-            "phone": None,
-            "logo_url": None,
-        }
-    )
-
-    # Resolve logo to base64 data URI for PDF embedding
-    _logo_data = None
-    _logo_filename = tenant_info.get("logo_url")
-    if _logo_filename:
-        _logo_path = (
-            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-        )
-        if _logo_path.exists():
-            with open(_logo_path, "rb") as _lf:
-                _logo_b64 = base64.b64encode(_lf.read()).decode()
-            _logo_data = f"data:image/png;base64,{_logo_b64}"
-    tenant_info["logo_data"] = _logo_data
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo) + setelan templat B: is_pkp (baris "Tax 11%"), workshop_address &
+    # signatory_name (V239; kosong = baris tak dicetak), pdf_template (bawaan tenant, V237).
+    from ..services.rekap_pesanan import muat_kop
+    tenant_info = await muat_kop(conn, ctx["tenant_id"], "is_pkp", "workshop_address", "signatory_name", "pdf_template")
     # Convert to dict for template
     invoice_data = {
         "id": str(invoice["id"]),
@@ -6261,7 +6208,7 @@ async def muat_pdf_faktur(conn, ctx, invoice_id, template=None) -> dict:
     )
     try:
         tpl = pilih_template(
-            tenant_row["pdf_template"] if tenant_row else "a", template
+            tenant_info["pdf_template"] or "a", template
         )
     except TemplateTidakDikenal as _e:
         # 422, bukan diam-diam jatuh ke 'a': pengguna yang salah ketik

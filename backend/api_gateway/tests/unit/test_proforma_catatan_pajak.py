@@ -64,6 +64,6 @@ def test_pemuat_membaca_is_pkp_ketat_dari_tenant():
     src = Path(PF.__file__).read_text()
     f = ast.get_source_segment(src, next(n for n in ast.walk(ast.parse(src))
                                          if isinstance(n, ast.AsyncFunctionDef) and n.name == "muat_pdf_proforma"))
-    assert 'SELECT display_name, address, phone, logo_url, is_pkp FROM "Tenant" WHERE id = $1' in f
-    assert '_catatan_pajak = bool(tenant_row and tenant_row["is_pkp"] is True)' in f
+    assert 'tenant_info = await muat_kop(conn, ctx["tenant_id"], "is_pkp")' in f   # kop SATU sumber + kolom is_pkp (4 Nov 2026)
+    assert '_catatan_pajak = tenant_info["is_pkp"] is True' in f
     assert '"catatan_bukan_faktur_pajak": _catatan_pajak,' in f

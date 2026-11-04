@@ -44,7 +44,7 @@
 <header>
   <div><h1>Faktur Pembelian</h1></div>
   {% set t = bill.tenant or {} %}
-  {{ kop_usaha(t.name, t.address, t.phone, t.npwp, t.logo_data) }}
+  {{ kop_usaha(t, t.logo_data) }}
 </header>
 
 {# Kita sendiri penerima tagihan -> tanpa blok "Kepada" (catatan internal atas tagihan vendor, pola Accurate). #}

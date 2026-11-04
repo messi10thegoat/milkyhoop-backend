@@ -3602,8 +3602,6 @@ async def download_payment_attachment(
 from io import BytesIO as _BytesIO
 from fastapi.responses import StreamingResponse as _StreamingResponse
 from ..services.pdf_service import get_pdf_service as _get_pdf_service
-import base64 as _base64
-from pathlib import Path as _Path
 
 
 
@@ -3796,37 +3794,9 @@ async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
             "notes": pay["notes"],
         }
 
-    # Tenant info for header
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
-    if tenant_row:
-        tenant_info = {
-            "name": tenant_row["display_name"],
-            "address": tenant_row["address"],
-            "phone": tenant_row["phone"],
-            "logo_url": tenant_row["logo_url"],
-        }
-    else:
-        tenant_info = {
-            "name": ctx["tenant_id"],
-            "address": None,
-            "phone": None,
-            "logo_url": None,
-        }
-
-    _logo_data = None
-    _logo_filename = tenant_info.get("logo_url")
-    if _logo_filename:
-        _logo_path = (
-            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-        )
-        if _logo_path.exists():
-            with open(_logo_path, "rb") as _lf:
-                _logo_b64 = _base64.b64encode(_lf.read()).decode()
-            _logo_data = f"data:image/png;base64,{_logo_b64}"
-    tenant_info["logo_data"] = _logo_data
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo)
+    from ..services.rekap_pesanan import muat_kop
+    tenant_info = await muat_kop(conn, ctx["tenant_id"])
     # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     return {"receipt_data": receipt_data, "tenant_info": tenant_info, "payment_id": payment_id}
 

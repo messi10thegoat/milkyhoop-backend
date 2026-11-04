@@ -1,10 +1,9 @@
-{# Kop usaha dokumen Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): logo (pinggiran polos dipangkas, filter logo_rapat) + identitas SATU blok rapat di kanan judul; kosong = tak dicetak. #}
-{% macro kop_usaha(nama, alamat, telepon, npwp, logo) -%}
+{# Kop usaha dokumen Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): logo (pinggiran polos dipangkas, filter logo_rapat) + identitas
+   usaha (_partials/identitas_usaha, sama dengan blok "Dari" Penjualan) SATU blok rapat di kanan judul; kosong = tak dicetak. #}
+{% from "_partials/identitas_usaha.html" import identitas %}
+{% macro kop_usaha(u, logo) -%}
 <div class="kop">
     {% if logo %}<img class="logo" src="{{ logo | logo_rapat }}" alt="">{% endif %}
-    {% if nama %}<b>{{ nama }}</b>{% endif %}
-    {% if alamat %}<div class="pre">{{ alamat }}</div>{% endif %}
-    {% if telepon %}<div>{{ telepon }}</div>{% endif %}
-    {% if npwp %}<div>NPWP {{ npwp }}</div>{% endif %}
+    {{ identitas(u, "usaha-nama", "") }}
 </div>
 {%- endmacro %}

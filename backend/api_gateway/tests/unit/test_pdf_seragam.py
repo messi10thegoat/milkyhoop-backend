@@ -150,9 +150,9 @@ def test_kotak_logo_semua_dokumen_sama_untuk_logo_sama():
         assert '{% from "_partials/kepala_si.html" import kepala %}' in t and 'class="company-logo"' not in t, f
 
 
-def _semua_dokumen(lg=None):
+def _semua_dokumen(lg=None, npwp=None):
     """Satu render per dokumen usaha (logo, tanpa baris) -- dipakai tes footer & HTML layar."""
-    s, t = PS.get_pdf_service(), {"name": "U", "logo_data": lg or _logo()}
+    s, t = PS.get_pdf_service(), {"name": "U", "address": "Jl. Uji 1", "phone": "0812", "npwp": npwp, "logo_data": lg or _logo()}
     return {
         "si": s.render_sales_invoice({"invoice_number": "INV-1", "status": "posted", "tenant": t, "customer": {"name": "A"}, "items": [],
                                       "subtotal": 1, "total_amount": 1, "amount_due": 1}),
@@ -190,3 +190,32 @@ def test_dicetak_di_kaki_halaman_pdf_dan_layar(nama):
     aturan = re.search(r"@media screen \{\s*body \{ position: relative; \}\s*([^{]+)\{([^}]*)\}", layar)
     assert aturan and kelas in aturan.group(1) and "position: absolute" in aturan.group(2) and "bottom:" in aturan.group(2), nama
     assert re.search(r"(?<![\w.-])th \{ text-align: left; \}", layar), nama   # C: kepala kolom rata kiri juga di browser (INV-2609-0011)
+
+
+def test_identitas_usaha_satu_sumber_npwp_bila_ada():
+    """Putusan MASTER 4 Nov 2026 (pola Accurate/NetSuite): NPWP usaha DICETAK di kop/"Dari" SEMUA dokumen bila tenant punya tax_id;
+    tanpa tax_id tak ada baris. Satu partial _partials/identitas_usaha (kop_usaha Pembelian + blok Dari Penjualan + kwitansi)."""
+    ada, tanpa = _semua_dokumen(npwp="01.234.567.8-901.000"), _semua_dokumen()
+    for n in ada:
+        if n == "grn":   # goods_receipt.html lama (pindah ke dokumen_gudang sesudah Terima-tabel)
+            continue
+        assert ada[n].html.count("NPWP 01.234.567.8-901.000") == 1, n
+        assert "NPWP" not in re.sub(r"<!--.*?-->", "", tanpa[n].html, flags=re.S), n
+    for p in sorted(TPL.glob("*.html")) + sorted((TPL / "_partials").glob("*.html")):
+        if p.name in ("identitas_usaha.html", "sales_invoice_b.html", "goods_receipt.html") or p.name.startswith(("laba_rugi", "neraca", "arus_kas")):
+            continue
+        t = p.read_text()   # tak ada salinan baris identitas usaha di luar partial
+        assert not re.search(r"\b(company|tenant|kop|t)\.(address|phone|npwp)\b", t), p.name
+
+
+def test_kop_tenant_satu_pemuat_satu_pembentuk():
+    """Kop "Tenant" dibaca HANYA lewat rekap_pesanan.muat_kop (dulu inline di 5 router; 4 tanpa tax_id) dan `company` templat dibentuk
+    HANYA oleh PDFService._usaha (dulu 7 salinan dict)."""
+    import pathlib
+    app = pathlib.Path(PS.__file__).parent.parent
+    for f in sorted((app / "routers").glob("*.py")) + sorted((app / "services").glob("*.py")):
+        t = f.read_text()
+        if f.name not in ("rekap_pesanan.py", "auth.py", "user.py", "akun_saya.py", "tenant_profile.py"):   # 4 terakhir: profil/sesi, bukan PDF
+            assert '"static" / "logos"' not in t and not re.search(r'logo_url[^\n]*FROM "Tenant"', t), f.name
+    src = (app / "services" / "pdf_service.py").read_text()
+    assert src.count('tenant_info.get("logo_data")') == 1 and src.count("company = self._usaha(tenant_info)") == 7

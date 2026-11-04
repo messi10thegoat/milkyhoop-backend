@@ -28,6 +28,7 @@ img.logo {
     max-height: var(--logo-tinggi);
     max-width: var(--logo-lebar);
 }
+.pre { white-space: pre-line; }   /* alamat multi-baris (identitas usaha, vendor, alamat kirim) */
 /* Kepala tabel rata kiri bila kelasnya tak menentukan lain: WeasyPrint sudah begitu, browser (HTML panel) memusatkan <th>. */
 th { text-align: left; }
 /* HTML panel (pdf_service.html_layar): browser tak mengenal position: running() -> "Dicetak" tampil di posisi DOM-nya (atas judul).

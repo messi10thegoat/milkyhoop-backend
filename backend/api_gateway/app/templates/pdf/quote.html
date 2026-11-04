@@ -32,10 +32,7 @@
 <div class="parties">
   <div>
     <b>Dari</b>
-    <div>{{ company.name if company else '' }}</div>
-    {% if (company and company.address) or tampil.telepon_usaha %}
-    <div>{% if company and company.address %}{{ company.address }}{% endif %}{% if company and company.address and tampil.telepon_usaha %}<br>{% endif %}{% if tampil.telepon_usaha %}{{ tampil.telepon_usaha }}{% endif %}</div>
-    {% endif %}
+    {% from "_partials/identitas_usaha.html" import identitas %}{{ identitas(company or {}, "", "", tampil.telepon_usaha) }}
   </div>
   <div>
     <b>Kepada Yth.</b>
