@@ -31,7 +31,7 @@ def test_nomor_pk_penghitung_dokumen_kunci_dan_lompati_terpakai():
     assert k.log[0][0] == "execute" and "pg_advisory_xact_lock" in k.log[0][1] and k.log[0][2] == ("NOMOR_PK:t",)
     assert k.log[1][1] is NB.SQL_NOMOR_PK and k.log[1][2] == ("t",)
     q = NB.SQL_NOMOR_PK
-    assert "FROM bill_payments_v2" in q and "tanggal_bisnis($1)" in q and "MAX(" in q and "get_next_journal_number" not in q
+    assert "FROM bill_payments_v2 bp" in q and "FROM journal_entries je" in q and "tanggal_bisnis($1)" in q and "MAX(" in q and "get_next_journal_number" not in q
     p = _Nomor("BP-2611-0004")
     assert asyncio.run(NB.perkiraan_nomor_pk(p, "t")) == "BP-2611-0004" and [x[0] for x in p.log] == ["fetchval"]  # tanpa kunci
 
