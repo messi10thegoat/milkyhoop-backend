@@ -710,6 +710,11 @@ async def get_vendor(request: Request, vendor_id: UUID):
             from ..services.smart_delete import cek_jejak
             from ..services import kontak_detail as KDT
             _beli = (await pembelian_vendor(conn, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
+            from ..services.uang_muka_vendor import sisa_vendor
+            try:
+                _uang_muka = KD.uang_json(await sisa_vendor(conn, ctx["tenant_id"], row["id"]))  # sisa jurnal AP_PREPAID
+            except HTTPException:  # peran Uang Muka Pembelian belum dipetakan -> medan null (bukan 0 palsu)
+                _uang_muka = None
             _aksi = KDT.aksi_detail(row["is_active"], await cek_jejak(conn, str(row["id"]), row["name"], JEJAK_VENDOR),
                                     await saldo_awal_vendor(conn, ctx["tenant_id"], row["id"]))
 
@@ -773,6 +778,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "lewat_tempo_nilai": _medan["lewat_tempo_nilai"],
                     "lewat_tempo_jumlah": _medan["lewat_tempo_jumlah"],
                     **_beli,
+                    "uang_muka": _uang_muka,
                     "jumlah_dokumen": _beli["jumlah_tagihan"],
                     "kontak_teks": _medan["kontak_teks"],
                     "status_text": _medan["status_text"],

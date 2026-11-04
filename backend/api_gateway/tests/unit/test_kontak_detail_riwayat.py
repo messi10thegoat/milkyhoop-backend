@@ -145,3 +145,13 @@ def test_detail_memanggil_saring_agregat_dan_skema_menerima_null():
             f = m.model_fields[k]
             assert f.annotation is not int and f.annotation is not float, (m.__name__, k)  # harus Optional (null = disaring)
         assert "omitted" in m.model_fields
+
+
+def test_uang_muka_vendor_detail_dari_jurnal_rumus_sama():
+    from app.services import uang_muka_vendor as UMV
+    per_dep, per_vendor = " ".join(UMV.SQL_SISA_JURNAL.split()), " ".join(UMV.SQL_SISA_VENDOR.split())
+    assert per_dep.replace("je.source_id = $2", "X") == per_vendor.replace(per_vendor[per_vendor.index("je.source_id IN"):
+                                                                                       per_vendor.index("AND je.source_type")].strip(), "X")
+    assert "vd.status NOT IN ('draft', 'void')" in per_vendor and "vd.tenant_id = $1" in per_vendor
+    s = inspect.getsource(VE.get_vendor)
+    assert "await sisa_vendor(conn" in s and '"uang_muka": _uang_muka' in s
