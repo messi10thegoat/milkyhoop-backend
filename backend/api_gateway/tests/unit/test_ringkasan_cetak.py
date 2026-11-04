@@ -144,7 +144,25 @@ def test_rekap_footer_sebaris_halaman_dan_subteks_menyebut_nota_kredit():
     r = {"order_number": "SO-1", "status": "sebagian", "total": D("3108372"), "dibayar": D("1554186"), "nota_kredit": D("100000"),
          "sisa": D("1454186"), "tagihan": [], "pembayaran": []}
     h = PS.get_pdf_service().render_rekap_pesanan(r, {"name": "U"}).html
-    assert "· nota kredit Rp&nbsp;100.000" in h and '<div class="footer-line">Dicetak' in h   # nbsp: "Rp" tak terpisah dari angka
+    assert '<span class="rk-seg">nota kredit Rp 100.000</span>' in h and '<div class="footer-line">Dicetak' in h   # segmen utuh nowrap
     assert "nota kredit Rp" not in PS.get_pdf_service().render_rekap_pesanan({**r, "nota_kredit": 0}, {"name": "U"}).html
     for f in ("sales_invoice.html", "credit_note.html", "proforma.html", "rekap_pesanan.html"):
         assert "running(dicetak)" not in (PS.TEMPLATE_DIR / f).read_text(), f   # tak ada salinan aturan footer per templat
+
+
+def test_rekap_teks_kecil_satu_baris_bila_muat():
+    """Tata letak HASIL WeasyPrint: tanpa stempel, teks kecil 3 segmen muat SATU baris (dulu terbungkus di kolom 64%, "Rp" terpisah)."""
+    from weasyprint import HTML
+    from weasyprint.text.fonts import FontConfiguration
+    r = PS.get_pdf_service().render_rekap_pesanan({"order_number": "SO-1", "status": "sebagian", "total": D("3108372"), "dibayar": D("1554186"),
+                                                   "nota_kredit": D("100000"), "sisa": D("1454186"), "tagihan": [], "pembayaran": []}, {"name": "U"})
+    fc = FontConfiguration()
+    d = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
+    garis = []
+    def jalan(b):
+        for c in getattr(b, "children", None) or []:
+            if type(c).__name__ == "LineBox" and "nota kredit" in "".join(t.text for t in _teks(c)):
+                garis.append("".join(t.text for t in _teks(c)))
+            jalan(c)
+    jalan(d.pages[0]._page_box)
+    assert any("Total pesanan" in g and "nota kredit Rp 100.000" in g for g in garis), garis
