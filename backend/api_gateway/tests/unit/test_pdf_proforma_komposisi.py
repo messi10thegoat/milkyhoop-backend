@@ -40,13 +40,17 @@ def _pf(**kw):
 
 
 def _baris_tabel(isi):
-    """(keterangan, jumlah) per baris tabel item, urut, tanpa tag."""
-    tbl = isi[isi.index('class="items-table"'):isi.index("</table>", isi.index('class="items-table"'))]
+    """(keterangan, jumlah) per baris: tabel barang lalu ringkasan, urut, tanpa tag. PDF seragam 4 Nov 2026: komposisi Nilai Pesanan
+    pindah dari dalam tabel ke ringkasan SATU sumber (ringkasan_cetak.proforma) -- urutan & angka sama."""
     keluar = []
-    for tr in re.findall(r"<tr>(.*?)</tr>", tbl, re.S):
-        sel = [" ".join(re.sub(r"<[^>]+>", "", c).split()) for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
-        if sel:
-            keluar.append((sel[0], sel[-1]))
+    for kelas in ('class="tabel-barang items-table"', 'class="summary-table"'):
+        if kelas not in isi:
+            continue
+        tbl = isi[isi.index(kelas):isi.index("</table>", isi.index(kelas))]
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", tbl, re.S):
+            sel = [" ".join(re.sub(r"<[^>]+>", "", c).split()) for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+            if sel:
+                keluar.append((sel[0], sel[-1]))
     return keluar
 
 

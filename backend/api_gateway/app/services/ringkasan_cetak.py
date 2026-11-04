@@ -8,7 +8,7 @@ satu-satunya turunan = Subtotal neto = subtotal bruto tersimpan - diskon baris t
 Bila tidak sama (data lama ber-pembulatan lain) -> pola lama (Subtotal bruto + "Diskon item"), supaya kertas tetap menjumlah.
 Angka akhir (DPP/PPN/Total/Dibayar/Sisa) tak pernah dihitung di sini -- hanya disalin.
 
-Keluaran: [{label, nilai, kelas}] -- kelas: "" | "kurang" (dicetak -Rp) | "tot" | "bayar" | "sisa" | "status" (nilai teks) | "coret".
+Keluaran: [{label, nilai, kelas}] -- kelas: "" | "kurang" (dicetak -Rp) | "tot" | "bayar" | "sisa" | "status" (nilai teks) | "coret" | "tebal".
 Dirender _partials/ringkasan.html (gaya keluarga invoice.css atau penawaran.css)."""
 import logging
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -59,7 +59,8 @@ def _jika(label, nilai, kelas=""):
     return [{"label": label, "nilai": _d(nilai), "kelas": kelas}] if _d(nilai) > NOL else []
 
 
-def susun(*, subtotal_bruto, diskon_baris, neto_baris, potongan=(), ongkir=0, dpp=(), pajak=None, total, coret=False, akhir=()) -> list:
+def susun(*, subtotal_bruto, diskon_baris, neto_baris, potongan=(), ongkir=0, dpp=(), pajak=None, total, coret=False, akhir=(),
+          label_total="Total") -> list:
     """potongan: [(label, nilai)] diskon dokumen (dicetak -Rp, hanya bila > 0) · dpp: [(label, nilai)] · pajak: (label, nilai) atau None ·
     akhir: baris sesudah Total (Dibayar / Sisa / Status) apa adanya."""
     rows = subtotal_baris(subtotal_bruto, diskon_baris, neto_baris)
@@ -69,7 +70,7 @@ def susun(*, subtotal_bruto, diskon_baris, neto_baris, potongan=(), ongkir=0, dp
     if pajak and _d(pajak[1]) > NOL:
         rows += [{"label": l, "nilai": _d(n), "kelas": ""} for l, n in dpp if n is not None]
         rows.append({"label": pajak[0], "nilai": _d(pajak[1]), "kelas": ""})
-    rows.append({"label": "Total", "nilai": _d(total), "kelas": "tot coret" if coret else "tot"})
+    rows.append({"label": label_total, "nilai": _d(total), "kelas": "tot coret" if coret else "tot"})
     return rows + list(akhir)
 
 
@@ -140,3 +141,31 @@ def penawaran(q: dict, label_pajak_tampil: str) -> list:
     return susun(subtotal_bruto=q.get("subtotal"), diskon_baris=0, neto_baris=[i.get("line_total") for i in q.get("items") or []],
                  potongan=[(_label_diskon(persen), q.get("discount_amount"))], ongkir=q.get("shipping_amount"),
                  pajak=(label_pajak_tampil, q.get("tax_amount")), total=q.get("total_amount"))
+
+
+def proforma(p: dict, batal=None) -> list:
+    """Proforma (tagihan uang muka/termin/pelunasan atas SO): komposisi Nilai Pesanan (sales_orders.subtotal = SIGMA neto baris,
+    diskon baris 0) lalu baris TAGIHAN -- angka proformas_router.muat_pdf_proforma apa adanya."""
+    tujuan = p.get("purpose")
+    judul = {"PELUNASAN": "Pelunasan yang Ditagih", "TERMIN": "Termin yang Ditagih"}.get(tujuan, "Uang Muka yang Ditagih")
+    if tujuan != "PELUNASAN" and p.get("dp_percent_display") is not None:
+        judul += f" {p['dp_percent_display']}%"
+    tagih = []
+    if tujuan == "PELUNASAN":
+        tagih += _jika("Uang muka sudah diterima", p.get("received_before"), "kurang")
+    tagih.append({"label": judul, "nilai": _d(p.get("amount")), "kelas": "tot tebal"})   # angka yang DITAGIH = baris tebal (pola lama)
+    sisa = p.get("remaining_after_this")
+    if sisa is not None and (tujuan == "PELUNASAN" or _d(sisa) > NOL):
+        label = "Sisa setelah tagihan ini" if tujuan == "PELUNASAN" else \
+            f"Pelunasan setelah {'termin ini' if tujuan == 'TERMIN' else 'uang muka'}, ditagih terpisah"
+        tagih.append({"label": label, "nilai": _d(sisa), "kelas": ""})
+    if p.get("is_partially_paid") or (p.get("is_paid") and not batal):
+        tagih += [{"label": "Sudah dibayar", "nilai": _d(p.get("paid_amount")), "kelas": "kurang"},
+                  {"label": "Sisa tagihan ini", "nilai": _d(p.get("outstanding_amount")), "kelas": "tot"}]
+    items = p.get("order_items") or []
+    if items and p.get("order_subtotal") is not None:
+        return susun(subtotal_bruto=p.get("order_subtotal"), diskon_baris=0, neto_baris=[i.get("line_total") for i in items],
+                     potongan=[("Diskon", p.get("order_discount"))], ongkir=p.get("order_shipping"),
+                     pajak=("PPN", p.get("order_tax")), total=p.get("order_total_amount"), label_total="Nilai Pesanan", akhir=tagih)
+    awal = [{"label": "Nilai Pesanan", "nilai": _d(p.get("order_total_amount")), "kelas": ""}] if p.get("order_total_amount") else []
+    return awal + tagih

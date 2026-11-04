@@ -32,7 +32,7 @@ def test_filter_qty_terdaftar_dan_merender():
 
 
 # PDF seragam 4 Nov 2026: Penawaran/PO/FPB/ND/NK/SI/Surat Jalan memakai _partials/tabel_barang.html (sel qty di sana)
-BERKAS_QTY = {"dokumen_gudang.html": 0, "sales_invoice.html": 0, "sales_invoice_b.html": 1, "proforma.html": 1,
+BERKAS_QTY = {"dokumen_gudang.html": 0, "sales_invoice.html": 0, "sales_invoice_b.html": 1, "proforma.html": 0,
               "quote.html": 0, "credit_note.html": 0, "bill_invoice.html": 0}
 
 

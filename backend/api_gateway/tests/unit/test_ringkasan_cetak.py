@@ -76,7 +76,8 @@ def test_data_lama_tak_menjumlah_jatuh_ke_pola_lama_bukan_angka_karangan():
 
 def test_semua_templat_bertabel_harga_memakai_makro_ringkasan_satu_sumber():
     for f, fn in (("sales_invoice.html", "faktur_penjualan"), ("credit_note.html", "nota"), ("debit_note.html", "nota"),
-                  ("bill_invoice.html", "faktur_pembelian"), ("purchase_order.html", "pesanan_pembelian"), ("quote.html", "penawaran")):
+                  ("bill_invoice.html", "faktur_pembelian"), ("purchase_order.html", "pesanan_pembelian"), ("quote.html", "penawaran"),
+                  ("proforma.html", "proforma")):
         s = re.sub(r"\{#.*?#\}", "", (PS.TEMPLATE_DIR / f).read_text(), flags=re.S)   # komentar Jinja boleh menyebut riwayat
         assert f"RC.{fn}(" in s and '{% from "_partials/ringkasan.html" import ringkasan %}' in s, f
         assert "Diskon item" not in s and 'class="summary-table"' not in s and '<div class="sum">' not in s, f   # blok lama dihapus
@@ -104,3 +105,17 @@ def _teks(b):
         if type(c).__name__ == "TextBox":
             yield c
         yield from _teks(c)
+
+
+def test_proforma_komposisi_lalu_tagihan_satu_ringkasan():
+    """Proforma (4 Nov 2026): Subtotal (= SIGMA neto baris SO) -> Diskon -> Ongkir -> PPN -> Nilai Pesanan -> baris tagihan (tebal);
+    angka = kolom SO / proforma apa adanya (muat_pdf_proforma)."""
+    p = {"purpose": "PELUNASAN", "order_items": [{"line_total": 1915200}, {"line_total": 775000}], "order_subtotal": 2690200,
+         "order_discount": 25000, "order_shipping": 150000, "order_tax": 293172, "order_total_amount": 3108372, "amount": 1554186,
+         "received_before": 1554186, "remaining_after_this": 0, "is_partially_paid": True, "paid_amount": 1000000, "outstanding_amount": 554186}
+    rows = RC.proforma(p)
+    assert [r["label"] for r in rows] == ["Subtotal", "Diskon", "Ongkos kirim", "PPN", "Nilai Pesanan", "Uang muka sudah diterima",
+                                          "Pelunasan yang Ditagih", "Sisa setelah tagihan ini", "Sudah dibayar", "Sisa tagihan ini"]
+    assert _nilai(rows, "Nilai Pesanan") == D("3108372") and _nilai(rows, "Pelunasan yang Ditagih") == D("1554186")
+    assert "tebal" in next(r["kelas"] for r in rows if r["label"] == "Pelunasan yang Ditagih")
+    assert [r["label"] for r in RC.proforma({"purpose": "DP", "amount": 100, "order_items": [], "order_total_amount": None})] == ["Uang Muka yang Ditagih"]
