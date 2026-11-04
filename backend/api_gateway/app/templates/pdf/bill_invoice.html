@@ -2,9 +2,7 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>Faktur Pembelian {{ bill.invoice_number or '-' }}</title>
 <style>
-/* FPB (PDF keluarga 3 Nov 2026): kerangka & gaya PO (penawaran.css); stempel status = pola faktur penjualan (invoice.css,
-   nilai disalin): satu-satunya teks berwarna. */
-.kepala-status { position: relative; }
+/* FPB: gaya keluarga penawaran.css; stempel status = pola faktur penjualan (invoice.css, nilai disalin): satu-satunya teks berwarna. */
 .stempel { position: absolute; right: 0; top: 0; transform: rotate(-8deg); border: 2.2px solid; border-radius: 8px;
            padding: 4px 14px 5px 14px; text-align: center; opacity: .85; }
 .stempel-teks { font-size: 22px; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
@@ -12,16 +10,23 @@
 .stempel-lunas { color: #4F6B2E; border-color: #4F6B2E; }
 .stempel-terlambat { color: #A3402F; border-color: #A3402F; }
 .stempel-batal { color: #8E3B2E; border-color: #8E3B2E; }
-.coret { text-decoration: line-through; color: #8E8E89; }
-.rw td { padding: 6px 0; font-size: 12px; }
-/* .akhir penawaran.css = satu blok tak terpecah; di FPB hanya ringkasan + TTD yang utuh (riwayat/catatan boleh mengalir,
-   dulu seluruh blok terdorong ke halaman 2). WeasyPrint: width max-content = auto -> garis TTD selebar halaman -> lebar tetap. */
+.coret { text-decoration: line-through; }
+.rw td { padding: 6px 0; }
+/* FPB pola Accurate (4 Nov 2026, putusan pemilik): kop usaha di kanan judul, Dari + meta sebaris, Keterangan + ringkasan sebaris. */
+.kop { text-align: right; }
+.kop .logo { display: block; margin: 0 0 6px auto; }
+.atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; }   /* kolom meta = lebar ringkasan */
+.atas .meta { margin-top: 0; }
+.atas > div:first-child { position: relative; }   /* stempel di kanan blok Dari, kiri meta */
+.atas b { display: block; margin-bottom: 3px; }
+.atas .meta b { display: inline; margin: 0; white-space: nowrap; }
+/* .akhir penawaran.css = satu blok utuh; di FPB hanya Keterangan+ringkasan dan TTD yang utuh (riwayat boleh mengalir). */
 .akhir { break-inside: auto; }
-.sum, .sign { break-inside: avoid; }
-.penutup { display: grid; grid-template-columns: 1fr 220px; gap: 32px; margin-top: 18px; align-items: start; break-inside: avoid; }
-.penutup .blk { margin-top: 0; }
-.sign { width: 220px; margin: 0; }
-.sign .garis { border-top: 1px solid #1A1A1A; margin-top: 40px; padding-top: 4px; }
+.bawah { display: grid; grid-template-columns: 1fr 42%; gap: 32px; align-items: start; margin-top: 14px; break-inside: avoid; }
+.bawah .sum { margin-top: 0; }
+.bawah .sum { width: auto; }
+.bawah .sign { margin: 18px 0 0; text-align: left; }   /* TTD di bawah Keterangan (kolom kiri, pola Accurate): hemat satu blok */
+.bawah .blk { margin-top: 0; }
 </style>
 {% set c = bill.cetak %}
 {% if c and c.jenis == 'batal' %}
@@ -32,11 +37,12 @@
 {% endif %}
 </head>
 {#
-  PDF Faktur Pembelian -- PDF keluarga (3 Nov 2026, putusan MASTER): kerangka purchase_order.html / penawaran.css (dokumen
-  Pembelian satu rupa). Konteks = services/cetak_bill.lengkapi_cetak_bill (get_bill_v2 + kop + kontak vendor + No. PO +
-  syarat bayar + keadaan_cetak SAMA dgn faktur penjualan). Tanpa angka besar (pola PO): status di kepala + stempel
-  LUNAS/TERLAMBAT/BATAL; tagihan lunas TIDAK lagi tampil "Rp 0 / Jatuh tempo" (temuan pemilik BILL-2611-0005).
-  Kolom farmasi (Satuan/Batch/Exp/Bonus) dibuang: satuan ikut Qty, batch/exp/bonus = baris kecil di deskripsi bila ada.
+  PDF Faktur Pembelian = catatan INTERNAL atas tagihan vendor -- pola Accurate (4 Nov 2026, putusan pemilik; acuan Accurate + QBO).
+  Atas -> bawah: judul | kop usaha (logo, nama, alamat, telepon, NPWP) · Dari vendor | meta (No. Form = nomor kita, No. Faktur =
+  nomor tagihan vendor, "—" bila kosong) · tabel (Kode bila ada SKU, Diskon selalu) · Keterangan | ringkasan · riwayat
+  pembayaran · TTD "Bagian Pembelian" (tampil_ttd). Tanpa blok "Kepada" (kita penerimanya). Konteks = services/cetak_bill.
+  lengkapi_cetak_bill; stempel LUNAS/TERLAMBAT/BATAL = keadaan_cetak SAMA dgn faktur penjualan. Biaya lain-lain: bills tak
+  punya kolomnya (tiket BE), tidak dicetak.
 #}
 <body>
 {% include "_partials/tanda_draf.html" %}
@@ -49,55 +55,66 @@
 
 <header>
   <div><h1>Faktur Pembelian</h1></div>
-  {% if bill.tenant and bill.tenant.logo_data %}<img class="logo" src="{{ bill.tenant.logo_data }}" alt="">{% endif %}
+  {% set t = bill.tenant or {} %}
+  <div class="kop">
+    {% if t.logo_data %}<img class="logo" src="{{ t.logo_data }}" alt="">{% endif %}
+    {% if t.name %}<b>{{ t.name }}</b>{% endif %}
+    {% if t.address %}<div class="pre">{{ t.address }}</div>{% endif %}
+    {% if t.phone %}<div>{{ t.phone }}</div>{% endif %}
+    {% if t.npwp %}<div>NPWP {{ t.npwp }}</div>{% endif %}
+  </div>
 </header>
 
-<div class="kepala-status">
-<div class="meta">
-  <b>Nomor</b><span>{{ bill.invoice_number or '-' }}</span>
-  <b>Tanggal</b><span>{{ (bill.issue_date or bill.bill_date) | date_id }}</span>
-  {% if bill.due_date %}<b>Jatuh tempo</b><span>{{ bill.due_date | date_id }}</span>{% endif %}
-  {% if bill.syarat_bayar %}<b>Syarat bayar</b><span>{{ bill.syarat_bayar }}</span>{% endif %}
-  {% if bill.ref_no %}<b>No. faktur vendor</b><span>{{ bill.ref_no }}</span>{% endif %}
-  {% if bill.po_number %}<b>No. PO</b><span>{{ bill.po_number }}</span>{% endif %}
-  {% if c %}<b>Status</b><span>
-    {%- if c.jenis == 'batal' -%}Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %}
-    {%- elif c.jenis == 'draf' -%}Draf
-    {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}
-    {%- elif c.jenis == 'terlambat' -%}Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari
-    {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar &middot; sisa Rp {{ bill.amount_due | rupiah(uang) }}
-    {%- else -%}Belum dibayar{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}
-    {%- endif -%}</span>{% endif %}
-</div>
-{% if c and c.stempel %}
-<div class="stempel stempel-{{ c.jenis }}">
-  <div class="stempel-teks">{{ c.stempel }}</div>
-  <div class="stempel-kecil">{% if c.jenis == 'lunas' %}{{ c.tanggal_lunas | date_id | upper }}{% elif c.jenis == 'terlambat' %}{{ c.hari_terlambat }} HARI{% elif c.tanggal_batal %}{{ c.tanggal_batal | date_id | upper }}{% endif %}</div>
-</div>
-{% endif %}
-</div>
-
-<div class="parties">
+{# Kita sendiri penerima tagihan -> tanpa blok "Kepada" (catatan internal atas tagihan vendor, pola Accurate). #}
+<div class="atas">
   <div>
     <b>Dari</b>
     <div>{{ v.nama or (bill.vendor.name if bill.vendor else bill.vendor_name) or '-' }}</div>
-    {% if v.alamat %}<div class="mut pre">{{ v.alamat }}</div>{% endif %}
-    {% if v.telepon %}<div class="mut">{{ v.telepon }}</div>{% endif %}
-    {% if v.npwp %}<div class="mut">NPWP {{ v.npwp }}</div>{% endif %}
+    {% if v.alamat %}<div class="pre">{{ v.alamat }}</div>{% endif %}
+    {% if v.telepon %}<div>{{ v.telepon }}</div>{% endif %}
+    {% if v.npwp %}<div>NPWP {{ v.npwp }}</div>{% endif %}
+    {% if c and c.stempel %}
+    <div class="stempel stempel-{{ c.jenis }}">
+      <div class="stempel-teks">{{ c.stempel }}</div>
+      <div class="stempel-kecil">{% if c.jenis == 'lunas' %}{{ c.tanggal_lunas | date_id | upper }}{% elif c.jenis == 'terlambat' %}{{ c.hari_terlambat }} HARI{% elif c.tanggal_batal %}{{ c.tanggal_batal | date_id | upper }}{% endif %}</div>
+    </div>
+    {% endif %}
   </div>
-  <div>
-    <b>Kepada</b>
-    <div>{{ bill.tenant.name if bill.tenant else '' }}</div>
-    {% if bill.tenant and bill.tenant.address %}<div class="mut pre">{{ bill.tenant.address }}</div>{% endif %}
-    {% if bill.tenant and bill.tenant.phone %}<div class="mut">{{ bill.tenant.phone }}</div>{% endif %}
-    {% if bill.tenant and bill.tenant.npwp %}<div class="mut">NPWP {{ bill.tenant.npwp }}</div>{% endif %}
+  <div class="meta">
+    <b>No. Form</b><span>{{ bill.invoice_number or '-' }}</span>
+    <b>No. Faktur</b><span>{{ bill.ref_no or '—' }}</span>
+    <b>Tanggal</b><span>{{ (bill.issue_date or bill.bill_date) | date_id }}</span>
+    {% if bill.due_date %}<b>Jatuh tempo</b><span>{{ bill.due_date | date_id }}</span>{% endif %}
+    {% if bill.syarat_bayar %}<b>Syarat bayar</b><span>{{ bill.syarat_bayar }}</span>{% endif %}
+    {% if bill.po_number %}<b>No. PO</b><span>{{ bill.po_number }}</span>{% endif %}
+    {% if c %}<b>Status</b><span>
+      {%- if c.jenis == 'batal' -%}Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %}
+      {%- elif c.jenis == 'draf' -%}Draf
+      {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}
+      {%- elif c.jenis == 'terlambat' -%}Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari
+      {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar &middot; sisa Rp {{ bill.amount_due | rupiah(uang) }}
+      {%- else -%}Belum dibayar{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}
+      {%- endif -%}</span>{% endif %}
   </div>
 </div>
 
 {% from "_partials/tabel_barang.html" import tabel_barang %}
-{{ tabel_barang(bill["items"], {"desk": ["product_name", "description"], "qty": "qty", "harga": "price", "jumlah": "total"}, uang) }}
+{{ tabel_barang(bill["items"], {"desk": ["product_name", "description"], "qty": "qty", "harga": "price", "jumlah": "total", "kode": "product_code",
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true}, uang) }}
 
 <div class="akhir">
+  <div class="bawah">
+  <div>
+  {% if c and c.jenis == 'batal' %}
+  <div class="blk"><b>Keterangan</b><div>Faktur ini telah dibatalkan dan tidak berlaku sebagai tagihan.{% if batal and batal.alasan %} Alasan: {{ batal.alasan }}{% endif %}</div></div>
+  {% elif bill.notes %}<div class="blk"><b>Keterangan</b><div class="pre">{{ bill.notes }}</div></div>{% endif %}
+  {% if tampil_ttd %}
+  <div class="sign">
+    <div>Bagian Pembelian,</div>
+    <div class="garis">Tgl.</div>
+  </div>
+  {% endif %}
+  </div>
   <div class="sum">
     <div><span>Subtotal</span><span>Rp {{ bill.subtotal | rupiah(uang) }}</span></div>
     {% if bill.invoice_discount_total and bill.invoice_discount_total|float > 0 %}<div><span>Diskon faktur</span><span>-Rp {{ bill.invoice_discount_total | rupiah(uang) }}</span></div>{% endif %}
@@ -118,32 +135,19 @@
     {% endif %}
     <div class="terb">{{ total | terbilang }}</div>
   </div>
+  </div>
 
   {% if c and c.riwayat %}
   <div class="blk"><b>Riwayat pembayaran</b>
     <table class="rw" style="margin-top:4px">
       <colgroup><col style="width:18%"><col style="width:40%"><col style="width:22%"><col style="width:20%"></colgroup>
       {% for h in c.riwayat %}
-      <tr><td>{{ h.tanggal | date_id }}</td><td>{{ h.jenis }}{% if h.metode %} &middot; {{ h.metode }}{% endif %}</td><td class="mut">{{ h.nomor }}</td><td class="r">Rp {{ h.jumlah | rupiah(uang) }}</td></tr>
+      <tr><td>{{ h.tanggal | date_id }}</td><td>{{ h.jenis }}{% if h.metode %} &middot; {{ h.metode }}{% endif %}</td><td>{{ h.nomor }}</td><td class="r">Rp {{ h.jumlah | rupiah(uang) }}</td></tr>
       {% endfor %}
     </table>
   </div>
   {% endif %}
 
-  {# Catatan + tanda tangan SEBARIS (hemat satu blok; dulu TTD sendirian di halaman 2 untuk 3 baris + riwayat) #}
-  <div class="penutup">
-  <div>
-  {% if c and c.jenis == 'batal' %}
-  <div class="blk"><b>Catatan</b><div class="mut">Faktur ini telah dibatalkan dan tidak berlaku sebagai tagihan.{% if batal and batal.alasan %} Alasan: {{ batal.alasan }}{% endif %}</div></div>
-  {% elif bill.notes %}<div class="blk"><b>Catatan</b><div class="mut pre">{{ bill.notes }}</div></div>{% endif %}
-  </div>
-
-  <div class="sign">
-    <div>Diterima oleh,</div>
-    {% if bill.tenant and bill.tenant.name %}<div>{{ bill.tenant.name }}</div>{% endif %}
-    <div class="garis"></div>
-  </div>
-  </div>
 </div>
 
 </div>

@@ -421,9 +421,10 @@ class PDFService:
         """PDF Faktur Pembelian -- rute lama /api/bills/{id}/pdf. Render SAMA dengan /api/documents/bill (render_bill)."""
         return self.tulis_pdf(self.render_bill(bill))
 
-    def render_bill(self, bill: Dict[str, Any]) -> Render:
+    def render_bill(self, bill: Dict[str, Any], tampil_ttd: bool = True) -> Render:
         """Faktur Pembelian (P2P cetak, 25 Okt 2026): konteks = cetak_bill.lengkapi_cetak_bill (get_bill_v2 + kop + kontak vendor +
-        No. PO + syarat + keadaan_cetak). PDF keluarga 3 Nov 2026: kerangka & gaya PO (CSS_PENAWARAN), dulu invoice.css."""
+        No. PO + syarat + keadaan_cetak). Gaya keluarga CSS_PENAWARAN; tata letak pola Accurate (4 Nov 2026). tampil_ttd = TTD
+        "Bagian Pembelian" (bawaan tampil; setelan tenant = tiket)."""
         status = bill.get("status", "draft")
         html_content = self.jinja_env.get_template("bill_invoice.html").render(
             bill=bill,
@@ -432,6 +433,7 @@ class PDFService:
             batal=self._tanda_batal(bill),
             draf=str(status).lower() == "draft",
             draf_keterangan="Belum diposting",
+            tampil_ttd=tampil_ttd,
         )
         return Render(html_content, CSS_PENAWARAN, font=True)
 

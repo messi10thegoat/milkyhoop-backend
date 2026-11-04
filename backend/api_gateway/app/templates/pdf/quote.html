@@ -34,14 +34,14 @@
     <b>Dari</b>
     <div>{{ company.name if company else '' }}</div>
     {% if (company and company.address) or tampil.telepon_usaha %}
-    <div class="mut">{% if company and company.address %}{{ company.address }}{% endif %}{% if company and company.address and tampil.telepon_usaha %}<br>{% endif %}{% if tampil.telepon_usaha %}{{ tampil.telepon_usaha }}{% endif %}</div>
+    <div>{% if company and company.address %}{{ company.address }}{% endif %}{% if company and company.address and tampil.telepon_usaha %}<br>{% endif %}{% if tampil.telepon_usaha %}{{ tampil.telepon_usaha }}{% endif %}</div>
     {% endif %}
   </div>
   <div>
     <b>Kepada Yth.</b>
     <div>{{ quote.customer_name or '-' }}</div>
-    {% if tampil.up %}<div class="mut">{{ tampil.up }}</div>{% endif %}
-    {% if tampil.alamat_pelanggan %}<div class="mut">{{ tampil.alamat_pelanggan }}</div>{% endif %}
+    {% if tampil.up %}<div>{{ tampil.up }}</div>{% endif %}
+    {% if tampil.alamat_pelanggan %}<div>{{ tampil.alamat_pelanggan }}</div>{% endif %}
   </div>
 </div>
 
@@ -66,8 +66,8 @@
   </div>
   {% if quote.total_in_words %}<div class="terb">{{ quote.total_in_words }}</div>{% endif %}
 
-  {% if quote.notes %}<div class="blk"><b>Catatan khusus</b><div class="mut pre">{{ quote.notes }}</div></div>{% endif %}
-  {% if quote.terms %}<div class="blk"><b>Ketentuan</b><div class="mut pre">{{ quote.terms }}</div></div>{% endif %}
+  {% if quote.notes %}<div class="blk"><b>Catatan khusus</b><div class="pre">{{ quote.notes }}</div></div>{% endif %}
+  {% if quote.terms %}<div class="blk"><b>Ketentuan</b><div class="pre">{{ quote.terms }}</div></div>{% endif %}
 
   {% if quote.closing_text %}<p class="closing pre">{{ quote.closing_text }}</p>{% endif %}
 
@@ -76,7 +76,7 @@
     {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
     <div class="sp"></div>
     {% if quote.signer_name %}<b>{{ quote.signer_name }}</b>{% endif %}
-    {% if quote.signer_title %}<div class="mut">{{ quote.signer_title }}</div>{% endif %}
+    {% if quote.signer_title %}<div>{{ quote.signer_title }}</div>{% endif %}
   </div>
 </div>
 

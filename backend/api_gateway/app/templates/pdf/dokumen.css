@@ -5,8 +5,12 @@
    - Logo = pola Faktur Pembelian (tinggi 96 px, lebar maks 180 px; dulu SI/Proforma/NK/ND 60 px).
    - Dikecualikan (putusan MASTER): kwitansi setengah A4 (kwitansi.css dimuat SESUDAH berkas ini -> @page-nya sendiri menang;
      logonya memakai token --logo-kecil-*) dan Faktur Penjualan templat B pilihan tenant (invoice_b.css saja).
-   - Tipografi = tahap 2 (putusan pemilik). */
+   - Tipografi = pilihan A pemilik (tahap 2, 4 Nov 2026): pola Faktur Penjualan -- SEMUA teks #1a1a1a (tanpa abu), isi 9.5pt. */
 :root {
+    --teks: #1a1a1a;
+    --huruf: 9.5pt;
+    --huruf-kecil: 8.5pt;
+    --judul: 22pt;
     --logo-tinggi: 96px;
     --logo-lebar: 180px;
     --logo-kecil-tinggi: 64px;      /* kwitansi setengah A4: persegi 295px (grapgrap) -> 64px masih terbaca */

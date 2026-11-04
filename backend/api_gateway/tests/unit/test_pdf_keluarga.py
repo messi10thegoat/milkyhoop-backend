@@ -164,24 +164,31 @@ def _fpb(tangkap, hari_fx, **x):
     return tangkap["isi"]
 
 
-def test_fpb_kerangka_po_isi(tangkap, hari):
+def test_fpb_pola_accurate_isi(tangkap, hari):
+    """FPB = catatan internal (pola Accurate 4 Nov 2026): kop usaha di atas, TANPA "Kepada", No. Form + No. Faktur vendor, TTD Bagian Pembelian."""
     h = _fpb(tangkap, hari)
-    for teks in ("<h1>Faktur Pembelian</h1>", "<b>No. faktur vendor</b><span>INV/SMN/0451</span>", "<b>No. PO</b><span>PO-2611-0002</span>",
+    for teks in ("<h1>Faktur Pembelian</h1>", "<b>No. Form</b>", "<b>No. Faktur</b><span>INV/SMN/0451</span>", "<b>No. PO</b><span>PO-2611-0002</span>",
                  "<b>Syarat bayar</b><span>30 hari</span>", "NPWP 01.234.567.8-901.000", "0811 2", "NPWP 02.345.678.9-012.000",
                  "100 Dus", "50 Dus", '<th class="r">Diskon</th>', ">2%</td>", '<td class="r">-</td>', "Batch B77 · Exp 2027-05-01",
-                 "Riwayat pembayaran", "BP-2611-0007", "Pembayaran &middot; Transfer BCA", "Diterima oleh,",
+                 "Riwayat pembayaran", "BP-2611-0007", "Pembayaran &middot; Transfer BCA", "Bagian Pembelian,", '<div class="garis">Tgl.</div>',
                  terbilang_rupiah("36132720.00"), "Sebagian dibayar &middot; sisa Rp 16.132.720"):
         assert teks in h, teks
-    for tak in ('class="hero', "Referensi", "Satuan</th>", "Batch</th>", "Exp</th>", "Bonus</th>", "0%</td>"):
+    for tak in ('class="hero', "<b>Kepada</b>", "Diterima oleh", "No. faktur vendor", "Referensi", "Satuan</th>", "Batch</th>", "Exp</th>", "Bonus</th>", "0%</td>"):
         assert tak not in h, tak
     assert "penawaran.css" in PS.CSS_PENAWARAN
 
 
-def test_fpb_tanpa_diskon_tanpa_kolom(tangkap, hari):
+def test_fpb_diskon_selalu_kode_hanya_bila_sku_noref_strip(tangkap, hari):
+    """Pola Accurate: kolom Diskon SELALU ("-"); Kode HANYA bila ada SKU; No. Faktur vendor kosong = "—"; TTD bisa disembunyikan."""
     items = [{"product_name": "Minyak", "qty": 1.0, "unit": "Dus", "price": "100.00", "discount_percent": 0.0, "total": "100.00"}]
-    h = _fpb(tangkap, hari, items=items, subtotal="100.00", dpp="0", tax_amount="0", tax_rate=0, grand_total="100.00", amount="100.00",
-             amount_paid="0.00", amount_due="100.00")
-    assert "Diskon</th>" not in h and "Belum dibayar" in h and "Dibayar</span>" not in h
+    kw = dict(items=items, subtotal="100.00", dpp="0", tax_amount="0", tax_rate=0, grand_total="100.00", amount="100.00",
+              amount_paid="0.00", amount_due="100.00", ref_no=None)
+    h = _fpb(tangkap, hari, **kw)
+    assert '<th class="r">Diskon</th>' in h and '<td class="r">-</td>' in h and "<th>Kode</th>" not in h
+    assert "<b>No. Faktur</b><span>—</span>" in h and "Belum dibayar" in h and "Dibayar</span>" not in h
+    h = _fpb(tangkap, hari, **{**kw, "items": [{**items[0], "product_code": "MNY-1"}]})
+    assert "<th>Kode</th>" in h and "<td>MNY-1</td>" in h
+    assert "Bagian Pembelian" not in PS.get_pdf_service().render_bill(_lengkap(_bill(**kw)), tampil_ttd=False).html
 
 
 def test_fpb_batal_stempel_dan_total_dicoret(tangkap, hari):
@@ -249,3 +256,16 @@ def test_si_belum_jatuh_tempo_baris_hero_tanpa_tanggal(tangkap):
     hero = h[i:i + 900]
     assert "10 hari lagi" in hero and "Jatuh tempo 13 Nov" not in hero
     assert h.count("13 Nov 2026") == 1   # meta saja
+
+
+def test_fpb_satu_halaman_ttd_di_kolom_keterangan(hari):
+    """Tata letak HASIL WeasyPrint: FPB ber-riwayat + pajak + diskon muat 1 halaman; TTD di kolom kiri ringkasan (dulu TTD sendirian di hal. 2)."""
+    from weasyprint import HTML
+    from weasyprint.text.fonts import FontConfiguration
+    b = _bill(notes="Kain diterima 2 tahap.")
+    b["items"] = b["items"] + [{**b["items"][0], "product_name": "Baris ke-%d" % i} for i in range(3, 5)]   # 4 baris (kasus nyata 3)
+    r = PS.get_pdf_service().render_bill(_lengkap(b))
+    fc = FontConfiguration()
+    d = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
+    assert len(d.pages) == 1, len(d.pages)
+    assert r.html.index("Bagian Pembelian,") < r.html.index('<div class="sum">') < r.html.index("Riwayat pembayaran")

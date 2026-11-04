@@ -1,9 +1,6 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title>
-<style>/* WeasyPrint: width max-content = auto -> lebar tetap agar garis TTD tak selebar halaman */
-.sign { width: 220px; } .sign .garis { border-top: 1px solid #1A1A1A; margin-top: 40px; padding-top: 4px; }</style>
-</head>
+<head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title></head>
 {#
   PDF Pesanan Pembelian (22 Okt 2026, tiket WORKSPACE "PDF PO"). Kerangka & gaya = PDF penawaran (penawaran.css), supaya
   dokumen keluar usaha seragam. Acuan isi: NetSuite/QBO Purchase Order. Stempel DRAF untuk status draft (belum dikirim ke
@@ -35,18 +32,18 @@
   <div>
     <b>Kepada</b>
     <div>{{ po.vendor_name or '-' }}</div>
-    {% if po.vendor_alamat %}<div class="mut pre">{{ po.vendor_alamat }}</div>{% endif %}
-    {% if po.vendor_telepon %}<div class="mut">{{ po.vendor_telepon }}</div>{% endif %}
-    {% if po.vendor_npwp %}<div class="mut">NPWP {{ po.vendor_npwp }}</div>{% endif %}
+    {% if po.vendor_alamat %}<div class="pre">{{ po.vendor_alamat }}</div>{% endif %}
+    {% if po.vendor_telepon %}<div>{{ po.vendor_telepon }}</div>{% endif %}
+    {% if po.vendor_npwp %}<div>NPWP {{ po.vendor_npwp }}</div>{% endif %}
   </div>
   <div>
     <b>Kirim ke</b>
     <div>{{ company.name if company else '' }}</div>
-    {% if po.ship_to_address %}<div class="mut pre">{{ po.ship_to_address }}</div>
-    {% elif po.warehouse_name %}<div class="mut">{{ po.warehouse_name }}</div>{% if po.warehouse_alamat %}<div class="mut pre">{{ po.warehouse_alamat }}</div>{% endif %}
-    {% elif company and company.address %}<div class="mut">{{ company.address }}</div>{% endif %}
-    {% if company and company.phone %}<div class="mut">{{ company.phone }}</div>{% endif %}
-    {% if company and company.npwp %}<div class="mut">NPWP {{ company.npwp }}</div>{% endif %}
+    {% if po.ship_to_address %}<div class="pre">{{ po.ship_to_address }}</div>
+    {% elif po.warehouse_name %}<div>{{ po.warehouse_name }}</div>{% if po.warehouse_alamat %}<div class="pre">{{ po.warehouse_alamat }}</div>{% endif %}
+    {% elif company and company.address %}<div>{{ company.address }}</div>{% endif %}
+    {% if company and company.phone %}<div>{{ company.phone }}</div>{% endif %}
+    {% if company and company.npwp %}<div>NPWP {{ company.npwp }}</div>{% endif %}
   </div>
 </div>
 
@@ -66,7 +63,7 @@
     <div class="terb">{{ po.total_amount | terbilang }}</div>
   </div>
 
-  {% if po.notes %}<div class="blk"><b>Catatan</b><div class="mut pre">{{ po.notes }}</div></div>{% endif %}
+  {% if po.notes %}<div class="blk"><b>Catatan</b><div class="pre">{{ po.notes }}</div></div>{% endif %}
 
   <div class="sign">
     <div>Pemesan,</div>

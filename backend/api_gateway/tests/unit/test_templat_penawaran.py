@@ -62,7 +62,7 @@ def test_kosong_tidak_dicetak_tanpa_teks_bawaan():
         assert kata not in h, kata
     h2 = _html(opening_text="Dengan hormat,\nBaris", notes="N", terms="T1\nT2", closing_text="Terima kasih").html
     assert h2.index("Catatan khusus") < h2.index("Ketentuan") < h2.index('class="closing') < h2.index('class="sign"')
-    assert 'class="intro pre">Dengan hormat,\nBaris' in h2 and 'class="mut pre">T1\nT2' in h2
+    assert 'class="intro pre">Dengan hormat,\nBaris' in h2 and 'class="pre">T1\nT2' in h2
 
 
 def test_draf_hanya_draft_dan_css_khusus_penawaran():
@@ -70,9 +70,11 @@ def test_draf_hanya_draft_dan_css_khusus_penawaran():
     r = _html()
     assert r.css == PSV.CSS_PENAWARAN and "invoice.css" not in r.css
     css = (pathlib.Path(PSV.__file__).resolve().parents[1] / "templates" / "pdf" / "penawaran.css").read_text()
-    for v in ("#63635E", "#8E8E89", "#EFEDE8", "1.2px solid #1A1A1A", "width: 42%", "height: 40px",
+    for v in ("var(--teks)", "var(--huruf)", "#EFEDE8", "1.2px solid var(--teks)", "width: 42%", "height: 40px",
               'counter(page) " dari " counter(pages)', "break-inside: avoid", "table-header-group"):
         assert v in css, v
+    for abu in ("#63635E", "#8E8E89", ".mut"):   # tipografi A (4 Nov 2026): abu SPEC dihapus, bukan ditimpa
+        assert abu not in css, abu
 
 
 def test_ringkasan_diskon_ppn_hanya_bila_ada():
