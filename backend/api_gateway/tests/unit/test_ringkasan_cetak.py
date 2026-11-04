@@ -144,7 +144,7 @@ def test_rekap_footer_sebaris_halaman_dan_subteks_menyebut_nota_kredit():
     r = {"order_number": "SO-1", "status": "sebagian", "total": D("3108372"), "dibayar": D("1554186"), "nota_kredit": D("100000"),
          "sisa": D("1454186"), "tagihan": [], "pembayaran": []}
     h = PS.get_pdf_service().render_rekap_pesanan(r, {"name": "U"}).html
-    assert "· nota kredit Rp 100.000" in h and '<div class="footer-line">Dicetak' in h
+    assert "· nota kredit Rp&nbsp;100.000" in h and '<div class="footer-line">Dicetak' in h   # nbsp: "Rp" tak terpisah dari angka
     assert "nota kredit Rp" not in PS.get_pdf_service().render_rekap_pesanan({**r, "nota_kredit": 0}, {"name": "U"}).html
     for f in ("sales_invoice.html", "credit_note.html", "proforma.html", "rekap_pesanan.html"):
         assert "running(dicetak)" not in (PS.TEMPLATE_DIR / f).read_text(), f   # tak ada salinan aturan footer per templat
