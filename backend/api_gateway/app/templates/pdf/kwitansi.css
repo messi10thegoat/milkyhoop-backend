@@ -22,7 +22,6 @@ body { font-size: var(--a5-isi); line-height: 1.4; }
 .kw-usaha { text-align: right; font-size: 8pt; }
 .kw-usaha .kw-usaha-nama { font-weight: 600; font-size: var(--a5-isi); }
 .kw-logo-sel { width: 1%; padding-left: 4mm !important; }
-.kw-logo { max-height: var(--logo-kecil-tinggi); max-width: var(--logo-kecil-lebar); object-fit: contain; }  /* persegi 295px (grapgrap) -> 64px masih terbaca */
 
 .kw-badan { width: 100%; border-collapse: collapse; }
 .kw-badan > tbody > tr > td { vertical-align: top; padding: 0; }
@@ -60,3 +59,4 @@ body { font-size: var(--a5-isi); line-height: 1.4; }
 .kw-stempel-diterima { color: #4F6B2E; border-color: #4F6B2E; }
 
 .footer-line { font-size: var(--a5-mini); }   /* footer bersama invoice.css (margin bawah-kiri), skala A5 */
+@media screen { .footer-line { left: 12mm; bottom: 4mm; } }   /* HTML panel: kaki kertas A5 (= margin @page di atas) */
