@@ -3,8 +3,11 @@
 PDF Generation Service - WeasyPrint-based HTML to PDF conversion.
 """
 
+import base64
+import io
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -90,6 +93,28 @@ CSS_PENAWARAN = ("fonts.css", "penawaran.css", "dokumen.css")
 CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)   # kwitansi.css SESUDAH dokumen.css: @page setengah A4 sendiri menang (dikecualikan)
 
 
+@lru_cache(maxsize=32)
+def logo_rapat(data_uri: Optional[str]) -> Optional[str]:
+    """Pangkas pinggiran POLOS logo (warna piksel sudut, juga transparan) -> kotak logo = isi gambar, nama usaha rapat di
+    bawahnya (FPB nyata grapgrap 4 Nov 2026: PNG 295x295 dengan isi hanya baris 88-208 -> celah ~45 px). Gagal / tanpa
+    pinggiran = data asli; berkas logo tenant tidak diubah."""
+    if not data_uri or ";base64," not in data_uri:
+        return data_uri
+    try:
+        from PIL import Image, ImageChops
+        im = Image.open(io.BytesIO(base64.b64decode(data_uri.split(",", 1)[1]))).convert("RGBA")
+        beda = ImageChops.difference(im, Image.new("RGBA", im.size, im.getpixel((0, 0))))
+        kotak = beda.convert("L").point(lambda v: 255 if v > 16 else 0).getbbox()   # >16: derau JPEG di latar bukan isi
+        if not kotak or kotak == (0, 0) + im.size:
+            return data_uri
+        b = io.BytesIO()
+        im.crop(kotak).save(b, "PNG")
+        return "data:image/png;base64," + base64.b64encode(b.getvalue()).decode()
+    except Exception:
+        logger.warning("[PDF] logo tak bisa dipangkas; dipakai apa adanya", exc_info=True)
+        return data_uri
+
+
 @dataclass(frozen=True)
 class Render:
     """Satu dokumen yang SUDAH dirender jadi HTML (P3 SO-dokumen, 1 Okt 2026).
@@ -162,6 +187,7 @@ class PDFService:
         # PDF keluarga (3 Nov 2026): terbilang SATU sumber (utils.terbilang) untuk semua templat
         from ..utils.terbilang import terbilang_rupiah
         self.jinja_env.filters["terbilang"] = terbilang_rupiah
+        self.jinja_env.filters["logo_rapat"] = logo_rapat   # kop Pembelian pola Accurate (_partials/kop_usaha)
 
     @classmethod
     def format_date_short(cls, date_value: Any) -> str:

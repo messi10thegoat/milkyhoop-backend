@@ -100,3 +100,16 @@ def test_tabel_barang_satu_makro_tiga_dokumen():
         assert "<th>Deskripsi</th>" not in s, f   # tabel lama dihapus, bukan ditimpa (kepala tabel hanya di makro)
     m = (TPL / "_partials" / "tabel_barang.html").read_text()
     assert "{{ item[k.qty] | qty }}" in m and '<th class="r">Diskon</th>' in m and "{% else %}-{% endif %}" in m
+
+
+def test_logo_rapat_pangkas_pinggiran_polos():
+    """Kop Pembelian (FPB nyata grapgrap 4 Nov 2026): PNG 295x295 berisi wordmark di baris 88-208 -> dipangkas ke isi; logo tanpa
+    pinggiran / bukan data URI / rusak = apa adanya."""
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (295, 295), "white"); ImageDraw.Draw(im).rectangle([16, 88, 279, 207], fill="black")
+    b = io.BytesIO(); im.save(b, "PNG"); uri = "data:image/png;base64," + base64.b64encode(b.getvalue()).decode()
+    hasil = PS.logo_rapat(uri)
+    assert Image.open(io.BytesIO(base64.b64decode(hasil.split(",", 1)[1]))).size == (264, 120)
+    penuh = _logo()   # putih polos seluruhnya = tak ada isi -> apa adanya
+    assert PS.logo_rapat(penuh) == penuh and PS.logo_rapat(None) is None and PS.logo_rapat("data:image/png;base64,rusak") == "data:image/png;base64,rusak"
+    assert "{{ logo | logo_rapat }}" in (TPL / "_partials" / "kop_usaha.html").read_text()
