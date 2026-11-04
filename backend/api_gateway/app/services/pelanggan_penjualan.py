@@ -15,6 +15,7 @@ SQL_PENJUALAN = """
         SELECT si.customer_id AS cid, COUNT(*) AS n, MAX(si.invoice_date) AS terakhir
         FROM sales_invoices si
         WHERE si.tenant_id = $1 AND si.customer_id = ANY($2::uuid[]) AND si.status NOT IN ('draft', 'void')
+          AND NOT si.is_opening_balance  -- B0: faktur pembuka saldo awal BUKAN penjualan
         GROUP BY 1
     ), ar AS (
         SELECT si.customer_id AS cid, SUM(jl.debit) AS debit
@@ -23,7 +24,7 @@ SQL_PENJUALAN = """
              AND je.source_id::text = si.id::text AND je.status = 'POSTED' AND je.reversed_by_id IS NULL
         JOIN journal_lines jl ON jl.journal_id = je.id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id AND coa.account_type = 'RECEIVABLE'
-        WHERE si.tenant_id = $1 AND si.customer_id = ANY($2::uuid[])
+        WHERE si.tenant_id = $1 AND si.customer_id = ANY($2::uuid[]) AND NOT si.is_opening_balance
         GROUP BY 1
     ), cn AS (
         SELECT c.customer_id AS cid, SUM(jl.credit) AS kredit

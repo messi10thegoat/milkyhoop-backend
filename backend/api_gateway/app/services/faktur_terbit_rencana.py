@@ -18,6 +18,8 @@ CABANG_TANGGUH_KIRIM = "tangguh_kirim"  # kebijakan 'delivery': pendapatan + HPP
 CABANG_KIRIM_OTOMATIS = "kirim_otomatis"  # jual dari stok, kebijakan 'invoice': kirim otomatis saat terbit (B2)
 CABANG_TANGGUH_WAC0 = "tangguh_wac0"    # ada barang stok WAC 0: tangguh + peringatan
 CABANG_JASA = "jasa"                    # tanpa barang stok: pendapatan diakui saat terbit
+CABANG_PEMBUKA = "pembuka"              # B0 V478: faktur pembuka saldo awal piutang -- Cr Modal Saldo Awal, tanpa pendapatan/SJ/HPP
+LABEL_PEMBUKA = "Modal Saldo Awal"
 
 
 def _d(v) -> Decimal:
@@ -27,14 +29,14 @@ def _d(v) -> Decimal:
     return Decimal(str(v)) if v else Decimal("0")
 
 
-def baris_jv(total, pajak, ongkir, akun_ar, akun_dimuka, akun_ongkir, akun_ppn, nomor: str) -> list:
+def baris_jv(total, pajak, ongkir, akun_ar, akun_dimuka, akun_ongkir, akun_ppn, nomor: str, label_kredit: str = "Pendapatan Diterima Dimuka") -> list:
     """Baris jurnal tagihan (INVOICE) berurutan == line_number 1..n: Dr Piutang = total · Cr Pendapatan Diterima Dimuka =
     total - pajak - ongkir · Cr Pendapatan Ongkos Kirim bila ongkir > 0 (V290) · Cr PPN Keluaran bila pajak > 0. Baris bernilai Rp 0
     DILEWATI (SI-FPB-RP0: pagar DB jl_has_amount menolaknya -> faktur hanya ongkir/pajak dulu 500; jurnal tetap seimbang).
     -> [{akun, debit, kredit, memo, sisi}] (sisi 'D'/'K' = bentuk INSERT penulis)."""
     total, pajak, ongkir = _d(total), _d(pajak), _d(ongkir)
     out = [{"akun": akun_ar, "debit": total, "kredit": NOL, "memo": f"Piutang - {nomor}", "sisi": "D"},
-           {"akun": akun_dimuka, "debit": NOL, "kredit": total - pajak - ongkir, "memo": f"Pendapatan Diterima Dimuka - {nomor}", "sisi": "K"}]
+           {"akun": akun_dimuka, "debit": NOL, "kredit": total - pajak - ongkir, "memo": f"{label_kredit} - {nomor}", "sisi": "K"}]
     if ongkir > 0:
         out.append({"akun": akun_ongkir, "debit": NOL, "kredit": ongkir, "memo": f"Pendapatan Ongkos Kirim - {nomor}", "sisi": "K"})
     if pajak > 0:
@@ -165,7 +167,7 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
     tid = ctx["tenant_id"]
     inv = await conn.fetchrow(
         """SELECT id, invoice_number, customer_id, customer_name, total_amount, tax_amount, invoice_date, warehouse_id, recognize_at,
-                  shipping_amount, status FROM sales_invoices WHERE id = $1 AND tenant_id = $2""", invoice_id, tid)
+                  shipping_amount, status, is_opening_balance FROM sales_invoices WHERE id = $1 AND tenant_id = $2""", invoice_id, tid)
     if inv is None:
         return None
     blocks, warnings, catatan, journals = [], [], [], []
@@ -189,7 +191,8 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
     akun_ar = akun_dimuka = akun_ppn = akun_ongkir = None
     try:
         akun_ar = await resolve_account_id_by_role(conn, tid, AccountRole.AR_TRADE)
-        akun_dimuka = await SI._resolve_unearned_revenue(conn, tid)
+        akun_dimuka = (await resolve_account_id_by_role(conn, tid, AccountRole.EQUITY_OPENING_BALANCE) if inv["is_opening_balance"]
+                       else await SI._resolve_unearned_revenue(conn, tid))  # B0: pembuka = Modal Saldo Awal (== penulis)
         akun_ppn = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_OUTPUT)
     except AccountRoleUnmappedError as e:
         blok("PERAN_AKUN_BELUM_DIPETAKAN", str(e), 500)
@@ -204,7 +207,10 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
         journals.append({"journal_number": None, "source_type": "INVOICE", "journal_date": inv["invoice_date"].isoformat(),
                          "description": f"Faktur Penjualan {inv['invoice_number']} - {inv['customer_name']}",
                          "lines": await _tampil(conn, tid, baris_jv(total, pajak, ongkir, akun_ar, akun_dimuka, akun_ongkir, akun_ppn,
-                                                                     inv["invoice_number"]))})
+                                                                     inv["invoice_number"], *([LABEL_PEMBUKA] if inv["is_opening_balance"] else [])))})
+    if inv["is_opening_balance"]:  # B0: == penulis -- sesudah jurnal INVOICE, nol alokasi/SJ/RECOG/kirim/uang muka
+        return {"invoice": inv, "blocks": blocks, "warnings": warnings, "notes": catatan, "complete": True, "cabang": CABANG_PEMBUKA,
+                "journals": journals, "deposit_applications": [], "deposit_application_journals": [], "deposit_plan": []}
     items = [dict(r) for r in await conn.fetch(SQL_ITEMS, invoice_id)]
     for it, a in zip(items, alokasi_baris(items, total, pajak, ongkir)):
         it["_allocated"] = a
