@@ -66,6 +66,21 @@ def harga_satuan_terima(po_item) -> Decimal:
     return (_d(po_item["subtotal"]) - _d(po_item["discount_amount"])) / q
 
 
+async def _harga_terima_kapital(conn, tenant_id: str, po_id) -> dict:
+    """Non-PKP + PO berpajak (putusan pemilik 4 Nov 2026): PPN tak bisa dikreditkan -> harga terima TERMASUK porsi PPN (dan diskon kepala),
+    aturan SAMA dengan tagihan (tagihan_aksi.dasar_tagihan + neto_baris berbobot neto + pajak baris atas total PO) -> GRNI == tagihan, PPV tak
+    menelan PPN. {str(po_item_id): harga per satuan PO}; PKP / PO tanpa pajak -> {} (harga_satuan_terima lama, byte-identik)."""
+    from . import tagihan_aksi as TA
+    kepala = await conn.fetchrow("SELECT total_amount, tax_amount FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, tenant_id)
+    if not kepala or _d(kepala["tax_amount"]) <= NOL or await TA.tenant_pkp(conn, tenant_id):
+        return {}
+    rows = await conn.fetch(
+        """SELECT id, quantity, COALESCE(subtotal, 0) - COALESCE(discount_amount, 0) AS net, COALESCE(tax_amount, 0) AS pajak
+           FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number""", po_id)
+    nilai = TA.neto_baris(TA.bobot(rows, True), _d(kepala["total_amount"]))
+    return {str(r["id"]): nilai[r["id"]] / _d(r["quantity"]) for r in rows if _d(r["quantity"]) > NOL}
+
+
 async def _periode_terbuka(conn, tenant_id: str, tanggal) -> Optional[str]:
     from .sj_so import _periode_terbuka as periode
     return await periode(conn, tenant_id, tanggal)
@@ -163,13 +178,14 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
                   p.kode_produk, p.nama_produk, p.item_type, p.track_inventory
            FROM purchase_order_items poi LEFT JOIN products p ON p.id = poi.item_id AND p.tenant_id = $1
            WHERE poi.po_id = $2 AND poi.id = ANY($3::uuid[])""", tenant_id, po["id"], ids)} if ids else {}
+    harga_ppn = await _harga_terima_kapital(conn, tenant_id, po["id"]) if detail else {}
     baris = []
     for pid, qty in akan.items():
         r = detail.get(pid)
         if r is None:
             continue
         stok = ber_stok(r["item_type"], r["track_inventory"])
-        hs = harga_satuan_terima(r)
+        hs = harga_ppn.get(pid) or harga_satuan_terima(r)
         baris.append({"po_item_id": pid, "item_id": r["item_id"], "kode": r["kode_produk"], "nama": r["nama_produk"] or r["description"],
                       "qty": qty, "harga_satuan": hs, "nilai": r2(qty * hs), "ber_stok": stok, "ditolak": tolak.get(pid, NOL),
                       "alasan_tolak": (terima.get("alasan") or {}).get(pid)})

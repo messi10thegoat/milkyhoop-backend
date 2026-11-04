@@ -50,7 +50,6 @@ from .role_resolver import (  # noqa: E402
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
-    PESAN_NON_PKP_PEMBELIAN,
 )
 from .role_precondition import assert_required_roles_for_path  # noqa: E402
 from . import satuan_dasar as SD  # noqa: E402  QTY-DASAR R1 (menggantikan unit_helpers.convert_to_base_unit di jalur stok)
@@ -2799,15 +2798,10 @@ class BillsService:
                         conn, tenant_id, debit_role
                     )
                     debit_account_code = debit_role  # for downstream error messages
-                    vat_input_acct_id = None
-                    if tax_amount_dec > 0:
-                        vat_input_acct_id = await resolve_account_id_by_role_if_pkp(
-                            conn, tenant_id, AccountRole.VAT_INPUT
-                        )
-                        if vat_input_acct_id is None:
-                            # Tenant non-PKP submitting bill with PPN > 0 -> 422
-                            # (Law 4 consistency, no silent skip).
-                            raise ValueError(PESAN_NON_PKP_PEMBELIAN)
+                    vat_input_acct_id = await resolve_account_id_by_role_if_pkp(
+                        conn, tenant_id, AccountRole.VAT_INPUT) if tax_amount_dec > 0 else None
+                    # non-PKP berpajak: PPN DIKAPITALISASI ke baris (tanpa Dr PPN Masukan) -- penentu SATU tagihan_aksi.dasar_tagihan
+                    subtotal_dec, kapital_ppn = TA.dasar_tagihan(grand_total_dec, tax_amount_dec, vat_input_acct_id)
 
                     if not ap_acct_id:
                         raise ValueError("Akun AP_TRADE tidak ter-resolve")
@@ -2875,7 +2869,7 @@ class BillsService:
                         # TA.hitung_debit (barang stok -> Persediaan produk; purchase_account_id produk; jasa -> COGS_SERVICE; non-stok &
                         # tanpa produk -> COGS_SALES; residu -> sink default). Dulu salinan di sini: non-stok -> COGS_SERVICE (5-10110) dan
                         # purchase_account_id diabaikan. Memo == TA.memo_debit (sama dgn posting draf).
-                        for acct_id, amt, is_inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id):
+                        for acct_id, amt, is_inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id, None, kapital_ppn):
                             await conn.execute(
                                 """
                                 INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
@@ -2973,7 +2967,7 @@ class BillsService:
                     await _uto.terapkan_otomatis(conn, {"tenant_id": tenant_id, "user_id": user_id}, bill_id)
 
                     # DTL writes for tax report (Law 16, /milkyhoop-tax Rule 3+10)
-                    if tax_amount_dec > 0:
+                    if tax_amount_dec > 0 and vat_input_acct_id:  # non-PKP: PPN dikapitalisasi, bukan PPN Masukan (tak masuk laporan PPN)
                         taxable_items_dtl = await conn.fetch(
                             "SELECT id, tax_code_id, tax_rate, tax_amount, dpp FROM bill_items WHERE bill_id = $1 AND COALESCE(tax_amount, 0) > 0",
                             bill_id,
@@ -3049,7 +3043,7 @@ class BillsService:
                             default_warehouse["id"] if default_warehouse else None
                         )
 
-                        nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal_dec)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
+                        nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal_dec, kapital_ppn)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
                         for inv_item in bill_items_for_inv:
                             # Only process inventory-tracked goods
                             if inv_item["item_type"] != "goods" or not inv_item.get(
@@ -3210,7 +3204,7 @@ class BillsService:
 
     async def _emit_bill_debit_lines(
         self, conn, tenant_id, bill_id, journal_id,
-        subtotal_dec, default_inv_acct_id, vendor_name, start_line, grn=None,
+        subtotal_dec, default_inv_acct_id, vendor_name, start_line, grn=None, kapital=False,
     ):
         """Baris debit bill PER-BARIS by track_inventory. goods+track -> Persediaan;
         service -> COGS_SERVICE; lainnya (non_inventory / goods-non-track / manual) ->
@@ -3219,7 +3213,7 @@ class BillsService:
         # Perhitungan baris = tagihan_aksi.hitung_debit (SATU fungsi dgn pratinjau POST /bills/{id}/post/preview); di sini hanya MENULIS.
         ln = start_line
         # GRN (grn = TA.rencana_grn, flag penerimaan_barang_v1): Dr GRNI + selisih harga (PPV kredit bila negatif); grn None = perilaku lama.
-        for aid, amt, _inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, default_inv_acct_id, grn):
+        for aid, amt, _inv in await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, default_inv_acct_id, grn, kapital):
             memo = TA.memo_debit(aid, _inv, vendor_name, grn)
             if amt < 0:  # hanya terjadi pada selisih harga GRN (harga tagih < harga terima)
                 await conn.execute(
@@ -3300,10 +3294,10 @@ class BillsService:
 
                 grand_total = Decimal(str(bill["grand_total"]))
                 bill_tax = Decimal(str(bill["tax_amount"] or 0))
-                subtotal = grand_total - bill_tax
+                subtotal, kapital_ppn = TA.dasar_tagihan(grand_total, bill_tax, _akun["vat"])  # non-PKP: PPN dikapitalisasi
 
                 # GRN 3-way match (penentu SAMA dgn pratinjau; PO dikunci SESUDAH tagihan): blok pertama -> pesan; flag mati -> kosong.
-                _grn = await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True)
+                _grn = await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True, kapital=kapital_ppn)
                 if _grn["blocks"]:
                     return {"success": False, "message": _grn["blocks"][0]["message"], "data": None}
                 _grn = _grn if _grn["rencana"] else None
@@ -3325,7 +3319,7 @@ class BillsService:
                 _total_header = grand_total
                 if _grn:
                     _total_header += -sum((a for _, a, _ in await TA.hitung_debit(
-                        conn, tenant_id, bill_id, Decimal(str(subtotal)), _akun["debit"], _grn) if a < 0), Decimal("0"))
+                        conn, tenant_id, bill_id, Decimal(str(subtotal)), _akun["debit"], _grn, kapital_ppn) if a < 0), Decimal("0"))
 
                 # 5. Create journal DRAFT (Law 20)
                 journal_id = uuid_module.uuid4()
@@ -3357,7 +3351,7 @@ class BillsService:
                 line_number = await self._emit_bill_debit_lines(
                     conn, tenant_id, bill_id, journal_id,
                     Decimal(str(subtotal)), inventory_account_id,
-                    bill["vendor_name"], line_number, _grn,
+                    bill["vendor_name"], line_number, _grn, kapital_ppn,
                 )
 
                 # Dr. PPN Masukan (if tax > 0)
@@ -3445,7 +3439,7 @@ class BillsService:
                 await _ad.catat_dokumen(conn, tenant_id, "bill", "posted", bill_id, bill["invoice_number"], user_id)  # AUDIT-DOKUMEN (Law 12)
 
                 # 9.5 Populate document_tax_lines (Fase 2.2)
-                if bill_tax > 0:
+                if bill_tax > 0 and vat_input_account_id:  # non-PKP: PPN dikapitalisasi, bukan PPN Masukan
                     ppn_journal_line_id = await conn.fetchval(
                         "SELECT id FROM journal_lines WHERE journal_id = $1 AND account_id = $2 LIMIT 1",
                         journal_id,
@@ -3524,7 +3518,7 @@ class BillsService:
                 )
                 warehouse_id = default_warehouse["id"] if default_warehouse else None
 
-                nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
+                nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal, kapital_ppn)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
                 for item in bill_items:
                     if item["item_type"] != "goods" or not item.get(
                         "track_inventory", True

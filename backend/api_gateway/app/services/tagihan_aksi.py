@@ -58,13 +58,14 @@ async def neto_tagihan_terposting(conn, tid: str, bill_ids) -> dict:
     baris urut line_number dengan subtotal_dec = grand_total - tax_amount TERSIMPAN (== post_bill / rencana_posting; header beku Law 19
     sesudah posting). Untuk sisi PENERIMAAN aturan D GRN (BACKEND2, pasangan 'tagih_dulu'). Baca saja, TANPA kunci (pemanggil memegang
     kunci PO). Tagihan draf / void / bukan milik tenant -> dilewati (tak ada di hasil)."""
-    out = {}
+    out, kena = {}, None
     for b in await conn.fetch(
             """SELECT id, grand_total, tax_amount FROM bills
                WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND status_v2 NOT IN ('draft', 'void')""", tid, list(bill_ids)):
-        rows = await conn.fetch(
-            "SELECT bi.id, COALESCE(bi.total, 0) AS net FROM bill_items bi WHERE bi.bill_id = $1 ORDER BY bi.line_number", b["id"])
-        out.update(neto_baris(rows, Decimal(str(b["grand_total"] or 0)) - Decimal(str(b["tax_amount"] or 0))))
+        if kena is None and Decimal(str(b["tax_amount"] or 0)) > NOL:
+            kena = not await tenant_pkp(conn, tid)
+        dasar, kapital = dasar_tagihan(b["grand_total"], b["tax_amount"], None if kena else True)
+        out.update(neto_baris(bobot(await conn.fetch(SQL_BARIS_DEBIT, b["id"]), kapital), dasar))
     return out
 
 
@@ -99,12 +100,13 @@ async def _blok_qty_po(conn, tid: str, bill_id, items: list) -> list:
     return out
 
 
-async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: bool = False) -> dict:
+async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: bool = False, kapital: bool = False) -> dict:
     """-> {rencana: {bill_item_id: butir}, blocks: [...], akun: {grni, ppv}|None}. Tulis (kunci=True): PO terkait dikunci FOR UPDATE SESUDAH
     tagihan (urutan bill -> PO; jalur GRN tak pernah mengunci bill, BACKEND2 23 Okt). Blok: butir.blok (SATUAN_TAK_TERKONVERSI) ·
     GRN_KONTRAK_INBOUND (penentu melanggar aturan D) · BONUS_GRN_BELUM (qty bonus atas baris PO ber-stok) · PO_QTY_TERLAMPAUI."""
     rows = await conn.fetch(
-        """SELECT bi.id, bi.quantity, bi.unit, bi.subtotal, bi.discount_amount, COALESCE(bi.total, 0) AS net, bi.purchase_order_item_id,
+        """SELECT bi.id, bi.quantity, bi.unit, bi.subtotal, bi.discount_amount, COALESCE(bi.total, 0) AS net, COALESCE(bi.tax_amount, 0) AS pajak,
+                  bi.purchase_order_item_id,
                   COALESCE(bi.bonus_qty, 0) AS bonus, poi.unit AS po_unit, poi.po_id
            FROM bill_items bi LEFT JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
            WHERE bi.bill_id = $1 ORDER BY bi.line_number""", bill_id)
@@ -115,7 +117,7 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
         for po in sorted({r["po_id"] for r in rows if r["po_id"]}, key=str):
             await conn.fetchrow("SELECT id FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", po, tid)
     from . import grn_tagih as GT
-    neto = neto_baris(rows, subtotal_dec)
+    neto = neto_baris(bobot(rows, kapital), subtotal_dec)
     sama = lambda r: not r["unit"] or not r["po_unit"] or r["unit"].strip().lower() == r["po_unit"].strip().lower()  # noqa: E731
     items = [{"id": r["id"], "quantity": r["quantity"], "unit": r["unit"], "subtotal": r["subtotal"], "discount_amount": r["discount_amount"],
               "purchase_order_item_id": r["purchase_order_item_id"], "nilai_neto": neto[r["id"]],
@@ -167,16 +169,36 @@ async def akun_beban_default(conn, tid: str, item_type) -> object:
     return acct
 
 
-async def nilai_baris(conn, bill_id, subtotal_dec: Decimal) -> dict:
+def dasar_tagihan(grand_total, pajak, vat) -> tuple:
+    """(dasar debit, kapital) -- SATU penentu PPN masukan tagihan. PKP (vat = akun PPN Masukan): dasar = grand_total - pajak, PPN baris
+    sendiri. Non-PKP berpajak (vat None; putusan pemilik 4 Nov 2026, pola Accurate): PPN tak bisa dikreditkan -> DIKAPITALISASI: dasar =
+    grand_total, tanpa Dr PPN Masukan, dibagi ke baris (bobot neto + pajak baris) -> Persediaan/beban + kartu = harga + PPN."""
+    g, p = Decimal(str(grand_total or 0)), Decimal(str(pajak or 0))
+    kapital = p > NOL and vat is None
+    return (g if kapital else g - p), kapital
+
+
+def bobot(rows, kapital: bool) -> list:
+    """Baris untuk neto_baris: net = neto baris (+ pajak baris bila PPN dikapitalisasi)."""
+    return [{"id": r["id"], "net": Decimal(str(r["net"] or 0)) + (Decimal(str(r["pajak"] or 0)) if kapital else NOL)} for r in rows]
+
+
+async def tenant_pkp(conn, tid: str) -> bool:
+    return bool(await conn.fetchval('SELECT is_pkp FROM "Tenant" WHERE id = $1', tid))
+
+
+async def nilai_baris(conn, bill_id, subtotal_dec: Decimal, kapital: bool = False) -> dict:
     """{bill_item_id: neto_baris} -- HPP-NETO (4 Nov 2026): biaya kartu stok FPB (create_bill_v2/post_bill) == Dr baris hitung_debit."""
-    return neto_baris(await conn.fetch(SQL_BARIS_DEBIT, bill_id), subtotal_dec)
+    return neto_baris(bobot(await conn.fetch(SQL_BARIS_DEBIT, bill_id), kapital), subtotal_dec)
 
 
-SQL_BARIS_DEBIT = ("SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
+SQL_BARIS_DEBIT = ("SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, COALESCE(bi.tax_amount, 0) AS pajak, p.item_type, "
+                   "p.track_inventory, p.purchase_account_id "
                    "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id WHERE bi.bill_id = $1 ORDER BY bi.line_number")
 
 
-async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None) -> list:
+async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None,
+                       kapital: bool = False) -> list:
     """Baris debit tagihan PER-BARIS (diangkat APA ADANYA dari BillsService._emit_bill_debit_lines; SATU fungsi untuk posting & pratinjau):
     goods+track -> Persediaan; service -> COGS_SERVICE; lainnya -> products.purchase_account_id bila ada, else COGS_SALES. Peran tak
     terpetakan -> HTTPException 422 ACCOUNT_DEFAULT_UNMAPPED (akun_beban_default). Residu -> sink default (Law 4). -> [(account_id, jumlah, is_inv)]
@@ -185,7 +207,7 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
     if await tagihan_pembuka(conn, tid, bill_id):  # SALDO-AWAL-VENDOR-A: default_inv_acct_id = Modal Saldo Awal (blok_posting)
         return [(default_inv_acct_id, subtotal_dec, SALDO_AWAL)] if subtotal_dec != NOL else []
     rows = await conn.fetch(SQL_BARIS_DEBIT, bill_id)
-    nilai = neto_baris(rows, subtotal_dec)  # HPP-NETO: neto baris + porsi diskon kepala/tunai (== kartu stok FPB)
+    nilai = neto_baris(bobot(rows, kapital), subtotal_dec)  # HPP-NETO: neto + porsi kepala/tunai (+ PPN non-PKP) == kartu stok FPB
     # GRN (rencana_grn): baris ber-GRN -> Dr GRNI nilai terima + selisih harga ke PPV (debit +, kredit -), BUKAN Persediaan; grn None = lama.
     rencana_grn_, akun_grn = (grn or {}).get("rencana") or {}, (grn or {}).get("akun") or {}
     tot, is_inv, urut = {}, {}, []
@@ -236,7 +258,7 @@ def memo_debit(aid, inv, vendor_name: str, grn: Optional[dict]) -> str:
 
 async def blok_posting(conn, tid: str, bill) -> tuple:
     """-> (blocks, akun{ap, debit, vat, debit_role}). Urutan = pemeriksaan post_bill. bill = baris bills (status_v2, issue_date, tax_amount, id)."""
-    from .role_resolver import PESAN_NON_PKP_PEMBELIAN, AccountRole, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
+    from .role_resolver import AccountRole, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
     bloks = []
     if bill["status_v2"] != "draft":
         bloks.append(blok("BUKAN_DRAF", tg.tak_bisa_status("bill", bill["status_v2"], "diposting")))
@@ -252,9 +274,7 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
     debit = await resolve_account_id_by_role(conn, tid, debit_role)
     vat = None
     if Decimal(str(bill["tax_amount"] or 0)) > 0:
-        vat = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT)
-        if vat is None:
-            bloks.append(blok("NON_PKP_PPN", PESAN_NON_PKP_PEMBELIAN))
+        vat = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT)  # None = non-PKP: PPN dikapitalisasi (dasar_tagihan)
     bloks += DN.blok_faktur_nol("bill", bill["grand_total"])  # SI-FPB-RP0: == create_bill_v2 posted (fungsi tolak sama)
     # QTY-DASAR R1: baris BER-STOK (goods + track_inventory, == loop stok post_bill) wajib bersatuan dasar atau berkonversi
     from . import satuan_dasar as SD
@@ -281,12 +301,13 @@ async def rencana_posting(conn, tid: str, bill_id) -> Optional[dict]:
     bloks, akun = await blok_posting(conn, tid, b)
     total = Decimal(str(b["grand_total"] or 0))
     pajak = Decimal(str(b["tax_amount"] or 0))
-    grn = await rencana_grn(conn, tid, b["id"], total - pajak)  # GRN: penentu SAMA dgn post_bill (tanpa kunci); flag mati -> kosong
+    dasar, kapital = dasar_tagihan(total, pajak, akun["vat"])
+    grn = await rencana_grn(conn, tid, b["id"], dasar, kapital=kapital)  # GRN: penentu SAMA dgn post_bill (tanpa kunci); flag mati -> kosong
     bloks += grn["blocks"]
     baris = []
     if akun["debit"]:
         try:
-            for aid, amt, inv in await hitung_debit(conn, tid, b["id"], total - pajak, akun["debit"], grn if grn["rencana"] else None):
+            for aid, amt, inv in await hitung_debit(conn, tid, b["id"], dasar, akun["debit"], grn if grn["rencana"] else None, kapital):
                 baris.append({"account_id": aid, "debit": amt if amt > NOL else NOL, "credit": -amt if amt < NOL else NOL,
                               "memo": memo_debit(aid, inv, b["vendor_name"], grn)})
         except HTTPException as e:

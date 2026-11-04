@@ -55,7 +55,6 @@ from ..services.role_resolver import (  # noqa: E402
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
-    PESAN_NON_PKP_PEMBELIAN,
 )
 from decimal import Decimal  # noqa: E402
 
@@ -228,7 +227,7 @@ def get_user_context(request: Request) -> dict:
 # =============================================================================
 # LIST BILLS
 # =============================================================================
-async def _bill_preview_debit_lines(conn, tenant_id, items_in, subtotal, acct_fn, num_fn):
+async def _bill_preview_debit_lines(conn, tenant_id, items_in, subtotal, acct_fn, num_fn, kapital=False):
     """Cermin PENUH _emit_bill_debit_lines (bills_service): agregasi baris debit PER-AKUN
     dari tiap baris item, bukan sink Persediaan tunggal utk tagihan CAMPUR. Nominal per
     baris = BillCalculator.calculate_item_total(qty, price, discount).total (== bill_items
@@ -236,6 +235,7 @@ async def _bill_preview_debit_lines(conn, tenant_id, items_in, subtotal, acct_fn
     tunai) -> sink Persediaan default (else akun pertama), persis seperti posting. Return
     daftar baris debit [{account_name, account_code, debit, credit, event}]. Item6 Sabtu."""
     from decimal import Decimal as _D
+    from ..services import tagihan_aksi as TA
     def_name, def_code, _ = await acct_fn(
         AccountRole.INVENTORY_MERCHANDISE, "Persediaan Barang Dagangan"
     )
@@ -271,24 +271,21 @@ async def _bill_preview_debit_lines(conn, tenant_id, items_in, subtotal, acct_fn
     amt: dict = {}
     meta: dict = {}
     order: list = []
-    sum_net = _D("0")
-    for _it in items_in:
+    baris = []
+    for k, _it in enumerate(items_in):
         _c, _n = await _line_acct(_it.get("item_id") or _it.get("product_id"))
         _qty = num_fn(_it.get("qty", _it.get("quantity", 0)), 0.0)
         _price = num_fn(_it.get("price", _it.get("unit_price", 0)), 0.0)
         _dpct = _D(str(num_fn(_it.get("discount_percent", 0), 0)))
         _net = _D(str(BillCalculator.calculate_item_total(_qty, _price, _dpct)["total"]))
-        if _c not in amt:
-            amt[_c] = _D("0"); meta[_c] = _n; order.append(_c)
-        amt[_c] += _net
-        sum_net += _net
-
-    residual = (_D(str(subtotal)) - sum_net).quantize(_D("0.01"))
-    if residual != _D("0") and order:
-        sink = def_code if def_code in amt else order[0]
-        if sink not in amt:
-            amt[sink] = _D("0"); meta[sink] = def_name; order.append(sink)
-        amt[sink] += residual
+        _pjk = (_net * _D(str(num_fn(_it.get("tax_rate"), 0))) / 100).quantize(_D("0.01")) if kapital else _D("0")
+        baris.append({"id": k, "net": _net, "pajak": _pjk, "akun": _c, "nama": _n})
+    # HPP-NETO: porsi diskon kepala/tunai (+ PPN non-PKP) pro-rata per baris == posting (tagihan_aksi.neto_baris, SATU aturan)
+    nilai = TA.neto_baris(TA.bobot(baris, kapital), _D(str(subtotal)))
+    for b in baris:
+        if b["akun"] not in amt:
+            amt[b["akun"]] = _D("0"); meta[b["akun"]] = b["nama"]; order.append(b["akun"])
+        amt[b["akun"]] += nilai[b["id"]]
 
     out = []
     for _c in order:
@@ -326,10 +323,10 @@ async def preview_journal(request: Request, body: dict = Body(...)):
        maupun barang sama-sama masuk akun yang sama. Bukan keputusan endpoint
        ini; itu yang dilakukan posting (`post_bill` me-resolve satu
        `debit_role` untuk seluruh dokumen).
-    2. PPN Masukan DIGERBANGI is_pkp lewat `resolve_account_id_by_role_if_pkp`,
-       dan posting MENOLAK KERAS bila tenant non-PKP mengirim pajak > 0.
-       Kebalikan dari faktur penjualan, yang tak memeriksa is_pkp sama sekali
-       (dok. 48 T6c). Pratinjau meniru sisi INI, bukan sisi penjualan.
+    2. PPN Masukan DIGERBANGI is_pkp lewat `resolve_account_id_by_role_if_pkp`.
+       Tenant non-PKP berpajak: PPN DIKAPITALISASI ke baris (tanpa Dr PPN
+       Masukan; tagihan_aksi.dasar_tagihan, putusan pemilik 4 Nov 2026).
+       Pratinjau meniru posting, bukan sisi penjualan.
     3. Nol pengakuan pendapatan, nol HPP — tagihan tidak menggerakkan laba
        saat diposting.
 
@@ -344,7 +341,6 @@ async def preview_journal(request: Request, body: dict = Body(...)):
       - tiap item ada, aktif, milik tenant ini
       - periode fiskal untuk tanggal tagihan terbuka
       - peran akun ter-resolve (AP_TRADE / debit / VAT_INPUT)
-      - tenant non-PKP mengirim pajak > 0  -> posting akan DITOLAK
       - diskon >= nilai dokumen            -> tagihan menjadi nol/negatif
 
     YANG TIDAK DIPERIKSA (sengaja, dan harus tetap tertulis di sini):
@@ -505,36 +501,16 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         # Item6 Sabtu: pratinjau CAMPUR kini cermin PENUH posting (_emit_bill_debit_lines):
         # agregasi debit PER-AKUN + residu ke sink Persediaan, bukan sink tunggal utk
         # subtotal. Bill SERAGAM -> tetap satu baris (identik hasil lama).
+        from ..services import tagihan_aksi as TA
+        vat_name, vat_code, vat_ok = await _acct(AccountRole.VAT_INPUT, "PPN Masukan", pkp_gated=True) if bill_tax > 0 else (None, None, False)
+        # non-PKP berpajak: PPN DIKAPITALISASI ke baris, tanpa Dr PPN Masukan (== posting, tagihan_aksi.dasar_tagihan)
+        dasar, kapital = TA.dasar_tagihan(grand_total, bill_tax, vat_code if vat_ok else None)
         lines = list(await _bill_preview_debit_lines(
-            conn, ctx["tenant_id"], items_in, subtotal, _acct, _num
+            conn, ctx["tenant_id"], items_in, dasar, _acct, _num, kapital
         ))
-        if bill_tax > 0:
-            vat_name, vat_code, vat_ok = await _acct(
-                AccountRole.VAT_INPUT, "PPN Masukan", pkp_gated=True
-            )
-            if vat_ok:
-                lines.append({"account_name": vat_name, "account_code": vat_code,
-                              "debit": bill_tax, "credit": 0, "event": "BILL"})
-            else:
-                # Cermin post_bill (:3395-3404): tenant non-PKP + pajak > 0 =>
-                # posting MENOLAK KERAS dan NOL jurnal terbentuk. Karena itu
-                # pratinjau tidak boleh menampilkan baris jurnal apa pun di sini:
-                # menampilkan Dr Persediaan + Cr Hutang tanpa baris PPN
-                # menghasilkan jurnal TIMPANG di kartu (4.500.000 vs 4.995.000) —
-                # gambar yang tak pernah akan terjadi, dan justru kelas
-                # "kartu menampilkan jurnal yang salah" yang endpoint ini ada
-                # untuk membasmi. Yang benar: nol baris + satu kalimat jelas.
-                warnings.append(
-                    PESAN_NON_PKP_PEMBELIAN
-                    + " Tagihan berpajak akan DITOLAK saat diterbitkan."
-                )
-                return {
-                    "journal_lines": [],
-                    "warnings": warnings,
-                    "subtotal": subtotal,
-                    "tax_amount": bill_tax,
-                    "total_amount": grand_total,
-                }
+        if bill_tax > 0 and vat_ok:
+            lines.append({"account_name": vat_name, "account_code": vat_code,
+                          "debit": bill_tax, "credit": 0, "event": "BILL"})
         lines.append({"account_name": ap_name, "account_code": ap_code,
                       "debit": 0, "credit": grand_total, "event": "BILL"})
 

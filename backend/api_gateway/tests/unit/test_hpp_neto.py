@@ -35,7 +35,7 @@ class KonTagih:
 
 
 def _b(net, jenis="goods"):
-    return {"id": uuid.uuid4(), "product_id": uuid.uuid4(), "net": D(net), "item_type": jenis, "track_inventory": jenis == "goods",
+    return {"id": uuid.uuid4(), "product_id": uuid.uuid4(), "net": D(net), "pajak": D("0"), "item_type": jenis, "track_inventory": jenis == "goods",
             "purchase_account_id": None}
 
 
@@ -107,3 +107,82 @@ def test_kirim_tunggal_massal_pratinjau_memakai_penentu_sama():
     for rel, nama in (("routers/purchase_orders.py", "kirim_po_core"), ("routers/purchase_orders.py", "preview_send_purchase_order"),
                       ("routers/bulk_po.py", "_blok")):
         assert "await PR.rencana_kirim(conn," in ast.unparse(_fungsi(rel, nama)), (rel, nama)
+
+
+# ---------------------------------------------------------------- NON-PKP: PPN pembelian DIKAPITALISASI (putusan pemilik 4 Nov 2026)
+def _bp(net, pajak="0", jenis="goods"):
+    return {**_b(net, jenis), "pajak": D(pajak)}
+
+
+@pytest.mark.parametrize("vat,harap", [(INV, (D("1000000"), False)), (None, (D("1110000"), True))])
+def test_dasar_tagihan_pkp_kurangi_pajak_non_pkp_kapitalisasi(vat, harap):
+    assert TA.dasar_tagihan(D("1110000"), D("110000"), vat) == harap
+    assert TA.dasar_tagihan(D("1000000"), D("0"), None) == (D("1000000"), False)  # tanpa pajak: tak ada yang dikapitalisasi
+
+
+async def _debit(monkeypatch, baris, dasar, kapital):
+    async def bukan_pembuka(*a): return False
+    async def akun_inv(conn, tid, pid): return {"inventory_account_id": INV}
+    async def beban(*a): return BEBAN
+    monkeypatch.setattr(TA, "tagihan_pembuka", bukan_pembuka)
+    monkeypatch.setattr(TA, "akun_beban_default", beban)
+    import app.services.inventory_helpers as IH
+    monkeypatch.setattr(IH, "resolve_inventory_accounts", akun_inv)
+    k = KonTagih(baris)
+    return ({a: v for a, v, _ in await TA.hitung_debit(k, T, uuid.uuid4(), dasar, INV, None, kapital)},
+            await TA.nilai_baris(k, uuid.uuid4(), dasar, kapital))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("baris,grand,pajak,harap_inv,harap_beban", [
+    ([("1000000", "0", "goods")], "1110000", "110000", "1110000", None),                                  # contoh pemilik: PPN kepala 11%
+    ([("1000000", "110000", "goods"), ("100000", "0", "service")], "1210000", "110000", "1110000", "100000"),  # campur: PPN baris barang saja
+    ([("950000", "0", "goods")], "1054500", "104500", "1054500", None)])                                  # diskon baris 5% + PPN
+async def test_non_pkp_ppn_masuk_persediaan_dan_kartu(monkeypatch, baris, grand, pajak, harap_inv, harap_beban):
+    rows = [_bp(n, p, j) for n, p, j in baris]
+    dasar, kapital = TA.dasar_tagihan(D(grand), D(pajak), None)
+    debit, nilai = await _debit(monkeypatch, rows, dasar, kapital)
+    assert debit[INV] == D(harap_inv) and debit.get(BEBAN) == (D(harap_beban) if harap_beban else None)
+    assert sum(debit.values(), D("0")) == D(grand)  # tanpa Dr PPN Masukan: Σ debit == hutang
+    assert sum((nilai[r["id"]] for r in rows if r["item_type"] == "goods"), D("0")) == debit[INV]  # kartu == Dr Persediaan
+
+
+@pytest.mark.asyncio
+async def test_pkp_tidak_berubah_ppn_tetap_terpisah(monkeypatch):
+    rows = [_bp("1000000", "110000"), _bp("100000", "0", "service")]
+    dasar, kapital = TA.dasar_tagihan(D("1210000"), D("110000"), INV)
+    debit, nilai = await _debit(monkeypatch, rows, dasar, kapital)
+    assert (debit[INV], debit[BEBAN], kapital) == (D("1000000"), D("100000"), False)
+
+
+def test_penjaga_tolak_non_pkp_dihapus_dari_jalur_tagihan():
+    for rel in ("services/tagihan_aksi.py", "services/bills_service.py", "routers/bills.py"):
+        s = (APP / rel).read_text()
+        assert "NON_PKP_PPN" not in s and "PESAN_NON_PKP_PEMBELIAN" not in s, rel
+    for rel, nama in (("services/bills_service.py", "create_bill_v2"), ("services/bills_service.py", "post_bill"),
+                      ("services/tagihan_aksi.py", "rencana_posting"), ("routers/bills.py", "preview_journal")):
+        assert "dasar_tagihan(" in ast.unparse(_fungsi(rel, nama)), (rel, nama)
+
+
+class KonPO:
+    def __init__(self, pkp, pajak):
+        self.pkp, self.pajak = pkp, pajak
+
+    async def fetchrow(self, sql, *a):
+        assert "FROM purchase_orders" in sql
+        return {"total_amount": D("1110000") if self.pajak else D("1000000"), "tax_amount": D("110000") if self.pajak else D("0")}
+
+    async def fetchval(self, sql, *a):
+        assert 'FROM "Tenant"' in sql
+        return self.pkp
+
+    async def fetch(self, sql, *a):
+        assert "FROM purchase_order_items" in sql
+        return [{"id": uuid.UUID(int=5), "quantity": D("10"), "net": D("1000000"), "pajak": D("0")}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pkp,pajak,harap", [(False, True, {str(uuid.UUID(int=5)): D("111000")}), (True, True, {}), (False, False, {})])
+async def test_grn_non_pkp_harga_terima_termasuk_ppn(pkp, pajak, harap):
+    from app.services import grn_rencana as G
+    assert await G._harga_terima_kapital(KonPO(pkp, pajak), T, uuid.uuid4()) == harap
