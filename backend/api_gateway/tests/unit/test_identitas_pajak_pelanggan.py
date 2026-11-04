@@ -88,8 +88,9 @@ def test_insert_create_kolom_placeholder_argumen_sejajar():
     m = re.search(r"INSERT INTO customers \((.*?)\)\s*VALUES \((.*?)\)", src, re.S)
     kolom = [k.strip() for k in m.group(1).split(",")]
     tempat = re.findall(r"\$(\d+)", m.group(2))
-    assert len(kolom) == len(tempat) == 33 and tempat == [str(i) for i in range(1, 34)]
-    assert kolom[29:] == list(KUNCI)
+    # 4 Nov 2026: + price_list_id ($34, daftar harga saat dibuat)
+    assert len(kolom) == len(tempat) == 34 and tempat == [str(i) for i in range(1, 35)]
+    assert kolom[29:33] == list(KUNCI) and kolom[33] == "price_list_id"
     for i, k in enumerate(KUNCI, start=30):
         assert f"body.{k},  # ${i}" in src
 

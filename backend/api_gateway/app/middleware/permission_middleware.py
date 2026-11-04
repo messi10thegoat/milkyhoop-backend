@@ -791,6 +791,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/resolve/sales_order$", ["POST"], "sales_order", "R"),
     (r"^/api/price-lists/resolve/quote$", ["POST"], "quote", "R"),
     (r"^/api/price-lists/resolve/sales_invoice$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
     (r"^/api/price-lists", ["POST"], "price_list", "C"),
     (r"^/api/price-lists", ["PUT", "PATCH"], "price_list", "U"),
     (r"^/api/price-lists", ["DELETE"], "price_list", "D"),

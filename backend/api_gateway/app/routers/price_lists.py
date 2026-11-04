@@ -12,6 +12,7 @@ from ..schemas.price_lists import (
     CreatePriceListRequest,
     UpdatePriceListRequest,
     PriceListItemCreate,
+    PriceListItemUpdate,
     PriceListResponse,
     PriceListListResponse,
     PriceListDetailResponse,
@@ -37,8 +38,13 @@ def _galat_unik(e) -> GalatBerkode:
     return GalatBerkode(409, "KODE_DAFTAR_GANDA", "Kode daftar harga itu sudah dipakai.", field="code")
 
 
-async def tulis_baris_harga(conn, tid: str, pl_id, item) -> object:
-    """SATU penulis baris harga (buat daftar + tambah baris): barang milik usaha, satuan dasar/berkonversi (penentu satuan_dasar), unik."""
+def _satuan(unit):
+    return (unit or None) and " ".join(unit.split())
+
+
+async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
+    """PENENTU BERSAMA penulis + pratinjau (BACA SAJA; GalatBerkode, kalimat == tulis): barang milik usaha, satuan dasar/berkonversi
+    (penentu satuan_dasar), unik barang + satuan + qty minimum di daftar ini (baris yang diubah dikecualikan). -> id barang."""
     try:
         pid = UUID(str(item.item_id))
     except (ValueError, TypeError):
@@ -47,13 +53,32 @@ async def tulis_baris_harga(conn, tid: str, pl_id, item) -> object:
         raise GalatBerkode(400, "BARANG_TIDAK_DITEMUKAN", "Barang tidak ditemukan di usaha ini.", field="item_id")
     if SD.normal(item.unit):
         await SD.qty_dasar(conn, tid, pid, item.unit, item.min_quantity, "konversi")  # tanpa konversi -> 400 berkalimat
+    if await conn.fetchval(
+            """SELECT 1 FROM price_list_items WHERE price_list_id = $1 AND item_id = $2 AND unit IS NOT DISTINCT FROM $3
+               AND min_quantity = $4 AND ($5::uuid IS NULL OR id <> $5)""", pl_id, pid, _satuan(item.unit), item.min_quantity, line_id):
+        raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+    return pid
+
+
+async def tulis_baris_harga(conn, tid: str, pl_id, item, line_id=None) -> object:
+    """SATU penulis baris harga (buat daftar + tambah baris + ubah baris) lewat siapkan_baris_harga. line_id = ubah baris itu di
+    tempat (UPDATE; dulu ubah = hapus + tambah, tak atomik). Unik tetap dijaga constraint DB (balapan -> 409 yang sama)."""
+    pid = await siapkan_baris_harga(conn, tid, pl_id, item, line_id)
+    unit = _satuan(item.unit)
     try:
         async with conn.transaction():
+            if line_id is not None:
+                return await conn.fetchval(
+                    """UPDATE price_list_items SET unit = $3, price = $4, min_quantity = $5, discount_percent = $6, start_date = $7,
+                              end_date = $8, is_default_unit = $9
+                       WHERE id = $1 AND price_list_id = $2 RETURNING id""",
+                    line_id, pl_id, unit, item.price, item.min_quantity, item.discount_percent, item.start_date, item.end_date,
+                    item.is_default_unit)
             return await conn.fetchval(
                 """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent,
                                                  start_date, end_date, is_default_unit)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
-                pl_id, pid, item.item_code, (item.unit or None) and " ".join(item.unit.split()), item.price, item.min_quantity,
+                pl_id, pid, item.item_code, unit, item.price, item.min_quantity,
                 item.discount_percent, item.start_date, item.end_date, item.is_default_unit)
     except asyncpg.exceptions.UniqueViolationError as e:
         raise _galat_unik(e)
@@ -194,9 +219,11 @@ async def get_price_list(request: Request, price_list_id: UUID):
             )
             if not row:
                 raise HTTPException(status_code=404, detail=TAK_ADA)
-            items = await conn.fetch(
-                "SELECT * FROM price_list_items WHERE price_list_id = $1 ORDER BY item_code",
-                price_list_id,
+            items = await conn.fetch(  # nama barang lewat JOIN (satu kueri)
+                """SELECT pli.*, p.nama_produk AS item_name FROM price_list_items pli
+                   LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = $2
+                   WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.min_quantity""",
+                price_list_id, ctx["tenant_id"],
             )
             return {
                 "success": True,
@@ -222,7 +249,9 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             "id": str(i["id"]),
                             "item_id": str(i["item_id"]),
                             "item_code": i["item_code"],
+                            "item_name": i["item_name"],
                             "unit": i["unit"],
+                            "is_default_unit": bool(i["is_default_unit"]),
                             "price": i["price"],
                             "min_quantity": float(i["min_quantity"]),
                             "discount_percent": float(i["discount_percent"])
@@ -378,6 +407,78 @@ async def add_item_to_price_list(
                 "message": "Harga ditambahkan ke daftar.",
                 "data": {"id": str(item_id)},
             }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GAGAL)
+
+
+async def _baris_gabungan(conn, tid: str, price_list_id: UUID, line_id: UUID, body: PriceListItemUpdate, kunci: bool) -> PriceListItemCreate:
+    """Daftar milik usaha + baris tersimpan (FOR UPDATE saat tulis) + medan terkirim -> badan lengkap untuk penentu bersama."""
+    if not await conn.fetchval("SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, tid):
+        raise HTTPException(status_code=404, detail=TAK_ADA)
+    r = await conn.fetchrow("SELECT * FROM price_list_items WHERE id = $1 AND price_list_id = $2" + (" FOR UPDATE" if kunci else ""),
+                            line_id, price_list_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Baris harga tidak ditemukan.")
+    lama = {k: r[k] for k in ("unit", "price", "min_quantity", "is_default_unit", "discount_percent", "start_date", "end_date")}
+    lama["discount_percent"] = float(lama["discount_percent"]) if lama["discount_percent"] is not None else None
+    return PriceListItemCreate(item_id=str(r["item_id"]), item_code=r["item_code"], **{**lama, **body.model_dump(exclude_unset=True)})
+
+
+async def _pratinjau_baris(request: Request, price_list_id: UUID, badan, line_id=None) -> dict:
+    """Pola /customers/preview: penentu SAMA dengan tulis di transaksi READ ONLY, nol tulis; galat -> blocks (kalimat == tulis)."""
+    from pydantic import ValidationError
+    from .customers import blok_dari_galat, blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(badan or {})
+    try:
+        b = (PriceListItemUpdate if line_id else PriceListItemCreate).model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "payload": payload}}
+    bloks = []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            try:
+                if not line_id and not await conn.fetchval("SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2",
+                                                           price_list_id, ctx["tenant_id"]):
+                    raise HTTPException(status_code=404, detail=TAK_ADA)
+                item = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, b, False) if line_id else b
+                await siapkan_baris_harga(conn, ctx["tenant_id"], price_list_id, item, line_id)
+            except HTTPException as e:
+                bloks.append(blok_dari_galat(e))
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "payload": payload}}
+
+
+@router.post("/{price_list_id}/items/preview")
+async def preview_add_price_list_item(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau tambah baris harga (badan == POST /{id}/items)."""
+    return await _pratinjau_baris(request, price_list_id, body)
+
+
+@router.post("/{price_list_id}/items/{line_id}/edit/preview")
+async def preview_update_price_list_item(request: Request, price_list_id: UUID, line_id: UUID, body: dict):
+    """Pratinjau ubah baris harga (badan == PATCH /{id}/items/{line_id})."""
+    return await _pratinjau_baris(request, price_list_id, body, line_id)
+
+
+@router.patch("/{price_list_id}/items/{line_id}", response_model=PriceListResponse)
+async def update_price_list_item(request: Request, price_list_id: UUID, line_id: UUID, body: PriceListItemUpdate):
+    """Ubah SATU baris harga, atomik (ANDROID U3): baris tersimpan + medan terkirim -> penulis YANG SAMA (validasi satuan/unik)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                baru = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, body, True)
+                await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, baru, line_id=line_id)
+            return {"success": True, "message": "Harga diperbarui.", "data": {"id": str(line_id)}}
     except HTTPException:
         raise
     except Exception as e:
