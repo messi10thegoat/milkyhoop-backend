@@ -77,7 +77,7 @@ def test_data_lama_tak_menjumlah_jatuh_ke_pola_lama_bukan_angka_karangan():
 def test_semua_templat_bertabel_harga_memakai_makro_ringkasan_satu_sumber():
     for f, fn in (("sales_invoice.html", "faktur_penjualan"), ("credit_note.html", "nota"), ("debit_note.html", "nota"),
                   ("bill_invoice.html", "faktur_pembelian"), ("purchase_order.html", "pesanan_pembelian"), ("quote.html", "penawaran"),
-                  ("proforma.html", "proforma")):
+                  ("proforma.html", "proforma"), ("rekap_pesanan.html", "rekap")):
         s = re.sub(r"\{#.*?#\}", "", (PS.TEMPLATE_DIR / f).read_text(), flags=re.S)   # komentar Jinja boleh menyebut riwayat
         assert f"RC.{fn}(" in s and '{% from "_partials/ringkasan.html" import ringkasan %}' in s, f
         assert "Diskon item" not in s and 'class="summary-table"' not in s and '<div class="sum">' not in s, f   # blok lama dihapus
@@ -128,3 +128,11 @@ def test_proforma_ber_ttd_penutup_sama_dengan_si():
     h = r.html
     assert '<div class="penutup-si">' in h and "Hormat kami," in h and "Grapgrap" in h and "Catatan uji" in h
     assert h.index("Hormat kami,") < h.index('class="summary-table"')
+
+
+def test_rekap_ringkasan_akun_tanpa_ttd():
+    rows = RC.rekap({"total": D("3108372"), "dibayar": D("1554186"), "nota_kredit": D("100000"), "sisa": D("1454186")})
+    assert [(r["label"], r["nilai"], r["kelas"]) for r in rows] == [("Total pesanan", D("3108372"), ""), ("Sudah dibayar", D("1554186"), "kurang"),
+                                                                    ("Nota kredit", D("100000"), "kurang"), ("Sisa tagihan", D("1454186"), "sisa")]
+    assert RC.rekap({"total": 1, "dibayar": 0, "sisa": 1})[1]["kelas"] == ""   # belum dibayar = "Rp 0", bukan "-Rp 0"
+    assert "Hormat kami" not in (PS.TEMPLATE_DIR / "rekap_pesanan.html").read_text()   # putusan MASTER: Rekap TANPA TTD

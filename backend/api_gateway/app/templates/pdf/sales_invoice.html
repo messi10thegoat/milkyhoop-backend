@@ -33,14 +33,8 @@
 <div class="invoice">
 
     <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">Faktur Penjualan</h1>
-        </div>
-        {% if invoice.tenant and invoice.tenant.logo_data %}
-        <img src="{{ invoice.tenant.logo_data | logo_rapat }}" class="company-logo" alt="">
-        {% endif %}
-    </div>
+    {% from "_partials/kepala_si.html" import kepala %}
+    {{ kepala("Faktur Penjualan", invoice.tenant.logo_data if invoice.tenant else none) }}
 
     <!-- 2. Meta -->
     <div class="meta-block">
