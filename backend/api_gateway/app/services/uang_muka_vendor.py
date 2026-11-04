@@ -21,14 +21,19 @@ NAMA_PERAN = {
     AccountRole.CASH_GENERAL: "Kas",
 }
 
-SQL_SISA_JURNAL = """
+_SISA = """
     SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
     FROM journal_entries je
     JOIN journal_lines jl ON jl.journal_id = je.id
-    WHERE je.tenant_id = $1 AND je.source_id = $2 AND je.source_type = ANY($3::text[])
+    WHERE je.tenant_id = $1 AND {sumber} AND je.source_type = ANY($3::text[])
       AND je.status = 'POSTED' AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
       AND jl.account_id = $4
 """
+SQL_SISA_JURNAL = _SISA.format(sumber="je.source_id = $2")
+# Kartu detail VENDOR (4 Nov 2026, strip F2 simetris pelanggan): sisa SEMUA uang muka vendor itu = rumus YANG SAMA atas deposit terbitnya
+SQL_SISA_VENDOR = _SISA.format(
+    sumber="je.source_id IN (SELECT vd.id FROM vendor_deposits vd WHERE vd.tenant_id = $1 AND vd.vendor_id = $2 "
+           "AND vd.status NOT IN ('draft', 'void'))")
 
 
 async def akun_peran(conn, tenant_id: str, peran: str) -> UUID:
@@ -40,6 +45,13 @@ async def akun_peran(conn, tenant_id: str, peran: str) -> UUID:
             "code": "PERAN_AKUN_BELUM_DIPETAKAN",
             "message": f"Akun untuk peran '{NAMA_PERAN.get(peran, peran)}' belum dipetakan. Atur pemetaan akun dulu.",
             "role": peran})
+
+
+async def sisa_vendor(conn, tenant_id: str, vendor_id) -> Decimal:
+    """Σ sisa uang muka pembelian vendor (detail vendor `uang_muka`) -- predikat SAMA dengan sisa_jurnal per deposit."""
+    akun = await akun_peran(conn, tenant_id, AccountRole.AP_PREPAID)
+    v = await conn.fetchval(SQL_SISA_VENDOR, tenant_id, UUID(str(vendor_id)), list(SUMBER_JURNAL), akun)
+    return Decimal(str(v or 0))
 
 
 async def sisa_jurnal(conn, tenant_id: str, deposit_id) -> Decimal:

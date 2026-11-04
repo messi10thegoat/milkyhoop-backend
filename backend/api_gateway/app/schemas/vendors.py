@@ -410,6 +410,7 @@ class VendorDetail(BaseModel):
     lewat_tempo_nilai: Optional[UangJson] = 0
     lewat_tempo_jumlah: int = 0
     total_pembelian: Optional[UangJson] = 0
+    uang_muka: Optional[UangJson] = None  # sisa uang muka pembelian (jurnal AP_PREPAID); null = peran akun belum dipetakan
     jumlah_tagihan: Optional[int] = 0  # K2b: null bila tanpa izin BACA faktur pembelian (omitted)
     last_bill_date: Optional[str] = None
     jumlah_dokumen: Optional[int] = 0
