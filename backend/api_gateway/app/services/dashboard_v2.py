@@ -991,9 +991,15 @@ async def so_dp_belum(conn, tenant_id: str, hari_ini: date) -> list:
     return await so_aksi.dp_belum_diterima(conn, tenant_id, hari_ini)
 
 
+FLAG_REKON_MATI = "modul_rekonsiliasi_mati"  # preset grosir_distribusi (5 Nov): modul disembunyikan -> tanpa tugas rekonsiliasi
+
+
 async def rekening_belum_rekon(conn, tenant_id: str, hari_ini: date) -> list:
-    """Putusan pemilik: tugas rekonsiliasi HANYA bila tenant PERNAH merekonsiliasi.
+    """Putusan pemilik: tugas rekonsiliasi HANYA bila tenant PERNAH merekonsiliasi dan modulnya tidak dimatikan (FLAG_REKON_MATI).
     Lalu: rekening bank aktif yang rekonsiliasi selesai terakhirnya < akhir bulan lalu."""
+    from .tenant_features import fitur_aktif
+    if FLAG_REKON_MATI in await fitur_aktif(conn, tenant_id):
+        return []
     pernah = await conn.fetchval(
         """SELECT EXISTS (SELECT 1 FROM reconciliation_sessions WHERE tenant_id = $1 AND status = 'completed')
                OR EXISTS (SELECT 1 FROM bank_reconciliations WHERE tenant_id = $1 AND status = 'completed')""",
