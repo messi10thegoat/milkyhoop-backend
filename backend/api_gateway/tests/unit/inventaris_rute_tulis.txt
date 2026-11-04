@@ -169,6 +169,7 @@ PATCH /api/metode-serah/{metode_id}
 PATCH /api/milkybook/sesi/{sesi_id}
 PATCH /api/nsfp-ranges/{range_id}
 PATCH /api/price-lists/{price_list_id}
+PATCH /api/price-lists/{price_list_id}/items/{line_id}
 PATCH /api/production/{order_id}
 PATCH /api/products/{product_id}/barcode
 POST /api/proformas/bulk/export
@@ -442,6 +443,8 @@ POST /api/periods/{period_id}/reopen
 POST /api/price-lists
 POST /api/price-lists/resolve/{modul}
 POST /api/price-lists/{price_list_id}/items
+POST /api/price-lists/{price_list_id}/items/preview
+POST /api/price-lists/{price_list_id}/items/{line_id}/edit/preview
 POST /api/product-djp-mapping
 POST /api/product-djp-mapping/bulk
 POST /api/production

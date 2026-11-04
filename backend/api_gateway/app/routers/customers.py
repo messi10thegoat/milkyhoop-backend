@@ -802,10 +802,18 @@ def _pelaku(request) -> tuple:
     return u.get("user_id"), u.get("username") or u.get("email")
 
 
+async def pastikan_daftar_harga(conn, tid: str, price_list_id) -> None:
+    """DAFTAR-HARGA: daftar harga pelanggan wajib milik usaha ini dan aktif (None = daftar bawaan). SATU pemeriksa buat + ubah."""
+    if price_list_id is not None and not await conn.fetchval(
+            "SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2 AND is_active", price_list_id, tid):
+        raise HTTPException(status_code=400, detail="Daftar harga tidak ditemukan di usaha ini.")
+
+
 async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, user_id, user_name) -> str:
     """Tulis SATU pelanggan di transaksi PEMANGGIL (POST /customers dan Milkybook v2 buat atomik, 1 Nov 2026): penentu
     _siapkan_buat_pelanggan + INSERT + aktivitas + alamat V428. -> id baru (str)."""
     opening_date = await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], body)
+    await pastikan_daftar_harga(conn, ctx["tenant_id"], body.price_list_id)
 
     # Generate UUID for customer ID
     import uuid as uuid_mod
@@ -824,7 +832,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             customer_type, is_pkp, nik, currency,
             ar_opening_balance, opening_balance_date, opening_balance_notes,
             created_by, phone2, community,
-            nitku, jenis_id, negara, nomor_dokumen
+            nitku, jenis_id, negara, nomor_dokumen, price_list_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11,
@@ -833,7 +841,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             $20, $21, $22, $23,
             $24, $25, $26,
             $27, $28, $29,
-            $30, $31, $32, $33
+            $30, $31, $32, $33, $34
         )
     """,
             new_id,  # $1  id
@@ -870,6 +878,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             body.jenis_id,  # $31 jenis_id
             body.negara,  # $32 negara
             body.nomor_dokumen,  # $33 nomor_dokumen
+            body.price_list_id,  # $34 price_list_id (null = daftar bawaan)
         )
 
         # Log activity
@@ -955,9 +964,7 @@ async def update_customer(
                 }
 
             # DAFTAR-HARGA: daftar harga wajib milik usaha ini dan aktif (null = kembali ke daftar bawaan tenant)
-            if update_data.get("price_list_id") is not None and not await conn.fetchval(
-                    "SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2 AND is_active", update_data["price_list_id"], ctx["tenant_id"]):
-                raise HTTPException(status_code=400, detail="Daftar harga tidak ditemukan di usaha ini.")
+            await pastikan_daftar_harga(conn, ctx["tenant_id"], update_data.get("price_list_id"))
 
             # Map schema field names to database column names
             field_mapping = {
@@ -1277,16 +1284,19 @@ async def get_customer_open_invoices(
                 customer_id,
             )
 
-            # Filter to only invoices with positive remaining
+            # Filter to only invoices with positive remaining. Uang: Decimal jurnal -> JSON bulat int / bersen float
+            # (schemas/uang_json, Law 9); dulu int() memotong sen (sisa 274,50 -> 274)
+            from decimal import Decimal
+            from ..schemas.uang_json import _uang_json as uang
             invoices = [
                 {
                     "id": str(row["id"]),
                     "invoice_number": row["invoice_number"],
                     "invoice_date": row["invoice_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
-                    "total_amount": row["total_amount"],
-                    "paid_amount": int(row["total_amount"] - row["remaining_amount"]),
-                    "remaining_amount": int(row["remaining_amount"]),
+                    "total_amount": uang(row["total_amount"]),
+                    "paid_amount": uang(row["total_amount"] - row["remaining_amount"]),
+                    "remaining_amount": uang(row["remaining_amount"]),
                     "is_overdue": row["is_overdue"],
                     "overdue_days": row["overdue_days"],
                 }
@@ -1294,10 +1304,9 @@ async def get_customer_open_invoices(
                 if row["remaining_amount"] > 0 and row["id"] is not None
             ]
 
-            total_outstanding = sum(inv["remaining_amount"] for inv in invoices)
-            total_overdue = sum(
-                inv["remaining_amount"] for inv in invoices if inv["is_overdue"]
-            )
+            total_outstanding = uang(sum((r["remaining_amount"] for r in rows if r["remaining_amount"] > 0 and r["id"] is not None), Decimal("0")))
+            total_overdue = uang(sum((r["remaining_amount"] for r in rows
+                                      if r["remaining_amount"] > 0 and r["id"] is not None and r["is_overdue"]), Decimal("0")))
 
             return {
                 "invoices": invoices,

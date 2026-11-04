@@ -63,6 +63,8 @@ class CreateCustomerRequest(IdentitasPajakPembeli):
     email: Optional[str] = Field(None, max_length=255)
     website: Optional[str] = Field(None, max_length=255)
     community: Optional[str] = Field(None, max_length=255, description="Community/organization membership")
+    # DAFTAR-HARGA (ANDROID U3, 4 Nov 2026): kelompok harga saat DIBUAT; null = daftar bawaan tenant (dulu dibuang diam-diam)
+    price_list_id: Optional[UUID] = None
     
     # Address
     address: Optional[str] = None

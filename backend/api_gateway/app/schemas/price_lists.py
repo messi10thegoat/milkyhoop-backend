@@ -8,6 +8,8 @@ from typing import Optional, List, Dict, Any, Literal
 from datetime import date
 from uuid import UUID
 
+from .uang_json import UangJson
+
 
 class PriceListItemCreate(BaseModel):
     item_id: str
@@ -21,12 +23,25 @@ class PriceListItemCreate(BaseModel):
     end_date: Optional[date] = None
 
 
+class PriceListItemUpdate(BaseModel):
+    """PATCH satu baris (ANDROID U3, 4 Nov 2026): medan yang dikirim menimpa baris tersimpan, lalu penulis YANG SAMA (tulis_baris_harga)."""
+    unit: Optional[str] = Field(None, max_length=20)
+    price: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
+    min_quantity: Optional[Decimal] = Field(None, gt=0)
+    is_default_unit: Optional[bool] = None
+    discount_percent: Optional[float] = Field(None, ge=0, le=100)
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+
+
 class PriceListItemResponse(BaseModel):
     id: str
     item_id: str
     item_code: Optional[str] = None
+    item_name: Optional[str] = None  # JOIN products (satu kueri; FE tak perlu GET /items)
     unit: Optional[str] = None
-    price: int
+    is_default_unit: bool = False
+    price: UangJson  # dulu int (memotong sen, Law 9)
     min_quantity: float = 1
     discount_percent: Optional[float] = None
     start_date: Optional[str] = None

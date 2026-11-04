@@ -152,7 +152,9 @@ def test_baris_harga_ditulis_satu_penulis_tervalidasi():
     for nama in ("create_price_list", "add_item_to_price_list"):
         assert "tulis_baris_harga(" in ast.unparse(_fungsi("routers/price_lists.py", nama)), nama
     t = ast.unparse(_fungsi("routers/price_lists.py", "tulis_baris_harga"))
-    assert "SD.qty_dasar" in t and "UniqueViolationError" in t and "FROM products WHERE id = $1 AND tenant_id = $2" in t
+    assert "siapkan_baris_harga(" in t and "UniqueViolationError" in t  # 4 Nov: validasi = penentu bersama tulis + pratinjau
+    v = ast.unparse(_fungsi("routers/price_lists.py", "siapkan_baris_harga"))
+    assert "SD.qty_dasar" in v and "FROM products WHERE id = $1 AND tenant_id = $2" in v and "HARGA_GANDA" in v
 
 
 # --- izin resolve (catatan MASTER 4 Nov): staf yang hanya boleh BACA SO / Penawaran tetap dapat harga saran ---

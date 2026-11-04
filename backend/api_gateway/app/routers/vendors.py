@@ -1433,20 +1433,21 @@ async def get_vendor_open_bills(request: Request, vendor_id: str):
                 vendor_id,
                 hari_ini,
             )
+            from ..schemas.uang_json import _uang_json as uang  # Law 9: dulu int() memotong sen
             bills = [
                 {
                     "id": str(row["bill_id"]),
                     "bill_number": row["bill_number"],
                     "bill_date": row["bill_date"].isoformat(),
                     "due_date": row["due_date"].isoformat(),
-                    "total_amount": row["total_amount"],
-                    "paid_amount": int(row["paid_amount"]) or 0,
-                    "remaining_amount": int(row["remaining_amount"]),
+                    "total_amount": uang(row["total_amount"]),
+                    "paid_amount": uang(row["paid_amount"] or 0),
+                    "remaining_amount": uang(row["remaining_amount"]),
                     "is_overdue": row["is_overdue"],
                 }
                 for row in rows
             ]
-            total_outstanding = sum(b["remaining_amount"] for b in bills)
+            total_outstanding = uang(sum((r["remaining_amount"] for r in rows), Decimal("0")))
             return {"bills": bills, "total_outstanding": total_outstanding}
     except HTTPException:
         raise

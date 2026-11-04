@@ -51,6 +51,8 @@ KHUSUS = {
     # AS-GP3 Pembayaran Keluar: hapus draf = DELETE (penentu bersama services/bayar_keluar_rencana.rencana_hapus_draf_bayar)
     "POST /api/bill-payments/{payment_id}/delete/preview": "DELETE /api/bill-payments/{payment_id}",
     "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
+    # daftar harga (ANDROID U3, 4 Nov): ubah baris = PATCH (penentu bersama price_lists.siapkan_baris_harga)
+    "POST /api/price-lists/{price_list_id}/items/{line_id}/edit/preview": "PATCH /api/price-lists/{price_list_id}/items/{line_id}",
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {
