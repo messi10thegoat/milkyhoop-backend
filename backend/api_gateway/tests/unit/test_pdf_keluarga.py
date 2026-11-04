@@ -280,3 +280,25 @@ def test_fpb_catatan_otomatis_konversi_po_tak_dicetak(tangkap, hari):
     """Catatan otomatis routers/purchase_orders "Dari pesanan pembelian <No. PO>" = dobel meta No. PO -> tak dicetak (data tetap); catatan lain tetap."""
     assert "Dari pesanan pembelian PO-2611-0002" not in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0002")
     assert "Dari pesanan pembelian PO-2611-0001" in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0001")
+
+
+def test_surat_jalan_dokumen_gudang_kerangka_fpb_tanpa_harga():
+    """PDF gudang (4 Nov 2026, putusan MASTER): SJ = dokumen_gudang.html SATU templat (GRN menyusul) -- kop_usaha, Kepada + Kirim ke |
+    meta, tabel_barang TANPA kolom uang (Keterangan hanya bila ada catatan baris), Catatan, 3 TTD garis; "Delivery Note" dibuang."""
+    ps = PS.get_pdf_service()
+    d = {"delivery_number": "SJ-2611-0007", "delivery_date": "2026-11-04", "invoice_number": "INV-1", "customer_name": "Toko Sinar",
+         "customer_address": "Jl. A 1", "customer_phone": "0812", "notes": "Bongkar belakang", "tenant": {"name": "Grosir", "npwp": "01.2"},
+         "serah": {"metode": {"nama": "Kurir", "jenis": "kirim"}, "kirim_ke": "Gudang Toko\nBitung", "kirim_ke_sumber": "manual",
+                   "resi": [{"nomor": "KT-1"}], "warehouse_name": "Utama"},
+         "items": [{"product_name": "Minyak 2L", "product_sku": "MNY-2", "quantity": "120", "unit": "dus", "notes": "Dus penyok"}]}
+    h = ps.render_delivery_note(d).html
+    for teks in ("<h1>Surat Jalan</h1>", '<div class="kop">', "NPWP 01.2", "<b>Kepada</b>", '<b class="kirim">Kirim ke</b>', "Gudang Toko",
+                 "<b>No. Surat Jalan</b><span>SJ-2611-0007</span>", "<b>No. Resi</b><span>KT-1</span>", "<th>Kode</th>", "120 dus",
+                 ">Keterangan</th>", "Dus penyok", "Bongkar belakang", "Diterima oleh,", "Pengantar,", "Gudang,"):
+        assert teks in h, teks
+    for tak in ("Delivery Note", "Harga", "Rp ", "( ____", "Dokumen ini sah"):
+        assert tak not in h, tak
+    assert h.count('<div class="sign">') == 3 and ps.render_delivery_note(d).css == PS.CSS_PENAWARAN
+    d["items"][0]["notes"] = None
+    assert ">Keterangan</th>" not in ps.render_delivery_note(d).html
+    assert not (PS.TEMPLATE_DIR / "delivery_note.html").exists()   # digantikan dokumen_gudang.html (dihapus, bukan disimpan)

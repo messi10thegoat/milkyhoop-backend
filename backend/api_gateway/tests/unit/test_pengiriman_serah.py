@@ -447,18 +447,13 @@ def test_lampiran_sj_tanpa_flag_409(monkeypatch):
 
 # ---------------- (7) cetakan ----------------
 def _render(serah):
-    import jinja2
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(APP / "templates" / "pdf")), autoescape=True)
-    env.filters["date_id"] = lambda v: str(v)
-    from app.services.pdf_service import format_qty
-    env.filters["qty"] = format_qty  # 14 Okt 2026: sel qty SJ memakai filter `qty` (format_qty)
-    for nama in ("rupiah", "idr", "angka", "fmt_qty", "terbilang", "tgl"):
-        env.filters.setdefault(nama, lambda v, *a, **k: str(v))
+    """Renderer NYATA (pdf_service.render_delivery_note -> dokumen_gudang.html; PDF gudang 4 Nov 2026, dulu delivery_note.html)."""
     d = {"delivery_number": "SJ-1", "delivery_date": "2026-10-11", "invoice_number": "INV-1", "customer_name": "Budi",
-         "customer_address": "Jl. Pelanggan 1", "customer_phone": None, "tenant": {"name": "Kaos"}, "notes": None}
+         "customer_address": "Jl. Pelanggan 1", "customer_phone": None, "tenant": {"name": "Kaos"}, "notes": None, "items": []}
     if serah is not None:
         d["serah"] = serah
-    return env.get_template("delivery_note.html").render(delivery=d, delivery_items=[], tenant=d["tenant"], generated_at=datetime(2026, 10, 11, 9, 0))
+    from app.services.pdf_service import PDFService
+    return PDFService().render_delivery_note(d).html
 
 
 def test_cetak_sj_blok_serah_hanya_bila_ada_dan_tanpa_serah_tak_berubah():

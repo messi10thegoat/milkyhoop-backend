@@ -869,14 +869,28 @@ class PDFService:
         return self.tulis_pdf(self.render_delivery_note(delivery))
 
     def render_delivery_note(self, delivery: dict) -> Render:
-        template = self.jinja_env.get_template("delivery_note.html")
-
-        html_content = template.render(
-            delivery=delivery,
-            delivery_items=delivery.get("items", []),
-            generated_at=datetime.now(),
-        )
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        """Surat Jalan = dokumen GUDANG arah keluar (PDF gudang 4 Nov 2026, putusan MASTER): templat dokumen_gudang.html SATU untuk
+        SJ + GRN (kerangka FPB: kop_usaha, .atas, tabel tanpa harga, 3 TTD garis). Konteks = routers/deliveries.muat_pdf_surat_jalan."""
+        d, s = delivery, delivery.get("serah") or {}
+        metode = s.get("metode") or {}
+        meta = [("No. Surat Jalan", d.get("delivery_number") or "-"), ("Tanggal", self.format_date_indonesian(d.get("delivery_date"))),
+                ("No. Faktur", d.get("invoice_number") or "-")]
+        if metode.get("jenis") == "ambil_sendiri":
+            meta.append(("Cara serah", "Diambil sendiri" + (f" di {s['warehouse_name']}" if s.get("warehouse_name") else "")))
+        elif metode.get("nama"):
+            meta.append(("Cara serah", metode["nama"]))
+        if s.get("resi"):
+            meta.append(("No. Resi", ", ".join(r["nomor"] for r in s["resi"])))
+        kirim = s.get("kirim_ke") if metode.get("jenis") != "ambil_sendiri" and s.get("kirim_ke_sumber") != "pelanggan" else None
+        items = d.get("items") or []
+        g = {"judul": "Surat Jalan", "pihak_label": "Kepada", "kirim_ke": kirim, "meta": meta, "items": items, "catatan": d.get("notes"),
+             "pihak": {"nama": d.get("customer_name"), "alamat": d.get("customer_address"), "telepon": d.get("customer_phone")},
+             "kolom": {"desk": ["product_name", "description"], "qty": "quantity", "kode": "product_sku", "judul": {"desk": "Nama Barang", "qty": "Kts."},
+                       "kolom": [{"judul": "Keterangan", "kunci": "notes"}] if any(i.get("notes") for i in items) else []},
+             "ttd": ["Diterima oleh,", "Pengantar,", "Gudang,"]}
+        html_content = self.jinja_env.get_template("dokumen_gudang.html").render(
+            g=g, kop=d.get("tenant") or {}, generated_at=datetime.now())
+        return Render(html_content, CSS_PENAWARAN, font=True)
 
     def generate_credit_note_pdf(self, credit_note_data: dict, tenant_info: dict) -> bytes:
         return self.tulis_pdf(self.render_credit_note(credit_note_data, tenant_info))

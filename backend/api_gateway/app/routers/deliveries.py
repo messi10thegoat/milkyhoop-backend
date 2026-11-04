@@ -599,19 +599,9 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
         ctx["tenant_id"],
     )
 
-    # Fetch tenant info
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
-    tenant_info = {
-        "name": tenant_row["display_name"] if tenant_row else str(ctx["tenant_id"]),
-        "address": tenant_row["address"] if tenant_row else None,
-        "phone": tenant_row["phone"] if tenant_row else None,
-    }
-    # 1 Okt 2026: logo kanan atas seperti dokumen lain (kop yang sama dengan Rekap -- logo_url -> data URI).
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo; PDF gudang 4 Nov 2026 -- dulu kueri "Tenant" sendiri + logo dari muat_kop).
     from ..services.rekap_pesanan import muat_kop as _muat_kop
-    tenant_info["logo_data"] = (await _muat_kop(conn, ctx["tenant_id"]))["logo_data"]
+    tenant_info = await _muat_kop(conn, ctx["tenant_id"])
     delivery_data = {
         "id": str(row["id"]),
         "delivery_number": row["delivery_number"],

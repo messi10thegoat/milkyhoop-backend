@@ -102,9 +102,10 @@ def test_surat_jalan_berlogo_kanan_atas():
     """MASTER 1 Okt: SJ satu-satunya dokumen tanpa logo (03-DOKUMEN: logo kanan atas semua dokumen)."""
     s = PS.get_pdf_service()
     r = s.render_delivery_note({"delivery_number": "SJ-T", "items": [], "tenant": dict(KOP, logo_data="data:image/png;base64,AAAA")})
-    assert '<img src="data:image/png;base64,AAAA" class="doc-logo"' in r.html
+    # PDF gudang 4 Nov 2026: kop = _partials/kop_usaha (logo kanan atas + identitas, logo_rapat; data rusak = apa adanya)
+    assert '<img class="logo" src="data:image/png;base64,AAAA"' in r.html
     r = s.render_delivery_note({"delivery_number": "SJ-T", "items": [], "tenant": KOP})
-    assert "doc-logo\"" not in r.html.split("</style>")[-1]
+    assert '<img class="logo"' not in r.html
 
 
 def test_proforma_jarak_dirapatkan_untuk_muat_satu_halaman():

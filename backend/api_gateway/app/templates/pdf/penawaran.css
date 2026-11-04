@@ -59,3 +59,7 @@ td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
 .bawah .sum { margin-top: 0; width: auto; }
 .bawah .sign { margin: 18px 0 0; text-align: left; }   /* TTD di bawah Keterangan (kolom kiri, pola Accurate): hemat satu blok */
 .bawah .blk:first-child { margin-top: 0; }   /* blok berikutnya tetap berjarak (.blk + .blk) */
+/* Dokumen gudang (dokumen_gudang.html: Surat Jalan, GRN): 3 TTD sebaris gaya garis keluarga. */
+.ttd3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-top: 24px; break-inside: avoid; }
+.ttd3 .sign { width: auto; margin: 0; text-align: left; }
+.tambah { padding-left: 16px; }   /* kolom tambahan tabel_barang (Keterangan / Qty diretur) tak menempel ke Kts. */

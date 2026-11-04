@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>{{ g.judul }} {{ g.meta[0][1] }}</title></head>
+{#
+  Dokumen GUDANG -- SATU templat untuk Surat Jalan (arah keluar) dan Penerimaan Barang (arah masuk, menyusul) -- PDF gudang
+  4 Nov 2026 (putusan MASTER): kerangka keluarga Pembelian/FPB tanpa uang. Kop usaha (_partials/kop_usaha) · pihak (+ Kirim ke) |
+  meta · tabel_barang tanpa harga · Catatan · 3 TTD gaya garis. Konteks `g` disusun pdf_service.render_* per dokumen
+  (judul, pihak_label, pihak, kirim_ke, meta [(label, nilai)], items, kolom = k makro, catatan, ttd [label]).
+#}
+<body>
+<div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
+<div class="doc">
+
+{% from "_partials/kop_usaha.html" import kop_usaha %}
+<header>
+  <div><h1>{{ g.judul }}</h1></div>
+  {{ kop_usaha(kop.name, kop.address, kop.phone, kop.npwp, kop.logo_data) }}
+</header>
+
+<div class="atas">
+  <div>
+    <b>{{ g.pihak_label }}</b>
+    <div>{{ g.pihak.nama or '-' }}</div>
+    {% if g.pihak.alamat %}<div class="pre">{{ g.pihak.alamat }}</div>{% endif %}
+    {% if g.pihak.telepon %}<div>{{ g.pihak.telepon }}</div>{% endif %}
+    {% if g.kirim_ke %}<b class="kirim">Kirim ke</b><div class="pre">{{ g.kirim_ke }}</div>{% endif %}
+  </div>
+  <div class="meta">
+    {% for label, nilai in g.meta %}<b>{{ label }}</b><span>{{ nilai }}</span>{% endfor %}
+  </div>
+</div>
+
+{% from "_partials/tabel_barang.html" import tabel_barang %}
+{{ tabel_barang(g["items"], g.kolom) }}
+
+<div class="akhir">
+  {% if g.catatan %}<div class="blk"><b>Catatan</b><div class="pre">{{ g.catatan }}</div></div>{% endif %}
+  <div class="ttd3">
+    {% for t in g.ttd %}<div class="sign"><div>{{ t }}</div><div class="garis">Nama &amp; tgl.</div></div>{% endfor %}
+  </div>
+</div>
+
+</div>
+</body>
+</html>

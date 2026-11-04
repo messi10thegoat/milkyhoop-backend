@@ -72,8 +72,8 @@ def test_margin_halaman_dan_logo_sama_semua_dokumen(nama):
     """Margin = pola SI (1.1cm 1.25cm 1.4cm 1.25cm = 41.6/47.2/52.9/47.2 px); logo = pola FPB 96 px -- diukur dari tata letak."""
     margin, logo = _kotak(_render(nama))
     assert margin[:4] == (41.6, 47.2, 52.9, 47.2), margin
-    # Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): kotak logo = gambar (maks token) agar nama usaha rapat; logo uji 600x150 -> 45 px
-    assert logo == (45 if nama in ("fpb", "po") else 96), logo
+    # kop pola Accurate (FPB 4 Nov 2026; PO, SJ turunannya): kotak logo = gambar (maks token) agar nama usaha rapat; logo uji 600x150 -> 45 px
+    assert logo == (45 if nama in ("fpb", "po", "sj") else 96), logo
 
 
 def test_kwitansi_setengah_a4_tetap_logo_token_kecil():
