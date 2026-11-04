@@ -1491,6 +1491,15 @@ async def _periksa_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest
         )
         total_allocated += alloc.amount_applied
 
+    # Nominal bersen pada presisi 0 DITOLAK, kecuali melunasi sisa lama persis (putusan pemilik 5 Nov 2026; satu pemeriksa uang_presisi)
+    from ..services import uang_presisi as UP
+    from ..services.galat_berkode import GalatBerkode
+    _tolak = UP.tolak_bersen(await UP.presisi_tenant(conn, ctx["tenant_id"]), [body.total_amount, body.discount_amount]
+                             + [v["amount_applied"] for v in validated_allocations],
+                             [(v["amount_applied"], v["remaining_before"]) for v in validated_allocations])
+    if _tolak:
+        raise GalatBerkode(422, UP.KODE_NOMINAL_RUPIAH, _tolak)
+
     # Calculate amounts
     allocated_amount = total_allocated
     # Effective amount after discount

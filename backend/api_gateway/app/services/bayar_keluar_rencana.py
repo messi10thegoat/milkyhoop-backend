@@ -363,6 +363,13 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
         alokasi.append({"bill_id": a.bill_id, "remaining_before": sebelum, "amount_applied": a.amount_applied,
                         "remaining_after": sebelum - a.amount_applied})
         bagian_pph.append((t["total_tagihan"], t["tax_amount"], a.amount_applied))
+    from . import uang_presisi as UP  # nominal bersen pada presisi 0 ditolak, kecuali pelunasan sisa lama persis (pemilik 5 Nov)
+    _tolak = UP.tolak_bersen(await UP.presisi_tenant(conn, tid),
+                             [payload.total_amount, payload.discount_amount, payload.bank_fee_amount]
+                             + [a["amount_applied"] for a in alokasi],
+                             [(a["amount_applied"], a["remaining_before"]) for a in alokasi])
+    if _tolak:
+        bl.galat(UP.KODE_NOMINAL_RUPIAH, 422, _tolak)
     pph = await tentukan_pph(conn, tid, payload.pph_tax_code_id, payload.pph_amount, bagian_pph)
     for b in pph["blocks"]:
         bl.galat(b["code"], b["status"], b["message"])
@@ -502,6 +509,12 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
             return out
     if payment_amount > remaining:
         blok("MELEBIHI_SISA_TAGIHAN", kalimat_bayar_melebihi_sisa(payment_amount, remaining))
+        if not pratinjau:
+            return out
+    from . import uang_presisi as UP  # nominal bersen pada presisi 0 ditolak, kecuali melunasi sisa lama persis (pemilik 5 Nov)
+    _tolak = UP.tolak_bersen(await UP.presisi_tenant(conn, tid), [payment_amount], [(payment_amount, remaining)])
+    if _tolak:
+        bloks.append({"code": UP.KODE_NOMINAL_RUPIAH, "message": _tolak, "status": 422})
         if not pratinjau:
             return out
 
