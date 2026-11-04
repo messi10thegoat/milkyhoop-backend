@@ -51,6 +51,22 @@ def test_tagihan_dibulatkan_neto_tetap_nilai_baris_asli():
     assert "pembulatan" in bulat.sql[0][0]  # kolom dibaca dari baris tersimpan
 
 
+class _KonnNonPkp(_KonnNeto):
+    async def fetchval(self, sql, *a):
+        assert 'FROM "Tenant"' in sql
+        return False  # is_pkp = false -> PPN dikapitalisasi (dasar_tagihan, putusan pemilik 4 Nov)
+
+
+def test_tagihan_dibulatkan_non_pkp_neto_termasuk_ppn_nilai_asli():
+    """Kasus nyata nyawit: non-PKP berpajak -> neto = harga + PPN baris = 55.444,50 (BUKAN total bulat 55.445)."""
+    b, i = uuid.uuid4(), uuid.uuid4()
+    items = {b: [{"id": i, "net": D("49950"), "pajak": D("5494.50")}]}
+    mentah = _KonnNonPkp([{"id": b, "grand_total": D("55444.50"), "tax_amount": D("5494.50"), "pembulatan": D("0")}], items)
+    bulat = _KonnNonPkp([{"id": b, "grand_total": D("55445"), "tax_amount": D("5494.50"), "pembulatan": D("0.50")}], items)
+    a = asyncio.run(TA.neto_tagihan_terposting(mentah, "t", [b]))
+    assert a == asyncio.run(TA.neto_tagihan_terposting(bulat, "t", [b])) == {i: D("55444.50")}
+
+
 def test_baca_saja_tanpa_kunci():
     pohon = ast.parse(textwrap.dedent(inspect.getsource(TA.neto_tagihan_terposting)))
     fn = pohon.body[0]
