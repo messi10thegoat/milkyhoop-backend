@@ -240,7 +240,9 @@ def test_pagar_tagih_dan_to_bill_satu_sumber_batas():
 def test_penentu_satu_satunya_penjaga_ditolak_sebelum_tulis():
     # cek sisa dobel di penulis dihapus -> blok penentu WAJIB ditolak (400) SEBELUM penghitung diterima/GRN ditulis
     s = ast.unparse(_fungsi("routers/purchase_orders.py", "receive_goods"))
-    i_tolak, i_tulis = s.index("_tolak(_rt['blocks'])"), s.index("SET quantity_received = $2")  # SQL master multi-baris
+    import re
+    i_tolak = s.index("_tolak(_rt['blocks'])")
+    i_tulis = re.search(r"\bSET\s+quantity_received\b", s).start()  # tahan bentuk SQL (satu / multi-baris)
     assert i_tolak < i_tulis and s.index("_tolak(_grn['blocks'])") < i_tulis and s.index("G.tulis_grn(") > i_tulis
     assert "kunci" not in s.split("PR.rencana_terima(", 1)[1].split(")", 1)[0]  # bawaan kunci=True: baris PO FOR UPDATE di penentu
 
