@@ -4,6 +4,7 @@ Kontrak = salinan contracts/*.schema.json paket dashboard-sidebar (tests/unit/da
 divalidasi dengan validator mini di bawah (image tak memuat jsonschema) — validator itu sendiri
 dibuktikan BISA MERAH (test_validator_bisa_merah, Law 33).
 """
+import asyncio
 import inspect
 import json
 import os
@@ -616,3 +617,28 @@ async def test_so_harus_kirim_kontrol_tanggal_dan_status(monkeypatch):
     assert sorted(r["order_number"] for r in await DV.so_harus_kirim(None, "t", H)) == ["SO-K", "SO-PS"]
     ids = await DV.id_tugas(None, "t", "harus_kirim", H)  # ?tugas= lewat fungsi yang SAMA
     assert sorted(ids) == ["KOSONG", "PS"]
+
+
+class _KonRekon:
+    """Tenant PERNAH rekonsiliasi + satu rekening tertinggal; flag dibaca dari tenant_features."""
+    def __init__(self, fitur):
+        self.fitur, self.sql = fitur, []
+
+    async def fetch(self, sql, *a):
+        self.sql.append(sql)
+        if "tenant_features" in sql:
+            return [{"feature": f} for f in self.fitur]
+        return [{"id": "rek-1", "name": "BCA", "account_number": "123", "terakhir": None}]
+
+    async def fetchval(self, sql, *a):
+        self.sql.append(sql)
+        return True
+
+
+def test_tugas_rekon_tidak_dikirim_bila_modul_rekonsiliasi_mati():
+    hari = date(2026, 11, 5)
+    mati = _KonRekon([DV.FLAG_REKON_MATI])
+    assert asyncio.run(DV.rekening_belum_rekon(mati, "t", hari)) == []
+    assert not any("reconcil" in q for q in mati.sql)  # flag dibaca DULU, kueri rekonsiliasi tak dijalankan
+    hidup = _KonRekon(["lain_x"])
+    assert asyncio.run(DV.rekening_belum_rekon(hidup, "t", hari)) != []  # kontrol: tanpa flag tugas tetap ada

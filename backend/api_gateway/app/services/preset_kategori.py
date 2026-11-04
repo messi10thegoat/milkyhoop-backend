@@ -7,8 +7,9 @@ Yang khas permintaan satu tenant (mis. Pajak/Batch/Gaji/Conversational mati) BUK
 """
 
 PRESET = {
-    # distributor: tak memproduksi; izin per pengguna & varian/matriks disembunyikan (permintaan pemilik 4 Nov)
-    "grosir_distribusi": ("modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati"),
+    # distributor: tak memproduksi; izin per pengguna & varian/matriks disembunyikan (permintaan pemilik 4 Nov);
+    # rekonsiliasi bank = putaran berikutnya (pemilik 5 Nov)
+    "grosir_distribusi": ("modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati"),
 }
 
 
