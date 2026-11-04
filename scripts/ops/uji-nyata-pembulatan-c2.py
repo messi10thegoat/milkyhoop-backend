@@ -147,9 +147,10 @@ async def main(keluar):
         catat["akun"] = {"AP": AP, "INV": INV, "BUL": BUL, "RET": RET}
         akun = sorted({a for a in (AP, INV, BUL, RET) if a})
         gl0 = await gl(akun)
-        qty0 = D(str(await c.fetchval("SELECT COALESCE(sum(quantity_on_hand), 0) FROM warehouse_stock WHERE tenant_id = $1 AND item_id = $2", T, STOK) or 0))
+        qty0 = D(str(await c.fetchval("SELECT COALESCE(sum(quantity), 0) FROM warehouse_stock WHERE tenant_id = $1 AND item_id = $2", T, STOK) or 0))
         tc = await c.fetchval("""SELECT id FROM tax_codes WHERE tenant_id = $1 AND tax_type = 'ppn' AND rate = 11 AND is_active
-                                 ORDER BY created_at LIMIT 1""", T)
+                                 AND COALESCE(dpp_factor_num, 1) = COALESCE(dpp_factor_den, 1) ORDER BY created_at LIMIT 1""", T)
+        harus("prasyarat: kode PPN 11% DPP penuh kaos", tc is not None, tc)
 
         # 1. tagihan draf mentah -> pratinjau == posting
         nomor = f"TES-E2E-C2-{uuid.uuid4().hex[:6]}"
@@ -202,7 +203,7 @@ async def main(keluar):
         await RVC.void_vendor_credit(req(uid), vid, VoidVendorCreditRequest(reason=PENANDA))
         await RB.void_bill(req(uid), b["id"], VoidBillRequest(reason=PENANDA))
         gl1 = await gl(akun)
-        qty1 = D(str(await c.fetchval("SELECT COALESCE(sum(quantity_on_hand), 0) FROM warehouse_stock WHERE tenant_id = $1 AND item_id = $2", T, STOK) or 0))
+        qty1 = D(str(await c.fetchval("SELECT COALESCE(sum(quantity), 0) FROM warehouse_stock WHERE tenant_id = $1 AND item_id = $2", T, STOK) or 0))
         harus("net 0: GL Hutang/Persediaan/Pembulatan/Retur kembali ke sebelum", gl1 == gl0, [str(gl0), str(gl1)])
         harus("net 0: qty stok kembali", qty1 == qty0, [str(qty0), str(qty1)])
         n_tak_seimbang = await c.fetchval("""SELECT count(*) FROM journal_entries je WHERE je.tenant_id = $1 AND je.created_at >= now() - interval '1 hour'
