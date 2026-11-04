@@ -328,8 +328,12 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
             q = it.get("quantity_to_bill")
             qty = Decimal(str(q)) if q else bt["qty_dasar"]
             if qty > bt["qty_dasar"]:
-                teks = "sisa belum tertagih" if bt["dasar"] == "dipesan" else "yang diterima belum ditagih"
-                bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH", f"Jumlah ditagih ({qty}) melebihi {teks} ({bt['qty_dasar']})."))
+                if bt["dasar"] == "dipesan":  # teks lama PERSIS
+                    bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH", f"Jumlah ditagih ({qty}) melebihi sisa belum tertagih ({bt['qty_dasar']})."))
+                else:
+                    from .teks_galat import qty as _q
+                    bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH",
+                                      f"Jumlah ditagih ({_q(qty)}) melebihi yang diterima belum ditagih ({_q(bt['qty_dasar'])})."))
                 continue
             pilih.append({"po_item": po_item, "quantity": qty, "batas": bt})
     else:

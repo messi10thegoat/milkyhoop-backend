@@ -264,3 +264,13 @@ class KonBatas:
 async def test_batas_tagih_satu_sumber(diterima, ada, ditagih, batas, dasar, qty_dasar):
     b = (await G.batas_tagih(KonBatas(diterima, ada, ditagih), T, [A]))[str(A)]
     assert (b["batas"], b["dasar"], b["qty_dasar"]) == (D(batas), dasar, D(qty_dasar))
+
+
+@pytest.mark.asyncio
+async def test_baris_nol_nol_tak_pernah_sampai_db():
+    # V477 melonggarkan CHECK (quantity >= 0 AND (quantity > 0 OR quantity_rejected > 0)); baris 0/0 dibuang penentu SEBELUM DB,
+    # semua baris 0/0 = blok berkalimat BARIS_KOSONG (bukan 500 CheckViolation)
+    r = await _terima(Kon(), [{"po_item_id": str(A), "quantity_received": D("0")}, {"po_item_id": str(B), "quantity_received": D("1")}])
+    assert r["blocks"] == [] and [i["po_item_id"] for i in r["payload"]["items"]] == [str(B)]
+    g = {k: v for k, v in r["akan"].items() if v > 0 or r["tolak"].get(k, 0) > 0}
+    assert list(g) == [str(B)]

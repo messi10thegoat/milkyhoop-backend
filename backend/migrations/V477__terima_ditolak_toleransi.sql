@@ -7,6 +7,10 @@ ALTER TABLE goods_receipt_items ADD COLUMN IF NOT EXISTS reject_reason TEXT;
 ALTER TABLE goods_receipt_items DROP CONSTRAINT IF EXISTS goods_receipt_items_ditolak_cek;
 ALTER TABLE goods_receipt_items ADD CONSTRAINT goods_receipt_items_ditolak_cek
     CHECK (quantity_rejected >= 0 AND (reject_reason IS NULL OR length(reject_reason) <= 200));
+-- baris HANYA-ditolak (diterima 0) tercatat tanpa kartu stok; baris 0/0 tetap DITOLAK (V452: quantity > 0)
+ALTER TABLE goods_receipt_items DROP CONSTRAINT IF EXISTS goods_receipt_items_quantity_check;
+ALTER TABLE goods_receipt_items ADD CONSTRAINT goods_receipt_items_quantity_check
+    CHECK (quantity >= 0 AND (quantity > 0 OR quantity_rejected > 0));
 
 CREATE TABLE IF NOT EXISTS purchase_settings (
     tenant_id TEXT PRIMARY KEY REFERENCES "Tenant"(id),
