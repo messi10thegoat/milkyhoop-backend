@@ -600,3 +600,67 @@ def test_riwayat_pemindahan_terdaftar():
     assert callable(H.riwayat_pemindahan)
     for ev in ("PEMINDAHAN_BARANG_SELESAI", "PEMINDAHAN_BARANG_DI_VOID"):
         assert ev in H.RINGKAS_AUDIT
+
+
+# ---- (12) K1 satuan (putusan pemilik LANGSUNG 5 Nov): qty bersatuan -> SATUAN DASAR lewat satuan_dasar (penentu SATU jalur stok)
+class KonekSatuan(Konek):
+    """Barang dasar Botol, 1 Dus = 12 Botol (unit_conversions); kamus satuan tenant kosong."""
+
+    async def fetch(self, sql, *a):
+        s = " ".join(sql.split())
+        if "FROM product_units" in s:
+            self.log.append(s)
+            return []
+        if "FROM unit_conversions" in s:
+            self.log.append(s)
+            return [{"product_id": P1, "base_unit": "Botol", "conversion_unit": "Dus", "conversion_factor": Decimal("12")}]
+        if "COALESCE(NULLIF(base_unit, ''), satuan) AS dasar" in s:
+            self.log.append(s)
+            return [{"id": P1, "nama_produk": "Minyak 1L", "dasar": "Botol"}]
+        return await super().fetch(sql, *a)
+
+
+def _botol():
+    return {P1: {**barang(P1, "Minyak 1L"), "base_unit": "Botol"}}
+
+
+def test_dua_dus_dipindah_jadi_24_botol_di_rencana_dokumen_dan_kartu():
+    c = KonekSatuan(produk=_botol())
+    r = jalan(S.pratinjau_baru(c, ctx(), S.PratinjauIn(from_warehouse_id=GA, to_warehouse_id=GB,
+                                                          items=[{"item_id": P1, "quantity_requested": 2, "unit": "Dus"}])))
+    assert r["ok"] and r["lines"][0]["quantity"] == Decimal("24") and r["lines"][0]["unit"] == "Botol"
+    assert r["payload"]["items"][0]["unit"] == "Dus"  # badan tulis membawa satuan asli
+    c = KonekSatuan(produk=_botol())
+    jalan(S.buat_draf(c, ctx(), body(items=[{"item_id": P1, "quantity_requested": Decimal("2"), "unit": "Dus"}])))
+    ins = [s for s in c.log if s.startswith("INSERT INTO stock_transfer_items")]
+    assert len(ins) == 1
+    c = KonekSatuan(produk=_botol(), header=draf(), items=[baris(P1, "24")])  # dokumen tersimpan dalam satuan dasar
+    selesai(c)
+    out, masuk = c.ledger
+    assert out["quantity_out"] == masuk["quantity_in"] == Decimal("24")
+
+
+def test_draf_menulis_qty_satuan_dasar():
+    tulis = []
+
+    class K(KonekSatuan):
+        async def execute(self, sql, *a):
+            if sql.lstrip().startswith("INSERT INTO stock_transfer_items"):
+                tulis.append(a)
+            return await super().execute(sql, *a)
+    jalan(S.buat_draf(K(produk=_botol()), ctx(), body(items=[{"item_id": P1, "quantity_requested": Decimal("2"), "unit": "Dus"}])))
+    assert tulis[0][4] == Decimal("24") and tulis[0][5] == "Botol"  # quantity_requested, unit
+
+
+def test_satuan_tanpa_konversi_diblok_berkalimat_dan_tanpa_satuan_tetap_dasar():
+    c = KonekSatuan(produk=_botol())
+    r = jalan(S.pratinjau_baru(c, ctx(), S.PratinjauIn(from_warehouse_id=GA, to_warehouse_id=GB,
+                                                          items=[{"item_id": P1, "quantity_requested": 2, "unit": "Karton"}])))
+    assert not r["ok"] and r["blocks"][0]["code"] == "SATUAN_TAK_TERKONVERSI" and "Karton" in r["blocks"][0]["message"]
+    with pytest.raises(HTTPException) as e:
+        jalan(S.buat_draf(KonekSatuan(produk=_botol()), ctx(),
+                          body(items=[{"item_id": P1, "quantity_requested": Decimal("2"), "unit": "Karton"}])))
+    assert kode(e) == "SATUAN_TAK_TERKONVERSI"
+    c = KonekSatuan(produk=_botol())  # form CW tak mengirim satuan -> satuan dasar, nol baca kamus satuan
+    r = jalan(S.pratinjau_baru(c, ctx(), S.PratinjauIn(from_warehouse_id=GA, to_warehouse_id=GB, items=[{"item_id": P1, "quantity_requested": 2}])))
+    assert r["lines"][0]["quantity"] == Decimal("2") and not any("unit_conversions" in s for s in c.log)

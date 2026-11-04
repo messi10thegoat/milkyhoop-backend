@@ -174,6 +174,7 @@ JALUR = [
     ("services/nota_debit_gudang.py", "rencana_keluar", "konversi"),
     ("services/kernel_document_executor.py", "_create_inventory_movements", "konversi"),
     ("routers/credit_notes.py", "_alokasi_sj_dasar", "konversi"),
+    ("services/pemindahan_barang.py", "_rencana", "konversi"),  # K1: pemindahan antar gudang
     # tetap TOLAK: penjualan lama /api/transactions + produksi (PARKIR, putusan MASTER)
     ("routers/transactions.py", "_create_pos_inventory_and_journals", "tolak"),
     ("routers/production.py", "issue_materials", "tolak"),
@@ -189,10 +190,10 @@ def test_tiap_jalur_stok_memanggil_penentu_dengan_mode_benar(rel, nama, mode):
 
 
 def test_tak_ada_lagi_konversi_satu_banding_satu_diam_di_jalur_stok():
-    """unit_helpers.convert_to_base_unit (tanpa konversi -> 1:1 + log) tak boleh dipakai jalur stok mana pun."""
+    """unit_helpers.convert_to_base_unit (tanpa konversi -> 1:1 + log) DIHAPUS (K1 5 Nov, salinan lama yang digantikan satuan_dasar);
+    tak boleh kembali di jalur mana pun."""
+    assert not (APP / "services" / "unit_helpers.py").exists()
     for f in APP.rglob("*.py"):
-        if f.name in ("unit_helpers.py",):
-            continue
         pohon = ast.parse(f.read_text())
         for n in ast.walk(pohon):
             if isinstance(n, (ast.ImportFrom, ast.Import)):

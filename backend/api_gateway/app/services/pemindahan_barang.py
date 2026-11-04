@@ -29,6 +29,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from . import satuan_dasar as SD  # K1 (5 Nov): satuan baris -> satuan dasar lewat penentu SATU jalur stok
 from . import so_fase_lokasi
 from .so_riwayat import catat_riwayat
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -46,10 +47,10 @@ class BarangIn(BaseModel):
     item_id: UUID
     quantity_requested: Decimal = Field(..., gt=0)
     notes: Optional[str] = Field(None, max_length=500)
+    unit: Optional[str] = None  # K1: satuan qty (kosong = satuan dasar); dikonversi lewat satuan_dasar, tanpa konversi = blok
     # Diabaikan (server memakai WAC & data master); dipertahankan agar klien lama tak 422.
     item_code: Optional[str] = None
     item_name: Optional[str] = None
-    unit: Optional[str] = None
     unit_cost: Optional[Decimal] = None
     batch_number: Optional[str] = None
     expiry_date: Optional[date] = None
@@ -137,7 +138,9 @@ async def _stok(conn, tid: str, gudang_id, item_id, kunci: bool) -> Decimal:
 # PENENTU (satu sumber angka: pratinjau == tulis)
 # ============================================================================
 async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bool = False, ctx: Optional[dict] = None) -> dict:
-    """baris: [{"item_id": UUID|None, "qty": Decimal|None, "notes": str|None}]. Mengumpulkan SEMUA blok.
+    """baris: [{"item_id": UUID|None, "qty": Decimal|None, "unit": str|None, "notes": str|None}]. Mengumpulkan SEMUA blok.
+    K1 (putusan pemilik LANGSUNG 5 Nov): qty bersatuan dikonversi ke SATUAN DASAR (satuan_dasar, mode konversi; 2 Dus -> 24 Botol);
+    satuan tanpa konversi = blok berkalimat. Baris rencana + dokumen + kartu stok SELALU dalam satuan dasar.
     -> {blocks, lines, dari, ke, total_quantity, total_value, sales_order, catatan_fase}. Tanpa tulis (kunci=True hanya mengunci baris stok)."""
     blocks: list = []
 
@@ -167,11 +170,13 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
     by = {}
     if ids:
         for r in await conn.fetch(
-                """SELECT id, item_code, nama_produk, base_unit, COALESCE(track_inventory, false) AS track_inventory,
+                """SELECT id, item_code, nama_produk, COALESCE(NULLIF(base_unit, ''), satuan) AS base_unit,
+                          COALESCE(track_inventory, false) AS track_inventory,
                           COALESCE(track_batches, false) AS track_batches, COALESCE(track_serial, false) AS track_serial
                    FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tid, ids):
             by[r["id"]] = r
 
+    ktx = await SD.muat(conn, tid, SD.ids_bersatuan(baris, "item_id"))
     lines, lihat = [], set()
     total_q = total_v = _NOL
     # Kunci stok urut (barang, gudang) -> tanpa deadlock; hanya jalur tulis.
@@ -190,6 +195,11 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         if qty is None or qty <= _NOL:
             blok("PB_QTY_TIDAK_SAH", f"Jumlah {nama} harus lebih dari 0.", 422, iid)
             continue
+        h_sd = SD.hitung(ktx, iid, b.get("unit"), qty, "konversi", "Pemindahan")
+        if h_sd["blok"]:
+            blok(h_sd["blok"]["code"], h_sd["blok"]["message"], h_sd["blok"]["status"], iid)
+            continue
+        qty = h_sd["qty_dasar"]
         if not p["track_inventory"]:
             blok("PB_BARANG_NON_STOK", f"{nama} tidak melacak stok; tak ada stok untuk dipindahkan.", 409, iid)
             continue
@@ -240,7 +250,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
 
 
 def _baris_dari_isi(isi) -> list:
-    return [{"item_id": i.item_id, "qty": i.quantity_requested, "notes": i.notes} for i in isi.items]
+    return [{"item_id": i.item_id, "qty": i.quantity_requested, "unit": i.unit, "notes": i.notes} for i in isi.items]
 
 
 def payload_dari(isi) -> dict:
@@ -250,7 +260,7 @@ def payload_dari(isi) -> dict:
         "expected_date": isi.expected_date.isoformat() if isi.expected_date else None,
         "reference": isi.reference, "notes": isi.notes, "sales_order_id": _s(isi.sales_order_id),
         "items": [{"item_id": _s(i.item_id), "quantity_requested": str(i.quantity_requested) if i.quantity_requested is not None else None,
-                   "notes": i.notes} for i in isi.items],
+                   "unit": i.unit, "notes": i.notes} for i in isi.items],
     }
 
 
@@ -372,13 +382,14 @@ async def pratinjau_batal(conn, ctx: dict, transfer_id, alasan: Optional[str]) -
 # TULIS
 # ============================================================================
 async def _tulis_baris(conn, transfer_id, by: dict, items: List[BarangIn]) -> None:
+    """by = _validasi_isi: barang + qty SATUAN DASAR per barang (dokumen menyimpan satuan dasar, K1)."""
     for n, it in enumerate(items, 1):
         p = by[it.item_id]
         await conn.execute(
             """INSERT INTO stock_transfer_items (stock_transfer_id, item_id, item_code, item_name, quantity_requested,
                                                  unit, unit_cost, total_value, line_number, notes)
                VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8)""",
-            transfer_id, it.item_id, p["item_code"], p["nama_produk"], it.quantity_requested, p["base_unit"], n, it.notes)
+            transfer_id, it.item_id, p["item_code"], p["nama_produk"], p["qty_dasar"], p["base_unit"], n, it.notes)
 
 
 async def _validasi_isi(conn, tid: str, isi: PemindahanIn) -> dict:
@@ -389,10 +400,9 @@ async def _validasi_isi(conn, tid: str, isi: PemindahanIn) -> dict:
     if struktural:
         b = struktural[0]
         raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
-    rows = await conn.fetch(
-        "SELECT id, item_code, nama_produk, base_unit FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
-        tid, [i.item_id for i in isi.items])
-    return {x["id"]: x for x in rows}
+    qty = {ln["item_id"]: ln["quantity"] for ln in r["lines"]}
+    return {ln["item_id"]: {"item_code": ln["item_code"], "nama_produk": ln["name"], "base_unit": ln["unit"], "qty_dasar": qty[ln["item_id"]]}
+            for ln in r["lines"]}
 
 
 async def buat_draf(conn, ctx: dict, body: PemindahanIn) -> UUID:
