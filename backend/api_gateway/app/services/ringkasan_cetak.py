@@ -60,8 +60,9 @@ def _jika(label, nilai, kelas=""):
 
 
 def susun(*, subtotal_bruto, diskon_baris, neto_baris, potongan=(), ongkir=0, dpp=(), pajak=None, total, coret=False, akhir=(),
-          label_total="Total") -> list:
+          label_total="Total", pembulatan=0) -> list:
     """potongan: [(label, nilai)] diskon dokumen (dicetak -Rp, hanya bila > 0) · dpp: [(label, nilai)] · pajak: (label, nilai) atau None ·
+    pembulatan (c-2 dokumen pembelian): dicetak bila != 0 (bisa negatif) tepat sebelum Total ·
     akhir: baris sesudah Total (Dibayar / Sisa / Status) apa adanya."""
     rows = subtotal_baris(subtotal_bruto, diskon_baris, neto_baris)
     for label, nilai in potongan:
@@ -70,6 +71,8 @@ def susun(*, subtotal_bruto, diskon_baris, neto_baris, potongan=(), ongkir=0, dp
     if pajak and _d(pajak[1]) > NOL:
         rows += [{"label": l, "nilai": _d(n), "kelas": ""} for l, n in dpp if n is not None]
         rows.append({"label": pajak[0], "nilai": _d(pajak[1]), "kelas": ""})
+    if _d(pembulatan) != NOL:
+        rows.append({"label": "Pembulatan", "nilai": _d(pembulatan), "kelas": ""})
     rows.append({"label": label_total, "nilai": _d(total), "kelas": "tot coret" if coret else "tot"})
     return rows + list(akhir)
 
@@ -106,7 +109,8 @@ def nota(n: dict) -> list:
     tarif = _d(n.get("tax_rate"))
     return susun(subtotal_bruto=n.get("subtotal"), diskon_baris=n.get("item_discount_total"), neto_baris=[i.get("net") for i in n.get("items") or []],
                  potongan=[("Diskon", n.get("discount_amount"))],
-                 pajak=(f"PPN {tarif.normalize():f}%" if tarif > NOL else "PPN", n.get("tax_amount")), total=n.get("total_amount"))
+                 pajak=(f"PPN {tarif.normalize():f}%" if tarif > NOL else "PPN", n.get("tax_amount")), total=n.get("total_amount"),
+                 pembulatan=n.get("pembulatan"))
 
 
 def faktur_pembelian(bill: dict) -> list:
@@ -121,7 +125,8 @@ def faktur_pembelian(bill: dict) -> list:
                  dpp=[("DPP", bill.get("dpp"))] if bill.get("dpp") else [],
                  pajak=(label_pajak(bill.get("tax_rate"), [i.get("tax_rate") for i in items], bill.get("tax_amount"), bill.get("dpp")),
                         bill.get("tax_amount")),
-                 total=bill.get("grand_total") or bill.get("amount"), coret=c.get("jenis") == "batal", akhir=akhir)
+                 total=bill.get("grand_total") or bill.get("amount"), coret=c.get("jenis") == "batal", akhir=akhir,
+                 pembulatan=bill.get("pembulatan"))
 
 
 def _label_diskon(persen) -> str:

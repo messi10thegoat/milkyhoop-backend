@@ -98,14 +98,18 @@ async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, poton
     Non-PKP berpajak (aturan pemilik 4 Nov "kapitalisasi balik", cermin tagihan): PPN tak pernah jadi PPN Masukan -> Cr Retur/Diskon = total
     (termasuk PPN), tanpa baris PPN -- penentu SAMA tagihan_aksi.dasar_tagihan. `peran` 'pajak' menandai baris PPN (penulis butuh id barisnya)."""
     from . import tagihan_aksi as TA
-    total = vc["total_amount"]
+    bulat = await TA.pembulatan_dokumen(conn, tid, vc["total_amount"])  # c-2 (V479): Dr Hutang = total BULAT, kredit = nilai baris asli
+    total = bulat["total"]
     pajak = vc["tax_amount"] or 0
     akun_pajak = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT) if pajak > 0 else None
-    dasar, _kapital = TA.dasar_tagihan(total, pajak, akun_pajak)
+    dasar, _kapital = TA.dasar_tagihan(total, pajak, akun_pajak, bulat["selisih"])
     baris = [(ap_account_id, total, 0, f"Pengurangan Hutang - {vc['credit_number']}", "hutang"),
              (akun_kredit, 0, dasar, f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}", "kredit")]
     if pajak > 0 and akun_pajak is not None:
         baris.append((akun_pajak, 0, pajak, f"PPN Retur - {vc['credit_number']}", "pajak"))
+    bb = TA.baris_pembulatan(bulat, -1) if bulat["akun"] else None
+    if bb:
+        baris.append((bb["account_id"], bb["debit"], bb["credit"], f"Pembulatan - {vc['credit_number']}", "pembulatan"))
     return baris
 
 
@@ -114,15 +118,17 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     PPN (409) · akun dipetakan · periode. -> {blocks, ap, akun_kredit, potongan[, journals, stock, bills]}.
     items = baris ND MAYA (P2P-3b, HANYA pratinjau buat ND: vc belum ditulis, id acak) -> HPP/stok dari baris itu, bukan vendor_credit_items.
     Penulis memanggil TANPA items (perilaku tak berubah)."""
+    from . import tagihan_aksi as TA
     tid = ctx["tenant_id"]
     bl = Blok(pratinjau)
     sisa_t = None
+    bulat = await TA.pembulatan_dokumen(conn, tid, vc["total_amount"])  # c-2: total yang AKAN dibukukan (draf = mentah)
     if vc["status"] == "draft" and vc["original_bill_id"]:
         sisa_t = await ND.sisa_tagihan_jurnal(conn, tid, vc["original_bill_id"])
         if sisa_t is None:
             bl.galat("TAGIHAN_TIDAK_AKTIF", 400, f"Tagihan {vc['original_bill_number'] or ''} belum dibukukan atau sudah batal.")
-        elif Decimal(str(vc["total_amount"])) > sisa_t:
-            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, kalimat_nd_melebihi_sisa_tagihan(sisa_t, vc["total_amount"], vc["original_bill_number"]))
+        elif bulat["total"] > sisa_t:
+            bl.galat("MELEBIHI_SISA_TAGIHAN", 400, kalimat_nd_melebihi_sisa_tagihan(sisa_t, bulat["total"], vc["original_bill_number"]))
     if vc["status"] != "draft":
         bl.galat("BUKAN_DRAF", 400, tg.tak_bisa_status("vc", vc["status"], "diposting", vc["credit_number"]))
     ap = await resolve_account_id_by_role(conn, tid, AccountRole.AP_TRADE)
@@ -133,12 +139,14 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
         akun_kredit = await resolve_account_id_by_role(conn, tid, ND.peran_kredit_nd(vc["reason"]))
     if not ap or not akun_kredit:
         bl.galat("PERAN_AKUN_BELUM_DIPETAKAN", 500, "Akun hutang / retur / diskon pembelian belum dipetakan.")
+    if bulat["blok"]:
+        bl.galat(bulat["blok"]["code"], 422, bulat["blok"]["message"])
     await periode_terbuka(conn, tid, vc["credit_date"], bl)
     # ND-GUDANG: gudang asal + sisa retur + stok (penulis: kunci tagihan asal + FOR UPDATE stok) -- penentu SATU dgn pratinjau
     keluar = [] if potongan else await NG.rencana_keluar(
         conn, tid, vc, items if items is not None else await conn.fetch(
             "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1 ORDER BY line_number", vc["id"]), kunci=not pratinjau, bl=bl)
-    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan, "keluar": keluar}
+    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan, "keluar": keluar, "bulat": bulat}
     if not pratinjau:
         return hasil
     jurnal, stok = [], []
@@ -155,7 +163,7 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     tag = []
     if vc["original_bill_id"] and sisa_t is not None:
         tag = [{"bill_id": str(vc["original_bill_id"]), "bill_number": vc["original_bill_number"], "remaining_before": _f(sisa_t),
-                "remaining_after": _f(sisa_t - Decimal(str(vc["total_amount"])))}]
+                "remaining_after": _f(sisa_t - bulat["total"])}]
     hasil.update({"journals": jurnal, "stock": stok, "bills": tag, "bank_transactions": []})
     return hasil
 

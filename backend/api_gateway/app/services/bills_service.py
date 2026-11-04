@@ -2798,7 +2798,19 @@ class BillsService:
                     vat_input_acct_id = await resolve_account_id_by_role_if_pkp(
                         conn, tenant_id, AccountRole.VAT_INPUT) if tax_amount_dec > 0 else None
                     # non-PKP berpajak: PPN DIKAPITALISASI ke baris (tanpa Dr PPN Masukan) -- penentu SATU tagihan_aksi.dasar_tagihan
-                    subtotal_dec, kapital_ppn = TA.dasar_tagihan(grand_total_dec, tax_amount_dec, vat_input_acct_id)
+                    # c-2 (V479): total dibulatkan SAAT posting, penentu SATU dgn post_bill (TA.pembulatan_dokumen)
+                    _bulat = await TA.pembulatan_dokumen(conn, tenant_id, grand_total_dec)
+                    if _bulat["blok"]:
+                        raise GalatBerkode(422, _bulat["blok"]["code"], _bulat["blok"]["message"])
+                    grand_total_dec = _bulat["total"]
+                    subtotal_dec, kapital_ppn = TA.dasar_tagihan(grand_total_dec, tax_amount_dec, vat_input_acct_id, _bulat["selisih"])
+                    if _bulat["selisih"] != 0:  # sebelum journal_id terisi (beku Law 19 berlaku sesudahnya)
+                        await conn.execute(
+                            """UPDATE bills SET grand_total = $1, pembulatan = $2,
+                                      amount = CASE WHEN amount = grand_total THEN $1 ELSE amount END
+                               WHERE id = $3 AND tenant_id = $4""", grand_total_dec, _bulat["selisih"], bill_id, tenant_id)
+                        calc["grand_total"] = float(grand_total_dec)
+                    _baris_bulat = TA.baris_pembulatan(_bulat, 1)
 
                     if not ap_acct_id:
                         raise ValueError("Akun AP_TRADE tidak ter-resolve")
@@ -2834,7 +2846,7 @@ class BillsService:
                         f"Bill dari {vendor_name} - {invoice_number}",
                         bill_id,
                         str(trace_id_v2),
-                        grand_total_dec,
+                        grand_total_dec + (_baris_bulat["credit"] if _baris_bulat else 0),
                         user_id,
                     )
 
@@ -2896,6 +2908,13 @@ class BillsService:
                             vat_input_acct_id,
                             tax_amount_dec,
                         )
+                        line_num_v2 += 1
+
+                    if _baris_bulat:  # c-2: Dr/Cr Pembulatan Pembelian
+                        await conn.execute(
+                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                            uuid_module.uuid4(), journal_id, line_num_v2, _baris_bulat["account_id"], _baris_bulat["debit"],
+                            _baris_bulat["credit"], _baris_bulat["memo"])
                         line_num_v2 += 1
 
                     # Line 3: Cr Utang Usaha (grand_total)
@@ -3289,9 +3308,16 @@ class BillsService:
                 if _bloks:
                     return {"success": False, "message": _bloks[0]["message"], "data": None}
 
-                grand_total = Decimal(str(bill["grand_total"]))
+                # c-2 (V479): total dibulatkan SAAT posting (draf mentah); selisih -> PURCHASE_ROUNDING, dasar debit = nilai baris asli
+                _bulat = _akun["bulat"]
+                grand_total = _bulat["total"]
                 bill_tax = Decimal(str(bill["tax_amount"] or 0))
-                subtotal, kapital_ppn = TA.dasar_tagihan(grand_total, bill_tax, _akun["vat"])  # non-PKP: PPN dikapitalisasi
+                subtotal, kapital_ppn = TA.dasar_tagihan(grand_total, bill_tax, _akun["vat"], _bulat["selisih"])  # non-PKP: PPN dikapitalisasi
+                if _bulat["selisih"] != 0:  # sebelum journal_id terisi (beku Law 19 berlaku sesudahnya)
+                    await conn.execute(
+                        """UPDATE bills SET grand_total = $1, pembulatan = $2,
+                                  amount = CASE WHEN amount = grand_total THEN $1 ELSE amount END
+                           WHERE id = $3 AND tenant_id = $4""", grand_total, _bulat["selisih"], bill_id, tenant_id)
 
                 # GRN 3-way match (penentu SAMA dgn pratinjau; PO dikunci SESUDAH tagihan): blok pertama -> pesan; flag mati -> kosong.
                 _grn = await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True, kapital=kapital_ppn)
@@ -3313,7 +3339,8 @@ class BillsService:
                 )
 
                 # GRN: selisih harga NEGATIF = baris KREDIT -> total header = grand_total + |PPV kredit| (Law 4: header == Σ baris)
-                _total_header = grand_total
+                _baris_bulat = TA.baris_pembulatan(_bulat, 1)
+                _total_header = grand_total + (_baris_bulat["credit"] if _baris_bulat else 0)
                 if _grn:
                     _total_header += -sum((a for _, a, _ in await TA.hitung_debit(
                         conn, tenant_id, bill_id, Decimal(str(subtotal)), _akun["debit"], _grn, kapital_ppn) if a < 0), Decimal("0"))
@@ -3365,6 +3392,13 @@ class BillsService:
                         bill_tax,
                         "PPN Masukan",
                     )
+                    line_number += 1
+
+                if _baris_bulat:  # c-2: Dr/Cr Pembulatan Pembelian
+                    await conn.execute(
+                        "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        uuid_module.uuid4(), journal_id, line_number, _baris_bulat["account_id"], _baris_bulat["debit"],
+                        _baris_bulat["credit"], _baris_bulat["memo"])
                     line_number += 1
 
                 # Cr. Hutang Usaha (grand_total)
@@ -4101,6 +4135,7 @@ class BillsService:
                     bill["grand_total"] or bill["amount"]
                 ),
             },
+            "pembulatan": self._money_str(bill.get("pembulatan") or 0),  # c-2 (V479): total bulat - total mentah; PDF baris "Pembulatan"
             "subtotal": self._money_str(bill["subtotal"]),
             "item_discount_total": self._money_str(bill["item_discount_total"]),
             "invoice_discount_total": self._money_str(

@@ -183,6 +183,7 @@ class AccountRole:
     BANK_ADJUSTMENT_LOSS: Final[str] = "BANK_ADJUSTMENT_LOSS"
     EMPLOYEE_ADVANCE: Final[str] = "EMPLOYEE_ADVANCE"  # V281 kasbon (Piutang Karyawan, asset)
     EXPENSE_OTHER: Final[str] = "EXPENSE_OTHER"  # V471 akun beban umum bawaan catat biaya Milkybook v2 (semai kode 5-20900)
+    PURCHASE_ROUNDING: Final[str] = "PURCHASE_ROUNDING"  # V479 selisih pembulatan total tagihan / nota debit (semai kode 5-90100)
     CURRENCY_UNREALIZED_FX: Final[str] = "CURRENCY_UNREALIZED_FX"
 
     # ---- V158 D3.1 RESERVED (forward-compat, NOT TIER 1, NOT seeded) --------
@@ -293,6 +294,7 @@ _CATALOG: Final[frozenset[str]] = frozenset(
         "BANK_ADJUSTMENT_LOSS",
         "EMPLOYEE_ADVANCE",
         "EXPENSE_OTHER",  # V471
+        "PURCHASE_ROUNDING",  # V479
         "CURRENCY_UNREALIZED_FX",
         # V158 D3.1 reserved (forward-compat, NOT seeded)
         "WIP_RAW",
@@ -444,6 +446,8 @@ PERAN_SEMAI: Final[frozenset[str]] = frozenset(
         "EMPLOYEE_ADVANCE", "BANK_ADJUSTMENT_GAIN", "BANK_ADJUSTMENT_LOSS", "REVENUE_SALES_SERVICE",
         # V471
         "EXPENSE_OTHER",
+        # V479
+        "PURCHASE_ROUNDING",
     }
 )
 

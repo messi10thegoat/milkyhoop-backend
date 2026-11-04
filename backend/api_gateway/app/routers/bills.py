@@ -504,13 +504,21 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         from ..services import tagihan_aksi as TA
         vat_name, vat_code, vat_ok = await _acct(AccountRole.VAT_INPUT, "PPN Masukan", pkp_gated=True) if bill_tax > 0 else (None, None, False)
         # non-PKP berpajak: PPN DIKAPITALISASI ke baris, tanpa Dr PPN Masukan (== posting, tagihan_aksi.dasar_tagihan)
-        dasar, kapital = TA.dasar_tagihan(grand_total, bill_tax, vat_code if vat_ok else None)
+        _bulat = await TA.pembulatan_dokumen(conn, ctx["tenant_id"], grand_total)  # c-2: == posting (total bulat, selisih)
+        if _bulat["blok"]:
+            warnings.append(_bulat["blok"]["message"])
+        grand_total = float(_bulat["total"])
+        dasar, kapital = TA.dasar_tagihan(grand_total, bill_tax, vat_code if vat_ok else None, _bulat["selisih"])
         lines = list(await _bill_preview_debit_lines(
             conn, ctx["tenant_id"], items_in, dasar, _acct, _num, kapital
         ))
         if bill_tax > 0 and vat_ok:
             lines.append({"account_name": vat_name, "account_code": vat_code,
                           "debit": bill_tax, "credit": 0, "event": "BILL"})
+        _bb = TA.baris_pembulatan(_bulat, 1) if _bulat["akun"] else None
+        if _bb:
+            _bn, _bc, _ = await _acct(AccountRole.PURCHASE_ROUNDING, "Pembulatan Pembelian")
+            lines.append({"account_name": _bn, "account_code": _bc, "debit": float(_bb["debit"]), "credit": float(_bb["credit"]), "event": "BILL"})
         lines.append({"account_name": ap_name, "account_code": ap_code,
                       "debit": 0, "credit": grand_total, "event": "BILL"})
 
