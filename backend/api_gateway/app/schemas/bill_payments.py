@@ -127,6 +127,13 @@ class CreateBillPaymentRequest(BaseModel):
         return v
 
 
+class BillPaymentPreviewRequest(CreateBillPaymentRequest):
+    """PRATINJAU saja (bayar banyak faktur, 4 Nov 2026): bill_ids = kolam tagihan tanpa nominal, dialokasi tertua-dulu dari
+    sisa (total + potongan - allocations manual). Payload balasan = alokasi TERSELESAIKAN untuk POST /bill-payments."""
+
+    bill_ids: List[str] = Field(default_factory=list)
+
+
 class UpdateBillPaymentRequest(BaseModel):
     """Request body for updating a draft bill payment."""
 

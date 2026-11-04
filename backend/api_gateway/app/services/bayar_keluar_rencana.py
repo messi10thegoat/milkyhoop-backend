@@ -254,6 +254,46 @@ async def _rencana_jurnal(conn, tid: str, bl: Blok, deskripsi: str, tgl, baris: 
             "journal_date": tgl.isoformat() if isinstance(tgl, date) else tgl, "lines": await _tampil_baris(conn, tid, baris)}
 
 
+# ------------------------------------------------------------------ kolam tagihan (bayar banyak faktur, 4 Nov 2026)
+async def kolam_tagihan(conn, tid: str, payload) -> tuple:
+    """PRATINJAU. bill_ids -> alokasi tertua-dulu (services/alokasi_tertua, sisa = sisa_tagihan = sumber validator tulis).
+    -> (CreateBillPaymentRequest alokasi TERSELESAIKAN, baris urut, galat [(code, pesan)])."""
+    from ..schemas.bill_payments import BillAllocationInput, CreateBillPaymentRequest
+    from .alokasi_tertua import selesaikan_kolam
+    from .pihak_helpers import normalisasi_pihak, pastikan_pihak_sama
+
+    async def muat(ids):
+        sah = []
+        for i in ids:
+            try:
+                sah.append(UUID(i))
+            except ValueError:
+                pass
+        rows = {str(r["id"]): r for r in await conn.fetch(
+            "SELECT id, invoice_number, vendor_id, due_date, issue_date FROM bills WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+            tid, sah)}
+        out = {}
+        for i in ids:
+            r = rows.get(i)
+            if not r:
+                out[i] = {"galat": ("TAGIHAN_TIDAK_DITEMUKAN", "Faktur pembelian tidak ditemukan.")}
+                continue
+            galat = None
+            try:
+                pastikan_pihak_sama(normalisasi_pihak(payload.vendor_id, "Vendor pembayaran"), r["vendor_id"],
+                                    f"Tagihan {r['invoice_number']}", "vendor")
+            except HTTPException as e:
+                galat = ("TAGIHAN_VENDOR_LAIN", e.detail)
+            out[i] = {"nomor": r["invoice_number"], "jatuh_tempo": r["due_date"], "tanggal": r["issue_date"], "galat": galat}
+        return out
+
+    baris, galat = await selesaikan_kolam([(a.bill_id, a.amount_applied) for a in payload.allocations], payload.bill_ids, muat,
+                                          lambda i: sisa_tagihan(conn, tid, i), payload.total_amount + payload.discount_amount)
+    tulis = CreateBillPaymentRequest(**payload.model_dump(exclude={"bill_ids", "allocations"}), allocations=[
+        BillAllocationInput(bill_id=b["id"], amount_applied=b["applied"]) for b in baris if b["applied"] > 0])
+    return tulis, baris, galat
+
+
 # ------------------------------------------------------------------ POST /bill-payments
 async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
     """Aturan POST /bill-payments, URUTAN == _op lama: periode (bukan draf) · UUID opsional · vendor · rekening · tagihan milik tenant &

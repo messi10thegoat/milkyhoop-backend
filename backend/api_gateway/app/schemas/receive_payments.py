@@ -89,6 +89,13 @@ class CreateReceivePaymentRequest(BaseModel):
         return v
 
 
+
+class ReceivePaymentPreviewRequest(CreateReceivePaymentRequest):
+    """PRATINJAU saja (bayar banyak faktur, 4 Nov 2026): invoice_ids = kolam faktur tanpa nominal, dialokasi tertua-dulu dari
+    sisa (total + potongan - allocations manual). Payload balasan = alokasi TERSELESAIKAN untuk POST /receive-payments."""
+
+    invoice_ids: List[str] = Field(default_factory=list)
+
 class UpdateReceivePaymentRequest(BaseModel):
     """Request body for updating a draft receive payment."""
 

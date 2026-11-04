@@ -6756,18 +6756,14 @@ async def _confirm_direct_action(
                 _new_total = payload.get("total_amount")
                 _allocs = payload.get("allocations")
                 if isinstance(_new_total, (int, float)) and isinstance(_allocs, list) and _allocs:
-                    _remaining = int(_new_total)
-                    _rebuilt = []
-                    for _a in _allocs:
-                        if not isinstance(_a, dict):
-                            continue
-                        _cap = int(_a.get("amount_applied") or 0)
-                        _give = max(0, min(_cap, _remaining))
-                        if _give > 0:
-                            _a2 = dict(_a)
-                            _a2["amount_applied"] = _give
-                            _rebuilt.append(_a2)
-                            _remaining -= _give
+                    # SATU penentu (services/alokasi_tertua, Decimal): urutan kartu dipertahankan, cap = amount_applied lama;
+                    # dulu int() membuang sen
+                    from decimal import Decimal as _Dec
+                    from ..services.alokasi_tertua import angka_json, selesaikan
+                    _dicts = [_a for _a in _allocs if isinstance(_a, dict)]
+                    _appl = selesaikan([{"remaining": _a.get("amount_applied"), "manual": None} for _a in _dicts], _new_total)
+                    _rebuilt = [dict(_a, amount_applied=angka_json(_x)) for _a, _x in zip(_dicts, _appl) if _x > 0]
+                    _remaining = _Dec(str(_new_total)) - sum(_appl)
                     if _rebuilt:
                         payload["allocations"] = _rebuilt
                         logger.info(

@@ -3,7 +3,7 @@
 POST /api/sales-orders/{id}/receive-payment/preview. NOL tulisan: seluruhnya di transaksi yang SELALU
 di-ROLLBACK. Dua lapis:
   1. RENCANA (di sini): faktur TERBIT milik SO, sisa per faktur dari compute_ar_outstanding (Law 1/16/29,
-     journal-derived; SAMA dengan yang dipakai validator create), alokasi TERTUA-DULU (tanggal faktur, nomor),
+     journal-derived; SAMA dengan yang dipakai validator create), alokasi TERTUA-DULU (services/alokasi_tertua),
      rekening bawaan, tanggal bawaan. SEMUA penghalang rencana dikumpulkan (tidak berhenti di yang pertama).
   2. TULIS-SUNGGUHAN-LALU-ROLLBACK: bila rencana bersih, `payload` (badan PERSIS untuk POST /api/receive-payments)
      dijalankan lewat receive_payments.buat_penerimaan -- inti yang SAMA dengan rute create -- di savepoint,
@@ -24,6 +24,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+from . import alokasi_tertua as AT
 from . import teks_galat as tg
 
 _NOL = Decimal("0")
@@ -44,14 +45,6 @@ def _f(v):
 
 def _rp(x) -> str:
     return tg.rp(x)  # Rupiah baku (services/teks_galat)
-def alokasi_tertua_dulu(faktur: list, jumlah: Decimal) -> list:
-    """faktur: [{invoice_id, remaining}] SUDAH urut tertua-dulu. Kembalikan applied per faktur (Decimal)."""
-    sisa, keluar = jumlah, []
-    for f in faktur:
-        a = min(f["remaining"], sisa) if sisa > 0 and f["remaining"] > 0 else _NOL
-        keluar.append(a)
-        sisa -= a
-    return keluar
 
 
 async def _rekening(conn, tenant_id: str, diminta: Optional[str], so) -> tuple:
@@ -108,7 +101,8 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
         tid, so_id,
     )
     draf = [r["invoice_number"] for r in semua if r["status"] == "draft"]
-    terbit = [r for r in semua if r["status"] != "draft"]
+    terbit = sorted((r for r in semua if r["status"] != "draft"),
+                    key=lambda r: AT.kunci_tertua(r["due_date"], r["invoice_date"], r["invoice_number"], r["id"]))
     if draf:
         notes.append({"code": "RP_DRAFT_INVOICES",
                       "message": f"Faktur draf {', '.join(draf)} belum terbit — tidak ikut dilunasi."})
@@ -143,16 +137,14 @@ async def rencana_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePaym
     jumlah = body.amount if body.amount is not None else total_sisa
     if body.amount is not None and body.amount <= 0:
         blocks.append({"code": "RP_AMOUNT_INVALID", "message": "Jumlah diterima harus lebih dari 0."})
-    applied = alokasi_tertua_dulu(faktur, jumlah if jumlah > 0 else _NOL)
+    applied = AT.selesaikan([{"remaining": f["remaining"], "manual": None} for f in faktur], jumlah if jumlah > 0 else _NOL)
     for f, a in zip(faktur, applied):
         f["applied"] = a
         f["remaining_after"] = f["remaining"] - a
     total_applied = sum(applied, _NOL)
     kelebihan = max(jumlah - total_applied, _NOL) if total_sisa > 0 else _NOL
     if kelebihan > 0:
-        notes.append({"code": "RP_OVERPAYMENT_DEPOSIT",
-                      "message": f"Kelebihan {_rp(kelebihan)} dicatat sebagai uang muka pelanggan (bisa dipakai "
-                                 "untuk faktur berikutnya atau dikembalikan)."})
+        notes.append(AT.catatan_lebih_pelanggan(kelebihan))
 
     if not so["customer_id"]:
         blocks.append({"code": "RP_CUSTOMER_MISSING", "message": "Pesanan tidak tertaut ke pelanggan."})
@@ -317,9 +309,7 @@ async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIRe
     faktur[0]["remaining_after"] = sisa - a
     kelebihan = max(jumlah - a, _NOL) if sisa > 0 else _NOL
     if kelebihan > 0:
-        notes.append({"code": "RP_OVERPAYMENT_DEPOSIT",
-                      "message": f"Kelebihan {_rp(kelebihan)} dicatat sebagai uang muka pelanggan (bisa dipakai "
-                                 "untuk faktur berikutnya atau dikembalikan)."})
+        notes.append(AT.catatan_lebih_pelanggan(kelebihan))
     if not inv["customer_id"]:
         blocks.append({"code": "RP_CUSTOMER_MISSING", "message": "Faktur tidak tertaut ke pelanggan."})
 
