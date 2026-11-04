@@ -73,6 +73,8 @@ class Kon:
         if "goods_receipt_items" in q and "AS ada_grn" in q:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
             return [{"id": i["id"], "quantity": i["quantity"], "ditagih": i["quantity_billed"], "diterima": D(0), "ada_grn": False}
                     for i in self.items]
+        if "JOIN products p" in q and "track_inventory" in q:  # HPP-NETO retarget (a): baris ber-stok rencana_kirim -> barang uji tanpa item_id = tak ber-stok
+            return []
         if "FROM purchase_order_items" in q: return self.items
         if "FROM vendor_deposits" in q: return self.deposit
         return []
