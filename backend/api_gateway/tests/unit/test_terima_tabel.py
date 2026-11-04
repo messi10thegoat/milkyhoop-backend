@@ -274,3 +274,14 @@ async def test_baris_nol_nol_tak_pernah_sampai_db():
     assert r["blocks"] == [] and [i["po_item_id"] for i in r["payload"]["items"]] == [str(B)]
     g = {k: v for k, v in r["akan"].items() if v > 0 or r["tolak"].get(k, 0) > 0}
     assert list(g) == [str(B)]
+
+
+def test_kolom_baru_pratinjau_float_2dp_seragam_kolom_lama():
+    # MASTER 4 Nov: pemetaan router dipertahankan -> nilai 4dp tak bulat WAJIB jadi float 2dp (merah bila pemetaan dicabut)
+    from app.routers import purchase_orders as RPO
+    b = {"po_item_id": "x", "description": "Minyak", "unit": "Dus", "qty": D("10.12345"), "sudah_diterima": D("0"), "sisa": D("10.12345"),
+         "akan_diterima": D("11.35801"), "akan_ditolak": D("1.23456"), "sisa_sesudah": D("0.00001"), "lebih": D("1.23456"),
+         "toleransi_persen": D("12.5")}
+    j = RPO._baris_terima_json(b)
+    assert {k: (type(j[k]), j[k]) for k in ("akan_ditolak", "sisa_sesudah", "lebih", "toleransi_persen", "qty")} == {
+        "akan_ditolak": (float, 1.23), "sisa_sesudah": (float, 0.0), "lebih": (float, 1.23), "toleransi_persen": (float, 12.5), "qty": (float, 10.12)}

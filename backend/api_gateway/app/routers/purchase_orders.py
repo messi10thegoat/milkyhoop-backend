@@ -1468,14 +1468,18 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
             g["goods_receipt"] = {**g["goods_receipt"], "estimated": True, "number_preview": await perkiraan_nomor_jurnal(
                 conn, ctx["tenant_id"], "GRN", date.fromisoformat(r["payload"]["receive_date"]))}
         return {"blocks": r["blocks"], "status_sesudah": r["status_sesudah"], "receive_date": r["payload"]["receive_date"],
-                "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
-                           "akan_diterima": _f2(b["akan_diterima"]), "akan_ditolak": _f2(b["akan_ditolak"]),
-                           "sisa_sesudah": _f2(b["sisa_sesudah"]), "lebih": _f2(b["lebih"]),
-                           "toleransi_persen": float(b["toleransi_persen"])} for b in r["baris"]],
+                "items": [_baris_terima_json(b) for b in r["baris"]],
                 "toleransi_persen": float(r["toleransi_persen"]),
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
                 "payload": r["payload"], **g, "notes": r["notes"] + g.get("notes", [])}
     return await _pratinjau(request, po_id, isi)
+
+
+def _baris_terima_json(b: dict) -> dict:
+    """Baris pratinjau TERIMA (kolom TabelQty): angka penentu (Decimal 4dp) -> float 2dp, seragam untuk kolom lama dan baru."""
+    return {**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
+            "akan_diterima": _f2(b["akan_diterima"]), "akan_ditolak": _f2(b["akan_ditolak"]), "sisa_sesudah": _f2(b["sisa_sesudah"]),
+            "lebih": _f2(b["lebih"]), "toleransi_persen": float(b["toleransi_persen"])}
 
 
 async def _pratinjau_grn(conn, tid: str, po, terima: dict, warehouse_id, sj_vendor=None) -> dict:
