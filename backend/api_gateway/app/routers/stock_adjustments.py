@@ -131,7 +131,7 @@ async def get_product_info(conn, tenant_id: str, product_id: UUID) -> Optional[d
     # Try products table first
     product = await conn.fetchrow(
         """
-        SELECT p.id, p.nama_produk as name, p.satuan as unit, p.barcode as code,
+        SELECT p.id, p.nama_produk as name, COALESCE(NULLIF(p.base_unit, ''), p.satuan) as unit, p.barcode as code,
                COALESCE(p.purchase_price, 0) as purchase_price
         FROM products p
         WHERE p.id = $1 AND p.tenant_id = $2
