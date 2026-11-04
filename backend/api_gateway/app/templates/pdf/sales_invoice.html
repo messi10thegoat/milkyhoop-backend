@@ -147,25 +147,11 @@
     {# Catatan + TTD (kiri) SEBARIS ringkasan + terbilang (kanan) -- pola FPB (putusan MASTER 4 Nov 2026): riwayat/rekening sesudahnya
        boleh mengalir, TTD tak pernah yatim di halaman berikutnya (dulu Catatan+TTD di paling akhir). #}
     {% from "_partials/ringkasan.html" import ringkasan %}
-    <div class="penutup-si">
-    <div>
-    {% if invoice.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ invoice.notes }}</div>
-    </div>
-    {% endif %}
-    <div class="ttd">
-        <div>Hormat kami,</div>
-        {% if invoice.tenant and invoice.tenant.name %}<div>{{ invoice.tenant.name }}</div>{% endif %}
-        <div class="garis"></div>
-    </div>
-    </div>
-    <div>
+    {% from "_partials/penutup.html" import penutup %}
+    {% call penutup([("Catatan", invoice.notes)], invoice.tenant.name if invoice.tenant else none) %}
     {{ ringkasan(RC.faktur_penjualan(invoice), invoice.has_cents, 'tabel') }}
     <div class="terbilang">{{ (invoice.total_amount or invoice.amount or invoice.grand_total) | terbilang }}</div>
-    </div>
-    </div>
+    {% endcall %}
 
     {% if c and c.riwayat %}
     <div class="notes-section riwayat">
