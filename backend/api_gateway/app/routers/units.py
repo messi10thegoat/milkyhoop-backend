@@ -10,6 +10,7 @@ from uuid import UUID
 import logging
 
 from ..services.db_pool import get_db_pool
+from ..services import satuan_dasar as SD  # P1: konversi terpakai terkunci
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -508,7 +509,7 @@ async def set_conversion(request: Request, product_id: UUID):
             # Check duplicate
             existing = await conn.fetchrow(
                 """
-                SELECT id FROM unit_conversions
+                SELECT id, conversion_unit, conversion_factor, COALESCE(is_active, true) AS is_active FROM unit_conversions
                 WHERE product_id = $1 AND tenant_id = $2
                   AND LOWER(base_unit) = $3 AND LOWER(conversion_unit) = $4
             """,
@@ -519,6 +520,8 @@ async def set_conversion(request: Request, product_id: UUID):
             )
 
             if existing:
+                if existing["is_active"]:  # P1: faktor konversi terpakai terkunci (harga tetap boleh)
+                    await SD.tolak_ubah_konversi(conn, ctx["tenant_id"], product_id, [existing], [(existing["conversion_unit"], factor)])
                 # Update existing
                 await conn.execute(
                     """
@@ -573,13 +576,14 @@ async def delete_conversion(request: Request, conversion_id: UUID):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchval(
-                "SELECT id FROM unit_conversions WHERE id = $1 AND tenant_id = $2",
+            existing = await conn.fetchrow(
+                "SELECT id, product_id, conversion_unit, conversion_factor FROM unit_conversions WHERE id = $1 AND tenant_id = $2",
                 conversion_id,
                 ctx["tenant_id"],
             )
             if not existing:
                 raise HTTPException(status_code=404, detail="Konversi tidak ditemukan")
+            await SD.tolak_ubah_konversi(conn, ctx["tenant_id"], existing["product_id"], [existing], None)  # P1: terpakai -> 409
 
             await conn.execute(
                 "UPDATE unit_conversions SET is_active = false, updated_at = NOW() WHERE id = $1",
