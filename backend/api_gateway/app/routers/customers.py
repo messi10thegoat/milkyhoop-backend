@@ -262,6 +262,9 @@ async def list_customers(
     B1 (4 Nov 2026): tanpa with_totals/aksi = perilaku lama (+ medan aditif); dengan salah satunya = urut nama, id, total/sum_sisa
     dari services/kontak_daftar (satu penentu dengan vendor).
     """
+    # dipanggil langsung (Milkybook/tes) tanpa FastAPI: default Query(...) -> anggap tak dikirim
+    with_totals = with_totals is True
+    aksi = aksi if isinstance(aksi, str) else None
     try:
         ctx = get_user_context(request)
         pool = await get_pool()

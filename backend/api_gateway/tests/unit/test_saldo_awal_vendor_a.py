@@ -97,7 +97,7 @@ def test_post_bill_conn_luar_memakai_koneksi_pemanggil():
 def test_endpoint_satu_transaksi_lewat_post_bill_tanpa_jurnal_tulisan_tangan():
     t = _tubuh(RV.set_vendor_opening_balance)
     urut = ['_ib.mulai(conn, ctx, _ib.kunci_dari(request), "VENDOR_OB"', 'f"VENDOR_OPENING:{vid}"', "FROM vendors WHERE id = $1",
-            "AccountRole.EQUITY_OPENING_BALANCE", "is_opening_balance AND status_v2 <> 'void'", "INSERT INTO bills",
+            "AccountRole.EQUITY_OPENING_BALANCE", "await saldo_awal_vendor(conn", "INSERT INTO bills",
             "INSERT INTO bill_items", "svc.post_bill(ctx[\"tenant_id\"], bill_id, UUID(str(ctx[\"user_id\"])), conn_luar=conn)",
             '_ib.simpan(conn, ctx, kp, sidik, "VENDOR_OB"']
     pos = [t.index(x) for x in urut]
@@ -106,6 +106,13 @@ def test_endpoint_satu_transaksi_lewat_post_bill_tanpa_jurnal_tulisan_tangan():
     ins = t[t.index("INSERT INTO bills"):t.index("INSERT INTO bill_items")]
     assert "'draft'" in ins and "is_opening_balance" in ins and "$6, $6" in ins and ", 0, false, $5::numeric, $5::numeric, 0, $5::numeric, true)" in ins  # jatuh tempo = tanggal, tanpa PPN
     assert "KODE_SALDO_AWAL_VENDOR_SUDAH_ADA" in t and "KODE_AKUN_SALDO_AWAL_BELUM_DIPETAKAN" in t
+
+
+def test_pemeriksa_saldo_awal_satu_sumber_penulis_dan_detail():
+    # B2 (4 Nov 2026): cek "sudah ada saldo awal" pindah ke saldo_awal_vendor -- dipakai POST /opening-balance DAN aksi detail
+    s = inspect.getsource(RV.saldo_awal_vendor)
+    assert "is_opening_balance AND status_v2 <> 'void'" in s and "VENDOR_OPENING_BALANCE" in s
+    assert "await saldo_awal_vendor(conn" in inspect.getsource(RV.get_vendor)
 
 
 def test_penahan_c_dicabut():

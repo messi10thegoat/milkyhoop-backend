@@ -302,6 +302,8 @@ class FakeConnGet(FakeConn):
 
     async def fetch(self, q, *a):
         self.sql.append((" ".join(q.split()), a))
+        if "WITH x AS" in q or "FROM bills b" in q:  # B2: fakta saldo (kontak_daftar) + pembelian (vendor_pembelian) -> kosong
+            return []
         return [{"id": uuid4(), "name": "Budi", "position": None, "email": None, "phone": "0431", "mobile": None,
                  "is_primary": True}]
 
