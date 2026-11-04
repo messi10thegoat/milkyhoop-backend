@@ -48,7 +48,10 @@
 {% if quote.opening_text %}<p class="intro pre">{{ quote.opening_text }}</p>{% endif %}
 
 {% from "_partials/tabel_barang.html" import tabel_barang %}
-{{ tabel_barang(quote["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total"}, quote.has_cents) }}
+{# tabel = konfigurasi PO/FPB/ND/SI (putusan pemilik "tabel pola PO untuk SEMUA dokumen", 4 Nov 2026) #}
+{{ tabel_barang(quote["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total",
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true},
+                quote.has_cents) }}
 
 <div class="akhir">
   {% from "_partials/ringkasan.html" import ringkasan %}
