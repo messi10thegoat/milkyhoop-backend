@@ -94,32 +94,8 @@
   </div>
 </div>
 
-{% set ns = namespace(disk=false) %}
-{% for item in bill["items"] %}{% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.disk = true %}{% endif %}{% endfor %}
-<table>
-  {% if ns.disk %}
-  <colgroup><col style="width:42%"><col style="width:14%"><col style="width:10%"><col style="width:16%"><col style="width:18%"></colgroup>
-  {% else %}
-  <colgroup><col style="width:52%"><col style="width:14%"><col style="width:16%"><col style="width:18%"></colgroup>
-  {% endif %}
-  <thead><tr><th>Deskripsi</th><th class="r">Qty</th>{% if ns.disk %}<th class="r">Diskon</th>{% endif %}<th class="r">Harga satuan</th><th class="r">Jumlah</th></tr></thead>
-  <tbody>
-  {% for item in bill["items"] %}
-    <tr>
-      <td><div>{{ item.product_name or item.description or '-' }}</div>
-        {%- set rinci = [] -%}
-        {%- if item.batch_no %}{% set _ = rinci.append('Batch ' ~ item.batch_no) %}{% endif -%}
-        {%- if item.exp_date %}{% set _ = rinci.append('Exp ' ~ item.exp_date) %}{% endif -%}
-        {%- if item.bonus_qty and item.bonus_qty|float > 0 %}{% set _ = rinci.append('Bonus ' ~ (item.bonus_qty | qty)) %}{% endif -%}
-        {% if rinci %}<div class="dt">{{ rinci | join(' · ') }}</div>{% endif %}</td>
-      <td class="r">{{ (item.qty or item.quantity) | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-      {% if ns.disk %}<td class="r">{% if item.discount_percent and item.discount_percent|float > 0 %}{{ "%g" % (item.discount_percent|float) }}%{% else %}-{% endif %}</td>{% endif %}
-      <td class="r">Rp {{ (item.price or item.unit_price) | rupiah(uang) }}</td>
-      <td class="r">Rp {{ (item.total or item.subtotal) | rupiah(uang) }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+{% from "_partials/tabel_barang.html" import tabel_barang %}
+{{ tabel_barang(bill["items"], {"desk": ["product_name", "description"], "qty": "qty", "harga": "price", "jumlah": "total"}, uang) }}
 
 <div class="akhir">
   <div class="sum">

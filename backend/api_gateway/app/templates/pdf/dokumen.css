@@ -1,0 +1,26 @@
+/* TOKEN CETAK DOKUMEN -- SATU SUMBER (PDF seragam tahap 1, 4 Nov 2026; permintaan pemilik via MASTER). Dimuat TERAKHIR oleh
+   SEMUA dokumen usaha (pdf_service CSS_DOKUMEN / CSS_PENAWARAN / CSS_KWITANSI) -> nilai di sini menang; templat & invoice.css /
+   penawaran.css TIDAK lagi memuat margin halaman atau ukuran logo sendiri.
+   - Margin halaman = pola Faktur Penjualan (isi lebih lebar; dulu Penawaran/PO/FPB 70/76 px, Surat Jalan/GRN 20 mm).
+   - Logo = pola Faktur Pembelian (tinggi 96 px, lebar maks 180 px; dulu SI/Proforma/NK/ND 60 px).
+   - Dikecualikan (putusan MASTER): kwitansi setengah A4 (kwitansi.css dimuat SESUDAH berkas ini -> @page-nya sendiri menang;
+     logonya memakai token --logo-kecil-*) dan Faktur Penjualan templat B pilihan tenant (invoice_b.css saja).
+   - Tipografi = tahap 2 (putusan pemilik). */
+:root {
+    --logo-tinggi: 96px;
+    --logo-lebar: 180px;
+    --logo-kecil-tinggi: 64px;      /* kwitansi setengah A4: persegi 295px (grapgrap) -> 64px masih terbaca */
+    --logo-kecil-lebar: 120px;
+}
+@page {
+    size: A4;
+    margin: 1.1cm 1.25cm 1.4cm 1.25cm;
+}
+.company-logo, header .logo, .doc-logo {
+    height: var(--logo-tinggi);
+    max-height: var(--logo-tinggi);
+    width: auto;
+    max-width: var(--logo-lebar);
+    object-fit: contain;
+    object-position: right top;
+}

@@ -5,11 +5,10 @@
   /* Pola yang sama dengan proforma.html: "Dicetak…" ke kotak margin @page (running element) supaya tak mendorong isi
      ke halaman 2; !important krn invoice.css dimuat sesudah. */
   .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
-  @page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }
+  @page { @bottom-left { content: element(dicetak); } }   /* margin: dokumen.css */
   .header { margin-bottom: 18px !important; }
   .meta-block { margin-bottom: 18px !important; }
   .parties { margin-bottom: 22px !important; }
-  .company-logo { max-height: 60px !important; }
   .meta-table { border-spacing: 20px 3px !important; }
   .notes-section { margin-bottom: 10px !important; }
 </style>

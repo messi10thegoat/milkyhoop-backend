@@ -6,14 +6,14 @@
 {# Kembaran delivery_note.html (Surat Jalan): kerangka & ukuran SAMA, arah MASUK (Dari vendor, ke gudang). Konteks = services/cetak_goods_receipt.
    Teks #1a1a1a (skill milkyhoop-pdf; tanpa abu). Tanpa harga: dokumen gudang. #}
 <style>
-  @page { size: A4; margin: 20mm; }
+  /* @page ukuran + margin: dokumen.css (dulu 20 mm) */
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Inter', 'DejaVu Sans', sans-serif; font-size: 12px; color: #1a1a1a; }
   .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #1a1a1a; padding-bottom: 16px; }
   .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
   .company-info p { font-size: 11px; line-height: 1.5; }
   .doc-title { text-align: right; }
-  .doc-logo { max-height: 52px; max-width: 130px; object-fit: contain; display: block; margin: 0 0 6px auto; }
+  .doc-logo { display: block; margin: 0 0 6px auto; }   /* ukuran: dokumen.css (dulu 52px) */
   .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
   .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .meta-block table { width: 100%; }
@@ -22,6 +22,7 @@
   .meta-block td:nth-child(2) { width: 10px; }
   .meta-block td:last-child { font-weight: 500; white-space: pre-line; }
   table.items { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  table.items .r { text-align: right; }
   table.items thead { display: table-header-group; }
   table.items thead tr { background: #1a1a1a; color: #fff; }
   table.items th { padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 600; }
@@ -79,9 +80,8 @@
     <tr>
       <th style="width:32px">No</th>
       <th>Deskripsi Barang</th>
-      <th class="center" style="width:80px">Qty Diterima</th>
-      {% if gr.ada_retur %}<th class="center" style="width:80px">Qty Diretur</th>{% endif %}
-      <th class="center" style="width:70px">Satuan</th>
+      <th class="r" style="width:110px">Qty Diterima</th>   <!-- pola PO: qty + satuan satu sel (PDF seragam 4 Nov 2026) -->
+      {% if gr.ada_retur %}<th class="r" style="width:110px">Qty Diretur</th>{% endif %}
     </tr>
   </thead>
   <tbody>
@@ -92,13 +92,12 @@
         {{ item.description or "-" }}
         {% if item.item_code %}<br><span class="kode">Kode: {{ item.item_code }}</span>{% endif %}
       </td>
-      <td class="center">{{ item.quantity | qty }}</td>
-      {% if gr.ada_retur %}<td class="center">{{ item.quantity_returned | qty if item.quantity_returned|float > 0 else "" }}</td>{% endif %}
-      <td class="center">{{ item.unit or "-" }}</td>
+      <td class="r">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
+      {% if gr.ada_retur %}<td class="r">{% if item.quantity_returned|float > 0 %}{{ item.quantity_returned | qty }}{% if item.unit %} {{ item.unit }}{% endif %}{% endif %}</td>{% endif %}
     </tr>
     {% endfor %}
     {% if not gr["items"] %}
-    <tr><td colspan="{{ 5 if gr.ada_retur else 4 }}" class="center" style="padding:20px">Tidak ada item</td></tr>
+    <tr><td colspan="{{ 4 if gr.ada_retur else 3 }}" class="center" style="padding:20px">Tidak ada item</td></tr>
     {% endif %}
   </tbody>
 </table>

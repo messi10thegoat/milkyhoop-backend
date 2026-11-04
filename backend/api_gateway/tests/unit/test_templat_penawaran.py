@@ -70,7 +70,7 @@ def test_draf_hanya_draft_dan_css_khusus_penawaran():
     r = _html()
     assert r.css == PSV.CSS_PENAWARAN and "invoice.css" not in r.css
     css = (pathlib.Path(PSV.__file__).resolve().parents[1] / "templates" / "pdf" / "penawaran.css").read_text()
-    for v in ("margin: 70px 76px", "#63635E", "#8E8E89", "#EFEDE8", "1.2px solid #1A1A1A", "width: 42%", "height: 40px",
+    for v in ("#63635E", "#8E8E89", "#EFEDE8", "1.2px solid #1A1A1A", "width: 42%", "height: 40px",
               'counter(page) " dari " counter(pages)', "break-inside: avoid", "table-header-group"):
         assert v in css, v
 

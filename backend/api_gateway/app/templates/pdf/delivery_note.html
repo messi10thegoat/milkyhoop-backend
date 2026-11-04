@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <title>Surat Jalan</title>
 <style>
-  @page { size: A4; margin: 20mm; }
+  /* @page ukuran + margin: dokumen.css (dulu 20 mm) */
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Inter', 'DejaVu Sans', sans-serif; font-size: 12px; color: #222; }  /* P3b: Inter (dulu Helvetica -> DejaVu) */
   .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #333; padding-bottom: 16px; }
   .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
   .company-info p { font-size: 11px; color: #555; line-height: 1.5; }
   .doc-title { text-align: right; }
-  .doc-logo { max-height: 52px; max-width: 130px; object-fit: contain; display: block; margin: 0 0 6px auto; }
+  .doc-logo { display: block; margin: 0 0 6px auto; }   /* ukuran: dokumen.css (dulu 52px) */
   .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
   .doc-title .subtitle { font-size: 11px; color: #777; }
   .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
@@ -21,6 +21,7 @@
   .meta-block td:nth-child(2) { width: 10px; }
   .meta-block td:last-child { font-weight: 500; }
   table.items { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  table.items .r { text-align: right; }
   table.items thead tr { background: #333; color: #fff; }
   table.items th { padding: 8px 10px; text-align: left; font-size: 11px; font-weight: 600; }
   table.items th.center, table.items td.center { text-align: center; }
@@ -110,8 +111,7 @@
     <tr>
       <th style="width:32px">No</th>
       <th>Deskripsi Barang</th>
-      <th class="center" style="width:80px">Qty</th>
-      <th class="center" style="width:70px">Satuan</th>
+      <th class="r" style="width:110px">Qty</th>   <!-- pola PO: qty + satuan satu sel (PDF seragam 4 Nov 2026) -->
       <th style="width:120px">Keterangan</th>
     </tr>
   </thead>
@@ -123,13 +123,12 @@
         {{ item.product_name or item.description or "-" }}
         {% if item.product_sku %}<br><span style="color:#888;font-size:10px">SKU: {{ item.product_sku }}</span>{% endif %}
       </td>
-      <td class="center">{{ item.quantity | qty }}</td>
-      <td class="center">{{ item.unit or "-" }}</td>
+      <td class="r">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
       <td>{{ item.notes or '' }}</td>
     </tr>
     {% endfor %}
     {% if not delivery_items %}
-    <tr><td colspan="5" class="center" style="color:#aaa;padding:20px">Tidak ada item</td></tr>
+    <tr><td colspan="4" class="center" style="color:#aaa;padding:20px">Tidak ada item</td></tr>
     {% endif %}
   </tbody>
 </table>

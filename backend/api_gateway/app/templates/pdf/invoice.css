@@ -2,8 +2,7 @@
 /* WeasyPrint: @page handles margins, NO padding on body/.invoice */
 
 @page {
-    size: A4;
-    margin: 1.1cm 1.25cm 2.2cm 1.25cm;
+    /* ukuran + margin halaman: dokumen.css (token satu sumber, PDF seragam 4 Nov 2026) */
     @bottom-right {
         content: "Halaman " counter(page) " dari " counter(pages);
         font-family: 'Inter', 'DejaVu Sans', sans-serif;
@@ -41,18 +40,8 @@ body {
     white-space: nowrap;
 }
 
-.doc-subtitle {
-    font-size: 11pt;
-    font-weight: 400;
-    color: #1a1a1a;
-    margin-top: 2px;
-}
 
-.company-logo {
-    max-height: 94px;
-    max-width: 234px;
-    object-fit: contain;
-}
+/* .company-logo: ukuran di dokumen.css (token --logo-*) */
 
 /* ── 2. Meta ── */
 .meta-block { margin-bottom: 28px; }
@@ -166,8 +155,6 @@ body {
 .col-qty { width: 10%; text-align: center; }
 .col-price { width: 20%; text-align: right; }
 .col-amount { width: 20%; text-align: right; }
-.text-right { text-align: right; }
-.text-center { text-align: center; }
 .text-muted { font-size: 8.5pt; color: #1a1a1a; }
 
 /* ── 6. Summary ── */
@@ -240,14 +227,6 @@ body {
     font-size: 9.5pt;
     color: #1a1a1a;
     line-height: 1.55;
-}
-
-/* ── Opening/closing text (quotes) ── */
-.prose-section {
-    margin-bottom: 20px;
-    font-size: 10pt;
-    color: #1a1a1a;
-    line-height: 1.6;
 }
 
 /* ── 7. Footer ── */

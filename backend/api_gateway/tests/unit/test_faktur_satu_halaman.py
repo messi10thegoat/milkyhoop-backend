@@ -8,8 +8,8 @@ def test_faktur_a_dicetak_ke_margin_dan_jarak_dirapatkan():
     src = (PS.TEMPLATE_DIR / "sales_invoice.html").read_text()
     kepala = src[:src.index("</head>")]
     for aturan in (".footer-line { position: running(dicetak);",
-                   "@page { margin-bottom: 1.4cm !important; @bottom-left { content: element(dicetak); } }",
-                   ".header { margin-bottom: 18px !important; }", ".company-logo { max-height: 60px !important; }",
+                   "@page { @bottom-left { content: element(dicetak); } }",   # margin 1.4cm + logo: dokumen.css (test_pdf_seragam)
+                   ".header { margin-bottom: 18px !important; }",
                    ".meta-table { border-spacing: 20px 3px !important; }"):
         assert aturan in kepala, aturan
 

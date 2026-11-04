@@ -84,10 +84,10 @@ def pilih_template(bawaan_tenant, override=None) -> str:
 
 # P3b (putusan pemilik 1 Okt 2026): font Inter untuk SEMUA dokumen SO lewat fonts.css + FontConfiguration.
 # Template faktur B (gaya industri, metrik Arial -> Liberation Sans) dan laporan keuangan (DejaVu) TIDAK berubah.
-CSS_DOKUMEN = ("fonts.css", "invoice.css")
+CSS_DOKUMEN = ("fonts.css", "invoice.css", "dokumen.css")   # dokumen.css TERAKHIR = token cetak satu sumber (margin, logo)
 # 7 Okt 2026: PDF Penawaran templat BARU (SPEC pemilik) -- gaya sendiri, invoice.css bersama TIDAK dimuat.
-CSS_PENAWARAN = ("fonts.css", "penawaran.css")
-CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)
+CSS_PENAWARAN = ("fonts.css", "penawaran.css", "dokumen.css")
+CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)   # kwitansi.css SESUDAH dokumen.css: @page setengah A4 sendiri menang (dikecualikan)
 
 
 @dataclass(frozen=True)

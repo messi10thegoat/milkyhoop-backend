@@ -110,6 +110,6 @@ def test_surat_jalan_berlogo_kanan_atas():
 def test_proforma_jarak_dirapatkan_untuk_muat_satu_halaman():
     """PRO-2610-0001 PELUNASAN + logo dulu 2 halaman (diukur: 49/112 proforma grapgrap 2 halaman -> 2)."""
     src = (PS.TEMPLATE_DIR / "proforma.html").read_text()
-    for aturan in (".header { margin-bottom: 18px !important; }", ".company-logo { max-height: 60px !important; }",
+    for aturan in (".header { margin-bottom: 18px !important; }",   # logo: token dokumen.css (test_pdf_seragam)
                    ".meta-table { border-spacing: 20px 3px !important; }"):
         assert aturan in src, aturan

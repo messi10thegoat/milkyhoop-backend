@@ -179,10 +179,13 @@ def test_rekening_tanpa_duplikasi_bank_dan_baris_transfer():
     assert "Cantumkan nomor faktur INV-2609-0035 pada berita transfer." in h
 
 
-def test_kolom_tetap_dan_header_rata_kanan():
+def test_kolom_pola_po_dan_header_rata_kanan():
+    """PDF seragam 4 Nov 2026 (permintaan pemilik via MASTER): pola PO -- Qty + satuan satu sel, tanpa kolom Satuan/Disk% (dulu kolom
+    tetap 27 Sep Deskripsi 44 / Satuan 10 / Qty 8 / Harga 19 / Jumlah 19)."""
     h = _html(_inv())
-    assert ".si-table .col-desc { width: 44%; }" in h and ".si-table .col-price { width: 19%; }" in h
-    assert ".si-table thead th.col-price, .si-table thead th.col-amount { text-align: right; }" in h
+    assert re.search(r"\.si-table \.col-desc \{ width: (52|42)%; text-align: left; \}", h) and ".si-table .col-price { width: 16%; text-align: right; }" in h
+    assert ">Satuan</th>" not in h and ">Disk%</th>" not in h
+    assert ".si-table thead th.col-qty, .si-table thead th.col-disc, .si-table thead th.col-price, .si-table thead th.col-amount { text-align: right; }" in h
 
 
 def test_tanpa_pill_status_dan_dicetak_tanggal_tenant():
