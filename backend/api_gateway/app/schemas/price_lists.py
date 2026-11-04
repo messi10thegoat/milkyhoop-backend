@@ -2,17 +2,20 @@
 Pydantic schemas for Price Lists module.
 """
 
+from decimal import Decimal
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
+from uuid import UUID
 
 
 class PriceListItemCreate(BaseModel):
     item_id: str
     item_code: Optional[str] = None
-    unit: Optional[str] = Field(None, max_length=20)
-    price: int = Field(..., ge=0)
-    min_quantity: float = Field(1, ge=0)
+    unit: Optional[str] = Field(None, max_length=20)  # kosong = satuan dasar barang
+    price: Decimal = Field(..., ge=0, max_digits=18, decimal_places=2)  # DAFTAR-HARGA: 2 desimal (Law 9/25); dulu int
+    min_quantity: Decimal = Field(Decimal("1"), gt=0)  # tingkat qty dalam SATUAN baris ini
+    is_default_unit: bool = False  # satuan jual bawaan barang ini di daftar ini (opsional)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
@@ -117,13 +120,15 @@ class PriceListDropdownResponse(BaseModel):
     items: List[PriceListDropdownItem]
 
 
-class ItemPriceRequest(BaseModel):
-    item_id: str
-    customer_id: Optional[str] = None
-    quantity: float = 1
-    unit: Optional[str] = None
+# DAFTAR-HARGA (4 Nov 2026): penentu harga saran SATU di server (services/harga_jual)
+class BarisHargaIn(BaseModel):
+    key: Optional[str] = Field(None, max_length=100)
+    item_id: UUID
+    unit: Optional[str] = Field(None, max_length=50)
+    quantity: Decimal = Field(Decimal("1"), gt=0)
 
 
-class ItemPriceResponse(BaseModel):
-    success: bool = True
-    data: Dict[str, Any]
+class ResolveHargaRequest(BaseModel):
+    customer_id: Optional[UUID] = None
+    tanggal: Optional[date] = None  # kosong = tanggal bisnis tenant
+    lines: List[BarisHargaIn] = Field(..., min_length=1, max_length=500)
