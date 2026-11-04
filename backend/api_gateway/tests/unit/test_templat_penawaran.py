@@ -79,7 +79,9 @@ def test_draf_hanya_draft_dan_css_khusus_penawaran():
 
 def test_ringkasan_diskon_ppn_hanya_bila_ada():
     h = _html().html
-    assert "Diskon" not in h and "PPN" not in h
+    # tabel pola PO (4 Nov 2026): kepala kolom Diskon SELALU ada; baris RINGKASAN diskon/PPN tetap hanya bila ada
+    assert '<th class="r">Diskon</th>' in h and "Diskon 10%" not in h and "-Rp" not in h and "PPN" not in h
+    assert h.index("<th>Nama Barang</th>") < h.index('<th class="r">Kts.</th>') < h.index("@Harga</th>") < h.index("Diskon</th>") < h.index(">Total</th>")
     h2 = _html(discount_amount=100000, discount_type="percentage", discount_value=10, tax_amount=154000,
                items=[dict(DASAR["items"][0], tax_rate=11)]).html
     assert "Diskon 10%" in h2 and "PPN 11%" in h2
