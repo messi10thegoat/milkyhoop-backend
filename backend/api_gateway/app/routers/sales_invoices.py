@@ -59,6 +59,7 @@ from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..utils.metode_pembayaran import label_metode, tentukan_metode
+from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services.sales_doc_calc import (
     compute_document, DocumentDiscountError, LineAmountError,
     harga_json as _harga_json, warisi_jumlah_baris as _warisi_jb,
@@ -575,6 +576,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 _conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
                 body.shipping_amount, "tax_code_id",
             )
+            _presisi = await UP.presisi_tenant(_conn, ctx["tenant_id"])
         try:
             res = compute_document(
                 _items,
@@ -582,6 +584,7 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
                 doc_discount_percent=body.discount_percent,
                 shipping_amount=body.shipping_amount,
                 shipping_tax=_ship,
+                presisi=_presisi,
             )
         except LineAmountError as _e:
             raise HTTPException(status_code=422, detail=str(_e))
@@ -779,12 +782,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                 _conn, ctx["tenant_id"], body.get("shipping_tax_code_id"), norms,
                 body.get("shipping_amount") or 0, "tax_code_id",
             )
+            _pv_presisi = await UP.presisi_tenant(_conn, ctx["tenant_id"])
         _res = compute_document(
             norms,
             doc_discount_amount=body.get("discount_amount") or 0,
             doc_discount_percent=body.get("discount_percent") or 0,
             shipping_amount=body.get("shipping_amount") or 0,
             shipping_tax=_pv_ship,
+            presisi=_pv_presisi,
         )
         subtotal = _res["dpp_total"]
         tax_total = _res["tax_amount"]
@@ -3374,6 +3379,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         doc_discount_percent=body.discount_percent,
                         shipping_amount=body.shipping_amount,
                         shipping_tax=_ship,
+                        presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]),
                     )
                 except DocumentDiscountError as _e:
                     raise HTTPException(status_code=400, detail=str(_e))
@@ -3894,6 +3900,7 @@ async def update_invoice(
                                 doc_discount_percent=_pct,
                                 shipping_amount=_ship_amt,
                                 shipping_tax=_ship,
+                                presisi=await UP.presisi_dari(conn, ctx["tenant_id"], "sales_invoices", invoice_id),
                             )
                         except DocumentDiscountError as _e:
                             raise HTTPException(status_code=400, detail=str(_e))
