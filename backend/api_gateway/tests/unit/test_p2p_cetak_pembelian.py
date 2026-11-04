@@ -163,7 +163,7 @@ def test_render_bayar_keluar_dan_kwitansi_penerimaan_tetap():
 
 def _vc(**ubah):
     d = {"id": uuid.uuid4(), "credit_number": "VC-2610-0002", "credit_date": date(2026, 10, 24), "status": "posted",
-         "voided_at": None, "voided_reason": None, "vendor_name": "CV Benang Jaya", "original_bill_id": None,
+         "voided_at": None, "voided_reason": None, "vendor_id": None, "vendor_name": "CV Benang Jaya", "original_bill_id": None,
          "original_bill_number": "PI-2610-0001", "reason": "return", "reason_detail": "Benang putus", "ref_no": None,
          "notes": None, "subtotal": Decimal("300000.00"), "discount_amount": Decimal("27000.00"), "tax_rate": Decimal("11"),
          "tax_amount": Decimal("26730.00"), "total_amount": Decimal("269730.00")}
@@ -216,10 +216,12 @@ def test_render_nd_angka_label_dan_stempel():
     d = _muat_nd(_vc(), ITEM_DISKON)["debit_note_data"]
     html = ps.render_debit_note(d, TENANT).html
     for teks in ("Nota Debit", "VC-2610-0002", "PI-2610-0001", "Retur barang", "CV Benang Jaya", "Rp 300.000", "-Rp 30.000",
-                 "-Rp 27.000", "PPN (11%)", "Rp 26.730", "Total Nota Debit", "Rp 269.730", "Rp 170.000", "Benang putus",
-                 "Pengurang hutang ke pemasok", "Kaos Biru Konveksi"):
+                 "-Rp 27.000", "PPN 11%", "Rp 26.730", "<span>Total</span>", "Rp 269.730", "Rp 170.000", "Benang putus",
+                 "Kaos Biru Konveksi", '<div class="kop">', "<b>Kepada</b>", "<b>No. Nota Debit</b>", "Bagian Pembelian,"):
         assert teks in html, teks
-    assert "Nota Kredit" not in html and "pelanggan" not in html and "DRAF" not in html
+    # turunan FPB/PO (4 Nov 2026): tanpa angka besar & kalimat hero, gaya keluarga Pembelian
+    assert "Nota Kredit" not in html and "pelanggan" not in html and "DRAF" not in html and "Pengurang hutang" not in html
+    assert ps.render_debit_note(d, TENANT).css[-2:] == ("penawaran.css", "dokumen.css")
     assert "DRAF" in ps.render_debit_note(dict(d, status="draft"), TENANT).html
     h_void = ps.render_debit_note(dict(d, status="void", voided_at=datetime(2026, 10, 25, tzinfo=timezone.utc),
                                        voided_reason="salah vendor"), TENANT).html
@@ -251,3 +253,15 @@ def test_pemuat_setiap_kueri_berfilter_tenant():
     asyncio.run(CP.muat_pdf_payment_out(c2, {"tenant_id": "t1"}, pay["id"]))
     lepas = [s for s, _ in c.sql + c2.sql if "tenant_id" not in s and '"Tenant"' not in s and "vendor_credit_items" not in s]
     assert not lepas, lepas  # vendor_credit_items dibaca lewat id ND yang SUDAH lolos filter tenant
+
+
+def test_nd_kepada_vendor_berkontak_fungsi_sama_po():
+    """ND turunan FPB/PO (4 Nov 2026): "Kepada" = kontak vendor dari po_cetak.kontak_vendor (fungsi SAMA dgn PO/FPB, filter tenant)."""
+    ven = {"name": "CV Benang Jaya", "address": "Jl. Benang 7", "city": "Bandung", "province": None, "postal_code": None,
+           "phone": "0811", "mobile_phone": None, "email": None, "tax_id": "01.234.567.8-901.000"}
+    vc = _vc(vendor_id=uuid.uuid4())
+    c = _Conn({"vendor_credits": vc, "bills": None, "vendors": ven}, ITEM_DISKON)
+    d = asyncio.run(CD.muat_pdf_debit_note(c, {"tenant_id": "t1"}, vc["id"]))["debit_note_data"]
+    html = get_pdf_service().render_debit_note(d, TENANT).html
+    for teks in ("Jl. Benang 7", "0811", "NPWP 01.234.567.8-901.000"):
+        assert teks in html, teks

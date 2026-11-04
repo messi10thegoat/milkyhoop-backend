@@ -2,12 +2,14 @@
 
 Simetri services/nota_kredit_dokumen: angka = KOLOM TERSIMPAN nota debit (dihitung saat dibuat, dasar jurnalnya), tidak
 dihitung ulang. Sisa kredit / terpakai / refund TIDAK dicetak: itu keadaan, bukan isi dokumen (Law 1/16).
-Ringkasan WAJIB cocok dengan total tersimpan: diskon baris hanya dicetak bila total tersimpan memang menguranginya."""
+Ringkasan WAJIB cocok dengan total tersimpan: diskon baris hanya dicetak bila total tersimpan memang menguranginya.
+PDF keluarga Pembelian (4 Nov 2026, turunan FPB/PO): + kontak vendor (po_cetak.kontak_vendor, fungsi SAMA) + has_cents."""
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException
 
+from .po_cetak import kontak_vendor
 from .rekap_pesanan import muat_kop
 
 PESAN_TAK_ADA = "Nota debit tidak ditemukan."
@@ -56,13 +58,15 @@ async def muat_pdf_debit_note(conn, ctx: dict, vc_id) -> dict:
         faktur = await conn.fetchrow(
             "SELECT invoice_number, issue_date FROM bills WHERE id = $1 AND tenant_id = $2", vc["original_bill_id"], tid)
     r = susun_ringkasan(vc["subtotal"], vc["discount_amount"], vc["tax_amount"], vc["total_amount"], items)
+    vendor = await kontak_vendor(conn, tid, vc["vendor_id"])
     data = {
         "credit_number": vc["credit_number"],
         "credit_date": vc["credit_date"],
         "status": vc["status"],
         "voided_at": vc["voided_at"],
         "voided_reason": vc["voided_reason"],
-        "vendor_name": vc["vendor_name"],
+        "vendor_name": vendor["nama"] or vc["vendor_name"],
+        "vendor_kontak": vendor,
         "original_bill_number": (faktur["invoice_number"] if faktur else None) or vc["original_bill_number"],
         "original_bill_date": faktur["issue_date"] if faktur else None,
         "reason": vc["reason"],
@@ -83,4 +87,8 @@ async def muat_pdf_debit_note(conn, ctx: dict, vc_id) -> dict:
         } for i, n in zip(items, r["net"])],
         "item_discount_total": r["item_discount_total"],
     }
+    from .pdf_service import PDFService
+    data["has_cents"] = PDFService.money_has_cents(
+        data["subtotal"], data["discount_amount"], data["tax_amount"], data["total_amount"], data["item_discount_total"],
+        *[x for b in data["items"] for x in (b["unit_price"], b["discount_amount"], b["net"])])
     return {"debit_note_data": data, "tenant_info": await muat_kop(conn, tid)}

@@ -895,16 +895,14 @@ class PDFService:
         return Render(html_content, CSS_DOKUMEN, font=True)
 
     def render_debit_note(self, debit_note_data: dict, tenant_info: dict) -> Render:
-        """Nota Debit (P2P cetak, 25 Okt 2026) -- simetri render_credit_note; konteks = services/cetak_debit_note."""
-        company = {"name": tenant_info.get("name"), "address": tenant_info.get("address"),
-                   "phone": tenant_info.get("phone"), "email": tenant_info.get("email"),
-                   "logo_base64": tenant_info.get("logo_data")}
+        """Nota Debit (P2P cetak, 25 Okt 2026); konteks = services/cetak_debit_note. PDF keluarga Pembelian (4 Nov 2026): kerangka
+        turunan FPB/PO (CSS_PENAWARAN, _partials/kop_usaha dari tenant_info = muat_kop), dulu invoice.css."""
         status = str(debit_note_data.get("status") or "draft").lower()
         html_content = self.jinja_env.get_template("debit_note.html").render(
-            debit_note=debit_note_data, company=company, generated_at=datetime.now(),
+            debit_note=debit_note_data, kop=tenant_info, generated_at=datetime.now(),
             batal=self._tanda_batal(debit_note_data), draf=status == "draft", draf_keterangan="Belum diposting",
         )
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        return Render(html_content, CSS_PENAWARAN, font=True)
 
     def render_rekap_pesanan(self, rekap: dict, tenant_info: dict) -> Render:
         """Rekap Pesanan (P3 SO-dokumen) -- konteks dari services/rekap_pesanan.muat_rekap_pesanan."""

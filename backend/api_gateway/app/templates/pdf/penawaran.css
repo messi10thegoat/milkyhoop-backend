@@ -58,4 +58,4 @@ td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
 .bawah { display: grid; grid-template-columns: 1fr 42%; gap: 32px; align-items: start; margin-top: 14px; break-inside: avoid; }
 .bawah .sum { margin-top: 0; width: auto; }
 .bawah .sign { margin: 18px 0 0; text-align: left; }   /* TTD di bawah Keterangan (kolom kiri, pola Accurate): hemat satu blok */
-.bawah .blk { margin-top: 0; }
+.bawah .blk:first-child { margin-top: 0; }   /* blok berikutnya tetap berjarak (.blk + .blk) */

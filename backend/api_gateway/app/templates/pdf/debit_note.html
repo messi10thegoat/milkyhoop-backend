@@ -1,161 +1,66 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Nota Debit {{ debit_note.credit_number or '-' }}</title>
-<style>
-  /* Pola yang sama dengan proforma.html: "Dicetak…" ke kotak margin @page (running element) supaya tak mendorong isi
-     ke halaman 2; !important krn invoice.css dimuat sesudah. */
-  .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
-  @page { @bottom-left { content: element(dicetak); } }   /* margin: dokumen.css */
-  .header { margin-bottom: 18px !important; }
-  .meta-block { margin-bottom: 18px !important; }
-  .parties { margin-bottom: 22px !important; }
-  .meta-table { border-spacing: 20px 3px !important; }
-  .notes-section { margin-bottom: 10px !important; }
-</style>
-</head>
+<head><meta charset="UTF-8"><title>Nota Debit {{ debit_note.credit_number or '-' }}</title></head>
+{#
+  PDF Nota Debit -- TURUNAN Faktur Pembelian / PO pola Accurate (4 Nov 2026, putusan pemilik: FPB acuan keluarga Pembelian).
+  Kop usaha (_partials/kop_usaha) di kanan judul; nota DIKIRIM ke vendor -> "Kepada" vendor | meta No. Nota Debit, Tanggal,
+  Faktur asal, Alasan, Referensi; tabel konfigurasi FPB; Keterangan alasan + catatan + TTD | ringkasan + terbilang. Tanpa angka
+  besar (pola PO/FPB). Angka = kolom tersimpan (services/cetak_debit_note.susun_ringkasan). Stempel DRAF / DIBATALKAN.
+#}
 <body>
 {% include "_partials/tanda_batal.html" %}
 {% include "_partials/tanda_draf.html" %}
-<div class="invoice">
+<div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
+<div class="doc">
+{% set dn = debit_note %}{% set uang = dn.has_cents %}{% set v = dn.vendor_kontak or {} %}
 
-    <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">Nota Debit</h1>
-        </div>
-        {% if company and company.logo_base64 %}
-        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
-        {% endif %}
+{% from "_partials/kop_usaha.html" import kop_usaha %}
+<header>
+  <div><h1>Nota Debit</h1></div>
+  {{ kop_usaha(kop.name, kop.address, kop.phone, kop.npwp, kop.logo_data) }}
+</header>
+
+<div class="atas">
+  <div>
+    <b>Kepada</b>
+    <div>{{ dn.vendor_name or '-' }}</div>
+    {% if v.alamat %}<div class="pre">{{ v.alamat }}</div>{% endif %}
+    {% if v.telepon %}<div>{{ v.telepon }}</div>{% endif %}
+    {% if v.npwp %}<div>NPWP {{ v.npwp }}</div>{% endif %}
+  </div>
+  <div class="meta">
+    <b>No. Nota Debit</b><span>{{ dn.credit_number or '-' }}</span>
+    <b>Tanggal</b><span>{{ dn.credit_date | date_id }}</span>
+    {% if dn.original_bill_number %}<b>Faktur asal</b><span>{{ dn.original_bill_number }}{% if dn.original_bill_date %} &middot; {{ dn.original_bill_date | date_id }}{% endif %}</span>{% endif %}
+    <b>Alasan</b><span>{{ dn.reason_label or '-' }}</span>
+    {% if dn.ref_no %}<b>Referensi</b><span>{{ dn.ref_no }}</span>{% endif %}
+  </div>
+</div>
+
+{% from "_partials/tabel_barang.html" import tabel_barang %}
+{{ tabel_barang(dn["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "net",
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, uang) }}
+
+<div class="akhir">
+  <div class="bawah">
+  <div>
+    {% if dn.reason_detail %}<div class="blk"><b>Keterangan alasan</b><div class="pre">{{ dn.reason_detail }}</div></div>{% endif %}
+    {% if dn.notes %}<div class="blk"><b>Catatan</b><div class="pre">{{ dn.notes }}</div></div>{% endif %}
+    <div class="sign">
+      <div>Bagian Pembelian,</div>
+      <div class="garis">Tgl.</div>
     </div>
-
-    <!-- 2. Meta -->
-    <div class="meta-block">
-        <table class="meta-table">
-            <tr>
-                <td class="meta-label">Nomor Nota Debit</td>
-                <td class="meta-value">{{ debit_note.credit_number or '-' }}</td>
-            </tr>
-            <tr>
-                <td class="meta-label">Tanggal</td>
-                <td class="meta-value">{{ debit_note.credit_date | date_id }}</td>
-            </tr>
-            {% if debit_note.original_bill_number %}
-            <tr>
-                <td class="meta-label">Faktur Asal</td>
-                <td class="meta-value">{{ debit_note.original_bill_number }}{% if debit_note.original_bill_date %} ({{ debit_note.original_bill_date | date_id }}){% endif %}</td>
-            </tr>
-            {% endif %}
-            <tr>
-                <td class="meta-label">Alasan</td>
-                <td class="meta-value">{{ debit_note.reason_label or '-' }}</td>
-            </tr>
-            {% if debit_note.ref_no %}
-            <tr>
-                <td class="meta-label">Referensi</td>
-                <td class="meta-value">{{ debit_note.ref_no }}</td>
-            </tr>
-            {% endif %}
-        </table>
-    </div>
-
-    <!-- 3. Parties -->
-    <div class="parties">
-        {% if company %}
-        <div class="party">
-            <div class="party-label">Dari</div>
-            <div class="party-name">{{ company.name }}</div>
-            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
-            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
-            {% if company.email %}<div class="party-detail"><!--email_off-->{{ company.email }}<!--/email_off--></div>{% endif %}
-        </div>
-        {% endif %}
-        <div class="party">
-            <div class="party-label">Kepada</div>
-            <div class="party-name">{{ debit_note.vendor_name or '-' }}</div>
-        </div>
-    </div>
-
-    <!-- 4. Hero: nilai pengurang hutang ke pemasok -->
-    <div class="hero">
-        <div class="hero-amount">Rp {{ debit_note.total_amount | currency }}</div>
-        <div class="hero-due">Pengurang hutang ke pemasok{% if debit_note.original_bill_number %} atas faktur {{ debit_note.original_bill_number }}{% endif %}</div>
-    </div>
-
-    <div style="height: 16px;"></div>
-
-    <!-- 5. Rincian -->
-    <table class="items-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Keterangan</th>
-                <th class="col-qty">Qty</th>
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {# bracket notation: debit_note["items"] (dot = dict.items()) #}
-            {% for item in debit_note["items"] %}
-            <tr>
-                <td class="col-desc">{{ item.description or '-' }}{% if item.discount_amount and item.discount_amount|float > 0 %}<br><span class="text-muted">Diskon -Rp {{ item.discount_amount | currency }}</span>{% endif %}</td>
-                <td class="col-qty">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                <td class="col-price">Rp {{ item.unit_price | harga }}</td>
-                <td class="col-amount">Rp {{ item.net | currency }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    {# 6. Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
-    <div class="summary">
-        <table class="summary-table">
-            <tr>
-                <td class="label">Subtotal</td>
-                <td class="value">Rp {{ debit_note.subtotal | currency }}</td>
-            </tr>
-            {% if debit_note.item_discount_total and debit_note.item_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon item</td>
-                <td class="value">-Rp {{ debit_note.item_discount_total | currency }}</td>
-            </tr>
-            {% endif %}
-            {% if debit_note.discount_amount and debit_note.discount_amount|float > 0 %}
-            <tr>
-                <td class="label">Diskon</td>
-                <td class="value">-Rp {{ debit_note.discount_amount | currency }}</td>
-            </tr>
-            {% endif %}
-            {% if debit_note.tax_amount and debit_note.tax_amount|float > 0 %}
-            <tr>
-                <td class="label">PPN{% if debit_note.tax_rate and debit_note.tax_rate|float > 0 %} ({{ "%g" % (debit_note.tax_rate|float) }}%){% endif %}</td>
-                <td class="value">Rp {{ debit_note.tax_amount | currency }}</td>
-            </tr>
-            {% endif %}
-            <tr class="total-row">
-                <td class="label"><strong>Total Nota Debit</strong></td>
-                <td class="value"><strong>Rp {{ debit_note.total_amount | currency }}</strong></td>
-            </tr>
-        </table>
-    </div>
-
-    {% if debit_note.reason_detail %}
-    <div class="notes-section">
-        <div class="notes-label">Keterangan Alasan</div>
-        <div class="notes-text">{{ debit_note.reason_detail }}</div>
-    </div>
-    {% endif %}
-
-    {% if debit_note.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ debit_note.notes }}</div>
-    </div>
-    {% endif %}
-
-    <!-- 7. Footer (running element -> kotak margin @page) -->
-    <div class="footer-running">
-        Dicetak {{ generated_at | date_id }}
-    </div>
+  </div>
+  <div class="sum">
+    <div><span>Subtotal</span><span>Rp {{ dn.subtotal | rupiah(uang) }}</span></div>
+    {% if dn.item_discount_total and dn.item_discount_total|float > 0 %}<div><span>Diskon item</span><span>-Rp {{ dn.item_discount_total | rupiah(uang) }}</span></div>{% endif %}
+    {% if dn.discount_amount and dn.discount_amount|float > 0 %}<div><span>Diskon</span><span>-Rp {{ dn.discount_amount | rupiah(uang) }}</span></div>{% endif %}
+    {% if dn.tax_amount and dn.tax_amount|float > 0 %}<div><span>PPN{% if dn.tax_rate and dn.tax_rate|float > 0 %} {{ "%g" % (dn.tax_rate|float) }}%{% endif %}</span><span>Rp {{ dn.tax_amount | rupiah(uang) }}</span></div>{% endif %}
+    <div class="tot"><span>Total</span><span>Rp {{ dn.total_amount | rupiah(uang) }}</span></div>
+    <div class="terb">{{ dn.total_amount | terbilang }}</div>
+  </div>
+  </div>
+</div>
 
 </div>
 </body>
