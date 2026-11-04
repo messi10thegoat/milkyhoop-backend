@@ -1559,159 +1559,93 @@ async def get_customer_credit(request: Request, customer_id: str):
 # =============================================================================
 
 
+KODE_SALDO_AWAL_PELANGGAN_SUDAH_ADA = "SALDO_AWAL_PELANGGAN_SUDAH_ADA"
+
+
+async def saldo_awal_pelanggan(conn, tid: str, customer_id) -> Optional[str]:
+    """Nomor saldo awal pelanggan yang masih berlaku (faktur pembuka tak-void, atau jurnal OPENING lama belum dibalik); None = belum ada."""
+    ada = await conn.fetchval(
+        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2 AND is_opening_balance AND status <> 'void'",
+        tid, customer_id)
+    return ada or await conn.fetchval(  # jurnal lepas OPENING lama (tak masuk sub-ledger piutang) yang belum dibalik
+        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING' AND source_id = $2::text
+           AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", tid, str(customer_id))
+
+
 @router.post("/{customer_id}/opening-balance")
-async def set_customer_opening_balance(request: Request, customer_id: UUID, body: dict):
-    """Set customer opening AR balance via journal entry (Law 1, 7, 20)."""
+async def set_customer_opening_balance(request: Request, customer_id: UUID, body: dict, response: Response = None):
+    """B0 (5 Nov 2026; putusan pemilik "saldo awal pelanggan = FAKTUR PEMBUKA", cermin SALDO-AWAL-VENDOR-A + V478). SATU transaksi: draf
+    faktur pembuka (sales_invoices.is_opening_balance, 1 baris "Saldo awal piutang", tanpa PPN, tanggal = jatuh tempo = tanggal saldo awal)
+    lalu terbit lewat _internal_post_invoice YANG SAMA (cabang PEMBUKA): jurnal INVOICE Dr Piutang / Cr Modal Saldo Awal, tanpa pendapatan/
+    SJ/HPP -> masuk compute_ar_rincian/outstanding, bisa dilunasi Terima pembayaran, batal = void faktur. Badan: amount | ar_opening_balance
+    (mobile), as_of_date, description | notes; deposit_opening_balance > 0 ditolak berkalimat (tiket terpisah). Idem X-Idempotency-Key
+    (CUSTOMER_OB) + lock CUSTOMER_OPENING. Satu faktur pembuka AKTIF per pelanggan (409 + indeks unik V478)."""
+    from datetime import date as _date
+    from decimal import InvalidOperation
+    from pydantic import BaseModel
+    from ..services import idem_buat as _ib
+    from .sales_invoices import _internal_post_invoice
+
+    class SaldoAwalPelangganIn(BaseModel):
+        amount: Decimal
+        as_of_date: Optional[_date] = None
+        description: Optional[str] = None
+
+    ctx = get_user_context(request)
     try:
-        from decimal import Decimal, InvalidOperation
-
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        await _ensure_role_preconditions(pool, ctx["tenant_id"])
-
-        # O08 fix: Use Decimal for financial amounts (Law 25)
-        try:
-            amount = Decimal(str(body.get("amount", 0)))
-        except (InvalidOperation, TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid amount format")
-
-        if amount <= 0:
-            raise HTTPException(status_code=400, detail="Amount must be positive")
-
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Law 13: Advisory lock
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"CUSTOMER_OPENING:{str(customer_id)}",
-                )
-
-                # Verify customer exists
-                customer = await conn.fetchrow(
-                    "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-                if not customer:
-                    raise HTTPException(status_code=404, detail="Customer not found")
-
-                # Check if opening balance journal already exists
-                existing = await saldo_awal_pelanggan(conn, ctx["tenant_id"], customer_id)
-                if existing:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Opening balance already set. Use reversal to correct.",
-                    )
-
-                # Resolve accounts via role mapping (Law 27 + Fase C1.6).
-                # NOTE: equity leg flipped from 3-10100 (Modal Pemilik) to
-                # EQUITY_OPENING_BALANCE -> 3-50000 (Modal Saldo Awal),
-                # konsisten dengan vendors.py per-vendor OB. Historical
-                # journals stay at 3-10100 (Law 2); reclassify via separate
-                # ticket (pola DEP-2604-0001, CN-2604-0005).
-                ar_account_id = str(
-                    await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.AR_TRADE
-                    )
-                )
-                equity_account_id = str(
-                    await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE
-                    )
-                )
-
-                # Generate journal number
-                import uuid as uuid_module
-
-                # t10b-3b: tanggal bisnis tenant, bukan UTC
-                today = await tanggal_dokumen(conn, ctx["tenant_id"])
-                year_month_str = today.strftime("%y%m")
-
-                # Self-healing canonical generator (V176): emits OB, bumps OB counter.
-                journal_number = await conn.fetchval(
-                    "SELECT get_next_journal_number($1, $2, $3)",
-                    ctx["tenant_id"],
-                    "OB",
-                    today,
-                )
-
-                # Law 20: DRAFT→lines→POSTED
-                journal_id = uuid_module.uuid4()
-                trace_id = str(uuid_module.uuid4())
-
-                await conn.execute(
-                    """INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        total_debit, total_credit, status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'OPENING', $6, $7, $8, $8, 'DRAFT', $9)""",
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    today,
-                    f"Saldo Awal Piutang - {customer['nama']}",
-                    str(customer_id),
-                    trace_id,
-                    amount,
-                    str(ctx["user_id"]),
-                )
-
-                # Dr. AR (1-10400), Cr. Opening Balance Equity (3-10000)
-                await conn.execute(
-                    """INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1, $2, 1, $3, $4, 0, $5),
-                           ($6, $2, 2, $7, 0, $4, $5)""",
-                    uuid_module.uuid4(),
-                    journal_id,
-                    ar_account_id,
-                    amount,
-                    f"Saldo Awal Piutang - {customer['nama']}",
-                    uuid_module.uuid4(),
-                    equity_account_id,
-                )
-
-                # Law 20: DRAFT→POSTED
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # Update reference field (for display only, NOT source of truth)
-                await conn.execute(
-                    "UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
-                    amount,
-                    str(customer_id),
-                    ctx["tenant_id"],
-                )
-
-                # Log activity
-                await conn.execute(
-                    """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
-                    VALUES ($1, $2, 'opening_balance', $3, $4)""",
-                    ctx["tenant_id"],
-                    str(customer_id),
-                    f"Saldo awal piutang: Rp {float(amount):,.0f}",
-                    str(ctx["user_id"]),
-                )
-
-                return {
-                    "success": True,
-                    "message": "Opening balance set successfully",
-                    "data": {
-                        "customer_id": str(customer_id),
-                        "amount": amount,
-                        "journal_id": str(journal_id),
-                        "journal_number": journal_number,
-                    },
-                }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Error setting opening balance for {customer_id}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Failed to set opening balance")
+        a, b = body.get("amount"), body.get("ar_opening_balance")
+        if a is not None and b is not None and Decimal(str(a)) != Decimal(str(b)):
+            raise HTTPException(status_code=400, detail="amount dan ar_opening_balance berbeda. Kirim salah satu saja.")
+        if Decimal(str(body.get("deposit_opening_balance") or 0)) > 0:
+            raise HTTPException(status_code=400, detail="Saldo awal uang muka pelanggan belum didukung di sini. Catat lewat Terima uang muka.")
+        tgl = body.get("as_of_date")
+        masuk = SaldoAwalPelangganIn(amount=Decimal(str(a if a is not None else (b or 0))),
+                                     as_of_date=_date.fromisoformat(tgl) if isinstance(tgl, str) and tgl else None,
+                                     description=body.get("description") or body.get("notes"))
+    except (InvalidOperation, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Nominal atau tanggal saldo awal tidak sah.")
+    if masuk.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    pool = await get_pool()
+    await _ensure_role_preconditions(pool, ctx["tenant_id"])
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            kp, sidik, lama = await _ib.mulai(conn, ctx, _ib.kunci_dari(request), "CUSTOMER_OB", masuk, "sales_invoices", "invoice", response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CUSTOMER_OPENING:{customer_id}")
+            customer = await conn.fetchrow("SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2", str(customer_id), ctx["tenant_id"])
+            if not customer:
+                raise HTTPException(status_code=404, detail="Customer not found")
+            ada = await saldo_awal_pelanggan(conn, ctx["tenant_id"], customer["id"])
+            if ada:
+                raise HTTPException(status_code=409, detail={
+                    "code": KODE_SALDO_AWAL_PELANGGAN_SUDAH_ADA,
+                    "message": f"Pelanggan ini sudah punya saldo awal {ada}. Batalkan dulu untuk menggantinya."})
+            tanggal = masuk.as_of_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+            nomor = await conn.fetchval("SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"])
+            invoice_id = await conn.fetchval(
+                """INSERT INTO sales_invoices (tenant_id, invoice_number, customer_id, customer_name, invoice_date, due_date, ref_no, notes,
+                                               subtotal, tax_rate, tax_amount, total_amount, status, created_by, is_opening_balance)
+                   VALUES ($1, $2, $3, $4, $5, $5, 'SALDO AWAL', $6, $7::numeric, 0, 0, $7::numeric, 'draft', $8, true) RETURNING id""",
+                ctx["tenant_id"], nomor, customer["id"], customer["nama"], tanggal,
+                masuk.description or f"Saldo awal piutang - {customer['nama']}", masuk.amount, str(ctx["user_id"]))
+            await conn.execute(
+                """INSERT INTO sales_invoice_items (invoice_id, description, quantity, unit_price, discount_percent, discount_amount, tax_rate,
+                                                    tax_amount, subtotal, total, line_number, jumlah_baris)
+                   VALUES ($1, 'Saldo awal piutang', 1, $2::numeric, 0, 0, 0, 0, $2::numeric, $2::numeric, 1, $2::numeric)""",
+                invoice_id, masuk.amount)
+            hasil = await _internal_post_invoice(conn, ctx, invoice_id, nomor, masuk.amount)
+            await conn.execute("UPDATE customers SET ar_opening_balance = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3",
+                               masuk.amount, str(customer_id), ctx["tenant_id"])  # tampilan saja, BUKAN sumber angka (Law 1)
+            resp = {
+                "success": True,
+                "message": "Saldo awal pelanggan dicatat sebagai faktur pembuka",
+                "data": {"customer_id": str(customer["id"]), "customer_name": customer["nama"], "amount": float(masuk.amount),
+                         "as_of_date": tanggal.isoformat(), "invoice_id": str(invoice_id), "invoice_number": nomor,
+                         "journal_id": hasil["journal_id"], "journal_number": hasil["journal_number"]},
+            }
+            return await _ib.simpan(conn, ctx, kp, sidik, "CUSTOMER_OB", resp, invoice_id) if kp else resp
 
 
 # =============================================================================

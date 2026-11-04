@@ -2248,7 +2248,7 @@ async def get_daily_transactions(request: Request, date: str = Query(...)):
                    c.display_name as customer_name
             FROM sales_invoices si
             LEFT JOIN customers c ON c.id::text = si.customer_id::text AND c.tenant_id = $2
-            WHERE si.tenant_id = $2 AND si.invoice_date = $1::date
+            WHERE si.tenant_id = $2 AND si.invoice_date = $1::date AND NOT si.is_opening_balance  -- B0: pembuka bukan penjualan hari itu
             ORDER BY si.invoice_number
         """,
             _date_obj,
