@@ -5,6 +5,9 @@
   /* Rekap Pesanan (P3 SO-dokumen, 03-DOKUMEN): dibangkitkan, tak disimpan. Gaya bersama invoice.css. */
   .rk-hero { position: relative; margin: 6px 0 22px 0; }
   .rk-sub { font-size: 9.5pt; margin-top: 2px; }
+  .rk-seg { white-space: nowrap; }   /* label + angka satu unit: tak pernah "Rp" di baris lain */
+  .rk-hero .hero-teks { max-width: none; }   /* lebar = konten; ruang stempel (64%) hanya bila ada stempel */
+  .rk-hero.berstempel .hero-teks { max-width: 64%; }
   .rk-judul-tabel { font-size: 8.5pt; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin: 18px 0 6px 0; }
   .rk-tabel { width: 100%; border-collapse: collapse; }
   .rk-tabel th { font-size: 8.5pt; font-weight: 400; text-align: left; border-bottom: 1px solid #1a1a1a; padding: 4px 6px 4px 0; }
@@ -41,11 +44,11 @@
         </div>
     </div>
 
-    <div class="rk-hero">
+    <div class="rk-hero{% if rekap.status in ('lunas', 'batal') %} berstempel{% endif %}">
         <div class="hero-teks">
             <div class="hero-label">{{ 'Total pesanan' if rekap.status in ('lunas', 'batal') else 'Sisa tagihan' }}</div>
             <div class="hero-amount">Rp {{ (rekap.total if rekap.status in ('lunas', 'batal') else rekap.sisa) | currency }}</div>
-            <div class="rk-sub">Total pesanan Rp&nbsp;{{ rekap.total | currency }} · sudah dibayar Rp&nbsp;{{ rekap.dibayar | currency }}{% if rekap.nota_kredit and rekap.nota_kredit > 0 %} · nota kredit Rp&nbsp;{{ rekap.nota_kredit | currency }}{% endif %}</div>
+            <div class="rk-sub"><span class="rk-seg">Total pesanan Rp {{ rekap.total | currency }}</span> · <span class="rk-seg">sudah dibayar Rp {{ rekap.dibayar | currency }}</span>{% if rekap.nota_kredit and rekap.nota_kredit > 0 %} · <span class="rk-seg">nota kredit Rp {{ rekap.nota_kredit | currency }}</span>{% endif %}</div>
         </div>
         {% if rekap.status == 'lunas' %}
         <div class="stempel stempel-lunas"><div class="stempel-teks">LUNAS</div></div>
