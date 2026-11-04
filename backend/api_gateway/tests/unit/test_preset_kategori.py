@@ -48,7 +48,7 @@ def test_rencana_hanya_kunci_preset_dan_terapkan_idempoten():
     assert r == {"tambah": ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati"], "nyalakan": ["modul_varian_mati"],
                  "sudah": ["modul_manufaktur_mati"]}
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
-    assert c.exec[0][1] == ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_varian_mati"]
+    assert c.exec[0][1] == ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "modul_varian_mati"]
     assert "DELETE" not in c.exec[0][0] and "enabled = false" not in c.exec[0][0]
     assert c.ada["lain_x"] is False and c.ada["modul_pajak_mati"] is True  # flag lain tak tersentuh
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
