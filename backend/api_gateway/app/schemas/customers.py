@@ -7,6 +7,7 @@ Following QB/Xero/Zoho patterns for customer master data.
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
+from uuid import UUID
 import re
 
 from .identitas_pajak import IdentitasPajakPembeli
@@ -143,6 +144,8 @@ class UpdateCustomerRequest(IdentitasPajakPembeli):
     nik: Optional[str] = None
     is_pkp: Optional[bool] = None
     customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI"]] = None
+    # DAFTAR-HARGA (4 Nov 2026): kelompok harga pelanggan; null = daftar bawaan tenant
+    price_list_id: Optional[UUID] = None
     
     # Financial
     currency: Optional[str] = None
@@ -295,6 +298,8 @@ class CustomerDetail(BaseModel):
     addresses: List[Dict[str, Any]] = []
     default_billing_address_id: Optional[str] = None
     default_shipping_address_id: Optional[str] = None
+    price_list_id: Optional[str] = None
+    price_list_name: Optional[str] = None
 
 
 class CustomerDetailResponse(BaseModel):

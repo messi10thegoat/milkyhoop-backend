@@ -404,7 +404,8 @@ async def get_customer(request: Request, customer_id: str):
                        mobile_phone, website, company_name, display_name,
                        customer_type, is_pkp, nik, currency,
                        ar_opening_balance, opening_balance_date, opening_balance_notes,
-                       phone2, community, nitku, jenis_id, negara, nomor_dokumen
+                       phone2, community, nitku, jenis_id, negara, nomor_dokumen, price_list_id,
+                       (SELECT pl.name FROM price_lists pl WHERE pl.id = customers.price_list_id) AS price_list_name
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -497,6 +498,8 @@ async def get_customer(request: Request, customer_id: str):
                     "payment_terms_days": row["payment_terms_days"] or 0,
                     "payment_terms_source": _termin_sumber,
                     "credit_limit": row["credit_limit"],
+                    "price_list_id": str(row["price_list_id"]) if row["price_list_id"] else None,  # NULL = daftar bawaan
+                    "price_list_name": row["price_list_name"],
                     # Opening balance
                     "ar_opening_balance": row["ar_opening_balance"] or 0,
                     "opening_balance_date": row["opening_balance_date"].isoformat()
@@ -951,6 +954,11 @@ async def update_customer(
                     "data": {"id": str(customer_id)},
                 }
 
+            # DAFTAR-HARGA: daftar harga wajib milik usaha ini dan aktif (null = kembali ke daftar bawaan tenant)
+            if update_data.get("price_list_id") is not None and not await conn.fetchval(
+                    "SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2 AND is_active", update_data["price_list_id"], ctx["tenant_id"]):
+                raise HTTPException(status_code=400, detail="Daftar harga tidak ditemukan di usaha ini.")
+
             # Map schema field names to database column names
             field_mapping = {
                 "name": "nama",
@@ -1027,6 +1035,7 @@ async def update_customer(
                     "currency": "Mata uang",
                     "address": "Alamat",
                     "alamat": "Alamat",
+                    "price_list_id": "Daftar harga",
                 }
 
                 change_parts = []
@@ -1829,8 +1838,6 @@ async def reverse_customer_opening_balance(request: Request, customer_id: UUID):
 # 14 Sep 2026 unit (3). Daftar tabel ber-referensi pelanggan diturunkan dari information_schema (kolom *customer*id*),
 # BUKAN daftar tangan. preview dan eksekusi memakai konstanta YANG SAMA -> yang ditampilkan == yang dipindah.
 # Tak dipindah dengan sengaja: customer_activities (riwayat milik pelanggan sumber; aktivitas 'merge' dicatat di sasaran).
-# customer_price_lists: dipindah KECUALI sasaran sudah punya daftar harga yang sama (uq_customer_price_list) -> baris
-# sumber tetap di sumber nonaktif dan dilaporkan sebagai konflik.
 # Putusan pemilik: dokumen terbit ikut pindah (hanya customer_id); snapshot customer_name TETAP; tanpa un-merge.
 MERGE_TABEL = (
     ("sales_invoices", "customer_id"),
@@ -1891,17 +1898,6 @@ async def _gabung_rincian(conn, tenant_id: str, sasaran, sumber):
         cacah[tabel] = await conn.fetchval(
             f"SELECT count(*) FROM {tabel} WHERE tenant_id = $1 AND {kolom} = ANY($2::uuid[])", tenant_id, sumber
         )
-    harga_pindah = await conn.fetchval(
-        """SELECT count(*) FROM customer_price_lists s WHERE s.customer_id = ANY($1::uuid[])
-             AND NOT EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $2 AND t.price_list_id = s.price_list_id)""",
-        sumber, sasaran,
-    )
-    harga_konflik = await conn.fetchval(
-        """SELECT count(*) FROM customer_price_lists s WHERE s.customer_id = ANY($1::uuid[])
-             AND EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $2 AND t.price_list_id = s.price_list_id)""",
-        sumber, sasaran,
-    )
-    cacah["customer_price_lists"] = harga_pindah
     cacah["customer_addresses"] = await _alamat.hitung_pindah_gabung(conn, tenant_id, sumber)  # V428: jadi alamat biasa
     # Kwitansi penjualan selesai/batal dijaga pemicu prevent_sr_modification (menolak UPDATE apa pun). Pagar itu TIDAK
     # dilemahkan: penggabungan ditolak dengan pesan terbaca.
@@ -1910,9 +1906,6 @@ async def _gabung_rincian(conn, tenant_id: str, sasaran, sumber):
         tenant_id, sumber,
     )
     konflik = []
-    if harga_konflik:
-        konflik.append({"type": "price_list", "count": harga_konflik,
-                        "message": f"{harga_konflik} daftar harga sudah dimiliki pelanggan tujuan; milik pelanggan yang digabung tidak dipindah."})
     if kwitansi_beku:
         konflik.append({"type": "sales_receipt_locked", "count": kwitansi_beku, "blocking": True,
                         "message": f"{kwitansi_beku} kwitansi penjualan sudah selesai/dibatalkan dan tidak bisa dipindah; penggabungan belum bisa dilakukan."})
@@ -1978,12 +1971,6 @@ async def merge_customers(request: Request):
                         sasaran, ctx["tenant_id"], sumber,
                     )
                     pindah[tabel] = int(hasil.split()[-1])
-                hasil = await conn.execute(
-                    """UPDATE customer_price_lists s SET customer_id = $1 WHERE s.customer_id = ANY($2::uuid[])
-                         AND NOT EXISTS (SELECT 1 FROM customer_price_lists t WHERE t.customer_id = $1 AND t.price_list_id = s.price_list_id)""",
-                    sasaran, sumber,
-                )
-                pindah["customer_price_lists"] = int(hasil.split()[-1])
                 pindah["customer_addresses"] = await _alamat.pindah_saat_gabung(conn, ctx["tenant_id"], sasaran, sumber)
                 if pindah != cacah:
                     # tak mungkin di dalam kunci; bila terjadi, jangan setengah jadi

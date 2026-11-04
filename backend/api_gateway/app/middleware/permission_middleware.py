@@ -786,6 +786,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/cost-centers", ["POST"], "cost_center", "C"),
     (r"^/api/cost-centers", ["PUT", "PATCH"], "cost_center", "U"),
     (r"^/api/cost-centers", ["DELETE"], "cost_center", "D"),
+    # DAFTAR-HARGA (4 Nov 2026): harga saran form penjualan (baca, nol tulis). Satu jalur per modul PEMANGGIL -> izin = R modul
+    # dokumen itu (staf yang hanya boleh baca SO/Penawaran tetap dapat harga), tanpa izin price_list.
+    (r"^/api/price-lists/resolve/sales_order$", ["POST"], "sales_order", "R"),
+    (r"^/api/price-lists/resolve/quote$", ["POST"], "quote", "R"),
+    (r"^/api/price-lists/resolve/sales_invoice$", ["POST"], "sales_invoice", "R"),
     (r"^/api/price-lists", ["POST"], "price_list", "C"),
     (r"^/api/price-lists", ["PUT", "PATCH"], "price_list", "U"),
     (r"^/api/price-lists", ["DELETE"], "price_list", "D"),
