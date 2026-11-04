@@ -20,7 +20,6 @@ header > div:first-child { flex: 1 1 auto; }
 h1 { white-space: nowrap; }
 h1 { font-size: var(--judul); font-weight: 700; letter-spacing: -.6px; margin: 0; line-height: 1.1; }
 .en { font-size: 14px; margin-top: 4px; }
-/* .logo: ukuran di dokumen.css (token --logo-*, = putusan pemilik 7 Okt 96px / maks 180px) */
 .meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 28px; margin-top: 30px; }
 .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; margin-top: 24px; }
 .parties b { display: block; margin-bottom: 3px; }
@@ -48,7 +47,7 @@ td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
 /* Tata letak Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): kop usaha (_partials/kop_usaha) di kanan judul, pihak + meta
    sebaris (.atas), Keterangan+TTD | ringkasan sebaris (.bawah). Penawaran tak memakai kelas ini. */
 .kop { text-align: right; }
-.kop .logo { display: block; margin: 0 0 6px auto; height: auto; }   /* kotak = gambar (maks token) -> nama rapat di bawah logo */
+.kop .logo { display: block; margin: 0 0 6px auto; }   /* nama rapat di bawah logo */
 .atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; align-items: start; }   /* meta tak meregang ikut tinggi blok pihak */   /* kolom meta = lebar ringkasan */
 .atas .meta { margin-top: 0; }
 .atas > div:first-child { position: relative; }   /* stempel di kanan blok Dari, kiri meta */

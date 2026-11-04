@@ -13,7 +13,7 @@
   .company-info h1 { font-size: 18px; font-weight: bold; margin-bottom: 4px; }
   .company-info p { font-size: 11px; line-height: 1.5; }
   .doc-title { text-align: right; }
-  .doc-logo { display: block; margin: 0 0 6px auto; }   /* ukuran: dokumen.css (dulu 52px) */
+  .logo { display: block; margin: 0 0 6px auto; }   /* ukuran: dokumen.css */
   .doc-title h2 { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
   .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
   .meta-block table { width: 100%; }
@@ -50,7 +50,7 @@
     {% if company.phone %}<p>Telp: {{ company.phone }}</p>{% endif %}
   </div>
   <div class="doc-title">
-    {% if company.logo_base64 %}<img src="{{ company.logo_base64 }}" class="doc-logo" alt="">{% endif %}
+    {% if company.logo_base64 %}<img src="{{ company.logo_base64 | logo_rapat }}" class="logo" alt="">{% endif %}
     <h2>PENERIMAAN BARANG</h2>
   </div>
 </div>

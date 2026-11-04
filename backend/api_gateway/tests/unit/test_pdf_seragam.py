@@ -28,17 +28,7 @@ def _kotak(r):
     fc = FontConfiguration()
     d = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
     hal = d.pages[0]._page_box
-
-    def logo(b):
-        for c in getattr(b, "children", None) or []:
-            if getattr(c, "element_tag", None) == "img":
-                return c
-            x = logo(c)
-            if x:
-                return x
-    img = logo(hal)
-    return (round(hal.margin_top, 1), round(hal.margin_right, 1), round(hal.margin_bottom, 1), round(hal.margin_left, 1),
-            round(hal.width, 1)), (img.height if img else None)
+    return round(hal.margin_top, 1), round(hal.margin_right, 1), round(hal.margin_bottom, 1), round(hal.margin_left, 1), round(hal.width, 1)
 
 
 def _render(nama):
@@ -68,21 +58,16 @@ def test_semua_dokumen_memuat_token_terakhir_kwitansi_sesudahnya():
 
 
 @pytest.mark.parametrize("nama", ["si", "fpb", "po", "sj"])
-def test_margin_halaman_dan_logo_sama_semua_dokumen(nama):
-    """Margin = pola SI (1.1cm 1.25cm 1.4cm 1.25cm = 41.6/47.2/52.9/47.2 px); logo = pola FPB 96 px -- diukur dari tata letak."""
-    margin, logo = _kotak(_render(nama))
-    assert margin[:4] == (41.6, 47.2, 52.9, 47.2), margin
-    # kop pola Accurate (FPB 4 Nov 2026; PO, SJ turunannya): kotak logo = gambar (maks token) agar nama usaha rapat; logo uji 600x150 -> 45 px
-    assert logo == (45 if nama in ("fpb", "po", "sj") else 96), logo
+def test_margin_halaman_sama_semua_dokumen(nama):
+    """Margin = pola SI (1.1cm 1.25cm 1.4cm 1.25cm = 41.6/47.2/52.9/47.2 px) -- diukur dari tata letak."""
+    assert _kotak(_render(nama))[:4] == (41.6, 47.2, 52.9, 47.2)
 
 
-def test_kwitansi_setengah_a4_tetap_logo_token_kecil():
-    margin, logo = _kotak(_render("kwitansi"))
-    assert margin[:4] != (41.6, 47.2, 52.9, 47.2) and logo <= 64, (margin, logo)
-    assert "var(--logo-kecil-tinggi)" in (TPL / "kwitansi.css").read_text()
+def test_kwitansi_setengah_a4_margin_sendiri():
+    assert _kotak(_render("kwitansi"))[:4] != (41.6, 47.2, 52.9, 47.2)
 
 
-def test_tak_ada_margin_halaman_atau_ukuran_logo_di_luar_token():
+def test_tak_ada_margin_halaman_di_luar_token():
     """Nilai HANYA di dokumen.css (+ pengecualian kwitansi.css / invoice_b.css): templat & CSS keluarga tak menimpa lagi."""
     for p in sorted(TPL.glob("*.html")) + sorted(TPL.glob("*.css")) + sorted((TPL / "_partials").glob("*.html")):
         if p.name in ("dokumen.css", "kwitansi.css", "invoice_b.css", "sales_invoice_b.html", "report.css") or p.name.startswith(("laba_rugi", "neraca", "arus_kas")):
@@ -90,7 +75,23 @@ def test_tak_ada_margin_halaman_atau_ukuran_logo_di_luar_token():
         s = p.read_text()
         for blok in re.findall(r"@page\s*\{(?:[^{}]|\{[^{}]*\})*\}", s):
             assert not re.search(r"(?<![-\w])margin(-(top|right|bottom|left))?\s*:", re.sub(r"@[\w-]+\s*\{[^{}]*\}", "", blok)), (p.name, blok)
-        assert not re.search(r"(company-logo|\.logo|doc-logo)\s*\{[^}]*(height|max-height|max-width)\s*:\s*\d", s), p.name
+
+
+def test_ukuran_logo_hanya_token():
+    """Logo SATU sumber (putusan pemilik 4 Nov 2026): di luar dokumen.css tak ada aturan logo ber-ukuran (angka ATAU token) dan tak ada
+    token --logo-* lain; <img> logo di semua templat = class="logo" lewat logo_rapat (SI templat B pilihan tenant dikecualikan)."""
+    lain = ("invoice_b.css", "sales_invoice_b.html")
+    for p in sorted(TPL.glob("*.html")) + sorted(TPL.glob("*.css")) + sorted((TPL / "_partials").glob("*.html")):
+        if p.name in lain or p.name == "dokumen.css":
+            continue
+        s = p.read_text()
+        assert not re.search(r"\.(logo|company-logo|doc-logo|kw-logo)(?![-\w])[^{};]*\{[^}]*(?<![-\w])(width|height|max-height|max-width)\s*:", s), p.name
+        assert "--logo-" not in s, p.name
+        for img in re.findall(r"<img[^>]*>", s):
+            if "logo" in img:
+                assert 'class="logo"' in img and "| logo_rapat" in img, (p.name, img)
+    d = (TPL / "dokumen.css").read_text()
+    assert re.findall(r"--logo-[\w-]+(?=\s*:)", d) == ["--logo-tinggi", "--logo-lebar"], d
 
 
 def test_tabel_barang_satu_makro_tiga_dokumen():
@@ -139,19 +140,53 @@ def _kotak_logo(r):
     return (round(img.width, 1), round(img.height, 1))
 
 
-def test_kotak_logo_keluarga_penjualan_sama_untuk_logo_sama():
-    """Logo ber-padding (grapgrap) -> kotak logo SI == Nota Kredit == Proforma (semuanya lewat logo_rapat; tinjauan MASTER 4 Nov 2026)."""
-    lg, s = _logo_berpadding(), PS.get_pdf_service()
-    si = _kotak_logo(s.render_sales_invoice({"invoice_number": "INV-1", "status": "posted", "tenant": {"name": "U", "logo_data": lg},
-                                             "customer": {"name": "A"}, "items": [], "subtotal": 0, "total_amount": 0, "amount_due": 0}))
-    nk = _kotak_logo(s.render_credit_note({"credit_note_number": "CN-1", "status": "posted", "items": [], "total_amount": 0}, {"name": "U", "logo_data": lg}))
-    pf = _kotak_logo(s.render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": 0, "order_items": [], "status": "posted"},
-                                       {"name": "U", "logo_data": lg}))
-    rk = _kotak_logo(s.render_rekap_pesanan({"order_number": "SO-1", "status": "sebagian", "total": 1, "dibayar": 0, "sisa": 1, "tagihan": [],
-                                             "pembayaran": []}, {"name": "U", "logo_data": lg}))
-    assert si == nk == pf == rk, (si, nk, pf, rk)
-    # kotak = isi terpangkas: token tinggi 96 + lebar maks 180 -> 180x96 (tanpa pangkas: PNG persegi 295x295 -> 96x96)
-    assert si == (180.0, 96.0), si
+def test_kotak_logo_semua_dokumen_sama_untuk_logo_sama():
+    """Logo ber-padding (grapgrap) -> kotak logo SAMA di SEMUA dokumen (putusan pemilik 4 Nov 2026: satu token = SI live - 20%)."""
+    kotak = {n: _kotak_logo(x) for n, x in _semua_dokumen(_logo_berpadding()).items()}
+    # isi terpangkas 264x120 -> muat 144 x 76,8 (= 180 x 96 SI live dikurangi 20%) -> 144 x 65,5
+    assert set(kotak.values()) == {(144.0, 65.5)}, kotak
     for f in ("sales_invoice.html", "credit_note.html", "proforma.html", "rekap_pesanan.html"):   # kepala SATU partial, tanpa salinan <img>
         t = (TPL / f).read_text()
         assert '{% from "_partials/kepala_si.html" import kepala %}' in t and 'class="company-logo"' not in t, f
+
+
+def _semua_dokumen(lg=None):
+    """Satu render per dokumen usaha (logo, tanpa baris) -- dipakai tes footer & HTML layar."""
+    s, t = PS.get_pdf_service(), {"name": "U", "logo_data": lg or _logo()}
+    return {
+        "si": s.render_sales_invoice({"invoice_number": "INV-1", "status": "posted", "tenant": t, "customer": {"name": "A"}, "items": [],
+                                      "subtotal": 1, "total_amount": 1, "amount_due": 1}),
+        "nk": s.render_credit_note({"credit_note_number": "CN-1", "status": "posted", "items": [], "total_amount": 1}, t),
+        "proforma": s.render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": 1, "order_items": [], "status": "posted"}, t),
+        "rekap": s.render_rekap_pesanan({"order_number": "SO-1", "status": "sebagian", "total": 1, "dibayar": 0, "sisa": 1, "tagihan": [],
+                                         "pembayaran": []}, t),
+        "penawaran": s.render_quote({"quote_number": "Q-1", "status": "sent", "items": [], "total_amount": 1}, t),
+        "po": s.render_purchase_order({"po_number": "PO-1", "status": "sent", "vendor_name": "V", "items": [], "subtotal": 1, "total_amount": 1}, t),
+        "fpb": s.render_bill({"invoice_number": "PB-1", "status": "posted", "tenant": t, "vendor": {"name": "V"}, "items": [], "subtotal": "1",
+                              "grand_total": "1", "amount_paid": "0", "amount_due": "1"}),
+        "nd": s.render_debit_note({"debit_note_number": "DN-1", "status": "posted", "items": [], "total_amount": 1}, t),
+        "sj": s.render_delivery_note({"delivery_number": "SJ-1", "tenant": t, "customer_name": "A", "items": []}),
+        "grn": s.render_goods_receipt({"receipt_number": "GRN-1", "status": "posted", "items": []}, t),
+        "kwitansi": s.render_receipt({"receipt_number": "RCV-1", "amount": 1, "status": "posted"}, t),
+    }
+
+
+@pytest.mark.parametrize("nama", ["si", "nk", "proforma", "rekap", "penawaran", "po", "fpb", "nd", "sj", "kwitansi", pytest.param(
+    "grn", marks=pytest.mark.xfail(strict=True, reason="goods_receipt.html lama: Dicetak di badan; pindah ke dokumen_gudang sesudah Terima-tabel"))])
+def test_dicetak_di_kaki_halaman_pdf_dan_layar(nama):
+    """"Dicetak" (temuan MASTER 4 Nov 2026, panel PO-2611-0011: tampil DI ATAS judul). PDF: teksnya di kotak margin @bottom-left, nol di isi.
+    HTML panel (html_layar, browser tanpa position: running()): elemennya ditaruh absolut di kaki kertas oleh @media screen dokumen.css."""
+    r = _semua_dokumen()[nama]
+    fc = FontConfiguration()
+    hal = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc).pages[0]._page_box
+
+    def teks(b):
+        return (getattr(b, "text", None) or "") + "".join(teks(c) for c in getattr(b, "children", None) or [])
+    kotak = {getattr(c, "at_keyword", None): teks(c) for c in hal.children}
+    assert "Dicetak" in kotak.get("@bottom-left", ""), kotak.keys()
+    assert "Dicetak" not in kotak[None], nama
+    layar = PS.get_pdf_service().html_layar(r)
+    kelas = re.search(r'<div class="(footer-line|kaki-kiri)">\s*Dicetak', layar).group(1)
+    aturan = re.search(r"@media screen \{\s*body \{ position: relative; \}\s*([^{]+)\{([^}]*)\}", layar)
+    assert aturan and kelas in aturan.group(1) and "position: absolute" in aturan.group(2) and "bottom:" in aturan.group(2), nama
+    assert re.search(r"(?<![\w.-])th \{ text-align: left; \}", layar), nama   # C: kepala kolom rata kiri juga di browser (INV-2609-0011)
