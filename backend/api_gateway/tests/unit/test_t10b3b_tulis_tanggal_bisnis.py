@@ -155,8 +155,15 @@ def test_list_vendors_tanpa_replace_tenant_id():
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "replace" \
                 and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "tenant_id":
             pytest.fail(f"list_vendors baris {n.lineno}: replace('tenant_id', ...) kembali")
-    teks = ast.unparse(f)
+    # B1 (4 Nov 2026): syarat daftar (termasuk fragmen has_overdue) pindah ke _syarat_vendor -- satu pembangun daftar + /summary
+    syarat = _fungsi("routers/vendors.py", "_syarat_vendor")
+    for n in ast.walk(syarat):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "replace" \
+                and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "tenant_id":
+            pytest.fail(f"_syarat_vendor baris {n.lineno}: replace('tenant_id', ...) kembali")
+    teks = ast.unparse(f) + ast.unparse(syarat)
     assert "compute_ap_outstanding(v.tenant_id)" in teks and "vendors.tenant_id" not in teks
+    assert "_syarat_vendor(" in ast.unparse(f)
 
 
 def test_ringkasan_biaya_periode_berbatas_atas():
