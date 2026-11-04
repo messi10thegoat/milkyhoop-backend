@@ -321,7 +321,11 @@ def test_nota_kredit_bingkai_si_tabel_bersama_tanpa_hero_ttd():
         assert tak not in h, tak
     assert h.index("@Harga</th>") < h.index("Diskon</th>") < h.index(">Total</th>")   # urutan = PO/FPB/ND
     css = (PS.TEMPLATE_DIR / "invoice.css").read_text()
-    assert ".penutup {" in css and ".ttd .garis" in css and ".penutup {" not in (PS.TEMPLATE_DIR / "sales_invoice.html").read_text()
+    # penutup keluarga Penjualan SATU sumber (_partials/penutup: SI, NK, Proforma) -- Catatan + TTD kiri sebaris ringkasan
+    assert ".penutup-si {" in css and ".ttd .garis" in css and ".penutup {" not in css
+    for f in ("sales_invoice.html", "credit_note.html", "proforma.html"):
+        s = (PS.TEMPLATE_DIR / f).read_text()
+        assert '{% from "_partials/penutup.html" import penutup %}' in s and "Hormat kami" not in s, f
 
 
 def test_surat_jalan_meta_referensi_hanya_bila_ada():

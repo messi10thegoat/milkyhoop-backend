@@ -1,0 +1,23 @@
+{#
+  Penutup keluarga Penjualan (Faktur Penjualan, Nota Kredit, Proforma) SATU sumber -- PDF seragam 4 Nov 2026 (pola FPB): Catatan + TTD
+  "Hormat kami, <usaha>" di kiri, SEBARIS ringkasan (isi caller) di kanan; blok utuh -> TTD tak yatim di halaman berikutnya.
+  catatan = [(label, teks)] -- teks kosong tak dicetak.
+#}
+{% macro penutup(catatan, nama_usaha) -%}
+<div class="penutup-si">
+<div>
+    {% for label, teks in catatan if teks %}
+    <div class="notes-section">
+        <div class="notes-label">{{ label }}</div>
+        <div class="notes-text">{{ teks }}</div>
+    </div>
+    {% endfor %}
+    <div class="ttd">
+        <div>Hormat kami,</div>
+        {% if nama_usaha %}<div>{{ nama_usaha }}</div>{% endif %}
+        <div class="garis"></div>
+    </div>
+</div>
+<div>{{ caller() }}</div>
+</div>
+{%- endmacro %}
