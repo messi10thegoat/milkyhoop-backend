@@ -2630,7 +2630,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         SELECT id, invoice_number, customer_id, customer_name, total_amount,
                tax_amount, subtotal, invoice_date, due_date, warehouse_id,
                recognize_at, shipping_amount, shipping_tax_code_id,
-               shipping_tax_rate, shipping_tax_amount, shipping_dpp
+               shipping_tax_rate, shipping_tax_amount, shipping_dpp, is_opening_balance
         FROM sales_invoices WHERE id = $1 AND tenant_id = $2
         """,
         invoice_id,
@@ -2707,7 +2707,9 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
             conn, ctx["tenant_id"], AccountRole.AR_TRADE
         )
     }
-    unearned_account = {"id": await _resolve_unearned_revenue(conn, ctx["tenant_id"])}
+    pembuka = bool(invoice["is_opening_balance"])  # B0 V478: faktur pembuka saldo awal -> Cr Modal Saldo Awal (FTR.CABANG_PEMBUKA)
+    unearned_account = {"id": await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.EQUITY_OPENING_BALANCE) if pembuka
+                        else await _resolve_unearned_revenue(conn, ctx["tenant_id"])}
     # Fase C1.1: VAT_OUTPUT interim → 2-10300 (Hutang Pajak) per LOCKED mapping.
     # Was hardcoded to 2-10600 which only existed for 2/5 tenants (latent bug
     # for anthonius-iwan, ponte-publishing, potus-id on any taxed invoice).
@@ -2744,7 +2746,7 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
     # Insert journal lines -- U-SI-TERBIT B1: baris dari SATU penentu (faktur_terbit_rencana.baris_jv, dipakai juga pratinjau
     # READ ONLY): Dr Piutang = total · Cr Dimuka = total - pajak - ongkir · Cr Ongkos Kirim (V290) · Cr PPN Keluaran. SQL & urutan tetap.
     for _b in FTR.baris_jv(total_amount, tax_amount, shipping_amount, ar_account["id"], unearned_account["id"],
-                           shipping_rev_account, vat_output_account["id"], invoice_number):
+                           shipping_rev_account, vat_output_account["id"], invoice_number, *([FTR.LABEL_PEMBUKA] if pembuka else [])):
         if _b["sisi"] == "D":
             await conn.execute(
                 """
@@ -2872,6 +2874,10 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
                 float(_ship_tax),
                 vat_jl_id,
             )
+
+    if pembuka:  # B0: sesudah jurnal INVOICE -- nol alokasi/SJ/RECOG/kirim (bukan pendapatan); == pratinjau FTR.CABANG_PEMBUKA
+        return await _tandai_terposting(conn, ctx, invoice_id, invoice_number, ar_id, journal_id, journal_number,
+                                        "not_applicable", "not_applicable", [])
 
     # =============================================================
     # PSAK 72 Step 4: Calculate allocated_amount per item
@@ -3251,6 +3257,13 @@ async def _internal_post_invoice(conn, ctx, invoice_id, invoice_number, total_am
         _q, _f = _d(_k["q"] or 0), _d(_k["f"] or 0)
         fulfillment_status = "fulfilled" if _f >= _q else ("partial" if _f > 0 else "pending")
 
+    return await _tandai_terposting(conn, ctx, invoice_id, invoice_number, ar_id, journal_id, journal_number,
+                                    fulfillment_status, revenue_status, post_warnings)
+
+
+async def _tandai_terposting(conn, ctx, invoice_id, invoice_number, ar_id, journal_id, journal_number,
+                             fulfillment_status, revenue_status, post_warnings) -> dict:
+    """Ekor SATU _internal_post_invoice (jalur biasa + faktur pembuka B0): status posted + total kirim/pengakuan + audit dokumen."""
     # Query totals from items
     totals = await conn.fetchrow(
         "SELECT COALESCE(SUM(fulfilled_qty),0) as f, COALESCE(SUM(recognized_amount),0) as r FROM sales_invoice_items WHERE invoice_id=$1",

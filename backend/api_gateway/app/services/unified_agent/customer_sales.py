@@ -66,6 +66,7 @@ _RANK_SQL = """
       AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
       AND je.journal_date >= $2::date AND je.journal_date <= $3::date
       AND jl.debit > 0
+      AND NOT si.is_opening_balance
     GROUP BY c.id, c.nama
     ORDER BY billed DESC
     LIMIT $4
@@ -86,6 +87,7 @@ _TOTAL_SQL = """
       AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
       AND je.journal_date >= $2::date AND je.journal_date <= $3::date
       AND jl.debit > 0
+      AND NOT si.is_opening_balance
       AND si.customer_id::text = $4
     GROUP BY c.id, c.nama
 """
