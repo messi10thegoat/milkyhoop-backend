@@ -22,6 +22,11 @@ echo "disalin: tenant=$(Q -c 'SELECT count(*) FROM "Tenant"') coa=$(Q -c 'SELECT
 TG() { Q -c "SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relname='bills' AND t.tgname='trg_law19_bekukan_nominal'"; }
 TG > $D/tg0; Q -c "SELECT pg_get_functiondef('seed_default_coa(text)'::regprocedure)" > $D/sc0
 Q -c "SELECT pg_get_functiondef('seed_default_account_roles(text)'::regprocedure)" > $D/sr0
+# DASAR semai (fungsi LAMA, tenant T2): selisih jumlah akun - nilai kembali v_count (diukur 5 Nov: blok 5-xxxx 27 baris tapi +26)
+T2=$(Q -c "SELECT tenant_id FROM chart_of_accounts WHERE account_code='5-90000' ORDER BY tenant_id DESC LIMIT 1")
+Q -c "DELETE FROM account_roles WHERE tenant_id='$T2'; DELETE FROM chart_of_accounts WHERE tenant_id='$T2'" >/dev/null
+N2=$(Q -c "SELECT seed_default_coa('$T2')"); A2=$(Q -c "SELECT count(*) FROM chart_of_accounts WHERE tenant_id='$T2'")
+Q -c "SELECT seed_default_account_roles('$T2')" >/dev/null; echo "dasar semai: v_count=$N2 akun=$A2 (selisih lama $((A2-N2)))"
 # MERAH: 5-90100 dipakai akun lain di satu tenant -> V479 gagal keras, tergulung
 T1=$(Q -c "SELECT tenant_id FROM chart_of_accounts WHERE account_code='5-90000' ORDER BY tenant_id LIMIT 1")
 Q -c "INSERT INTO chart_of_accounts (tenant_id, account_code, name, account_type, normal_balance) VALUES ('$T1','5-90100','Akun Lain','EXPENSE','DEBIT')" >/dev/null
@@ -34,15 +39,16 @@ N1=$(Q -c "SELECT count(*) FROM account_roles a JOIN chart_of_accounts c ON c.id
 [ "$N1" = "$N0" ] && echo "PASS peran PURCHASE_ROUNDING -> 5-90100 di $N1/$N0 tenant" || F "peran $N1 <> $N0"
 [ "$(Q -c "SELECT count(*) FROM information_schema.columns WHERE table_name IN ('bills','vendor_credits') AND column_name='pembulatan' AND numeric_scale=2 AND is_nullable='NO'")" = 2 ] && echo "PASS kolom pembulatan x2" || F "kolom"
 TG | grep -q "'pembulatan'" && TG | grep -q "'pph_dpp'" && echo "PASS beku Law 19 += pembulatan (kolom lama tetap)" || F "trigger: $(TG)"
-BP=$(Q -c "SELECT id FROM bills WHERE journal_id IS NOT NULL LIMIT 1"); BD=$(Q -c "SELECT id FROM bills WHERE journal_id IS NULL LIMIT 1")
+BP=$(Q -c "SELECT id FROM bills WHERE journal_id IS NOT NULL LIMIT 1"); BD=$(Q -c "SELECT id FROM bills WHERE journal_id IS NULL AND status_v2 = 'draft' LIMIT 1")  # status_v2 NULL = tiket pemicu lain
 if [ -n "$BP" ]; then Q -c "UPDATE bills SET pembulatan=0.5 WHERE id='$BP'" >/dev/null 2>$D/e3 && F "pembulatan tagihan POSTED bisa diubah" || echo "PASS pembulatan posted beku"; else echo "SKIP tak ada tagihan posted"; fi
 if [ -n "$BD" ]; then Q -c "BEGIN; UPDATE bills SET pembulatan=0.5, grand_total=grand_total WHERE id='$BD'; ROLLBACK" >/dev/null 2>$D/e4 && echo "PASS draf boleh ditulis pembulatan" || F "draf: $(tail -2 $D/e4)"; else echo "SKIP tak ada draf"; fi
 # SEMAI tenant: hapus CoA + peran satu tenant lalu semai ulang dengan fungsi yang sudah ditambal
 Q -c "DELETE FROM account_roles WHERE tenant_id='$T1'; DELETE FROM chart_of_accounts WHERE tenant_id='$T1'" >/dev/null
 Q -c "SELECT seed_default_coa('$T1')" > $D/n1 2>$D/e5 && Q -c "SELECT seed_default_account_roles('$T1')" >/dev/null 2>>$D/e5 || F "semai: $(tail -3 $D/e5)"
 [ "$(Q -c "SELECT count(*) FROM account_roles a JOIN chart_of_accounts c ON c.id=a.account_id WHERE a.tenant_id='$T1' AND a.role_key='PURCHASE_ROUNDING' AND c.account_code='5-90100'")" = 1 ] \
-  && [ "$(Q -c "SELECT count(*) FROM chart_of_accounts WHERE tenant_id='$T1'")" = "$(cat $D/n1)" ] \
-  && echo "PASS semai baru: 5-90100 + PURCHASE_ROUNDING (v_count == jumlah akun $(cat $D/n1))" || F "semai: n=$(cat $D/n1) akun=$(Q -c "SELECT count(*) FROM chart_of_accounts WHERE tenant_id='$T1'")"
+  && [ "$(Q -c "SELECT count(*) FROM chart_of_accounts WHERE tenant_id='$T1'")" = "$((A2+1))" ] && [ "$(cat $D/n1)" = "$((N2+1))" ] \
+  && echo "PASS semai baru: 5-90100 + PURCHASE_ROUNDING; akun +1 ($A2 -> $((A2+1))), v_count +1 ($N2 -> $(cat $D/n1))" \
+  || F "semai: v_count=$(cat $D/n1) akun=$(Q -c "SELECT count(*) FROM chart_of_accounts WHERE tenant_id='$T1'") (dasar $N2/$A2)"
 # TERAPAN ULANG = no-op
 Q -1 < $V >/dev/null 2>$D/e6 && echo "PASS V479 diulang lolos (idempoten)" || F "ulang: $(tail -2 $D/e6)"
 # ROLLBACK
