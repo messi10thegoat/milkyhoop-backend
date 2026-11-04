@@ -112,3 +112,25 @@ def test_kontrol_merah_pemeriksa_menangkap_panggilan_tanpa_presisi():
     ketemu = [n.lineno for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
               and not any(k.arg == "presisi" for k in n.keywords) and len(n.args) < (2 if n.func.id == "line_net" else 99)]
     assert ketemu == [1, 2]
+
+
+# ── nominal pembayaran bersen pada presisi 0 (putusan pemilik LANGSUNG 5 Nov 2026) ─────────────────────────────────
+
+def test_tolak_bersen_dan_pengecualian_sisa_lama_persis():
+    t = UP.tolak_bersen
+    assert t(2, [D("1000.50")]) is None                                  # tenant uang_bersen: bebas
+    assert t(0, [D("1000"), D("0"), None]) is None                       # rupiah penuh
+    assert t(0, [D("1000.50")]) == "Nominal harus rupiah penuh."        # ketikan bersen ditolak
+    # melunasi sisa lama bersen PERSIS: alokasi = sisa -> boleh; total = jumlah alokasi persis -> boleh
+    assert t(0, [D("1274.50"), D("274.50"), D("1000")], [(D("274.50"), D("274.50")), (D("1000"), D("5000"))]) is None
+    assert t(0, [D("274.25")], [(D("274.25"), D("274.50"))]) == "Nominal harus rupiah penuh."  # bersen tapi BUKAN sisa persis
+    assert t(0, [D("1274.75"), D("274.50"), D("1000")], [(D("274.50"), D("274.50")), (D("1000"), D("5000"))]) is not None
+
+
+def test_tiga_penentu_bayar_terima_memakai_pemeriksa_sama():
+    import inspect as _i
+    from app.services import bayar_keluar_rencana as BKR
+    from app.routers import receive_payments as RP
+    for fn in (BKR.rencana_bayar, BKR.rencana_bayar_tagihan, RP._periksa_penerimaan):
+        s = _i.getsource(fn)
+        assert "UP.tolak_bersen(await UP.presisi_tenant(" in s and "KODE_NOMINAL_RUPIAH" in s, fn.__name__
