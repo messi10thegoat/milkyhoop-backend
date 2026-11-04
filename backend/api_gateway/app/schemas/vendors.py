@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Any, Literal, Union
 import re
 
 from .identitas_pajak import IdentitasPajakDasar
+from .uang_json import UangJson
 
 
 # =============================================================================
@@ -310,7 +311,15 @@ class VendorListItem(BaseModel):
     payment_terms_days: int
     is_active: bool
     created_at: str
-    ap_balance: Optional[float] = 0
+    ap_balance: Optional[UangJson] = 0  # B1: jurnal (kontak_daftar), JSON number
+    # B1 (kontak_daftar, satu penentu dengan pelanggan): medan baru, aditif
+    saldo: Optional[UangJson] = 0
+    lewat_tempo_nilai: Optional[UangJson] = 0
+    lewat_tempo_jumlah: int = 0
+    kontak_teks: Optional[str] = None
+    status_text: Optional[str] = None
+    aksi: Optional[str] = None  # kunci aksi pertama (urut desak) atau null
+    aksi_semua: List[str] = []  # SEMUA kunci yang berlaku untuk baris ini
 
 
     """Vendor item for list responses."""
@@ -332,6 +341,7 @@ class VendorListResponse(BaseModel):
     items: List[VendorListItem]
     total: int
     has_more: bool
+    sum_sisa: Optional[UangJson] = None  # with_totals=true: Σ saldo hutang seluruh hasil filter (kontak_daftar)
 
 
 # =============================================================================
@@ -394,7 +404,20 @@ class VendorDetail(BaseModel):
     has_transactions: Optional[bool] = None
 
     # Pure Ledger: AP balance from journals
-    ap_balance: Optional[float] = 0
+    ap_balance: Optional[UangJson] = 0  # B2: jurnal (kontak_daftar), JSON number
+    # B2 (4 Nov 2026, kontak_daftar / kontak_detail / vendor_pembelian): medan baru, aditif
+    saldo: Optional[UangJson] = 0
+    lewat_tempo_nilai: Optional[UangJson] = 0
+    lewat_tempo_jumlah: int = 0
+    total_pembelian: Optional[UangJson] = 0
+    jumlah_tagihan: int = 0
+    last_bill_date: Optional[str] = None
+    jumlah_dokumen: int = 0
+    kontak_teks: Optional[str] = None
+    status_text: Optional[str] = None
+    tipe_text: Optional[str] = None
+    termin_text: Optional[str] = None
+    aksi: List[Dict[str, Any]] = []  # [{kunci, label, utama?, bahaya?, boleh, alasan?}]
 
     is_active: bool
     created_at: str

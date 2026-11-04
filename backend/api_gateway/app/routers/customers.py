@@ -6,6 +6,7 @@ Integrates with AR module for balance tracking.
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, Response
+from decimal import Decimal
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -18,6 +19,8 @@ from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pelanggan + Vendor satu penentu
+from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
 from ..services import alamat_pelanggan as _alamat  # V428 alamat terstruktur
 from ..schemas.customers import (
     CreateCustomerRequest,
@@ -191,6 +194,50 @@ async def autocomplete_customers(
 # =============================================================================
 # LIST CUSTOMERS
 # =============================================================================
+def _syarat_pelanggan(tid: str, search: Optional[str], tipe: Optional[str], is_active: Optional[bool]) -> tuple:
+    """Syarat daftar pelanggan -- SATU pembangun untuk GET /customers dan /customers/summary (predikat sama). -> (where, params, idx)."""
+    # Exclude soft-deleted customers by default (Iron Law 12)
+    conditions = ["tenant_id = $1", "deleted_at IS NULL"]
+    params = [tid]
+    param_idx = 2
+
+    if search:
+        # Split search into words for fuzzy matching
+        words = search.strip().split()
+        if len(words) == 1:
+            conditions.append(
+                f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
+                f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
+            )
+            params.append(f"%{words[0]}%")
+            param_idx += 1
+        else:
+            word_conds = []
+            for word in words:
+                word_conds.append(
+                    f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
+                    f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
+                    f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
+                )
+                params.append(f"%{word}%")
+                param_idx += 1
+            conditions.append(f"({' AND '.join(word_conds)})")
+
+    if tipe is not None:
+        conditions.append(f"tipe = ${param_idx}")
+        params.append(tipe)
+        param_idx += 1
+
+    # Filter by is_active (None = show all)
+    if is_active is not None:
+        conditions.append(f"is_active = ${param_idx}")
+        params.append(is_active)
+        param_idx += 1
+
+    return " AND ".join(conditions), params, param_idx
+
+
 @router.get("", response_model=CustomerListResponse)
 async def list_customers(
     request: Request,
@@ -205,58 +252,23 @@ async def list_customers(
         "created_at", description="Sort field"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
+    with_totals: bool = Query(False, description="B1: sum_sisa (Σ piutang hasil filter) + urut nama, id"),
+    aksi: Optional[Literal["lewat_jatuh_tempo", "punya_piutang"]] = Query(None, description="B1: saring aksi (kontak_daftar)"),
 ):
     """
     List customers with search, filtering, and pagination.
 
     **Search:** Matches nama, nomor_member, or telepon.
+    B1 (4 Nov 2026): tanpa with_totals/aksi = perilaku lama (+ medan aditif); dengan salah satunya = urut nama, id, total/sum_sisa
+    dari services/kontak_daftar (satu penentu dengan vendor).
     """
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Build query conditions
-            # Exclude soft-deleted customers by default (Iron Law 12)
-            conditions = ["tenant_id = $1", "deleted_at IS NULL"]
-            params = [ctx["tenant_id"]]
-            param_idx = 2
-
-            if search:
-                # Split search into words for fuzzy matching
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
-                        f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                        f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(nama ILIKE ${param_idx} OR nomor_member ILIKE ${param_idx} "
-                            f"OR company_name ILIKE ${param_idx} OR display_name ILIKE ${param_idx} "
-                            f"OR telepon ILIKE ${param_idx} OR search_text ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
-
-            if tipe is not None:
-                conditions.append(f"tipe = ${param_idx}")
-                params.append(tipe)
-                param_idx += 1
-
-            # Filter by is_active (None = show all)
-            if is_active is not None:
-                conditions.append(f"is_active = ${param_idx}")
-                params.append(is_active)
-                param_idx += 1
-
-            where_clause = " AND ".join(conditions)
+            where_clause, params, param_idx = _syarat_pelanggan(ctx["tenant_id"], search, tipe, is_active)
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
 
             # Validate sort field
             valid_sorts = {
@@ -268,39 +280,37 @@ async def list_customers(
             sort_field = valid_sorts.get(sort_by, "nama")
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
 
-            # Get total count
-            count_query = f"SELECT COUNT(*) FROM customers WHERE {where_clause}"
-            total = await conn.fetchval(count_query, *params)
-
-            # Get items
-            query = f"""
-                SELECT id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat,
+            kolom = """id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat, city,
                        points, total_transaksi, total_nilai, is_active, created_at,
-                       phone2, community, nitku, jenis_id, negara, nomor_dokumen
-                FROM customers
-                WHERE {where_clause}
-                ORDER BY {sort_field} {sort_dir}
-                LIMIT ${param_idx} OFFSET ${param_idx + 1}
-            """
-            params.extend([limit, skip])
+                       phone2, community, nitku, jenis_id, negara, nomor_dokumen"""
+            sum_sisa = None
+            if with_totals or aksi:  # B1: filter aksi + urut nama, id + total/sum_sisa dari penentu bersama
+                h = await KD.halaman(conn, ctx["tenant_id"], "customer", "customers", where_clause, params, param_idx, hari_ini,
+                                     skip=skip, limit=limit, aksi=aksi, with_totals=with_totals)
+                total, sum_sisa = h["total"], h.get("sum_sisa")
+                urut = {str(i): n for n, i in enumerate(h["ids"])}
+                rows = sorted(await conn.fetch(f"SELECT {kolom} FROM customers WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+                                               ctx["tenant_id"], h["ids"]), key=lambda r: urut[str(r["id"])])
+            else:
+                # Get total count
+                count_query = f"SELECT COUNT(*) FROM customers WHERE {where_clause}"
+                total = await conn.fetchval(count_query, *params)
 
-            rows = await conn.fetch(query, *params)
+                # Get items
+                query = f"""
+                    SELECT {kolom}
+                    FROM customers
+                    WHERE {where_clause}
+                    ORDER BY {sort_field} {sort_dir}
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                """
+                params.extend([limit, skip])
 
-            # Phase 3: AR balances from compute_ar_outstanding() DB function
+                rows = await conn.fetch(query, *params)
+
+            # B1: saldo / lewat tempo dari JURNAL lewat kontak_daftar (satu penentu dengan vendor; dulu int() memotong sen)
             customer_ids = [str(row["id"]) for row in rows]
-            ar_balances = {}
-            if customer_ids:
-                ar_rows = await conn.fetch(
-                    """
-                    SELECT customer_id as cid, COALESCE(SUM(outstanding), 0) as balance
-                    FROM compute_ar_outstanding($1)
-                    WHERE customer_id = ANY($2)
-                    GROUP BY customer_id
-                """,
-                    ctx["tenant_id"],
-                    customer_ids,
-                )
-                ar_balances = {row["cid"]: int(row["balance"]) for row in ar_rows}
+            fakta = await KD.fakta_kontak(conn, ctx["tenant_id"], "customer", customer_ids, hari_ini)
 
             # Q-015: ringkasan SO per pelanggan (jumlah pesanan non-draf non-batal, SO terakhir, DP% terakhir)
             # — SATU kueri untuk seluruh halaman, berpagar tenant (services/pelanggan_ringkas_so.py).
@@ -330,7 +340,8 @@ async def list_customers(
                     "total_transactions": None,  # cache mati (26 Sep 2026) -> pakai jumlah_faktur
                     "total_value": None,  # cache mati (26 Sep 2026) -> pakai total_penjualan
                     **penjualan.get(str(row["id"]), KOSONG_PENJUALAN),
-                    "outstanding_balance": ar_balances.get(str(row["id"]), 0),
+                    "outstanding_balance": KD.medan_baris("customer", row, fakta)["saldo"],
+                    **KD.medan_baris("customer", row, fakta),
                     **ringkas_so.get(str(row["id"]), KOSONG_RINGKAS_SO),
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat()
@@ -340,7 +351,10 @@ async def list_customers(
                 for row in rows
             ]
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            out = {"items": items, "total": total, "has_more": (skip + limit) < total}
+            if with_totals:
+                out["sum_sisa"] = sum_sisa
+            return out
 
     except HTTPException:
         raise
@@ -351,6 +365,20 @@ async def list_customers(
 
 # =============================================================================
 # =============================================================================
+
+
+@router.get("/summary")
+async def customers_summary(request: Request, search: Optional[str] = Query(None), tipe: Optional[str] = Query(None),
+                            is_active: Optional[bool] = Query(None)):
+    """B1: ringkasan daftar pelanggan -- predikat SAMA dengan GET /customers (_syarat_pelanggan + kontak_daftar). Didaftarkan SEBELUM
+    /{customer_id} (dulu tertangkap -> 422)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        where, params, idx = _syarat_pelanggan(ctx["tenant_id"], search, tipe, is_active)
+        data = await KD.ringkasan(conn, ctx["tenant_id"], "customer", "customers", where, params, idx,
+                                  await tanggal_dokumen(conn, ctx["tenant_id"]))
+    return {"success": True, "data": data}
 
 
 @router.get("/next-code")
@@ -386,6 +414,45 @@ async def get_next_customer_code(request: Request):
 
 # GET CUSTOMER DETAIL
 # =============================================================================
+# Jejak transaksi yang menolak hapus pelanggan -- SATU daftar untuk DELETE (smart_delete) dan aksi detail B2 (cek_jejak)
+JEJAK_PELANGGAN = [
+        (
+            "sales_invoices",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
+        ),
+        (
+            "receive_payments",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
+        ),
+        (
+            "accounts_receivable",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
+            "",
+        ),
+        (
+            "credit_notes",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki nota kredit. Nonaktifkan saja.",
+        ),
+        (
+            "customer_deposits",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki deposit. Nonaktifkan saja.",
+        ),
+    ]
+
+
+async def saldo_awal_pelanggan(conn, tid: str, customer_id) -> Optional[str]:
+    """Nomor jurnal saldo awal pelanggan yang sudah POSTED (None = belum ada). SATU pemeriksa untuk POST /opening-balance dan aksi
+    detail B2 (saldo_awal boleh / alasan)."""
+    return await conn.fetchval(
+        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING'
+           AND source_id = $2 AND status = 'POSTED'""", tid, str(customer_id))
+
+
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
 async def get_customer(request: Request, customer_id: str):
     """Get detailed information for a single customer."""
@@ -427,34 +494,22 @@ async def get_customer(request: Request, customer_id: str):
                 customer_id,
             )
 
-            # Live query for transaction stats (fallback over stale cached columns)
-            stats = await conn.fetchrow(
-                """
-                SELECT
-                    COUNT(*) as total_transaksi,
-                    COALESCE(SUM(total_amount), 0) as total_nilai,
-                    MAX(invoice_date) as last_transaction_at
-                FROM sales_invoices
-                WHERE customer_id = $1 AND tenant_id = $2
-                  AND status NOT IN ('draft', 'void')
-            """,
-                customer_id,
-                ctx["tenant_id"],
-            )
-
-            # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan); fallback lama total_value tetap
-            # sementara (putusan MASTER b — halaman detail FE lama masih membacanya).
+            # B2 (4 Nov 2026): total penjualan TURUNAN JURNAL (pelanggan_penjualan) -- SUM(sales_invoices.total_amount) DIHAPUS (total_value
+            # lama kini = total_penjualan jurnal); saldo / lewat tempo = kontak_daftar (satu penentu dengan daftar); uang muka = sisa
+            # jurnal deposit (compute_deposit_remaining_many)
             _penjualan = (await penjualan_pelanggan(conn, ctx["tenant_id"], [customer_id]))[str(customer_id)]
-
-            # Phase 3: AR balance from compute_customer_ar() DB function (Law 16)
-            ar_balance = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(outstanding), 0) as saldo
-                FROM compute_customer_ar($1, $2)
-            """,
-                ctx["tenant_id"],
-                customer_id,
-            )
+            _hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+            _fakta = await KD.fakta_kontak(conn, ctx["tenant_id"], "customer", [str(row["id"])], _hari)
+            _medan = KD.medan_baris("customer", row, _fakta)
+            from .customer_deposits import compute_deposit_remaining_many
+            _dp_ids = [r["id"] for r in await conn.fetch(
+                """SELECT id FROM customer_deposits WHERE tenant_id = $1 AND customer_id = $2 AND status IN ('posted', 'partial')""",
+                ctx["tenant_id"], str(row["id"]))]
+            _uang_muka = sum((await compute_deposit_remaining_many(conn, ctx["tenant_id"], _dp_ids)).values(), Decimal("0"))
+            from ..services.smart_delete import cek_jejak
+            from ..services import kontak_detail as KDT
+            _aksi = KDT.aksi_detail(row["is_active"], await cek_jejak(conn, str(row["id"]), row["nama"], JEJAK_PELANGGAN),
+                                    await saldo_awal_pelanggan(conn, ctx["tenant_id"], row["id"]))
             # F3: sumber termin menurut aturan YANG SAMA dengan pembuat faktur (termin_bayar)
             _, _termin_sumber = await termin_hari(conn, ctx["tenant_id"], None, customer_id)
             # V428: alamat aktif (bawaan dulu); medan datar di bawah = cermin bawaan tagih
@@ -509,23 +564,21 @@ async def get_customer(request: Request, customer_id: str):
                     # Statistics (live query values, fallback to cached)
                     "points": row["points"],
                     "points_per_50k": row["points_per_50k"],
-                    "total_transactions": int(stats["total_transaksi"])
-                    if stats
-                    else (row["total_transaksi"] or 0),
-                    "total_value": int(stats["total_nilai"] or 0)
-                    if stats
-                    else int(row["total_nilai"] or 0),
+                    "total_transactions": _penjualan["jumlah_faktur"],  # B2: dari jurnal (pelanggan_penjualan)
+                    "total_value": _penjualan["total_penjualan"],
                     **_penjualan,
-                    "outstanding_balance": int(ar_balance["saldo"] or 0)
-                    if ar_balance
-                    else 0,
-                    "last_transaction_at": stats["last_transaction_at"].isoformat()
-                    if stats and stats["last_transaction_at"]
-                    else (
-                        row["last_transaction_at"].isoformat()
-                        if row["last_transaction_at"]
-                        else None
-                    ),
+                    "jumlah_dokumen": _penjualan["jumlah_faktur"],
+                    "outstanding_balance": _medan["saldo"],
+                    "saldo": _medan["saldo"],
+                    "lewat_tempo_nilai": _medan["lewat_tempo_nilai"],
+                    "lewat_tempo_jumlah": _medan["lewat_tempo_jumlah"],
+                    "uang_muka": KD.uang_json(_uang_muka),
+                    "kontak_teks": _medan["kontak_teks"],
+                    "status_text": _medan["status_text"],
+                    "tipe_text": KDT.tipe_text(row["customer_type"]),
+                    "termin_text": KDT.termin_text(row["payment_terms_days"]),
+                    "aksi": _aksi,
+                    "last_transaction_at": _penjualan["last_invoice_date"],
                     # Metadata
                     "has_transactions": bool(has_tx),
                     "default_currency_id": str(row["default_currency_id"])
@@ -1123,34 +1176,7 @@ async def delete_customer(request: Request, customer_id: str):
                     entity_id=str(customer_id),
                     table="customers",
                     name_column="nama",
-                    ledger_checks=[
-                        (
-                            "sales_invoices",
-                            "customer_id",
-                            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi. Nonaktifkan saja.",
-                        ),
-                        (
-                            "receive_payments",
-                            "customer_id",
-                            "Tidak bisa menghapus pelanggan yang sudah memiliki transaksi pembayaran.",
-                        ),
-                        (
-                            "accounts_receivable",
-                            "customer_id",
-                            "Tidak bisa menghapus pelanggan yang memiliki catatan piutang. Nonaktifkan saja.",
-                            "",
-                        ),
-                        (
-                            "credit_notes",
-                            "customer_id",
-                            "Tidak bisa menghapus pelanggan yang memiliki nota kredit. Nonaktifkan saja.",
-                        ),
-                        (
-                            "customer_deposits",
-                            "customer_id",
-                            "Tidak bisa menghapus pelanggan yang memiliki deposit. Nonaktifkan saja.",
-                        ),
-                    ],
+                    ledger_checks=JEJAK_PELANGGAN,
                     extra_exists_filter="",
                 )
                 return {
@@ -1563,13 +1589,7 @@ async def set_customer_opening_balance(request: Request, customer_id: UUID, body
                     raise HTTPException(status_code=404, detail="Customer not found")
 
                 # Check if opening balance journal already exists
-                existing = await conn.fetchval(
-                    """SELECT id FROM journal_entries
-                    WHERE tenant_id = $1 AND source_type = 'OPENING'
-                    AND source_id = $2 AND status = 'POSTED'""",
-                    ctx["tenant_id"],
-                    str(customer_id),
-                )
+                existing = await saldo_awal_pelanggan(conn, ctx["tenant_id"], customer_id)
                 if existing:
                     raise HTTPException(
                         status_code=400,
@@ -2341,6 +2361,20 @@ async def get_customer_journal_entries(
 # =============================================================================
 
 
+@router.get("/{customer_id}/history")
+async def get_customer_history(request: Request, customer_id: str, limit: int = Query(200, ge=1, le=500)):
+    """B4: riwayat bentuk /sales-orders/{id}/history (services/kontak_riwayat, sumber SAMA dengan /activity); dokumen tersaring
+    izin BACA pemanggil -> omitted."""
+    from ..services.dashboard_izin import boleh_baca
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Customer not found")
+        data = await KR.riwayat(conn, ctx["tenant_id"], "customer", customer_id, lambda m: boleh_baca(request, m), limit)
+    return {"success": True, "data": data}
+
+
 @router.get("/{customer_id}/activity", response_model=CustomerActivityResponse)
 async def get_customer_activity(
     request: Request,
@@ -2366,62 +2400,8 @@ async def get_customer_activity(
             raise HTTPException(status_code=404, detail="Customer not found")
 
         # Get total count (including transaction events)
-        count_query = """
-            SELECT (
-                SELECT COUNT(*) FROM customer_activities
-                WHERE customer_id = $1 AND tenant_id = $2
-            ) + (
-                SELECT COUNT(*) FROM sales_invoices
-                WHERE customer_id = $1 AND tenant_id = $2
-                  AND status NOT IN ('draft', 'void')
-            ) + (
-                SELECT COUNT(*) FROM receive_payments
-                WHERE customer_id = $1 AND tenant_id = $2
-                  AND status NOT IN ('draft', 'void')
-            )
-        """
-        total = await conn.fetchval(count_query, customer_id, ctx["tenant_id"])
-
-        # Get activities (UNION with transaction events)
-        query = """
-            SELECT id::text, type, description, details, actor_name, timestamp,
-                   NULL as document_number, NULL::numeric as total,
-                   field_name, old_value, new_value
-            FROM customer_activities
-            WHERE customer_id = $1 AND tenant_id = $2
-
-            UNION ALL
-
-            SELECT si.id::text, 'sale' as type,
-                   'Faktur penjualan ' || si.invoice_number as description,
-                   'Total: ' || si.total_amount::text as details,
-                   NULL as actor_name,
-                   si.created_at as timestamp,
-                   si.invoice_number as document_number,
-                   si.total_amount as total,
-                   NULL as field_name, NULL as old_value, NULL as new_value
-            FROM sales_invoices si
-            WHERE si.customer_id = $1 AND si.tenant_id = $2
-              AND si.status NOT IN ('draft', 'void')
-
-            UNION ALL
-
-            SELECT rp.id::text, 'payment' as type,
-                   'Pembayaran ' || rp.payment_number as description,
-                   'Total: ' || rp.total_amount::text as details,
-                   NULL as actor_name,
-                   rp.created_at as timestamp,
-                   rp.payment_number as document_number,
-                   rp.total_amount as total,
-                   NULL as field_name, NULL as old_value, NULL as new_value
-            FROM receive_payments rp
-            WHERE rp.customer_id = $1 AND rp.tenant_id = $2
-              AND rp.status NOT IN ('draft', 'void')
-
-            ORDER BY timestamp DESC
-            LIMIT $3 OFFSET $4
-        """
-        rows = await conn.fetch(query, customer_id, ctx["tenant_id"], limit, offset)
+        # B4 (4 Nov 2026): sumber BERSAMA dengan GET /customer_id/history (services/kontak_riwayat)
+        rows, total = await KR.baris(conn, "customer", customer_id, ctx["tenant_id"], limit, offset)
 
         activities = [
             CustomerActivity(
@@ -2432,7 +2412,7 @@ async def get_customer_activity(
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
                 document_number=row.get("document_number"),
-                total=int(row["total"]) if row.get("total") is not None else None,
+                total=KR.total_aktivitas(row),
                 field_name=row.get("field_name"),
                 old_value=row.get("old_value"),
                 new_value=row.get("new_value"),
