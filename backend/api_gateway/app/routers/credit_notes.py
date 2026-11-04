@@ -252,9 +252,18 @@ async def _cn_doc(conn, tenant_id, items, discount_percent, discount_amount, hea
             ln["tax_rate"] = hr
         ln["tax_code_id"] = await _cn_line_code(conn, tenant_id, ln, cache)
     await attach_dpp_factors(conn, tenant_id, lines, "tax_code_id")
+    from ..services import uang_presisi as UP
+    # NK dari faktur bersen (data lama) = 2 desimal supaya retur penuh menutup faktur persis; selainnya presisi tenant
+    _inv_p = None
+    if invoice_id:
+        try:
+            _inv_p = invoice_id if isinstance(invoice_id, UUID) else UUID(str(invoice_id))
+        except ValueError:
+            _inv_p = None
+    presisi = await (UP.presisi_dari(conn, tenant_id, "sales_invoices", _inv_p) if _inv_p else UP.presisi_tenant(conn, tenant_id))
     try:
         return compute_document(lines, doc_discount_amount=discount_amount or 0,
-                                doc_discount_percent=discount_percent or 0)
+                                doc_discount_percent=discount_percent or 0, presisi=presisi)
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except LineAmountError as e:
@@ -1387,6 +1396,8 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
         """SELECT id, item_id, item_code, description, quantity, unit, unit_price, discount_percent, discount_amount,
                   tax_code, tax_code_id, tax_rate, jumlah_baris
            FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number""", fid)
+    from ..services import uang_presisi as UP
+    presisi = await UP.presisi_dari(conn, tid, "sales_invoices", fid)  # == _cn_doc untuk faktur ini
     # JUMLAH BARIS (V427): jumlah kotor yang SUDAH dinotakan per baris faktur (NK tak-void) -> NK yang menuntaskan baris
     # menyerap sisa (NK penuh == jumlah baris faktur; tak ada selisih pembulatan tersisa di piutang).
     sudah_gross = {r["oid"]: Decimal(str(r["g"])) for r in await conn.fetch(
@@ -1430,7 +1441,7 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
         q = pilih.get(str(r["id"]), Decimal("0")) if pilih is not None else bisa
         lines.append({"original_invoice_item_id": str(r["id"]), "description": r["description"], "unit": r["unit"],
                       "invoiced": float(qty), "already_credited": float(sd), "creditable": float(bisa), "quantity": float(q)})
-        net_semua += line_net(dict(r))["net"]
+        net_semua += line_net(dict(r), presisi)["net"]
         if q <= 0:
             continue
         if q > bisa:
@@ -1452,7 +1463,7 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
             if cand >= 0 and abs(q * Decimal(str(r["unit_price"])) - cand) <= q * Decimal("0.005"):
                 it["line_amount"] = cand
         items.append(it)
-        net_pilih += line_net(it)["net"]
+        net_pilih += line_net(it, presisi)["net"]
     # lebih dari yang bisa dinotakan -> BLOK CN_QTY_EXCEEDS_CREDITABLE dari _rencana_nota_kredit (periksa_bisa_dinotakan)
     if Decimal(str(inv["shipping_amount"] or 0)) > 0:
         notes.append({"code": "CN_SHIPPING_NOT_INCLUDED", "message": "Ongkos kirim faktur tidak ikut dinotakan."})

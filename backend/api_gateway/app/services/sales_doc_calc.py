@@ -4,7 +4,9 @@ Dipakai oleh SEMUA jalur berikut -- jangan buat salinan aritmetika pajak di temp
   sales_invoices: create, update, /calculate, /preview-journal
   sales_orders:   create, update, /{id}/to-invoice
 
-ATURAN (Law 9: Decimal + ROUND_HALF_UP, 2 desimal):
+ATURAN (Law 9: Decimal + ROUND_HALF_UP; PRESISI = parameter `presisi` -- 0 rupiah penuh bawaan tenant, 2 sen -- lewat
+services/uang_presisi.bulat, putusan pemilik 4 Nov 2026; bawaan fungsi murni = 2 supaya pemanggil yang belum meneruskan presisi
+tetap SETARA):
   1. Neto baris = qty x harga - diskon baris, dibulatkan HALF_UP 2dp PER BARIS.
      (diskon baris: persen bila > 0, selain itu nominal -- sama dengan perilaku lama.)
   1b. JUMLAH BARIS (V427, 14 Okt 2026; NetSuite Amount<->Rate, Accurate "Jumlah"): bila baris membawa
@@ -36,6 +38,7 @@ Modul ini MURNI (tanpa DB, tanpa FastAPI) supaya gerbangnya bisa diulang tanpa e
 from decimal import Decimal, ROUND_HALF_UP
 
 from . import teks_galat as tg
+from .uang_presisi import bulat
 
 _C = Decimal("0.01")
 _ZERO = Decimal("0")
@@ -70,7 +73,7 @@ def q2(v: Decimal) -> Decimal:
     return v.quantize(_C, rounding=ROUND_HALF_UP)
 
 
-def line_net(item: dict) -> dict:
+def line_net(item: dict, presisi: int = 2) -> dict:
     """Aturan 1. Kembalikan gross (2dp), diskon baris (2dp), neto (2dp).
 
     Identitas yang DIJAMIN: subtotal - discount_amount == net (tepat), jadi pembaca yang
@@ -94,20 +97,20 @@ def line_net(item: dict) -> dict:
     disc = gross * pct / _HUNDRED if pct > 0 else d(item.get("discount_amount"))
     if q2(disc) > q2(gross):  # U-SI-LAW: neto negatif DITOLAK (dulu lolos -> alokasi negatif -> RECOG timpang, Law 4)
         raise LineDiscountError(tg.diskon_baris_melebihi(q2(disc), q2(gross)))
-    net = q2(gross - disc)
-    sub = q2(gross)
+    net = bulat(gross - disc, presisi)
+    sub = bulat(gross, presisi)
     return {"subtotal": sub, "discount_amount": sub - net, "net": net}
 
 
-def resolve_document_discount(net_total: Decimal, amount=0, percent=0) -> Decimal:
+def resolve_document_discount(net_total: Decimal, amount=0, percent=0, presisi: int = 2) -> Decimal:
     """Persen (bila > 0) dihitung dari SIGMA neto SESUDAH diskon baris; selain itu nominal."""
     pct = d(percent)
     if pct > 0:
-        return q2(net_total * pct / _HUNDRED)
-    return q2(d(amount))
+        return bulat(net_total * pct / _HUNDRED, presisi)
+    return bulat(d(amount), presisi)
 
 
-def allocate(total: Decimal, weights: list) -> list:
+def allocate(total: Decimal, weights: list, presisi: int = 2) -> list:
     """Aturan 2. Pro-rata `total` menurut `weights`; baris terakhir menyerap sisa."""
     n = len(weights)
     if n == 0:
@@ -117,26 +120,26 @@ def allocate(total: Decimal, weights: list) -> list:
         out = [_ZERO] * n
         out[-1] = total  # total != 0 dengan wsum == 0 ditolak pemanggil; di sini tetap jumlah == total
         return out
-    out = [q2(total * w / wsum) for w in weights[:-1]]
+    out = [bulat(total * w / wsum, presisi) for w in weights[:-1]]
     out.append(total - sum(out, _ZERO))
     return out
 
 
 def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
-                     shipping_amount=0, shipping_tax=None) -> dict:
+                     shipping_amount=0, shipping_tax=None, presisi: int = 2) -> dict:
     """Hitung satu dokumen. `items`: dict dengan quantity, unit_price, discount_percent,
     discount_amount (opsional), tax_rate. Mengembalikan baris (dengan kunci asli
     dipertahankan) + header. Semua angka Decimal 2dp."""
-    lines = [dict(it, **line_net(it)) for it in items]
+    lines = [dict(it, **line_net(it, presisi)) for it in items]
     net_total = sum((ln["net"] for ln in lines), _ZERO)
-    doc_disc = resolve_document_discount(net_total, doc_discount_amount, doc_discount_percent)
+    doc_disc = resolve_document_discount(net_total, doc_discount_amount, doc_discount_percent, presisi)
     if doc_disc < 0:
         raise DocumentDiscountError("Diskon dokumen tidak boleh negatif.")
     if doc_disc > net_total:
         raise DocumentDiscountError(
             f"Diskon dokumen {tg.rp(doc_disc)} melebihi jumlah baris setelah diskon {tg.rp(net_total)}."
         )
-    allocs = allocate(doc_disc, [ln["net"] for ln in lines])
+    allocs = allocate(doc_disc, [ln["net"] for ln in lines], presisi)
     tax_total = _ZERO
     for ln, a in zip(lines, allocs):
         dpp_hj = ln["net"] - a
@@ -144,24 +147,24 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         den = int(ln.get("dpp_factor_den") or 1)
         base = dpp_hj if num == den else dpp_hj * Decimal(num) / Decimal(den)
         rate = d(ln.get("tax_rate"))
-        tax = q2(base * rate / _HUNDRED) if rate > 0 else _ZERO
+        tax = bulat(base * rate / _HUNDRED, presisi) if rate > 0 else _ZERO
         ln["doc_discount_allocated"] = a
         ln["dpp_harga_jual"] = dpp_hj
         # `dpp` = dasar yang BENAR-BENAR dikenai tarif (sama arti dengan bills.dpp):
         # == DPP harga jual bila faktor 1/1, == DPP nilai lain bila 11/12.
-        ln["dpp"] = q2(base)
+        ln["dpp"] = bulat(base, presisi)
         ln["tax_amount"] = tax
         # `total` baris = neto + PPN baris (arti lama dipertahankan: nilai baris SEBELUM
         # diskon dokumen, ditambah PPN-nya). Header total = SIGMA total baris - diskon
         # dokumen + ongkir.
         ln["total"] = ln["net"] + tax
         tax_total += tax
-    shipping = q2(d(shipping_amount))
+    shipping = bulat(d(shipping_amount), presisi)
     st = shipping_tax or {}
     s_rate = d(st.get("rate")) if shipping > 0 else _ZERO
     s_num, s_den = int(st.get("num") or 1), int(st.get("den") or 1)
     s_base = shipping if s_num == s_den else shipping * Decimal(s_num) / Decimal(s_den)
-    s_tax = q2(s_base * s_rate / _HUNDRED) if s_rate > 0 else _ZERO
+    s_tax = bulat(s_base * s_rate / _HUNDRED, presisi) if s_rate > 0 else _ZERO
     gross_total = sum((ln["subtotal"] for ln in lines), _ZERO)
     return {
         "items": lines,
@@ -174,7 +177,7 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
         "tax_amount": tax_total + s_tax,
         "shipping_amount": shipping,
         "shipping_tax_rate": s_rate,
-        "shipping_dpp": q2(s_base) if shipping > 0 else _ZERO,
+        "shipping_dpp": bulat(s_base, presisi) if shipping > 0 else _ZERO,
         "shipping_tax_amount": s_tax,
         # RESOLVED code (explicit, or followed from the goods). The EXPLICIT choice is the
         # caller's to echo under `shipping_tax_code_id` -- one meaning per key (unit 3d).
@@ -185,7 +188,7 @@ def compute_document(items: list, doc_discount_amount=0, doc_discount_percent=0,
 
 def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
                     prior_discount=0, prior_shipping=0, is_last=False,
-                    shipping_tax=None) -> dict:
+                    shipping_tax=None, presisi: int = 2) -> dict:
     """SO -> Faktur (penuh atau parsial). Diskon & ongkir SO dibawa PRO-RATA menurut neto
     yang ditagih; faktur yang MENUNTASKAN SO menyerap sisa (SO - yang sudah dibawa faktur
     sebelumnya yang tidak void), jadi SIGMA semua faktur parsial == total SO.
@@ -194,7 +197,7 @@ def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
     so_items: SEMUA baris SO (id, quantity, unit_price, discount_percent, tax_rate, ...).
     invoice_qty: {so_item_id: qty yang ditagih di faktur ini}.
     """
-    full_net = sum((line_net(it)["net"] for it in so_items), _ZERO)
+    full_net = sum((line_net(it, presisi)["net"] for it in so_items), _ZERO)
     inv_items = []
     for it in so_items:
         q = invoice_qty.get(str(it["id"]))
@@ -210,20 +213,20 @@ def plan_so_invoice(so_items: list, invoice_qty: dict, so_discount, so_shipping,
             if prior_q + d(q) >= so_q:
                 ln["jumlah_baris"] = d(jb) - d(it.get("prior_gross"))
             else:
-                ln["jumlah_baris"] = q2(d(jb) * d(q) / so_q)
+                ln["jumlah_baris"] = bulat(d(jb) * d(q) / so_q, presisi)
         inv_items.append(ln)
-    inv_net = sum((line_net(it)["net"] for it in inv_items), _ZERO)
-    so_disc, so_ship = q2(d(so_discount)), q2(d(so_shipping))
-    if is_last:
-        disc = so_disc - q2(d(prior_discount))
-        ship = so_ship - q2(d(prior_shipping))
+    inv_net = sum((line_net(it, presisi)["net"] for it in inv_items), _ZERO)
+    so_disc, so_ship = bulat(d(so_discount), presisi), bulat(d(so_shipping), presisi)
+    if is_last:  # sisa = nilai SO tersimpan - yang sudah dibawa (data lama bersen: dibawa apa adanya, tanpa pembulatan ulang)
+        disc = so_disc - d(prior_discount)
+        ship = so_ship - d(prior_shipping)
     elif full_net > 0:
-        disc = q2(so_disc * inv_net / full_net)
-        ship = q2(so_ship * inv_net / full_net)
+        disc = bulat(so_disc * inv_net / full_net, presisi)
+        ship = bulat(so_ship * inv_net / full_net, presisi)
     else:
         disc = ship = _ZERO
     return compute_document(inv_items, doc_discount_amount=disc, shipping_amount=ship,
-                            shipping_tax=shipping_tax)
+                            shipping_tax=shipping_tax, presisi=presisi)
 
 
 def harga_json(v):

@@ -83,6 +83,8 @@ class DB:
             return {"id": a[0], "status": "draft"}
         if s.startswith("SELECT discount_amount, shipping_amount, shipping_tax_code_id FROM sales_orders"):
             return self.so_header
+        if s == "SELECT * FROM sales_orders WHERE id = $1 AND tenant_id = $2":  # pembulatan 4 Nov: presisi_dari (SO tersimpan bulat)
+            return dict(self.so_header or {}, total_amount=0, tax_amount=0, subtotal=0)
         raise AssertionError(f"fetchrow tak dikenal: {s}")
 
     async def fetch(self, sql, *a):

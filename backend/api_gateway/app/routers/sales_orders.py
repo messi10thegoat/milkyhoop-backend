@@ -8,10 +8,12 @@ from typing import Optional, Literal
 from datetime import date
 from decimal import Decimal
 import asyncpg
+import functools
 import logging
 import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
+from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..services.proforma_terbayar import memo_ringkasan  # PERF-DAFTAR-SO (16 Okt 2026)
 from ..services.so_posisi import fakta_daftar, jumlah_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
@@ -91,7 +93,7 @@ def get_user_context(request: Request) -> dict:
     }
 
 
-def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None) -> dict:
+def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None, presisi: int = 2) -> dict:
     """SO memakai kalkulator bersama (services/sales_doc_calc.py) -- menggantikan
     salinan lokal yang memotong pajak dengan int() (Law 9) dan mengurangkan diskon
     dokumen SESUDAH PPN. Arti kolom SO dipertahankan: subtotal header = SIGMA neto baris
@@ -100,7 +102,7 @@ def _so_doc(items: list, discount_amount, shipping_amount, shipping_tax=None) ->
     try:
         doc = compute_document(
             items, doc_discount_amount=discount_amount or 0,
-            shipping_amount=shipping_amount or 0, shipping_tax=shipping_tax,
+            shipping_amount=shipping_amount or 0, shipping_tax=shipping_tax, presisi=presisi,
         )
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -822,7 +824,8 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                     conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
                     body.shipping_amount, "tax_id",
                 )
-                _doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+                _doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship,
+                               presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]))
                 await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
                 calculated_items = _doc["items"]
                 totals = {
@@ -977,7 +980,8 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
             conn, ctx["tenant_id"], body.shipping_tax_code_id, _items,
             body.shipping_amount, "tax_id",
         )
-        doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship)
+        doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship,
+                      presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]))
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
@@ -1113,7 +1117,8 @@ async def update_sales_order(
                     # HANYA bila flag tenant so_edit_confirmed aktif. Tanpa flag: perilaku lama apa adanya.
                     from ..services import so_ubah_terkonfirmasi as _sut
                     if await _sut.flag_aktif(conn, ctx["tenant_id"]):
-                        hasil = await _sut.ubah(conn, ctx, await _so_untuk_ubah(conn, ctx, order["id"]), body, _hitung_so)
+                        hasil = await _sut.ubah(conn, ctx, await _so_untuk_ubah(conn, ctx, order["id"]), body,
+                                           functools.partial(_hitung_so, so_id=order["id"]))
                         return await _simpan_idem_patch(conn, ctx, _kunci_penuh, _sidik, SalesOrderResponse(
                             success=True, message="Pesanan diperbarui", data=hasil), order["id"])
                     raise HTTPException(
@@ -1207,7 +1212,8 @@ async def update_sales_order(
                     _ship = await resolve_shipping_tax(
                         conn, ctx["tenant_id"], _ship_code, _src, shipping_amt, "tax_id"
                     )
-                    _doc = _so_doc(_src, discount_amt, shipping_amt, _ship)
+                    _doc = _so_doc(_src, discount_amt, shipping_amt, _ship,
+                                   presisi=await UP.presisi_dari(conn, ctx["tenant_id"], "sales_orders", _so_uuid(order_id)))
                     await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #34
                     calculated_items = _doc["items"]
 
@@ -1342,11 +1348,12 @@ async def _so_untuk_ubah(conn, ctx: dict, so_id) -> Optional[dict]:
     return dict(r) if r else None
 
 
-async def _hitung_so(conn, tenant_id: str, src: list, discount, shipping, shipping_code) -> dict:
+async def _hitung_so(conn, tenant_id: str, src: list, discount, shipping, shipping_code, so_id=None) -> dict:
     """Kalkulator SO yang SAMA dengan jalur draf (faktor DPP, pajak ongkir, _so_doc, pagar PKP #34)."""
     await attach_dpp_factors(conn, tenant_id, src, "tax_id")
     _ship = await resolve_shipping_tax(conn, tenant_id, shipping_code, src, shipping, "tax_id")
-    doc = _so_doc(src, discount, shipping, _ship)
+    doc = _so_doc(src, discount, shipping, _ship, presisi=(await UP.presisi_dari(conn, tenant_id, "sales_orders", so_id) if so_id
+                                                           else await UP.presisi_tenant(conn, tenant_id)))
     await tolak_ppn_bila_non_pkp(conn, tenant_id, doc["tax_amount"])
     return doc
 
@@ -1375,7 +1382,7 @@ async def preview_edit_sales_order(request: Request, order_id: str, body: Update
                 if not await _sut.flag_aktif(conn, ctx["tenant_id"]):
                     _sut.galat(409, "SO_EDIT_NOT_ENABLED", "Ubah pesanan terkonfirmasi belum aktif untuk usaha ini.")
                 body.__pydantic_fields_set__.discard("order_title")  # judul = jalur sendiri (PATCH), bukan pratinjau ini
-                raise _BatalkanUbah(await _sut.ubah(conn, ctx, so, body, _hitung_so))
+                raise _BatalkanUbah(await _sut.ubah(conn, ctx, so, body, functools.partial(_hitung_so, so_id=so["id"])))
     except _BatalkanUbah as b:
         return SalesOrderResponse(success=True, message="Pratinjau ubah pesanan", data={**b.hasil, "preview": True})
 
@@ -2055,7 +2062,8 @@ async def _nilai_batal(conn, ctx, order_id, rows: list, qty_batal: dict) -> dict
     if not any(_dd(q) > 0 for q in qty_batal.values()):
         return {}
     await attach_dpp_factors(conn, ctx["tenant_id"], so_rows, "tax_id")
-    plan = plan_so_invoice(so_rows, qty_batal, order["discount_amount"] or 0, 0, is_last=False)
+    plan = plan_so_invoice(so_rows, qty_batal, order["discount_amount"] or 0, 0, is_last=False,
+                           presisi=await UP.presisi_dari(conn, ctx["tenant_id"], "sales_orders", _so_uuid(order_id)))
     return {str(ln["id"]): ln["dpp_harga_jual"] + ln["tax_amount"] for ln in plan["items"]}
 
 
@@ -2599,6 +2607,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
             prior_shipping=_prior["ship"],
             is_last=_is_last,
             shipping_tax=_ship,
+            presisi=await UP.presisi_dari(conn, ctx["tenant_id"], "sales_orders", order["id"]),
         )
     except DocumentDiscountError as _e:
         raise HTTPException(status_code=400, detail=str(_e))

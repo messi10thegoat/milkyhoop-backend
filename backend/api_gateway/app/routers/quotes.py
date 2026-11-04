@@ -11,6 +11,7 @@ from datetime import date, datetime
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services import faktur_cetak as _fc_snap
+from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services import teks_galat as tg
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
@@ -77,7 +78,7 @@ def get_user_context(request: Request) -> dict:
 
 
 async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fixed_amount=None,
-                      shipping_amount=0, shipping_tax_code_id=None) -> dict:
+                      shipping_amount=0, shipping_tax_code_id=None, quote_id=None) -> dict:
     """3h -- SATU jalan hitung Penawaran: create, update, dan konversi (3g) semuanya lewat
     kalkulator bersama (sama dengan Faktur/SO). Arti kolom Penawaran dipertahankan:
     subtotal = SIGMA neto baris (sesudah diskon baris), line_total = neto baris + PPN baris.
@@ -96,8 +97,10 @@ async def _quote_calc(conn, tenant_id, lines, discount_type, discount_value, fix
     elif dval > 0:
         amt = dval if fixed_amount is None else fixed_amount
     try:
+        # presisi: Penawaran baru = presisi tenant; ubah / konversi Penawaran tersimpan bersen = 2 (data lama tak diubah)
+        presisi = await (UP.presisi_dari(conn, tenant_id, "quotes", quote_id) if quote_id else UP.presisi_tenant(conn, tenant_id))
         doc = compute_document(lines, doc_discount_amount=amt, doc_discount_percent=pct,
-                               shipping_amount=shipping_amount or 0, shipping_tax=_ship)
+                               shipping_amount=shipping_amount or 0, shipping_tax=_ship, presisi=presisi)
     except DocumentDiscountError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except LineAmountError as e:
@@ -209,11 +212,12 @@ async def _quote_converted_doc(conn, tenant_id, quote, items) -> dict:
     if dval > 0 and dtype != "percentage":
         all_rows = await conn.fetch("SELECT * FROM quote_items WHERE quote_id = $1", quote["id"])
         if len(sel) != len(all_rows):
-            net_all = sum((line_net(_quote_line(r))["net"] for r in all_rows), Decimal("0"))
-            net_sel = sum((line_net(ln)["net"] for ln in sel), Decimal("0"))
-            fixed = dval if net_all == 0 else _q2(dval * net_sel / net_all)
+            presisi = await UP.presisi_dari(conn, tenant_id, "quotes", quote["id"])
+            net_all = sum((line_net(_quote_line(r), presisi)["net"] for r in all_rows), Decimal("0"))
+            net_sel = sum((line_net(ln, presisi)["net"] for ln in sel), Decimal("0"))
+            fixed = dval if net_all == 0 else UP.bulat(dval * net_sel / net_all, presisi)
     return await _quote_calc(conn, tenant_id, sel, dtype, dval, fixed_amount=fixed,
-                             shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir)
+                             shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir, quote_id=quote["id"])
 
 
 def resolve_dp(
@@ -1182,7 +1186,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
             else _lama_ongkir
         _kode_ongkir = body.shipping_tax_code_id if "shipping_tax_code_id" in _ubah_ongkir else _lama_kode
         _doc = await _quote_calc(conn, ctx["tenant_id"], _lines, discount_type, discount_value,
-                                 shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir)
+                                 shipping_amount=_ongkir, shipping_tax_code_id=_kode_ongkir, quote_id=uuid_module.UUID(quote_id))
         if _ada_ongkir(_ongkir, _kode_ongkir) or _ada_ongkir(_lama_ongkir, _lama_kode):
             _tulis_ongkir_nanti = (_doc, _kode_ongkir)
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])  # #39
