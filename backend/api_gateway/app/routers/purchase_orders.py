@@ -953,7 +953,7 @@ async def kirim_po_core(conn, ctx: dict, po_id) -> dict:
     po = await _kunci_po(conn, ctx["tenant_id"], po_id, "id, status, po_number")
     if not po:
         raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
-    _tolak(PR.rencana_kirim(po)["blocks"])  # = /send/preview
+    _tolak((await PR.rencana_kirim(conn, ctx["tenant_id"], po))["blocks"])  # = /send/preview
     await conn.execute(
         """
         UPDATE purchase_orders
@@ -1466,7 +1466,7 @@ async def preview_edit_purchase_order(request: Request, po_id: UUID, body: Updat
 async def preview_send_purchase_order(request: Request, po_id: UUID):
     """Pratinjau KIRIM (Draf -> Terkirim). payload = {} (POST /send tanpa badan)."""
     async def isi(conn, ctx, po):
-        return {**PR.rencana_kirim(po), "payload": {}}
+        return {**(await PR.rencana_kirim(conn, ctx["tenant_id"], po)), "payload": {}}
     return await _pratinjau(request, po_id, isi)
 
 

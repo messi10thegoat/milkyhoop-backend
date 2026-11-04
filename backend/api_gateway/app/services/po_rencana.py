@@ -138,9 +138,16 @@ def _j(v):
 
 
 # ---------------------------------------------------------------- kirim / tutup / batal / hapus
-def rencana_kirim(po) -> dict:
+async def rencana_kirim(conn, tid: str, po) -> dict:
+    """Kirim (Draf -> Terkirim). Baris ber-stok wajib bersatuan dasar/berkonversi (penentu SAMA dgn Terima, kalimat sama) -- satuan
+    tanpa konversi ditangkap di dokumen awal, bukan baru saat barang datang. Draf tetap boleh disimpan."""
     bloks = [] if po["status"] == "draft" else [
         blok("PO_TAK_BISA_DIKIRIM", f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dikirim. Hanya Draf.")]
+    from . import satuan_dasar as SD
+    stok = await conn.fetch(
+        """SELECT i.item_id AS product_id, i.unit, i.quantity FROM purchase_order_items i JOIN products p ON p.id = i.item_id AND p.tenant_id = $2
+           WHERE i.po_id = $1 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true) ORDER BY i.line_number""", po["id"], tid)
+    bloks += [blok(x["code"], x["message"], x["status"]) for x in await SD.blok_baris(conn, tid, [dict(r) for r in stok], "konversi")]
     return {"blocks": bloks, "status_sesudah": "sent"}
 
 

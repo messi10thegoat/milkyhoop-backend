@@ -167,6 +167,15 @@ async def akun_beban_default(conn, tid: str, item_type) -> object:
     return acct
 
 
+async def nilai_baris(conn, bill_id, subtotal_dec: Decimal) -> dict:
+    """{bill_item_id: neto_baris} -- HPP-NETO (4 Nov 2026): biaya kartu stok FPB (create_bill_v2/post_bill) == Dr baris hitung_debit."""
+    return neto_baris(await conn.fetch(SQL_BARIS_DEBIT, bill_id), subtotal_dec)
+
+
+SQL_BARIS_DEBIT = ("SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
+                   "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id WHERE bi.bill_id = $1 ORDER BY bi.line_number")
+
+
 async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_inv_acct_id, grn: Optional[dict] = None) -> list:
     """Baris debit tagihan PER-BARIS (diangkat APA ADANYA dari BillsService._emit_bill_debit_lines; SATU fungsi untuk posting & pratinjau):
     goods+track -> Persediaan; service -> COGS_SERVICE; lainnya -> products.purchase_account_id bila ada, else COGS_SALES. Peran tak
@@ -175,9 +184,8 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
     from .inventory_helpers import resolve_inventory_accounts
     if await tagihan_pembuka(conn, tid, bill_id):  # SALDO-AWAL-VENDOR-A: default_inv_acct_id = Modal Saldo Awal (blok_posting)
         return [(default_inv_acct_id, subtotal_dec, SALDO_AWAL)] if subtotal_dec != NOL else []
-    rows = await conn.fetch(
-        "SELECT bi.id, bi.product_id, COALESCE(bi.total, 0) AS net, p.item_type, p.track_inventory, p.purchase_account_id "
-        "FROM bill_items bi LEFT JOIN products p ON p.id = bi.product_id WHERE bi.bill_id = $1 ORDER BY bi.line_number", bill_id)
+    rows = await conn.fetch(SQL_BARIS_DEBIT, bill_id)
+    nilai = neto_baris(rows, subtotal_dec)  # HPP-NETO: neto baris + porsi diskon kepala/tunai (== kartu stok FPB)
     # GRN (rencana_grn): baris ber-GRN -> Dr GRNI nilai terima + selisih harga ke PPV (debit +, kredit -), BUKAN Persediaan; grn None = lama.
     rencana_grn_, akun_grn = (grn or {}).get("rencana") or {}, (grn or {}).get("akun") or {}
     tot, is_inv, urut = {}, {}, []
@@ -190,12 +198,12 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
         tot[aid] += amt
 
     for dr in rows:
-        net = Decimal(str(dr["net"] or 0))
+        net = nilai[dr["id"]]
         pid = dr["product_id"]
         if dr["id"] in rencana_grn_:
             b = rencana_grn_[dr["id"]]
             _acc(akun_grn["grni"], b["nilai_grni"] + b.get("nilai_tertunda", NOL), True)  # D: bagian belum diterima juga ke GRNI
-            _acc(akun_grn["ppv"], b["selisih"], False)
+            _acc(akun_grn["ppv"], b["selisih"], False)  # rencana_grn sudah memakai neto_baris (Σ GRNI + PPV == nilai baris)
             continue
         if dr["item_type"] == "goods" and dr["track_inventory"]:
             _acc((await resolve_inventory_accounts(conn, tid, pid))["inventory_account_id"], net, True)

@@ -3029,7 +3029,7 @@ class BillsService:
                         # Get bill items with product details
                         bill_items_for_inv = await conn.fetch(
                             """
-                            SELECT bi.product_id, bi.quantity, bi.unit, bi.unit_price, bi.description,
+                            SELECT bi.id, bi.product_id, bi.quantity, bi.unit, bi.unit_price, bi.description,
                                    bi.batch_no, bi.exp_date,
                                    p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                                    p.track_batches
@@ -3049,6 +3049,7 @@ class BillsService:
                             default_warehouse["id"] if default_warehouse else None
                         )
 
+                        nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal_dec)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
                         for inv_item in bill_items_for_inv:
                             # Only process inventory-tracked goods
                             if inv_item["item_type"] != "goods" or not inv_item.get(
@@ -3060,8 +3061,8 @@ class BillsService:
                             # QTY-DASAR R1: kartu stok + WAC dalam satuan DASAR (penentu SATU; blok sudah ditolak sebelum tulis)
                             _qdv2 = await SD.qty_dasar(conn, tenant_id, product_id, inv_item["unit"], inv_item["quantity"], "konversi")
                             quantity = _qdv2["qty_dasar"]
-                            total_cost = Decimal(str(inv_item["quantity"])) * Decimal(str(inv_item["unit_price"]))
-                            unit_cost = SD.biaya_dasar(total_cost, quantity) if _qdv2["faktor"] != SD.SATU else Decimal(str(inv_item["unit_price"]))
+                            total_cost = nilai_inv[inv_item["id"]]
+                            unit_cost = SD.biaya_dasar(total_cost, quantity)
                             # WAC computed by record_inventory_inbound below
                             # (CANONICAL source — milkyhoop-inventory Rule 3,
                             # L09 convergence). Batch resolution runs first so
@@ -3523,6 +3524,7 @@ class BillsService:
                 )
                 warehouse_id = default_warehouse["id"] if default_warehouse else None
 
+                nilai_inv = await TA.nilai_baris(conn, bill_id, subtotal)  # HPP-NETO: biaya kartu == Dr baris jurnal (neto + porsi kepala)
                 for item in bill_items:
                     if item["item_type"] != "goods" or not item.get(
                         "track_inventory", True
@@ -3540,9 +3542,8 @@ class BillsService:
                     _qd3 = await SD.qty_dasar(conn, tenant_id, product_id, transaction_unit_3, transaction_quantity_3, "konversi")
                     base_qty_3, conversion_factor_3 = _qd3["qty_dasar"], _qd3["faktor"]
                     quantity = base_qty_3
-                    unit_cost_raw_3 = Decimal(str(item["unit_price"]))
-                    total_cost = transaction_quantity_3 * unit_cost_raw_3
-                    unit_cost = total_cost / quantity if quantity else unit_cost_raw_3
+                    total_cost = nilai_inv[item["id"]]
+                    unit_cost = SD.biaya_dasar(total_cost, quantity)
                     # WAC + inventory_ledger inbound delegated to CANONICAL
                     # helper below (milkyhoop-inventory Rule 3, L09 convergence).
                     # quantity/unit_cost are already base-unit converted; batch

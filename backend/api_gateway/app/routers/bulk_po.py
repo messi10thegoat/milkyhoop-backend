@@ -71,7 +71,7 @@ async def _blok(conn, ctx, i, aksi: str, alasan: Optional[str], kunci: bool) -> 
     if not po:
         return [TAK_ADA], None
     if aksi == "send":
-        r = PR.rencana_kirim(po)
+        r = await PR.rencana_kirim(conn, tid, po)
     elif aksi == "delete":
         r = PR.rencana_hapus(po)
     else:
