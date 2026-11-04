@@ -9,6 +9,7 @@ import re
 import uuid
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 
 os.environ.setdefault("OPENAI_API_KEY", "sk-boneka-unit-test-tanpa-jaringan")
 
@@ -131,8 +132,9 @@ def _terima(monkeypatch, kon, qty, tgl=date(2026, 10, 22)):
 
 def test_skema_terima_decimal_bukan_float():
     f = PS.ReceiveItemRequest.model_fields["quantity_received"]
-    assert f.annotation is Decimal
+    assert f.annotation == Optional[Decimal] and not f.is_required()  # (A) 4 Nov: absen = sisa - ditolak (penentu), tetap Decimal bukan float
     assert isinstance(PS.ReceiveItemRequest(po_item_id="x", quantity_received="2.5").quantity_received, Decimal)
+    assert PS.ReceiveItemRequest(po_item_id="x").quantity_received is None
 
 
 def test_receive_decimal_tidak_lagi_typeerror_dan_status_benar(monkeypatch):
