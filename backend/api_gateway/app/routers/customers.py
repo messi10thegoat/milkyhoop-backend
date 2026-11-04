@@ -449,11 +449,14 @@ JEJAK_PELANGGAN = [
 
 
 async def saldo_awal_pelanggan(conn, tid: str, customer_id) -> Optional[str]:
-    """Nomor jurnal saldo awal pelanggan yang sudah POSTED (None = belum ada). SATU pemeriksa untuk POST /opening-balance dan aksi
-    detail B2 (saldo_awal boleh / alasan)."""
-    return await conn.fetchval(
-        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING'
-           AND source_id = $2 AND status = 'POSTED'""", tid, str(customer_id))
+    """Nomor saldo awal pelanggan yang masih berlaku (faktur pembuka tak-void, atau jurnal OPENING lama belum dibalik); None = belum ada.
+    SATU pemeriksa untuk POST /opening-balance dan aksi detail B2 (saldo_awal boleh / alasan)."""
+    ada = await conn.fetchval(
+        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2 AND is_opening_balance AND status <> 'void'",
+        tid, customer_id)
+    return ada or await conn.fetchval(  # jurnal lepas OPENING lama (tak masuk sub-ledger piutang) yang belum dibalik
+        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING' AND source_id = $2::text
+           AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", tid, str(customer_id))
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
@@ -1560,16 +1563,6 @@ async def get_customer_credit(request: Request, customer_id: str):
 
 
 KODE_SALDO_AWAL_PELANGGAN_SUDAH_ADA = "SALDO_AWAL_PELANGGAN_SUDAH_ADA"
-
-
-async def saldo_awal_pelanggan(conn, tid: str, customer_id) -> Optional[str]:
-    """Nomor saldo awal pelanggan yang masih berlaku (faktur pembuka tak-void, atau jurnal OPENING lama belum dibalik); None = belum ada."""
-    ada = await conn.fetchval(
-        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2 AND is_opening_balance AND status <> 'void'",
-        tid, customer_id)
-    return ada or await conn.fetchval(  # jurnal lepas OPENING lama (tak masuk sub-ledger piutang) yang belum dibalik
-        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING' AND source_id = $2::text
-           AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", tid, str(customer_id))
 
 
 @router.post("/{customer_id}/opening-balance")
