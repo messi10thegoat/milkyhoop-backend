@@ -133,8 +133,10 @@ def test_posting_menandai_pending_bila_ada_non_stok_perlu_kirim():
     s = _src(SI, "_internal_post_invoice")
     assert "sii.perlu_kirim AND NOT COALESCE(p.track_inventory, false)" in s
     assert "'fulfilled' if _f >= _q else 'partial' if _f > 0 else 'pending'" in s
-    # penanda ditulis SEBELUM UPDATE status faktur (nilai itulah yang disimpan)
-    assert s.index("sii.perlu_kirim AND NOT COALESCE") < s.index("SET status = 'posted'")
+    # penanda ditulis SEBELUM UPDATE status faktur (nilai itulah yang disimpan) -- (b) B0: UPDATE ada di helper ekor _tandai_terposting,
+    # dipanggil TERAKHIR dengan fulfillment_status hasil penanda
+    assert s.index("sii.perlu_kirim AND NOT COALESCE") < s.rindex("await _tandai_terposting(")
+    assert "SET status = 'posted'" in _src(SI, "_tandai_terposting")
 
 
 def test_detail_so_dan_ringkasan_sj_memakai_snapshot():

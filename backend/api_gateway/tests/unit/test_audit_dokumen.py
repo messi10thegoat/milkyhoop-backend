@@ -170,7 +170,7 @@ TITIK = [
     (PO.kirim_po_core, "purchase_order", "sent", "SET status = 'sent'"),
     (PO.batal_po_core, "purchase_order", "cancelled", "SET status = 'cancelled'"),
     (PO.close_purchase_order, "purchase_order", "closed", "SET status = 'closed'"),
-    (SI._internal_post_invoice, "sales_invoice", "posted", "SET status = 'posted'"),
+    (SI._tandai_terposting, "sales_invoice", "posted", "SET status = 'posted'"),  # (b) B0: ekor posting = helper SATU (biasa + pembuka)
 ]
 
 
@@ -198,7 +198,10 @@ def test_pk_posting_satu_penulis_untuk_buat_posted_dan_draf():
 def test_faktur_penjualan_posting_satu_titik_untuk_buat_dan_post():
     src = inspect.getsource(SI)
     assert src.count("await _internal_post_invoice(") == 2  # buat-posted + POST /{id}/post
-    assert inspect.getsource(SI._internal_post_invoice).count("_ad.catat_dokumen(") == 1
+    # (b) B0: catat_dokumen di helper ekor _tandai_terposting, dipanggil _internal_post_invoice tepat 2x (jalur biasa + faktur pembuka)
+    assert inspect.getsource(SI._tandai_terposting).count("_ad.catat_dokumen(") == 1
+    post = inspect.getsource(SI._internal_post_invoice)
+    assert post.count("await _tandai_terposting(") == 2 and "_ad.catat_dokumen(" not in post
     assert src.count('"sales_invoice", "posted"') == 1
 
 
