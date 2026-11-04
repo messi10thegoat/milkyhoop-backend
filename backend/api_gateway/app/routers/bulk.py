@@ -12,16 +12,12 @@ from ..services import bulk_export_beli as BB
 from ..services.bulk_export import SPEC, kolom_tambahan, susun_baris
 from ..services.kode_order import muat_setelan
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 
 AKSI_EXPORT = "export"
 assert AKSI_EXPORT in bulk.AKSI_DIIZINKAN  # rute hanya untuk aksi di daftar putih
-
-
-async def get_pool():
-    from ..services.db_pool import get_db_pool
-    return await get_db_pool()
 
 
 def _ctx(request: Request) -> dict:

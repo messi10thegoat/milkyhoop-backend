@@ -65,6 +65,8 @@ from ..schemas.cheques import (
     ChequeResponse,
 )
 from ..services.resolve_account import resolve_account_id  # Law 27
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -77,28 +79,6 @@ CHEQUES_PAYABLE = "2-10500"  # Giro Diberikan
 AR_ACCOUNT = "1-10300"  # Piutang Usaha
 AP_ACCOUNT = "2-10100"  # Hutang Usaha
 OTHER_INCOME = "4-20100"  # Pendapatan Lain-lain
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def check_period_is_open(conn, tenant_id: str, journal_date: date):

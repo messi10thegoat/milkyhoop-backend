@@ -7,7 +7,6 @@ from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from datetime import date
 from decimal import Decimal
-import asyncpg
 import logging
 import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
@@ -59,18 +58,12 @@ from ..schemas.sales_orders import (
     ShipmentDetail,
     ShipmentItemResponse,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

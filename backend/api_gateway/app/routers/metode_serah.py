@@ -17,15 +17,10 @@ from pydantic import BaseModel, Field
 
 from ..services import pengiriman_serah as S
 from ..services.so_pengiriman import _gudang
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool():
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def _ctx(request: Request) -> dict:

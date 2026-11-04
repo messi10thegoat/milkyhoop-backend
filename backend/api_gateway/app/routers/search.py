@@ -9,20 +9,14 @@ if not permitted. q min 2 chars; statement_timeout 500ms; one request.
 import logging
 from typing import Optional
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from backend.api_gateway.app.dependencies.auth import get_current_user
 from backend.api_gateway.app.services.policy_engine_client import get_policy_engine
+from backend.api_gateway.app.services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    from backend.api_gateway.app.services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 PAT = "'%' || lower(unaccent($2)) || '%'"

@@ -11,7 +11,6 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response, Depends
 from pydantic import BaseModel, Field
 
@@ -39,15 +38,9 @@ from ..schemas.stock_transfers import (
     UpdateStockTransferRequest,
     VoidTransferRequest,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

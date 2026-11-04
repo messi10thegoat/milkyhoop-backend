@@ -9,18 +9,11 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List
 import logging
-import asyncpg
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 class SupplierSuggestion(BaseModel):

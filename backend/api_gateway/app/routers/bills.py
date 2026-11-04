@@ -80,6 +80,8 @@ from ..utils.lampiran_unduh import (
     url_lampiran_dokumen,
     url_unduh_lampiran,
 )
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 # Unit 1b: url lampiran faktur pembelian = path relatif rute download
 # GET /api/bills/{bill_id}/attachments/{attachment_id}/download (stream lewat
@@ -183,13 +185,6 @@ router = APIRouter()
 # Connection pool (initialized on first request)
 
 
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
 # Global accounting facade instance
 _accounting_facade = None
 
@@ -208,21 +203,6 @@ async def get_bills_service() -> BillsService:
     pool = await get_pool()
     facade = await get_accounting_facade() if HAS_ACCOUNTING else None
     return BillsService(pool, accounting_facade=facade)
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================

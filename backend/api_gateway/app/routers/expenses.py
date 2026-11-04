@@ -12,7 +12,6 @@ from uuid import UUID
 from datetime import date
 from decimal import Decimal
 import logging
-import asyncpg
 
 from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -103,6 +102,8 @@ def _exp_lampiran_ke_respons(rows, expense_id) -> list:
 
 import uuid as _uuid_post  # noqa: E402  (dipakai post_expense)
 from types import SimpleNamespace  # noqa: E402
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -144,28 +145,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None):
 
 
 # Connection pool (initialized on first request)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:

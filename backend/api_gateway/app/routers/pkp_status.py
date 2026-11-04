@@ -12,9 +12,9 @@ NPWP/NITKU/identitas e-Faktur tetap di pkp_settings (tetap dijaga penjaga modul)
 """
 import logging
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 
 class PkpStatusUpdate(BaseModel):
     is_pkp: bool
-
-
-async def get_pool() -> asyncpg.Pool:
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def _user(request: Request) -> dict:

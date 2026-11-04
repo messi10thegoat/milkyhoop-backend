@@ -5,7 +5,6 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..schemas.recipes import (
@@ -28,26 +27,10 @@ from ..schemas.recipes import (
     UpdateMenuItemRequest,
     UpdateRecipeRequest,
 )
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================

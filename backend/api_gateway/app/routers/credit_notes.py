@@ -41,7 +41,6 @@ from ..services.pihak_helpers import (
     rupiah,
 )
 import logging
-import asyncpg
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -73,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 # Label layar alasan nota kredit (MASTER 5 Okt): nilai server tetap, FE menampilkan reason_label (sumber: teks_galat).
 from ..services.teks_galat import ALASAN_NK as LABEL_ALASAN_NK  # noqa: E402
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
 
@@ -138,13 +138,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None):
         pool, "credit_notes", CREDIT_NOTES_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _precondition_checked_tenants.add(tenant_id)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

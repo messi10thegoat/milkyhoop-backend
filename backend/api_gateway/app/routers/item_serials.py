@@ -6,7 +6,6 @@ Serial number tracking for individual units.
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
 from ..services.fitur_parkir import fitur_belum_tersedia
 
@@ -32,15 +31,9 @@ from ..schemas.item_serials import (
     TransferSerialResponse,
     WarehouseSerialsResponse,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

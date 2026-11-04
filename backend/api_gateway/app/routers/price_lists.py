@@ -22,6 +22,8 @@ from ..services import harga_jual as HJ
 from ..services import satuan_dasar as SD
 from ..services.galat_berkode import GalatBerkode
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 GAGAL = "Gagal memproses daftar harga."
 TAK_ADA = "Daftar harga tidak ditemukan."
@@ -60,26 +62,6 @@ async def tulis_baris_harga(conn, tid: str, pl_id, item) -> object:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {
-        "tenant_id": tenant_id,
-        "user_id": UUID(user.get("user_id")) if user.get("user_id") else None,
-    }
 
 
 @router.get("/health")

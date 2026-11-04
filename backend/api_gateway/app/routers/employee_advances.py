@@ -25,7 +25,6 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -39,27 +38,13 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
 )
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
+from ..dependencies.user_context import get_user_context_str as get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SEN = Decimal("0.01")
-
-
-async def get_pool() -> asyncpg.Pool:
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    tenant_id = user.get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
 class GrantAdvanceRequest(BaseModel):

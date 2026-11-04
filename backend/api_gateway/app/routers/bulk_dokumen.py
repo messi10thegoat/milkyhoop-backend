@@ -31,6 +31,7 @@ from ..services.bulk_export import SPEC
 from ..services.bulk_export_beli import SPEC_BELI
 from ..utils.tanggal_tenant import tanggal_dokumen
 from . import dokumen as D
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,6 @@ for _a in ("pdf", "share"):
     assert _a in bulk.AKSI_DIIZINKAN  # setiap aksi di berkas ini harus ada di daftar putih
 
 BATAS_WAKTU_PDF = 40.0  # detik; sisa dokumen dilewati (tercatat) bila terlampaui -- tak menggantung sampai batas waktu proxy
-
-
-async def get_pool():
-    from ..services.db_pool import get_db_pool
-    return await get_db_pool()
 
 
 class BulkIdsRequest(BaseModel):

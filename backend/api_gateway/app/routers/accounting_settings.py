@@ -16,19 +16,13 @@ from enum import Enum
 from ..config import settings
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.audit_setelan import catat_audit_setelan, ringkas_perubahan
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 async def get_db_connection():

@@ -9,7 +9,6 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/hapus + nama event (Law 12)
@@ -49,15 +48,9 @@ from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

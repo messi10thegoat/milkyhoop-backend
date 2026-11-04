@@ -21,7 +21,6 @@ from typing import Optional, Literal
 from uuid import UUID
 from datetime import date
 import logging
-import asyncpg
 
 from ..schemas.branches import (
     CreateBranchRequest,
@@ -42,6 +41,8 @@ from ..schemas.branches import (
     BranchResponse,
 )
 from ..services.resolve_account import resolve_account_id
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 # PARKIR (25 Sep 2026, putusan MASTER): enam rute ini menjalankan SQL ber-kolom hantu
@@ -52,28 +53,6 @@ logger = logging.getLogger(__name__)
 PARKIR_CABANG = [Depends(fitur_belum_tersedia_dengan("Fitur cabang belum tersedia."))]
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================

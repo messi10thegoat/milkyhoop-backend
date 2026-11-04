@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from typing import Optional
 from uuid import UUID
 import logging
-import asyncpg
 from datetime import date
 from decimal import Decimal
 
@@ -24,18 +23,12 @@ from ..schemas.ledger import (
     LedgerSummaryResponse,
     TypeSummary,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

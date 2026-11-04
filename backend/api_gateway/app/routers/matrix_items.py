@@ -4,16 +4,10 @@ Matrix Items Router - Parent-Variant Item Management
 import json
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 
 router = APIRouter()
-
-
-async def get_pool():
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

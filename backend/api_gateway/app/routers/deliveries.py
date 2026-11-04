@@ -15,15 +15,10 @@ from fastapi.responses import StreamingResponse
 from ..services.pdf_service import get_pdf_service
 from ..services import pengiriman_serah as _serah
 from ..services.so_riwayat import catat_riwayat
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool():
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

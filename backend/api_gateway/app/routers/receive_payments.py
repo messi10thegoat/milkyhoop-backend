@@ -40,7 +40,6 @@ from typing import Optional, Literal
 from uuid import UUID
 import uuid as uuid_module
 import logging
-import asyncpg
 from datetime import date
 from decimal import Decimal
 
@@ -87,6 +86,7 @@ from ..services.bank_sync import (
     create_bank_transaction_for_journal,
     create_reversal_bank_transaction,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -129,13 +129,6 @@ async def _ensure_receive_payments_role_preconditions(pool, tenant_id=None):
         pool, "receive_payments", RECEIVE_PAYMENTS_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _receive_payments_precondition_checked_tenants.add(tenant_id)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

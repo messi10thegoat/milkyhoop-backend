@@ -9,24 +9,11 @@ from typing import Optional
 from uuid import UUID
 import logging
 
-from ..services.db_pool import get_db_pool
+from ..dependencies.user_context import get_user_context_str as get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool():
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
 # =============================================================================

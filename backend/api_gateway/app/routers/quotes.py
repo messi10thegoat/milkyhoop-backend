@@ -22,7 +22,6 @@ from ..services.sales_doc_calc import (
 from ..services.tax_factor import attach_dpp_factors, effective_shipping_code, resolve_shipping_tax, turunkan_tarif_baris
 from ..services.pkp_guard import tolak_ppn_bila_non_pkp
 from decimal import Decimal, ROUND_HALF_UP
-import asyncpg
 import logging
 import uuid as uuid_module
 
@@ -44,18 +43,12 @@ from ..schemas.quotes import (
     QuoteDetail,
     QuoteItemResponse,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

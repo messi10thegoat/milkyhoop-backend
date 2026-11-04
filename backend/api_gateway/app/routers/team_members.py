@@ -17,10 +17,10 @@ import uuid
 from typing import Optional, List
 from fastapi import APIRouter, Request, Query, HTTPException
 from pydantic import BaseModel
-import asyncpg
 from ..services.nama_pengguna import nama_pengguna
 from ..services.email_service import send_invitation_email, EmailDeliveryUnavailable
 from ..services.tenant_features import fitur_aktif
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/team-members", tags=["team-members"])
@@ -34,13 +34,6 @@ _ACCESS_ACTIONS = {
 
 
 # === DATABASE POOL ===
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 # === SCHEMAS ===

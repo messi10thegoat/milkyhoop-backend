@@ -17,7 +17,6 @@ from backend.api_gateway.app.services.role_resolution import (
     try_resolve_business_role,
 )
 import os
-import asyncpg
 import hashlib
 import secrets
 from fastapi import Depends
@@ -25,6 +24,7 @@ from backend.api_gateway.app.utils.rahasia_jwt import jwt_secret_wajib
 from backend.api_gateway.app.services.fitur_parkir import fitur_belum_tersedia
 from datetime import datetime, timedelta
 from backend.api_gateway.libs.milkyhoop_prisma import Prisma
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -77,13 +77,6 @@ class AuthResponse(BaseModel):
 # =====================================================
 # DB POOL FOR TENANT QUERIES
 # =====================================================
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 class SwitchTenantRequest(BaseModel):

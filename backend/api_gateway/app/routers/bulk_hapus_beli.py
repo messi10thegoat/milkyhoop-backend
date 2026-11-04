@@ -26,13 +26,9 @@ from ..services.po_daftar import po_terkait_bill
 from . import bill_payments as RBP
 from . import vendor_credits as RVC
 from . import vendor_deposits as RVD
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
-
-
-async def get_pool():
-    from ..services.db_pool import get_db_pool
-    return await get_db_pool()
 
 
 def _ctx(request: Request) -> dict:

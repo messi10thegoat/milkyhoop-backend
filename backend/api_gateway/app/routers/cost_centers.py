@@ -8,7 +8,6 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..schemas.cost_centers import (
@@ -24,17 +23,11 @@ from ..schemas.cost_centers import (
     CostCenterTransactionItem,
     CostCenterTransactionsResponse,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

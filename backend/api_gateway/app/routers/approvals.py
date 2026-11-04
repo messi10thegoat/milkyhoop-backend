@@ -40,7 +40,6 @@ from typing import Optional, Literal
 from uuid import UUID
 import json
 import logging
-import asyncpg
 from datetime import date, datetime
 
 from ..schemas.approvals import (
@@ -64,6 +63,7 @@ from ..schemas.approvals import (
 
 logger = logging.getLogger(__name__)
 from ..services.role_resolution import require_active_membership
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 # Sisa audit izin usul D (26 Sep 2026): POST .../cancel = WRITE_EXEMPT (pengaju
 # belum tentu punya approval_inbox), jadi PermissionMiddleware TIDAK memeriksa
@@ -73,13 +73,6 @@ from ..services.role_resolution import require_active_membership
 router = APIRouter(dependencies=[Depends(require_active_membership)])
 
 # Connection pool
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 _STATUS_APPROVAL = ("pending", "approved", "rejected", "cancelled")

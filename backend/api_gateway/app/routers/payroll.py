@@ -48,7 +48,6 @@ from typing import Optional, Literal, List
 from uuid import UUID
 import uuid as uuid_module
 import logging
-import asyncpg
 from datetime import date, datetime
 from decimal import Decimal
 import json
@@ -58,6 +57,7 @@ from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payroll", tags=["payroll"])
@@ -100,13 +100,6 @@ async def _ensure_payroll_role_preconditions(pool, tenant_id=None):
         pool, "payroll", PAYROLL_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _payroll_precondition_checked_tenants.add(tenant_id)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

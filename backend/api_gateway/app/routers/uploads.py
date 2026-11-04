@@ -18,19 +18,7 @@ yang berkunci sendiri). Jalur baru yang menghapus objek dokumen WAJIB menghitung
 import hashlib
 import logging
 from fastapi import APIRouter, Request, UploadFile, File, HTTPException
-from uuid import UUID as _UUID
-
-def get_user_context(request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-    if not tenant_id:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": _UUID(user_id) if user_id else None}
+from ..dependencies.user_context import get_user_context
 from ..services.db_pool import get_db_pool as get_session_db_pool
 from ..services.storage_service import get_storage_service
 from ..utils.chat_file_path import kunci_unggahan, simpan_objek_unggahan, url_berkas

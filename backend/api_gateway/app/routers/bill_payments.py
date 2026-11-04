@@ -19,7 +19,6 @@ from ..services import bayar_keluar_rencana as BKR
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal pembayaran = nomor PK
 import uuid as uuid_module
 import logging
-import asyncpg
 from datetime import date
 from decimal import Decimal
 from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP
@@ -52,6 +51,8 @@ from ..utils.idempotency import (  # Law 14 (kunci HANYA dari klien sejak 22 Okt
     kunci_idempotensi_klien,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 # Fase D2-wrap B: PURCHASE_DISCOUNT + AP_PREPAID now resolved at runtime via
 # role mapping (V156). Legacy hardcoded literals removed.
@@ -94,24 +95,6 @@ async def _ensure_bill_payments_role_preconditions(pool, tenant_id=None):
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 def validate_uuid(value: str, field_name: str = "id") -> UUID:

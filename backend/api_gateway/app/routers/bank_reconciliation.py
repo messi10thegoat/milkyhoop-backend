@@ -32,7 +32,6 @@ from pydantic import BaseModel
 from typing import Optional, Literal
 from uuid import UUID
 import logging
-import asyncpg
 from datetime import date, datetime
 import uuid
 import json
@@ -69,16 +68,10 @@ from ..schemas.bank_reconciliation import (
     TransactionItem,
     MatchSuggestion,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

@@ -12,7 +12,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Literal
 import logging
-import asyncpg
 from datetime import datetime, date
 from calendar import monthrange
 import uuid
@@ -45,19 +44,13 @@ from ..schemas.accounting_settings import (
     UnpaidInvoiceItem,
     UnpaidBillItem,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool for AccountingFacade (initialized on first request)
 _facade: Optional[AccountingFacade] = None
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 async def get_facade() -> AccountingFacade:

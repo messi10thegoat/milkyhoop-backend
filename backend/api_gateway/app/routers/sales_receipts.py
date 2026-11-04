@@ -9,7 +9,6 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..services import teks_galat as tg
@@ -37,6 +36,7 @@ from ..services.role_resolver import (
 )
 from ..services.pkp_guard import PESAN_NON_PKP, tolak_ppn_bila_non_pkp
 from ..services.role_precondition import assert_required_roles_for_path
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 # Fase C1.2: required role mappings for sales_receipts posting path
 # (cash sale, NOT AR settlement — no AR_TRADE).
@@ -93,13 +93,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None):
 
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

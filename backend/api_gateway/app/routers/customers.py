@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from uuid import UUID
 import logging
-import asyncpg
 
 from ..services.termin_bayar import termin_hari
 from ..services.pelanggan_unik import tolak_nama_dipakai, tolak_nomor_dipakai
@@ -35,18 +34,13 @@ from ..services.role_resolver import (
     resolve_account_id_by_role,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 # Fase C1.6: required role mappings for customers.py per-customer
@@ -87,21 +81,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
         pool, "customers", CUSTOMERS_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _precondition_checked_tenants.add(tenant_id)
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 # =============================================================================

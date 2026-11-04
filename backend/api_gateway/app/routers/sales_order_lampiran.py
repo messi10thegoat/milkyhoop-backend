@@ -49,6 +49,7 @@ from ..attachment_limits import (
 from ..services.storage_service import get_storage_service
 from ..utils.chat_file_path import kunci_unggahan, simpan_objek_unggahan
 from ..utils.lampiran_unduh import stream_lampiran, url_unduh_lampiran
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,13 +60,6 @@ PENANDA_LAMPIRAN_SO = "lampiran-so-l1-kuota-dalam-txn"
 _MODUL_URL = "sales-orders"
 _ENTITAS = "sales_order"
 _SUBDIR = "lampiran"
-
-
-async def get_pool():
-    """Singleton pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def _ctx(request: Request) -> dict:

@@ -35,6 +35,7 @@ from ..attachment_limits import (
 from ..services.storage_service import get_storage_service
 from ..utils.chat_file_path import kunci_unggahan, simpan_objek_unggahan
 from ..utils.lampiran_unduh import stream_lampiran, url_unduh_lampiran
+from ..services.db_pool import get_db_pool as get_pool  # noqa: F401 -- dibaca dinamis via getattr(sys.modules[...], "get_pool") (Law 32)
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +45,6 @@ PENANDA_LAMPIRAN_SJ = "lampiran-sj-serah-kuota-dalam-txn"
 _MODUL_URL = "deliveries"
 _ENTITAS = "delivery"
 _SUBDIR = "lampiran"
-
-
-async def get_pool():
-    """Singleton pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def _ctx(request: Request) -> dict:

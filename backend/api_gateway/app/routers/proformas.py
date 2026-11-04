@@ -21,7 +21,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
 from typing import Literal, Optional
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -36,6 +35,7 @@ from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempote
 from fastapi.responses import StreamingResponse
 from fastapi import Response as _Response
 from pydantic import BaseModel, Field
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +74,6 @@ def _normalisasi_purpose(nilai):
     if nilai is None:
         return None
     return str(nilai).strip().upper()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

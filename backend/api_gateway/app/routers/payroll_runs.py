@@ -9,7 +9,6 @@ from typing import Optional
 from uuid import UUID
 from decimal import Decimal
 import logging
-import asyncpg
 
 from ..services import teks_galat as tg
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -27,6 +26,8 @@ from ..services.payroll_calc import (
 )
 from ..services.role_resolver import AccountRole, resolve_account_id_by_role, AccountRoleUnmappedError
 from ..services.pay_group_access import get_accessible_pay_group_ids, get_user_role_code, run_dalam_cakupan
+from ..dependencies.user_context import get_user_context_str as get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,13 +81,6 @@ def unmapped_deduction_categories(categories) -> list:
     return out
 
 
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
 async def _resolve_wage_account(conn, tenant_id, role_key, default_role="SALARY_EXPENSE"):
     """Resolve a component's earning destination CoA by ROLE (Law 27, V286). NULL/unknown/unmapped
     role -> the SALARY_EXPENSE default -- NEVER raise, so an unconfigured tenant's run is never blocked."""
@@ -95,16 +89,6 @@ async def _resolve_wage_account(conn, tenant_id, role_key, default_role="SALARY_
         return await resolve_account_id_by_role(conn, tenant_id, rk)
     except Exception:
         return await resolve_account_id_by_role(conn, tenant_id, default_role)
-
-
-def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-    return {"tenant_id": tenant_id, "user_id": user.get("user_id")}
 
 
 async def _pg_filter(conn, ctx):

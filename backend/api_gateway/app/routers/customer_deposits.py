@@ -91,6 +91,7 @@ from ..services.bank_sync import (
     create_reversal_bank_transaction,
 )
 from ..services.storage_service import get_storage_service
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +154,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None) -> None:
         pool, "customer_deposits", CUSTOMER_DEPOSITS_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _precondition_checked_tenants.add(tenant_id)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

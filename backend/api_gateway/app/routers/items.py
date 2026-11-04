@@ -71,6 +71,7 @@ from ..services.role_resolver import (
     AccountRoleUnmappedError,
     resolve_account_id_by_role,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -150,13 +151,6 @@ async def _auto_default_product_accounts(
 
 
 # Connection pool for newer endpoints
-
-
-async def get_pool():
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 # 11 Okt 2026 (MASTER): nama barang ganda (sesama barang belum dihapus, V402 idx_products_tenant_nama) -> 409 berkode.

@@ -64,6 +64,7 @@ from ..services.sales_doc_calc import (
     harga_json as _harga_json, warisi_jumlah_baris as _warisi_jb,
 )
 from ..services.tax_factor import attach_dpp_factors, resolve_shipping_tax, effective_shipping_code
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 # Fase C1.1: required role mappings for sales_invoices posting path.
 # VAT_OUTPUT is interim-mapped to 2-10300 (Hutang Pajak); see
@@ -109,13 +110,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool (initialized on first request)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

@@ -6,7 +6,6 @@ File attachment management with S3/MinIO storage.
 from typing import List, Optional
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -56,16 +55,10 @@ from ..utils.lampiran_unduh import (  # noqa: E402
     sajian_lampiran,
     stream_lampiran,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 MAX_FILE_SIZE = ATTACHMENT_MAX_BYTES  # alias untuk referensi lain (storage-usage dsb.)
 ALLOWED_CONTENT_TYPES = ATTACHMENT_ALLOWED_TYPES
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

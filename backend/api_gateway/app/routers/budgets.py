@@ -7,7 +7,6 @@ NO journal entries - budgets are planning data only.
 from typing import Optional, List
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from ..schemas.budgets import (
@@ -26,15 +25,9 @@ from ..schemas.budgets import (
     BudgetSummaryResponse,
     BudgetStatus,
 )
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 router = APIRouter()
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:

@@ -28,7 +28,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from uuid import UUID
 import logging
-import asyncpg
 from datetime import date
 from decimal import Decimal
 from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP (simetri NK)
@@ -63,6 +62,8 @@ from ..services.role_resolver import (
     PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
+from ..dependencies.user_context import get_user_context
+from ..services.db_pool import get_db_pool as get_pool  # singleton pool (Law 32)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -103,28 +104,6 @@ async def _ensure_role_preconditions(pool, tenant_id=None):
         pool, "vendor_credits", VENDOR_CREDIT_REQUIRED_ROLES, tenant_id=tenant_id
     )
     _precondition_checked_tenants.add(tenant_id)
-
-
-async def get_pool() -> asyncpg.Pool:
-    """Get singleton connection pool (Law 32)."""
-    from ..services.db_pool import get_db_pool
-
-    return await get_db_pool()
-
-
-def get_user_context(request: Request) -> dict:
-    """Extract and validate user context from request."""
-    if not hasattr(request.state, "user") or not request.state.user:
-        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-
-    user = request.state.user
-    tenant_id = user.get("tenant_id")
-    user_id = user.get("user_id")
-
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
-
-    return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
 async def get_bill_remaining_from_journal(conn, tenant_id: str, bill_id) -> Decimal:
