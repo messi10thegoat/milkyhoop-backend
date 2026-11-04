@@ -168,9 +168,12 @@ def test_receive_tanggal_masa_depan_dan_sebelum_po_ditolak(monkeypatch):
 
 
 def test_receive_po_dan_baris_dikunci_for_update():
+    # TERIMA-TABEL retarget (b), putusan MASTER 4 Nov: penentu = satu-satunya penjaga -> baris PO dikunci DI PENENTU
+    # (rencana_terima kunci=True, dipanggil sesudah PO FOR UPDATE); qty Decimal dari penentu (_d), bukan recv_item
     src = inspect.getsource(PO.receive_goods)
-    assert len(re.findall(r"\n\s+FOR UPDATE\n", src)) == 2   # PO + baris
-    assert "Decimal(str(recv_item.quantity_received))" in src and "float(" not in src
+    assert len(re.findall(r"\n\s+FOR UPDATE\n", src)) == 1   # PO
+    assert "PR.rencana_terima(conn, po, body.receive_date" in src and "kunci=False" not in src.split("PR.rencana_terima(", 1)[1].split(")", 1)[0]
+    assert '" FOR UPDATE" if kunci else ""' in inspect.getsource(PO.PR.rencana_terima) and "float(" not in src
 
 
 def test_kontrol_merah_kode_lama_memang_typeerror():
