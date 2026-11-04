@@ -60,11 +60,11 @@ async def neto_tagihan_terposting(conn, tid: str, bill_ids) -> dict:
     kunci PO). Tagihan draf / void / bukan milik tenant -> dilewati (tak ada di hasil)."""
     out, kena = {}, None
     for b in await conn.fetch(
-            """SELECT id, grand_total, tax_amount FROM bills
+            """SELECT id, grand_total, tax_amount, pembulatan FROM bills
                WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND status_v2 NOT IN ('draft', 'void')""", tid, list(bill_ids)):
         if kena is None and Decimal(str(b["tax_amount"] or 0)) > NOL:
             kena = not await tenant_pkp(conn, tid)
-        dasar, kapital = dasar_tagihan(b["grand_total"], b["tax_amount"], None if kena else True)
+        dasar, kapital = dasar_tagihan(b["grand_total"], b["tax_amount"], None if kena else True, b["pembulatan"])
         out.update(neto_baris(bobot(await conn.fetch(SQL_BARIS_DEBIT, b["id"]), kapital), dasar))
     return out
 
@@ -169,13 +169,42 @@ async def akun_beban_default(conn, tid: str, item_type) -> object:
     return acct
 
 
-def dasar_tagihan(grand_total, pajak, vat) -> tuple:
+def dasar_tagihan(grand_total, pajak, vat, pembulatan=0) -> tuple:
     """(dasar debit, kapital) -- SATU penentu PPN masukan tagihan. PKP (vat = akun PPN Masukan): dasar = grand_total - pajak, PPN baris
     sendiri. Non-PKP berpajak (vat None; putusan pemilik 4 Nov 2026, pola Accurate): PPN tak bisa dikreditkan -> DIKAPITALISASI: dasar =
-    grand_total, tanpa Dr PPN Masukan, dibagi ke baris (bobot neto + pajak baris) -> Persediaan/beban + kartu = harga + PPN."""
-    g, p = Decimal(str(grand_total or 0)), Decimal(str(pajak or 0))
+    grand_total, tanpa Dr PPN Masukan, dibagi ke baris (bobot neto + pajak baris) -> Persediaan/beban + kartu = harga + PPN.
+    pembulatan (V479 c-2): grand_total BULAT - total mentah -> dikeluarkan dari dasar (kartu / HPP = nilai baris asli)."""
+    g, p = Decimal(str(grand_total or 0)) - Decimal(str(pembulatan or 0)), Decimal(str(pajak or 0))
     kapital = p > NOL and vat is None
     return (g if kapital else g - p), kapital
+
+
+PESAN_AKUN_PEMBULATAN = "Akun pembulatan pembelian belum diatur. Atur di Pengaturan -> Akun Default."
+
+
+async def pembulatan_dokumen(conn, tid: str, total_mentah) -> dict:
+    """SATU penentu pembulatan dokumen PEMBELIAN (c-2, putusan pemilik LANGSUNG 5 Nov 2026, pola Accurate): tagihan + nota debit, posting
+    == pratinjau. TOTAL dibulatkan ke presisi tenant (uang_presisi.pembulatan), selisih ke peran PURCHASE_ROUNDING; akun tak terpetakan
+    hanya memblok bila selisih != 0. -> {total, selisih, akun, blok}."""
+    from . import uang_presisi as UP
+    from .role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
+    total, selisih = UP.pembulatan(total_mentah, await UP.presisi_tenant(conn, tid))
+    akun, b = None, None
+    if selisih != NOL:
+        try:
+            akun = await resolve_account_id_by_role(conn, tid, AccountRole.PURCHASE_ROUNDING)
+        except AccountRoleUnmappedError:
+            b = blok("AKUN_PEMBULATAN_HILANG", PESAN_AKUN_PEMBULATAN)
+    return {"total": total, "selisih": selisih, "akun": akun, "blok": b}
+
+
+def baris_pembulatan(p: dict, arah: int) -> Optional[dict]:
+    """Baris jurnal pembulatan. arah +1 = tagihan (Cr Hutang = total bulat: dibulatkan NAIK -> Dr pembulatan), -1 = nota debit
+    (Dr Hutang = total bulat: NAIK -> Cr pembulatan). Selisih 0 -> None."""
+    v = p["selisih"] * arah
+    if v == NOL:
+        return None
+    return {"account_id": p["akun"], "debit": v if v > NOL else NOL, "credit": -v if v < NOL else NOL, "memo": "Pembulatan"}
 
 
 def bobot(rows, kapital: bool) -> list:
@@ -276,6 +305,9 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
     if Decimal(str(bill["tax_amount"] or 0)) > 0:
         vat = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT)  # None = non-PKP: PPN dikapitalisasi (dasar_tagihan)
     bloks += DN.blok_faktur_nol("bill", bill["grand_total"])  # SI-FPB-RP0: == create_bill_v2 posted (fungsi tolak sama)
+    bulat = await pembulatan_dokumen(conn, tid, bill["grand_total"])  # c-2: draf = total mentah; posting membulatkan
+    if bulat["blok"]:
+        bloks.append(bulat["blok"])
     # QTY-DASAR R1: baris BER-STOK (goods + track_inventory, == loop stok post_bill) wajib bersatuan dasar atau berkonversi
     from . import satuan_dasar as SD
     stok = [] if awal else await conn.fetch(  # tagihan pembuka saldo awal: debit Modal, tanpa gerak stok -> tak membaca baris produk
@@ -286,7 +318,7 @@ async def blok_posting(conn, tid: str, bill) -> tuple:
         bloks.append(blok("AKUN_AP_HILANG", "Akun AP_TRADE tidak ter-resolve"))
     if not debit:
         bloks.append(blok("AKUN_DEBIT_HILANG", f"Akun debit ({debit_role} / INVENTORY_MERCHANDISE) tidak ter-resolve"))
-    return bloks, {"ap": ap, "debit": debit, "vat": vat, "debit_role": debit_role}
+    return bloks, {"ap": ap, "debit": debit, "vat": vat, "debit_role": debit_role, "bulat": bulat}
 
 
 async def rencana_posting(conn, tid: str, bill_id) -> Optional[dict]:
@@ -299,9 +331,9 @@ async def rencana_posting(conn, tid: str, bill_id) -> Optional[dict]:
     if not b:
         return None
     bloks, akun = await blok_posting(conn, tid, b)
-    total = Decimal(str(b["grand_total"] or 0))
+    total = akun["bulat"]["total"]
     pajak = Decimal(str(b["tax_amount"] or 0))
-    dasar, kapital = dasar_tagihan(total, pajak, akun["vat"])
+    dasar, kapital = dasar_tagihan(total, pajak, akun["vat"], akun["bulat"]["selisih"])
     grn = await rencana_grn(conn, tid, b["id"], dasar, kapital=kapital)  # GRN: penentu SAMA dgn post_bill (tanpa kunci); flag mati -> kosong
     bloks += grn["blocks"]
     baris = []
@@ -315,6 +347,8 @@ async def rencana_posting(conn, tid: str, bill_id) -> Optional[dict]:
             bloks.append(blok(d.get("code", "ACCOUNT_DEFAULT_UNMAPPED"), d.get("message", "")))
     if pajak > 0 and akun["vat"]:
         baris.append({"account_id": akun["vat"], "debit": pajak, "credit": NOL, "memo": "PPN Masukan"})
+    if akun["bulat"]["akun"] and baris_pembulatan(akun["bulat"], 1):
+        baris.append(baris_pembulatan(akun["bulat"], 1))
     if akun["ap"]:
         baris.append({"account_id": akun["ap"], "debit": NOL, "credit": total, "memo": f"Hutang ke {b['vendor_name']}"})
     return {"bill": b, "blocks": bloks, "baris": await _bernama(conn, tid, baris), "grand_total": total, "tax_amount": pajak}

@@ -949,9 +949,11 @@ async def preview_create_vendor_credit(request: Request, body: VendorCreditPrevi
                 s = await _susun_nd(conn, ctx, badan, bl) if badan is not None else None
                 if s is not None and rakit is not None and rakit["penuh"] and not bl.daftar:
                     jumlah_tagihan = Decimal(str(rakit["tagihan"]["amount"]))
-                    if _q2(s["total_amount"]) != _q2(jumlah_tagihan):  # MASTER (a): ND penuh == tagihan PERSIS, selisih = blok, bukan catatan
+                    from ..services import tagihan_aksi as _ta
+                    _nd_bulat = (await _ta.pembulatan_dokumen(conn, tid, s["total_amount"]))["total"]  # c-2: dibandingkan nilai BULAT
+                    if _q2(_nd_bulat) != _q2(jumlah_tagihan):  # MASTER (a): ND penuh == tagihan PERSIS, selisih = blok, bukan catatan
                         bl.galat("ND_TOTAL_BEDA_TAGIHAN", 400, {"code": "ND_TOTAL_BEDA_TAGIHAN", "message": (
-                            f"Nota debit penuh {_q2(s['total_amount']):,.2f} tidak sama dengan faktur pembelian {_q2(jumlah_tagihan):,.2f}; "
+                            f"Nota debit penuh {_q2(_nd_bulat):,.2f} tidak sama dengan faktur pembelian {_q2(jumlah_tagihan):,.2f}; "
                             "belum didukung.")})
                 nomor, r = None, {}
                 if s is not None and not bl.daftar:
@@ -1342,6 +1344,12 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                 total_amount = vc["total_amount"]
                 tax_amount = vc["tax_amount"] or 0
                 subtotal = total_amount - tax_amount
+                # c-2 (V479): baris dari penentu SATU (Dr Hutang total BULAT + pembulatan); header = Σ debit (Law 4)
+                _baris_nd = await NDR.baris_posting_nd(conn, ctx["tenant_id"], vc, ap_account_id, purchase_return_account_id, potongan)
+                total_amount = sum((Decimal(str(b[1])) for b in _baris_nd), Decimal("0"))
+                if _r["bulat"]["selisih"] != 0:
+                    await conn.execute("UPDATE vendor_credits SET total_amount = $1, pembulatan = $2 WHERE id = $3 AND tenant_id = $4",
+                                       _r["bulat"]["total"], _r["bulat"]["selisih"], vendor_credit_id, ctx["tenant_id"])
 
                 # Law 20: Create journal entry as DRAFT (Law 25: no float())
                 await conn.execute(
@@ -1364,8 +1372,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
 
                 # Baris = NDR.baris_posting_nd (SATU sumber dgn pratinjau; Law 25: Decimal langsung): Dr Hutang · Cr Retur/Diskon · Cr PPN Masukan
                 tax_jl_id = None
-                for line_number, (_akun, _d, _k, _memo, _peran) in enumerate(
-                        await NDR.baris_posting_nd(conn, ctx["tenant_id"], vc, ap_account_id, purchase_return_account_id, potongan), 1):
+                for line_number, (_akun, _d, _k, _memo, _peran) in enumerate(_baris_nd, 1):
                     _jl = uuid_module.uuid4()
                     if _peran == "pajak":
                         tax_jl_id = _jl
@@ -1840,7 +1847,7 @@ async def void_vendor_credit(
                         TJ.nd_batal(vc['credit_number'], vc['vendor_name']),
                         vendor_credit_id,
                         vc["journal_id"],
-                        vc["total_amount"],
+                        sum((Decimal(str(x["debit"])) for x in original_lines), Decimal("0")),  # c-2: == Σ baris asli (pembulatan ikut)
                         ctx["user_id"],
                         hari_ini,  # t10-tanggal-bisnis
                     )

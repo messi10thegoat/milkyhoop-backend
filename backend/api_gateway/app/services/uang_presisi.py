@@ -18,6 +18,14 @@ def bulat(v, presisi: int = 2) -> Decimal:
     return x.quantize(_SATUAN[presisi], rounding=ROUND_HALF_UP)
 
 
+def pembulatan(total, presisi: int) -> tuple:
+    """Dokumen PEMBELIAN (putusan pemilik LANGSUNG 5 Nov 2026, pola Accurate): baris tetap bersen, TOTAL dibulatkan ke presisi tenant,
+    selisih dijurnal ke akun PURCHASE_ROUNDING. -> (total_bulat, selisih = total_bulat - total). presisi 2 -> selisih 0."""
+    t = bulat(total, 2)
+    b = bulat(t, presisi)
+    return b, b - t
+
+
 async def presisi_tenant(conn, tid: str) -> int:
     """0 bawaan; 2 bila flag uang_bersen aktif (pembaca flag tunggal)."""
     from .tenant_features import fitur_aktif
