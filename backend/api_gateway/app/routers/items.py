@@ -1277,6 +1277,12 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
 
             # Update conversions if provided
             if body.conversions is not None:
+                # P1 (putusan pemilik 5 Nov): konversi aktif yang hilang / berubah faktor DAN sudah terpakai transaksi -> 409
+                from ..services import satuan_dasar as _SDK
+                await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
+                    """SELECT conversion_unit, conversion_factor FROM unit_conversions
+                       WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),
+                    [(c.conversion_unit, c.conversion_factor) for c in body.conversions if c.is_active is not False])
                 # Deactivate all existing conversions
                 await conn.execute(
                     "UPDATE unit_conversions SET is_active = false WHERE product_id = $1 AND tenant_id = $2",

@@ -159,6 +159,11 @@ def periode_tertutup(nama, status) -> str:
     return f"{awal} sudah {kata}. Buka kembali di Akuntansi › Tutup Buku, atau ubah tanggalnya."
 
 
+def konversi_terpakai(satuan) -> str:
+    """P1 (pola NetSuite): konversi yang sudah dipakai transaksi tak boleh diubah / dihapus."""
+    return f"Konversi {satuan} sudah dipakai transaksi. Buat satuan baru."
+
+
 def satuan_tak_terkonversi(satuan, nama, dasar) -> str:
     """QTY-DASAR: satuan dokumen tanpa konversi ke satuan dasar barang (dulu dianggap 1:1 diam -> stok & HPP salah)."""
     return f"Satuan {satuan} untuk {nama} belum punya konversi ke {dasar}. Atur konversinya di Barang › Satuan."

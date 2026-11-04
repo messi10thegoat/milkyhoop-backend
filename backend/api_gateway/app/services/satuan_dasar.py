@@ -121,3 +121,37 @@ def biaya_dasar(nilai, qty_dasar_) -> Decimal:
     """Biaya per satuan dasar = nilai baris / qty dasar (presisi penuh; pola posting FPB). qty 0 -> 0."""
     q = Decimal(str(qty_dasar_ or 0))
     return Decimal(str(nilai or 0)) / q if q else Decimal("0")
+
+
+# ------------------------------------------------------------------ P1: konversi TERKUNCI sesudah dipakai (putusan pemilik LANGSUNG 5 Nov,
+# pola NetSuite Units of Measure): faktor tak dibekukan di baris dokumen -> konversi yang SUDAH muncul di transaksi (baris dokumen atau
+# kartu stok) tak boleh diubah faktornya, diganti satuannya, atau dinonaktifkan; harga beli/jual konversi tetap boleh. Buat satuan baru.
+KODE_KONVERSI_TERPAKAI = "KONVERSI_TERPAKAI"
+# (tabel baris dokumen, kolom barang) yang menyimpan satuan transaksi (information_schema prod 5 Nov; daftar harga bukan transaksi)
+BARIS_BERSATUAN = (("bill_items", "product_id"), ("purchase_order_items", "item_id"), ("quote_items", "item_id"),
+                   ("sales_order_items", "item_id"), ("sales_invoice_items", "item_id"), ("sales_receipt_items", "item_id"),
+                   ("credit_note_items", "item_id"), ("vendor_credit_items", "item_id"), ("stock_adjustment_items", "product_id"),
+                   ("stock_transfer_items", "item_id"))
+_NORM_SQL = "regexp_replace(lower(btrim({k})), '\\s+', ' ', 'g')"
+SQL_KONVERSI_TERPAKAI = "SELECT EXISTS (" + " UNION ALL ".join(
+    [f"SELECT 1 FROM {t} WHERE {k} = $1 AND {_NORM_SQL.format(k='unit')} = ANY($3::text[])" for t, k in BARIS_BERSATUAN]
+    + [f"SELECT 1 FROM inventory_ledger WHERE tenant_id = $2 AND product_id = $1 AND {_NORM_SQL.format(k='transaction_unit')} = ANY($3::text[])"]) + ")"
+
+
+async def konversi_terpakai(conn, tid: str, product_id, satuan: Optional[str]) -> bool:
+    """Satuan (dengan semua aliasnya di kamus tenant) sudah dipakai transaksi barang ini? Pemanggil sudah memastikan barang milik tenant."""
+    alias = await _alias(conn, tid)
+    k = kanon(satuan, alias)
+    bentuk = sorted({normal(satuan), k} | {x for x, v in alias.items() if v == k} - {""})
+    return bool(bentuk) and bool(await conn.fetchval(SQL_KONVERSI_TERPAKAI, product_id, tid, bentuk))
+
+
+async def tolak_ubah_konversi(conn, tid: str, product_id, lama: list, baru: Optional[list]) -> None:
+    """lama = konversi AKTIF sekarang [{conversion_unit, conversion_factor}]; baru = yang akan aktif [(satuan, faktor)] (None = semua
+    dinonaktifkan/dihapus). Konversi lama yang hilang / berubah faktor DAN sudah terpakai -> GalatBerkode 409 KONVERSI_TERPAKAI."""
+    tetap = {(normal(u), Decimal(str(f))) for u, f in (baru or [])}
+    for r in lama:
+        if (normal(r["conversion_unit"]), Decimal(str(r["conversion_factor"]))) in tetap:
+            continue
+        if await konversi_terpakai(conn, tid, product_id, r["conversion_unit"]):
+            raise GalatBerkode(409, KODE_KONVERSI_TERPAKAI, tg.konversi_terpakai(r["conversion_unit"]))
