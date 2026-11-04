@@ -116,3 +116,35 @@ def test_logo_rapat_pangkas_pinggiran_polos():
     # cetak massal: hasil pangkas di-cache per proses (kunci = data URI = isi gambar), PIL tak dijalankan ulang
     sebelum = PS.logo_rapat.cache_info().hits
     assert PS.logo_rapat(uri) is hasil and PS.logo_rapat.cache_info().hits == sebelum + 1
+
+
+def _logo_berpadding():
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (295, 295), "white"); ImageDraw.Draw(im).rectangle([16, 88, 279, 207], fill="black")
+    b = io.BytesIO(); im.save(b, "PNG"); return "data:image/png;base64," + base64.b64encode(b.getvalue()).decode()
+
+
+def _kotak_logo(r):
+    fc = FontConfiguration()
+    d = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
+
+    def cari(b):
+        for c in getattr(b, "children", None) or []:
+            if getattr(c, "element_tag", None) == "img":
+                return c
+            x = cari(c)
+            if x:
+                return x
+    img = cari(d.pages[0]._page_box)
+    return (round(img.width, 1), round(img.height, 1))
+
+
+def test_kotak_logo_keluarga_penjualan_sama_untuk_logo_sama():
+    """Logo ber-padding (grapgrap) -> kotak logo SI == Nota Kredit == Proforma (semuanya lewat logo_rapat; tinjauan MASTER 4 Nov 2026)."""
+    lg, s = _logo_berpadding(), PS.get_pdf_service()
+    si = _kotak_logo(s.render_sales_invoice({"invoice_number": "INV-1", "status": "posted", "tenant": {"name": "U", "logo_data": lg},
+                                             "customer": {"name": "A"}, "items": [], "subtotal": 0, "total_amount": 0, "amount_due": 0}))
+    nk = _kotak_logo(s.render_credit_note({"credit_note_number": "CN-1", "status": "posted", "items": [], "total_amount": 0}, {"name": "U", "logo_data": lg}))
+    pf = _kotak_logo(s.render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": 0, "order_items": [], "status": "posted"},
+                                       {"name": "U", "logo_data": lg}))
+    assert si == nk == pf, (si, nk, pf)
