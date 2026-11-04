@@ -119,3 +119,12 @@ def test_proforma_komposisi_lalu_tagihan_satu_ringkasan():
     assert _nilai(rows, "Nilai Pesanan") == D("3108372") and _nilai(rows, "Pelunasan yang Ditagih") == D("1554186")
     assert "tebal" in next(r["kelas"] for r in rows if r["label"] == "Pelunasan yang Ditagih")
     assert [r["label"] for r in RC.proforma({"purpose": "DP", "amount": 100, "order_items": [], "order_total_amount": None})] == ["Uang Muka yang Ditagih"]
+
+
+def test_proforma_ber_ttd_penutup_sama_dengan_si():
+    """Proforma = dokumen tagih keluarga Penjualan -> penutup SAMA (_partials/penutup): Hormat kami + nama usaha, sebelum ringkasan."""
+    r = PS.get_pdf_service().render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": D("100"), "order_items": [],
+                                              "order_total_amount": None, "notes": "Catatan uji", "status": "posted"}, {"name": "Grapgrap"})
+    h = r.html
+    assert '<div class="penutup-si">' in h and "Hormat kami," in h and "Grapgrap" in h and "Catatan uji" in h
+    assert h.index("Hormat kami,") < h.index('class="summary-table"')
