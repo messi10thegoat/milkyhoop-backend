@@ -1,28 +1,27 @@
-"""Nomor Pembayaran Keluar -- SATU seri BP-YYMM-NNNN untuk kedua rute (putusan MASTER 4 Nov 2026, syarat U-A).
+"""Nomor Pembayaran Keluar -- SATU seri dokumen BP-YYMM-NNNN untuk kedua rute (putusan MASTER 4 Nov 2026, syarat U-A).
 
-Dulu dua generator: POST /bills/{id}/payments = get_next_journal_number(tenant, 'BP') -> BP-2611-0001 (seri yang dipakai PDF/daftar
-grapgrap), POST /bill-payments = bill_payment_sequences -> PAY-202611-0001. Memindah pembayaran ke /bill-payments akan mengganti seri
-dokumen di tengah jalan. Kini keduanya + perkiraan pratinjau memakai penghitung YANG SAMA (fungsi DB penomoran jurnal, awalan BP,
-self-heal dari journal_entries) dan MELOMPATI nomor yang sudah dipakai pembayaran mana pun di tenant (pola V475). Nomor PAY- lama
-dibiarkan (data lama tak diubah); bill_payment_sequences tak ditulis lagi.
+Dulu dua generator: rute lama /bills/{id}/payments menerbitkan BP- dari penghitung JURNAL berawalan BP, rute baru /bill-payments
+menerbitkan PAY- dari bill_payment_sequences. Kini SATU penentu PENGHITUNG DOKUMEN (penjaga test_nomor_jurnal_satu_ruang: seri jurnal
+!= seri dokumen): nomor berikutnya = BP- tertinggi bulan bisnis ini yang SUDAH dipakai bill_payments_v2 tenant + 1, di bawah kunci
+advisory per tenant (pola V475: melompati yang terpakai, termasuk nomor manual/lama). Nol tabel/migrasi baru; UNIQUE (tenant_id,
+payment_number) V088 tetap pagar terakhir. Nomor JURNAL pembayaran = nomor_jurnal_dokumen (standar dokumen lain, cadangan PKJ).
+Nomor PAY- lama dibiarkan; bill_payment_sequences tak ditulis lagi.
 """
-from fastapi import HTTPException
-
-AWALAN = "BP"
+SQL_NOMOR_PK = """
+SELECT 'BP-' || k.yymm || '-' || lpad((COALESCE(MAX((regexp_match(bp.payment_number, '^BP-' || k.yymm || '-([0-9]+)$'))[1]::int), 0)
+                                       + 1)::text, 4, '0')
+FROM (SELECT to_char(tanggal_bisnis($1), 'YYMM') AS yymm) k
+LEFT JOIN bill_payments_v2 bp ON bp.tenant_id = $1 AND bp.payment_number ~ ('^BP-' || k.yymm || '-[0-9]+$')
+GROUP BY k.yymm
+"""
 
 
 async def nomor_pk(conn, tid: str) -> str:
-    """Terbitkan nomor berikutnya (penulis; di transaksi pemanggil). Lompati nomor yang sudah dipakai bill_payments_v2 tenant ini."""
-    for _ in range(1000):
-        n = await conn.fetchval("SELECT get_next_journal_number($1, $2)", tid, AWALAN)
-        if not n:
-            break
-        if not await conn.fetchval("SELECT 1 FROM bill_payments_v2 WHERE tenant_id = $1 AND payment_number = $2", tid, n):
-            return n
-    raise HTTPException(status_code=500, detail="Nomor pembayaran tidak bisa dibuat. Coba lagi.")
+    """Penulis (di transaksi pemanggil): kunci advisory per tenant lalu nomor berikutnya -- dua penulis bersamaan tak bentrok."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"NOMOR_PK:{tid}")
+    return await conn.fetchval(SQL_NOMOR_PK, tid)
 
 
 async def perkiraan_nomor_pk(conn, tid: str) -> str:
-    """Pratinjau (baca saja): nomor yang AKAN diterbitkan penghitung yang sama (perkiraan; penulis paralel bisa mendahului)."""
-    from .nomor_jurnal_perkiraan import perkiraan_nomor_jurnal
-    return await perkiraan_nomor_jurnal(conn, tid, AWALAN)
+    """Pratinjau (baca saja, tanpa kunci): rumus YANG SAMA; perkiraan -- penulis paralel bisa mendahului."""
+    return await conn.fetchval(SQL_NOMOR_PK, tid)

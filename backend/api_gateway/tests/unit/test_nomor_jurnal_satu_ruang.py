@@ -36,8 +36,8 @@ TERLARANG = {
 # Entri yang tak lagi cocok situs mana pun = basi -> merah.
 _VD = "jurnal void; dokumen uang muka vendor VD-YYYY-NNNNN (5 digit, tahun penuh) mustahil sama dengan VD-YYMM-NNNN"
 IZIN_LITERAL = {
-    ("services/bills_service.py", "record_payment", "BP"):
-        "MENERBITKAN nomor dokumen PK lama dari penghitung jurnal, jurnalnya bernomor sama (satu ruang nama)",
+    # NOMOR-PK 4 Nov 2026: izin ("services/bills_service.py", "record_payment", "BP") DICABUT -- nomor PK kini penghitung DOKUMEN
+    # (services/nomor_bayar_keluar), jurnal = nomor_jurnal_dokumen; seri jurnal 'BP' tak dipakai lagi.
     ("routers/sales_invoices.py", "_execute_fulfillment", "SJ"): "MENERBITKAN nomor dokumen Surat Jalan (bukan nomor jurnal)",
     ("services/sj_so.py", "tulis", "SJ"): "MENERBITKAN nomor dokumen Surat Jalan dari pesanan (bukan nomor jurnal)",
     ("services/grn_rencana.py", "tulis_grn", "GRN"): "MENERBITKAN nomor dokumen penerimaan barang (jurnalnya 'GRJ')",

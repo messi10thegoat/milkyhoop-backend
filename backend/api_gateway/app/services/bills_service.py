@@ -1496,6 +1496,7 @@ class BillsService:
                 # 23 Okt 2026): tagihan FOR UPDATE · void · sisa (SQL lama + cadangan cache -- U2a tiket pemilik) · nominal · rekening/akun ·
                 # akun Hutang + PPh. URUTAN + PESAN == kode lama; blok pertama -> {"success": False, "message"} seperti dulu.
                 from . import bayar_keluar_rencana as BKR
+                from . import nomor_jurnal as NJ
                 _r = await BKR.rencana_bayar_tagihan(conn, tenant_id, bill_id, request)
                 if _r["blocks"]:
                     _b = _r["blocks"][0]
@@ -1525,7 +1526,7 @@ class BillsService:
                     """,
                     journal_id,
                     tenant_id,
-                    payment_number,
+                    await NJ.nomor_jurnal_dokumen(conn, tenant_id, payment_number, "PKJ"),  # standar dokumen lain (seri jurnal != dokumen)
                     payment_date,
                     f"Pembayaran ke {bill['vendor_name']}",
                     payment_id,

@@ -34,12 +34,14 @@ def test_perkiraan_meneruskan_tenant_prefix_tanggal():
     assert k.log[0][0] is NJ.SQL_PERKIRAAN_NOMOR_JURNAL and k.log[0][1] == ("t", "BP", None)
 
 
-def test_pratinjau_bayar_tagihan_memakai_prefix_penulis():
+def test_pratinjau_bayar_tagihan_memakai_penentu_nomor_penulis():
+    # NOMOR-PK (4 Nov 2026): pratinjau rute lama = perkiraan_nomor_pk, penulis record_payment = nomor_pk (SATU penentu dokumen,
+    # sama dengan /bill-payments); dulu perkiraan_nomor_jurnal(..., 'BP') + get_next_journal_number($1, 'BP').
     s = inspect.getsource(RB.preview_record_payment)
     pohon = ast.parse(s.lstrip())
-    panggil = [ast.unparse(n) for n in ast.walk(pohon) if isinstance(n, ast.Call) and ast.unparse(n.func) == "perkiraan_nomor_jurnal"]
-    assert panggil == ["perkiraan_nomor_jurnal(conn, ctx['tenant_id'], 'BP')"], panggil
-    assert s.index("transaction(readonly=True)") < s.index("perkiraan_nomor_jurnal(") < s.index("tr.rollback()")
+    panggil = [ast.unparse(n) for n in ast.walk(pohon) if isinstance(n, ast.Call) and ast.unparse(n.func) == "perkiraan_nomor_pk"]
+    assert panggil == ["perkiraan_nomor_pk(conn, ctx['tenant_id'])"], panggil
+    assert s.index("transaction(readonly=True)") < s.index("perkiraan_nomor_pk(") < s.index("tr.rollback()")
     assert '"payment_number_preview": nomor, "payment_number_estimated": True' in s
-    # prefix SAMA dengan penulis record_payment
-    assert "get_next_journal_number($1, 'BP')" in inspect.getsource(BS.BillsService.record_payment)
+    rp = inspect.getsource(BS.BillsService.record_payment)
+    assert "await nomor_pk(conn, tenant_id)" in rp and "get_next_journal_number" not in rp
