@@ -350,7 +350,7 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
 
     alokasi, bagian_pph = [], []
     for a in payload.allocations:
-        t = await conn.fetchrow("SELECT id, amount as total_amount, COALESCE(grand_total, amount) AS total_tagihan, tax_amount "
+        t = await conn.fetchrow("SELECT id, amount as total_amount, COALESCE(NULLIF(grand_total, 0), amount) AS total_tagihan, tax_amount "
                                 "FROM bills WHERE id = $1::uuid AND tenant_id = $2"
                                 + ("" if pratinjau else " FOR UPDATE"), a.bill_id, tid)
         if not t:
@@ -471,7 +471,7 @@ async def rencana_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict, pr
     bill = await conn.fetchrow(
         """
                     SELECT id, amount, amount_paid, status, status_v2, ap_id, vendor_id, vendor_name, invoice_number,
-                           COALESCE(grand_total, amount) AS total_tagihan, tax_amount
+                           COALESCE(NULLIF(grand_total, 0), amount) AS total_tagihan, tax_amount
                     FROM bills
                     WHERE id = $1 AND tenant_id = $2
                     """ + ("" if pratinjau else "FOR UPDATE"), bill_id, tid)

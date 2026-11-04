@@ -174,3 +174,12 @@ def test_is_withholding_di_tiga_respons_kode_pajak():
     src = Path(TC.__file__).read_text(encoding="utf-8")
     assert src.count('"is_withholding": bool(row["is_withholding"])') == 3
     assert src.count("dpp_factor_num, dpp_factor_den, is_withholding") == 3
+
+
+def test_dasar_pph_total_tagihan_abaikan_grand_total_nol():
+    # 4 Nov 2026 (rekaman kesetaraan U-A): tagihan ber-grand_total 0 tapi amount > 0 (kaos ZSEARCHBILL-1/2/3) -> dulu
+    # COALESCE(grand_total, amount) = 0 -> dasar PPh 0 diam-diam di KEDUA rute. Kini NULLIF(grand_total, 0).
+    for fn in (BKR.rencana_bayar, BKR.rencana_bayar_tagihan):
+        s = inspect.getsource(fn)
+        assert "COALESCE(NULLIF(grand_total, 0), amount) AS total_tagihan" in s and "COALESCE(grand_total, amount)" not in s, fn.__name__
+    assert BKR.dasar_pph_prorata(D("10001"), D("0"), D("5000")) == D("5000")  # total dari amount -> dasar penuh bagian dibayar
