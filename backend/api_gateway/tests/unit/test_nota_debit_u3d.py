@@ -50,9 +50,9 @@ def test_baris_posting_tanpa_dan_dengan_pajak(monkeypatch):
     assert b == [(ap, 1100, 0, "Pengurangan Hutang - VC-1", "hutang"), (kr, 0, 1100, "Retur Pembelian - VC-1", "kredit")]
     b = asyncio.run(NDR.baris_posting_nd(_K(True), "t", _vc(100), ap, kr, True))
     assert b[1] == (kr, 0, 1000, "Diskon Pembelian - VC-1", "kredit") and b[2] == (ppn, 0, 100, "PPN Retur - VC-1", "pajak")
-    with pytest.raises(HTTPException) as e:
-        asyncio.run(NDR.baris_posting_nd(_K(False), "t", _vc(100), ap, kr, False))
-    assert e.value.status_code == 422
+    # (b) aturan pemilik 4 Nov "kapitalisasi balik": non-PKP berpajak TIDAK lagi 422 -> Cr Retur = total (termasuk PPN), tanpa baris PPN
+    b = asyncio.run(NDR.baris_posting_nd(_K(False), "t", _vc(100), ap, kr, False))
+    assert b == [(ap, 1100, 0, "Pengurangan Hutang - VC-1", "hutang"), (kr, 0, 1100, "Retur Pembelian - VC-1", "kredit")]
 
 
 def test_baris_refund():
