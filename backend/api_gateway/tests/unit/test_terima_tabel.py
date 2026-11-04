@@ -307,3 +307,18 @@ def test_sidik_idempotensi_terima_bentuk_lama_tak_berubah():
     alasan = RGR(receive_date=HARI, items=[{"po_item_id": PO_ITEM_BEKU, "quantity_received": D("3"), "reject_reason": "pecah"}])
     assert hash_payload(RPO._sidik_terima(alasan)) != HASH_MASTER_TERIMA
     assert "lambda: _sidik_terima(body)" in ast.unparse(_fungsi("routers/purchase_orders.py", "receive_goods"))  # rute memakai sidik ini
+
+
+@pytest.mark.asyncio
+async def test_diterima_absen_default_sisa_dikurangi_ditolak():
+    # putusan MASTER (A): "vendor bawa 90, 5 rusak" (sisa 90) -> diterima 85 + ditolak 5; sisa 5 masih ditunggu; payload = terselesaikan
+    baris = [{"id": A, "description": "Minyak", "quantity": D("90"), "quantity_received": D("0"), "quantity_billed": D("0"), "unit": "Dus",
+              "total": D("900000")}]
+    r = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_rejected": D("5")}])
+    a = r["baris"][0]
+    assert r["blocks"] == [] and (a["akan_diterima"], a["akan_ditolak"], a["sisa_sesudah"]) == (D("85"), D("5"), D("5"))
+    assert r["payload"]["items"] == [{"po_item_id": str(A), "quantity_received": "85", "quantity_rejected": "5"}]
+    r2 = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_received": D("90"), "quantity_rejected": D("5")}])
+    assert [b["code"] for b in r2["blocks"]] == ["QTY_DITOLAK_MELEBIHI"]  # eksplisit 90 + 5 > 90 tetap diblok
+    r3 = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_rejected": D("95")}])
+    assert [b["code"] for b in r3["blocks"]] == ["QTY_DITOLAK_MELEBIHI"] and r3["baris"][0]["akan_diterima"] == 0  # default tak negatif

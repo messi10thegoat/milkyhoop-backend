@@ -5,13 +5,17 @@
   terima_keadaan = telat | hari_ini | akan | selesai (sudah diterima penuh, tanggal redup) | tanpa
   terima_teks    = "Hari ini" / "Besok" / "24 Okt" / "12 Okt, lewat jadwal" / "—"
   position_text  = Draf | Terkirim ke vendor | Diterima sebagian | Diterima | Ditagih sebagian | Ditagih | Selesai | Dibatalkan
-  aksi (pill; putusan MASTER 22 Okt): perlu_dikirim > telat_terima > perlu_ditagih -- PARTISI (satu baris = satu pill;
+  aksi (pill; putusan MASTER 22 Okt): perlu_dikirim > telat_terima > perlu_ditagih > draf_tagihan -- PARTISI (satu baris = satu pill;
                  ?aksi=k, hitungan summary dan `aksi` baris memakai predikat yang sama). `menunggu_barang` (keadaan normal tiap PO terkirim)
                  dan `perlu_ditutup` (Fully Billed = selesai otomatis, pola NetSuite) BUKAN pill; tutup manual = aksi di detail.
   amount_received/amount_billed = TURUNAN dari baris (qty_diterima x total / qty, 2dp HALF_UP), bukan kolom cache PO.
   DITAGIH (1 Nov 2026, putusan MASTER, cermin SO "faktur draf = belum difaktur" 25 Sep): amount_billed/sisa_ditagih/aksi/status dari bill
                  POSTED saja; porsi bill DRAF terpisah (draft_bill_amount). PAGAR (to-bill, posting, ubah/batal PO) tetap SEMUA bill non-void
                  (cache purchase_order_items.quantity_billed). Dua angka, dua tujuan -- satu predikat per tujuan (PRED_TAGIH).
+  DRAF-TAGIHAN (4 Nov 2026, putusan MASTER): belum_ditagih_sesudah_draf = Σ max(diterima - qty PAGAR, 0); perlu_ditagih hanya bila > 0
+                 (masih ada yang bisa dibuatkan faktur), draf_tagihan bila sisanya sudah seluruhnya faktur DRAF (pill "Buka faktur draf",
+                 draft_bills). Status PO tetap dari bill POSTED (D1). bisa_diterima = SARINGAN daftar (bukan pill/partisi): status bisa-terima
+                 penentu terima (po_rencana.status_bisa_terima) + sisa terima > 0.
   documents      = bundel (dokumen_po) tanpa rekap -- SATU definisi dgn /purchase-orders/{id}/documents.
 """
 from datetime import date
@@ -44,7 +48,8 @@ def sql_qty_tagih(jenis: str, i: str = "i", tenant: str = "$2") -> str:
     """Σ qty bill_items bertaut ke baris PO `i` pada bill tenant `tenant` dengan predikat PRED_TAGIH[jenis]. SATU sumber."""
     return (f"COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id "
             f"WHERE bi.purchase_order_item_id = {i}.id AND b.tenant_id = {tenant} AND {PRED_TAGIH[jenis]}), 0)")
-AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih")  # urutan desak
+AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan")  # urutan desak (PARTISI)
+SARINGAN = ("bisa_diterima",)  # ?aksi= daftar saja: bukan pill, tak dihitung summary
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}
 
@@ -77,15 +82,18 @@ def terima_fakta(status: Optional[str], expected_date: Optional[date], sisa_teri
     return {"terima_terbuka": terbuka, "terima_hari": hari, "terima_keadaan": keadaan, "terima_teks": teks}
 
 
-def aksi_po(status: Optional[str], expected_date: Optional[date], sisa_terima, belum_ditagih, hari_ini: date) -> Optional[str]:
-    """Pure. Satu kunci PALING mendesak atau None. belum_ditagih = Σ(diterima - ditagih) baris PO."""
+def aksi_po(status: Optional[str], expected_date: Optional[date], sisa_terima, belum_ditagih, hari_ini: date,
+            belum_ditagih_sesudah_draf=None) -> Optional[str]:
+    """Pure. Satu kunci PALING mendesak atau None. belum_ditagih = Σ(diterima - ditagih POSTED) baris PO; belum_ditagih_sesudah_draf =
+    Σ(diterima - ditagih PAGAR) (None = sama dengan belum_ditagih)."""
     if status == "draft":
         return "perlu_dikirim"
     telat = (status in STATUS_TERIMA_TERBUKA and _d(sisa_terima) > NOL and expected_date is not None and expected_date < hari_ini)
     if telat:
         return "telat_terima"
     if status in STATUS_BISA_TAGIH and _d(belum_ditagih) > NOL:
-        return "perlu_ditagih"
+        sesudah = belum_ditagih if belum_ditagih_sesudah_draf is None else belum_ditagih_sesudah_draf
+        return "perlu_ditagih" if _d(sesudah) > NOL else "draf_tagihan"
     return None
 
 
@@ -106,6 +114,7 @@ SQL_AGREGAT = f"""
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0)), 0) AS sisa_terima,
                COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - q.posted, 0)), 0) AS belum_ditagih,
+               COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - COALESCE(i.quantity_billed, 0), 0)), 0) AS belum_ditagih_sesudah_draf,
                COALESCE(SUM(ROUND(COALESCE(i.quantity_received, 0) * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_received,
                COALESCE(SUM(ROUND(q.posted * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_billed,
                COALESCE(SUM(ROUND(q.draf * i.total / NULLIF(i.quantity, 0), 2)), 0) AS draft_bill_amount
@@ -116,15 +125,19 @@ SQL_AGREGAT = f"""
     ) ag ON true"""
 
 
-def sql_aksi(aksi: str, hari: str, po: str = "po", ag: str = "ag") -> str:
-    """Predikat SQL setara aksi_po(...) == aksi (PARTISI). `hari` = placeholder tanggal bisnis (mis. '$2')."""
+def sql_aksi(aksi: str, hari: str, po: str = "po", ag: str = "ag", status_terima: tuple = ()) -> str:
+    """Predikat SQL setara aksi_po(...) == aksi (PARTISI) + saringan bisa_diterima (status_terima = po_rencana.status_bisa_terima(flag)).
+    `hari` = placeholder tanggal bisnis (mis. '$2')."""
     telat = (f"({po}.status IN ('sent', 'partial_received') AND {ag}.sisa_terima > 0 AND {po}.expected_date IS NOT NULL "
              f"AND {po}.expected_date < {hari}::date)")
+    tagih = f"({po}.status IN ('partial_received', 'received', 'partial_billed') AND {ag}.belum_ditagih > 0 AND NOT {telat})"
+    if aksi == "bisa_diterima":
+        return f"({po}.status IN ({', '.join(repr(s) for s in status_terima) or 'NULL'}) AND {ag}.sisa_terima > 0)"
     return {
         "perlu_dikirim": f"({po}.status = 'draft')",
         "telat_terima": telat,
-        "perlu_ditagih": (f"({po}.status IN ('partial_received', 'received', 'partial_billed') AND {ag}.belum_ditagih > 0 "
-                          f"AND NOT {telat})"),
+        "perlu_ditagih": f"({tagih} AND {ag}.belum_ditagih_sesudah_draf > 0)",
+        "draf_tagihan": f"({tagih} AND {ag}.belum_ditagih_sesudah_draf <= 0)",
     }[aksi]
 
 
@@ -166,17 +179,23 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
     out = {}
     for r in await conn.fetch(
         f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.amount_received, ag.amount_billed,
-                   ag.draft_bill_amount
+                   ag.draft_bill_amount, ag.belum_ditagih_sesudah_draf
             FROM purchase_orders po {SQL_AGREGAT}
             WHERE po.tenant_id = $1 AND po.id = ANY($2::uuid[])""", tenant_id, list(po_ids)):
         sisa = NOL if r["status"] in STATUS_TANPA_SISA_TAGIH else r2(r["total_amount"]) - r2(r["amount_billed"])
         out[r["id"]] = {
             **terima_fakta(r["status"], r["expected_date"], r["sisa_terima"], hari_ini),
             "position_text": position_text(r["status"]),
-            "aksi": aksi_po(r["status"], r["expected_date"], r["sisa_terima"], r["belum_ditagih"], hari_ini),
+            "aksi": aksi_po(r["status"], r["expected_date"], r["sisa_terima"], r["belum_ditagih"], hari_ini, r["belum_ditagih_sesudah_draf"]),
             "amount_received": r2(r["amount_received"]), "amount_billed": r2(r["amount_billed"]),
             "sisa_ditagih": max(sisa, NOL), "draft_bill_amount": r2(r["draft_bill_amount"]),
+            "belum_ditagih_sesudah_draf": _d(r["belum_ditagih_sesudah_draf"]), "draft_bills": [],
         }
+    for r in await conn.fetch(  # faktur DRAF bertaut baris PO (SATU kueri untuk semua po_ids)
+            f"""SELECT DISTINCT poi.po_id, b.id, b.invoice_number FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
+                JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
+                WHERE poi.po_id = ANY($2::uuid[]) AND {PRED_TAGIH["draf"]} ORDER BY b.invoice_number""", tenant_id, list(out)):
+        out[r["po_id"]]["draft_bills"].append({"id": str(r["id"]), "bill_number": r["invoice_number"]})
     return out
 
 

@@ -29,6 +29,12 @@ STATUS_TAK_BISA_TUTUP = ("draft", "cancelled", "closed")
 STATUS_TAK_BISA_BATAL = ("cancelled", "closed")
 
 
+def status_bisa_terima(aturan_d: bool) -> tuple:
+    """Status PO yang bisa diterima: aturan D (flag penerimaan_barang_v1: tagih dulu, terima kemudian) menambah status ditagih.
+    SATU sumber untuk penentu terima DAN saringan daftar ?aksi=bisa_diterima (po_daftar.sql_aksi)."""
+    return STATUS_BISA_TERIMA_D if aturan_d else STATUS_BISA_TERIMA
+
+
 def blok(code: str, message: str, status: int = 400) -> dict:
     return {"code": code, "message": message, "status": status}
 
@@ -196,7 +202,7 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     bloks, catatan = [], []
     from . import grn_rencana as G
     aturan_d = po["status"] in STATUS_DITAGIH and await G.aktif(conn, po.get("tenant_id"))
-    if po["status"] not in (STATUS_BISA_TERIMA_D if aturan_d else STATUS_BISA_TERIMA):
+    if po["status"] not in status_bisa_terima(aturan_d):
         bloks.append(blok("PO_TAK_BISA_DITERIMA", f"Barang tidak bisa diterima untuk pesanan pembelian berstatus '{po['status']}'."))
     if receive_date is None:
         receive_date = hari_ini
@@ -216,11 +222,15 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     toleransi = await toleransi_terima(conn, po.get("tenant_id"))
     akan, tolak, alasan = {}, {}, {}
     for it in items:
-        pid, qty, ditolak = str(it["po_item_id"]), _d(it["quantity_received"]), _d(it.get("quantity_rejected"))
+        pid, ditolak = str(it["po_item_id"]), _d(it.get("quantity_rejected"))
         r = peta.get(pid)
         if r is None:
             bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
             continue
+        # putusan MASTER (A) 4 Nov: diterima ABSEN = sisa - ditolak ("vendor bawa 90, 5 rusak" -> 85 + 5, sisa 5 masih ditunggu);
+        # diterima eksplisit dihormati apa adanya (aturan blok lama tetap)
+        qty = (_d(it["quantity_received"]) if it.get("quantity_received") is not None
+               else max(_d(r["quantity"]) - _d(r["quantity_received"]) - ditolak, NOL))
         if qty < NOL or ditolak < NOL:
             if not any(b["code"] == "QTY_NEGATIF" for b in bloks):
                 bloks.append(blok("QTY_NEGATIF", "Jumlah tidak boleh negatif."))
@@ -313,18 +323,22 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
     kuncian = " FOR UPDATE" if kunci else ""
     pilih = []
     if items:
+        baca = []
         for it in items:
             pid = str(it["po_item_id"])
             try:
                 uid = UUID(pid)
             except (ValueError, TypeError):
                 uid = None
-            po_item = await conn.fetchrow(
-                "SELECT * FROM purchase_order_items WHERE id = $1 AND po_id = $2" + kuncian, uid, po["id"]) if uid else None
+            baca.append((it, pid, await conn.fetchrow(
+                "SELECT * FROM purchase_order_items WHERE id = $1 AND po_id = $2" + kuncian, uid, po["id"]) if uid else None))
+        ada = [r["id"] for _, _, r in baca if r]
+        bts = await G.batas_tagih(conn, po["tenant_id"], ada) if ada else {}  # SATU kueri untuk semua baris
+        for it, pid, po_item in baca:
             if not po_item:
                 bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
                 continue
-            bt = (await G.batas_tagih(conn, po["tenant_id"], [po_item["id"]]))[str(po_item["id"])]
+            bt = bts[str(po_item["id"])]
             q = it.get("quantity_to_bill")
             qty = Decimal(str(q)) if q else bt["qty_dasar"]
             if qty > bt["qty_dasar"]:

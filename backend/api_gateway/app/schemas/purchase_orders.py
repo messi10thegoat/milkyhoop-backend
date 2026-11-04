@@ -127,7 +127,7 @@ class ReceiveItemRequest(BaseModel):
     """Single item to receive."""
     po_item_id: str = Field(..., description="PO item UUID")
     # P-U1 G1: Decimal (dulu float). TERIMA-TABEL: 0 boleh (baris hanya ditolak); negatif/kosong-semua = BLOK berkalimat penentu (bukan 422)
-    quantity_received: Decimal = Field(..., max_digits=18, decimal_places=4)
+    quantity_received: Optional[Decimal] = Field(None, max_digits=18, decimal_places=4)  # absen = sisa - ditolak (penentu)
     quantity_rejected: Decimal = Field(Decimal("0"), max_digits=18, decimal_places=4)  # dicatat di GRN saja; bukan stok/HPP/tagih
     reject_reason: Optional[str] = Field(None, max_length=200)
 
