@@ -11,26 +11,29 @@ from app.services import nomor_bayar_keluar as NB
 from app.services import so_pelunasan as SP
 
 
-class _Terbit:
-    """get_next_journal_number tiruan: urutan nomor; `terpakai` = nomor yang sudah dipakai bill_payments_v2."""
-    def __init__(self, urut, terpakai=()):
-        self.urut, self.terpakai, self.log = list(urut), set(terpakai), []
+class _Nomor:
+    def __init__(self, n):
+        self.n, self.log = n, []
+
+    async def execute(self, sql, *a):
+        self.log.append(("execute", sql, a))
 
     async def fetchval(self, sql, *a):
-        self.log.append((sql, a))
-        if "get_next_journal_number" in sql:
-            assert a[1] == "BP"
-            return self.urut.pop(0)
-        if "FROM bill_payments_v2 WHERE tenant_id = $1 AND payment_number = $2" in sql:
-            return 1 if a[1] in self.terpakai else None
-        raise AssertionError(sql)
+        self.log.append(("fetchval", sql, a))
+        return self.n
 
 
-def test_nomor_pk_seri_bp_dan_lompati_terpakai():
-    # NOMOR-PK (4 Nov 2026): SATU seri BP- untuk /bill-payments dan /bills/{id}/payments; nomor yang sudah dipakai dilompati
-    assert asyncio.run(NB.nomor_pk(_Terbit(["BP-2611-0003"]), "t")) == "BP-2611-0003"
-    k = _Terbit(["BP-2611-0003", "BP-2611-0004"], terpakai={"BP-2611-0003"})
+def test_nomor_pk_penghitung_dokumen_kunci_dan_lompati_terpakai():
+    # NOMOR-PK (4 Nov 2026, putusan MASTER ikut penjaga satu-ruang-nomor-jurnal): penghitung DOKUMEN = BP- tertinggi bulan bisnis
+    # yang sudah dipakai bill_payments_v2 + 1 (lompati terpakai, pola V475), di bawah kunci advisory per tenant; tanpa seri jurnal.
+    k = _Nomor("BP-2611-0004")
     assert asyncio.run(NB.nomor_pk(k, "t")) == "BP-2611-0004"
+    assert k.log[0][0] == "execute" and "pg_advisory_xact_lock" in k.log[0][1] and k.log[0][2] == ("NOMOR_PK:t",)
+    assert k.log[1][1] is NB.SQL_NOMOR_PK and k.log[1][2] == ("t",)
+    q = NB.SQL_NOMOR_PK
+    assert "FROM bill_payments_v2" in q and "tanggal_bisnis($1)" in q and "MAX(" in q and "get_next_journal_number" not in q
+    p = _Nomor("BP-2611-0004")
+    assert asyncio.run(NB.perkiraan_nomor_pk(p, "t")) == "BP-2611-0004" and [x[0] for x in p.log] == ["fetchval"]  # tanpa kunci
 
 
 def _panggil(fn, nama):
@@ -42,6 +45,7 @@ def test_dua_rute_dan_pratinjau_satu_penentu_nomor():
     from app.routers import bills as BR
     from app.services import bills_service as BS
     assert _panggil(BP.create_bill_payment, "nomor_pk") and _panggil(BS.BillsService.record_payment, "nomor_pk")
+    assert _panggil(BS.BillsService.record_payment, "nomor_jurnal_dokumen")  # jurnal = standar dokumen (seri jurnal != dokumen)
     for fn in (BP.preview_create_bill_payment, BR.preview_record_payment):
         assert _panggil(fn, "perkiraan_nomor_pk"), fn.__name__
     s = inspect.getsource(BP.preview_create_bill_payment)

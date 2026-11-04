@@ -272,11 +272,11 @@ def test_void_memeriksa_periode_tanggal_pembalik(berkas, nama):
 
 def test_nomor_pembayaran_keluar_bulan_bisnis_dari_fungsi_db():
     """PENGGANTI test_nomor_pembayaran_tagihan_ikut_bulan_bisnis (NOMOR-PK 4 Nov 2026): generator PAY- (bulan dari tanggal_dokumen)
-    dihapus; nomor BP- kini dari get_next_journal_number TANPA argumen tanggal -> fungsi DB memakai tanggal_bisnis(tenant) (V302),
-    bukan CURRENT_DATE / jam kontainer. Perkiraan pratinjau = SQL perkiraan_nomor_jurnal yang juga COALESCE(.., tanggal_bisnis)."""
+    dihapus; bulan nomor BP- kini dari tanggal_bisnis(tenant) di SQL penghitung dokumen (V302), bukan CURRENT_DATE / jam kontainer."""
     import inspect
     from app.services import nomor_bayar_keluar as NB
     from app.services.nomor_jurnal_perkiraan import SQL_PERKIRAAN_NOMOR_JURNAL
-    src = inspect.getsource(NB.nomor_pk)
-    assert 'get_next_journal_number($1, $2)", tid, AWALAN' in src and "CURRENT_DATE" not in src and "date.today" not in src
+    assert "to_char(tanggal_bisnis($1), 'YYMM')" in NB.SQL_NOMOR_PK and "CURRENT_DATE" not in NB.SQL_NOMOR_PK
+    src = inspect.getsource(NB)
+    assert "date.today" not in src and "datetime.now" not in src
     assert "tanggal_bisnis($1)" in SQL_PERKIRAAN_NOMOR_JURNAL

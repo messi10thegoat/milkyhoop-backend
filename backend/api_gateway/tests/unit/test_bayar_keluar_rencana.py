@@ -134,7 +134,7 @@ def test_penulis_memakai_penentu_yang_sama():
     rp = bs[bs.index("    async def record_payment("):bs.index("    async def mark_paid(")]
     assert "await BKR.rencana_bayar_tagihan(conn, tenant_id, bill_id, request)" in rp
     assert "BKR.baris_tagihan_lama(" in rp and rp.count("INSERT INTO journal_lines") == 1
-    assert rp.index("rencana_bayar_tagihan(") < rp.index("get_next_journal_number")
+    assert rp.index("rencana_bayar_tagihan(") < rp.index("nomor_pk(")  # nomor lahir SESUDAH semua cek (NOMOR-PK 4 Nov)
 
 
 def test_pratinjau_read_only_tanpa_kunci():
