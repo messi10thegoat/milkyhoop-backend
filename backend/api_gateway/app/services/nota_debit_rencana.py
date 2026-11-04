@@ -16,7 +16,7 @@ from . import nota_debit as ND
 from . import teks_galat as tg
 from . import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from . import nota_debit_gudang as NG  # ND-GUDANG
-from .role_resolver import AccountRole, PESAN_NON_PKP_PEMBELIAN, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
+from .role_resolver import AccountRole, resolve_account_id_by_role, resolve_account_id_by_role_if_pkp
 
 NOL = Decimal("0")
 
@@ -94,16 +94,17 @@ async def perkiraan_nomor_nd(conn, tid: str) -> str:
 
 # ------------------------------------------------------------------ posting
 async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, potongan: bool) -> list:
-    """[(account_id, debit, credit, memo, peran)] jurnal VENDOR_CREDIT == penulis lama: Dr Hutang total · Cr Retur/Diskon subtotal · Cr PPN Masukan
-    (bila pajak > 0; tenant non-PKP -> 422 PESAN_NON_PKP_PEMBELIAN). `peran` 'pajak' menandai baris PPN (penulis butuh id barisnya untuk DTL)."""
+    """[(account_id, debit, credit, memo, peran)] jurnal VENDOR_CREDIT: Dr Hutang total · Cr Retur/Diskon dasar · Cr PPN Masukan (PKP, pajak > 0).
+    Non-PKP berpajak (aturan pemilik 4 Nov "kapitalisasi balik", cermin tagihan): PPN tak pernah jadi PPN Masukan -> Cr Retur/Diskon = total
+    (termasuk PPN), tanpa baris PPN -- penentu SAMA tagihan_aksi.dasar_tagihan. `peran` 'pajak' menandai baris PPN (penulis butuh id barisnya)."""
+    from . import tagihan_aksi as TA
     total = vc["total_amount"]
     pajak = vc["tax_amount"] or 0
+    akun_pajak = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT) if pajak > 0 else None
+    dasar, _kapital = TA.dasar_tagihan(total, pajak, akun_pajak)
     baris = [(ap_account_id, total, 0, f"Pengurangan Hutang - {vc['credit_number']}", "hutang"),
-             (akun_kredit, 0, total - pajak, f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}", "kredit")]
-    if pajak > 0:
-        akun_pajak = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT)
-        if akun_pajak is None:
-            raise HTTPException(status_code=422, detail=PESAN_NON_PKP_PEMBELIAN)
+             (akun_kredit, 0, dasar, f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}", "kredit")]
+    if pajak > 0 and akun_pajak is not None:
         baris.append((akun_pajak, 0, pajak, f"PPN Retur - {vc['credit_number']}", "pajak"))
     return baris
 

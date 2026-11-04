@@ -60,7 +60,6 @@ from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
-    PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 

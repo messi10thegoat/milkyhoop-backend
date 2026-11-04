@@ -86,3 +86,27 @@ def test_penjaga_tolak_hilang_dan_pratinjau_memakai_penentu_sama():
     for nama in ("create_expense_journal", "preview_journal"):
         fn = next(n for n in ast.walk(pohon) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama)
         assert "TA.dasar_tagihan(" in ast.unparse(fn), nama
+
+
+# ---------------------------------------------------------------- RETUR (ND) non-PKP: kapitalisasi balik (aturan pemilik 4 Nov)
+HUTANG, RETUR = uuid.UUID(int=21), uuid.UUID(int=22)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pkp,pajak,harap", [
+    (False, "11000", [(HUTANG, D("111000"), 0), (RETUR, 0, D("111000"))]),                       # contoh pemilik: tanpa PPN Masukan
+    (True, "11000", [(HUTANG, D("111000"), 0), (RETUR, 0, D("100000")), (PPN, 0, D("11000"))]),   # PKP tidak berubah
+    (False, "0", [(HUTANG, D("100000"), 0), (RETUR, 0, D("100000"))])])
+async def test_nd_non_pkp_retur_termasuk_ppn(monkeypatch, pkp, pajak, harap):
+    from app.services import nota_debit_rencana as NDR
+    monkeypatch.setattr(NDR, "resolve_account_id_by_role_if_pkp", _vat(PPN if pkp else None))
+    total = D("100000") + D(pajak)
+    vc = {"total_amount": total, "tax_amount": D(pajak), "credit_number": "VC-1"}
+    b = await NDR.baris_posting_nd(None, T, vc, HUTANG, RETUR, False)
+    assert [(x[0], x[1], x[2]) for x in b] == harap
+    assert sum(D(str(x[1])) for x in b) == sum(D(str(x[2])) for x in b)
+
+
+def test_konstanta_tolak_non_pkp_hilang_dari_aplikasi():
+    for f in APP.rglob("*.py"):
+        assert "PESAN_NON_PKP_PEMBELIAN" not in f.read_text(), f
