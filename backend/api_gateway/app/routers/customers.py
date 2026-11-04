@@ -518,7 +518,7 @@ async def get_customer(request: Request, customer_id: str):
             # V428: alamat aktif (bawaan dulu); medan datar di bawah = cermin bawaan tagih
             _alamat_daftar = await _alamat.daftar(conn, ctx["tenant_id"], row["id"])
 
-            return {
+            _hasil = {
                 "success": True,
                 "data": {
                     "id": str(row["id"]),
@@ -597,6 +597,10 @@ async def get_customer(request: Request, customer_id: str):
                     else None,
                 },
             }
+            # K2b: agregat dokumen hanya untuk yang boleh BACA modulnya (pola omitted B4; medan null, bukan 0 palsu)
+            from ..services.dashboard_izin import boleh_baca
+            await KDT.saring_agregat("customer", _hasil["data"], lambda m: boleh_baca(request, m))
+            return _hasil
 
     except HTTPException:
         raise

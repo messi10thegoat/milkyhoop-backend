@@ -16,6 +16,27 @@ def termin_text(hari) -> str:
     return "Tunai" if n <= 0 else f"Net {n} hari"
 
 
+AGREGAT = {
+    # K2b (putusan MASTER 4 Nov 2026): agregat dokumen di detail kontak hanya untuk yang boleh BACA modul dokumennya
+    "customer": ("sales_invoice", ("total_transactions", "total_value", "total_penjualan", "jumlah_faktur", "last_invoice_date",
+                                   "jumlah_dokumen", "last_transaction_at")),
+    "vendor": ("purchase_invoice", ("total_pembelian", "jumlah_tagihan", "last_bill_date", "jumlah_dokumen")),
+}
+
+
+async def saring_agregat(jenis: str, data: dict, boleh) -> dict:
+    """Pola omitted B4: tanpa izin BACA modul dokumen -> medan agregat DIBUANG (null di JSON, FE "—"), bukan 0 palsu;
+    data["omitted"] = [modul]. boleh(modul) = dashboard_izin.boleh_baca (sama dengan riwayat)."""
+    modul, kunci = AGREGAT[jenis]
+    if await boleh(modul):
+        data["omitted"] = []
+        return data
+    for k in kunci:
+        data[k] = None
+    data["omitted"] = [modul]
+    return data
+
+
 def aksi_detail(is_active: bool, alasan_hapus: Optional[str], saldo_awal_ada: Optional[str]) -> list:
     """Urutan tampil tetap; boleh=False membawa alasan berkalimat (sama dengan galat penulisnya)."""
     def a(kunci, label, boleh=True, alasan=None, **kw):
