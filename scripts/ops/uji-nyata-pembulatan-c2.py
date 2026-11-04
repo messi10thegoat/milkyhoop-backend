@@ -173,8 +173,8 @@ async def main(keluar):
               pr["baris"])
         hdr = await c.fetchrow("SELECT total_debit, total_credit FROM journal_entries WHERE id = $1", b["journal_id"])
         harus("header jurnal == Σ baris (Law 4)", hdr["total_debit"] == hdr["total_credit"] == sum(d for _, d, _ in jl), dict(hdr))
-        kartu = D(str(await c.fetchval("""SELECT COALESCE(sum(total_cost), 0) FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2::text
-                                         AND movement_type IN ('PURCHASE', 'purchase', 'IN', 'in')""", T, str(b["id"])) or 0))
+        kartu = D(str(await c.fetchval("""SELECT COALESCE(sum(total_cost), 0) FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2
+                                         AND movement_type = 'PURCHASE'""", T, b["id"]) or 0))  # source_id uuid (skema diukur)
         catat["kartu_tagihan"] = str(kartu)
         harus("kartu stok = nilai baris asli 55.444,50 (pembulatan bukan biaya barang)", kartu == D("55444.50"), str(kartu))
         sisa0 = D(str(await c.fetchval("SELECT outstanding FROM compute_ap_outstanding($1) WHERE bill_id = $2", T, b["id"]) or 0))
