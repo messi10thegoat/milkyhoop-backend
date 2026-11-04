@@ -452,10 +452,10 @@ async def saldo_awal_pelanggan(conn, tid: str, customer_id) -> Optional[str]:
     """Nomor saldo awal pelanggan yang masih berlaku (faktur pembuka tak-void, atau jurnal OPENING lama belum dibalik); None = belum ada.
     SATU pemeriksa untuk POST /opening-balance dan aksi detail B2 (saldo_awal boleh / alasan)."""
     ada = await conn.fetchval(
-        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND customer_id::text = $2 AND is_opening_balance AND status <> 'void'",
+        "SELECT invoice_number FROM sales_invoices WHERE tenant_id = $1 AND customer_id = $2::uuid AND is_opening_balance AND status <> 'void'",
         tid, str(customer_id))
     return ada or await conn.fetchval(  # jurnal lepas OPENING lama (tak masuk sub-ledger piutang) yang belum dibalik
-        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING' AND source_id::text = $2
+        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'OPENING' AND source_id = $2::uuid
            AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", tid, str(customer_id))
 
 
