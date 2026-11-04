@@ -215,12 +215,13 @@ def test_render_nd_angka_label_dan_stempel():
     ps = get_pdf_service()
     d = _muat_nd(_vc(), ITEM_DISKON)["debit_note_data"]
     html = ps.render_debit_note(d, TENANT).html
-    for teks in ("Nota Debit", "VC-2610-0002", "PI-2610-0001", "Retur barang", "CV Benang Jaya", "Rp 300.000", "-Rp 30.000",
+    for teks in ("Nota Debit", "VC-2610-0002", "PI-2610-0001", "Retur barang", "CV Benang Jaya", "Rp 270.000", "Rp 30.000",
                  "-Rp 27.000", "PPN 11%", "Rp 26.730", "<span>Total</span>", "Rp 269.730", "Rp 170.000", "Benang putus",
                  "Kaos Biru Konveksi", '<div class="kop">', "<b>Kepada</b>", "<b>No. Nota Debit</b>", "Bagian Pembelian,"):
         assert teks in html, teks
     # turunan FPB/PO (4 Nov 2026): tanpa angka besar & kalimat hero, gaya keluarga Pembelian
     assert "Nota Kredit" not in html and "pelanggan" not in html and "DRAF" not in html and "Pengurang hutang" not in html
+    assert "Diskon item" not in html and "Rp 300.000" not in html   # Subtotal = SIGMA kolom Total (ringkasan_cetak)
     assert ps.render_debit_note(d, TENANT).css[-2:] == ("penawaran.css", "dokumen.css")
     assert "DRAF" in ps.render_debit_note(dict(d, status="draft"), TENANT).html
     h_void = ps.render_debit_note(dict(d, status="void", voided_at=datetime(2026, 10, 25, tzinfo=timezone.utc),

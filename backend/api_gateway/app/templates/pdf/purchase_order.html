@@ -55,17 +55,8 @@
       <div class="garis">Bagian Pembelian</div>
     </div>
   </div>
-  <div class="sum">
-    <div><span>Subtotal</span><span>Rp {{ po.subtotal | rupiah(po.has_cents) }}</span></div>
-    {% if po.discount_amount and po.discount_amount|float > 0 %}
-    <div><span>Diskon{% if po.discount_percent and po.discount_percent|float > 0 %} {{ "%g" % (po.discount_percent|float) }}%{% endif %}</span><span>-Rp {{ po.discount_amount | rupiah(po.has_cents) }}</span></div>
-    {% endif %}
-    {% if po.tax_amount and po.tax_amount|float > 0 %}
-    <div><span>{{ po.label_pajak }}</span><span>Rp {{ po.tax_amount | rupiah(po.has_cents) }}</span></div>
-    {% endif %}
-    <div class="tot"><span>Total</span><span>Rp {{ po.total_amount | rupiah(po.has_cents) }}</span></div>
-    <div class="terb">{{ po.total_amount | terbilang }}</div>
-  </div>
+  {% from "_partials/ringkasan.html" import ringkasan %}
+  {{ ringkasan(RC.pesanan_pembelian(po), po.has_cents, 'sum', po.total_amount | terbilang) }}
   </div>
 </div>
 

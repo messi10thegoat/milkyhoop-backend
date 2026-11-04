@@ -74,4 +74,8 @@ async def muat_pdf_nota_kredit(conn, ctx: dict, cn_id) -> dict:
         } for i in items],
         "item_discount_total": sum((_d(i["discount_amount"]) for i in items), Decimal("0")),
     }
+    from .pdf_service import PDFService   # PDF seragam 4 Nov 2026: tabel_barang + ringkasan rupiah(has_cents), pola ND
+    data["has_cents"] = PDFService.money_has_cents(
+        data["subtotal"], data["discount_amount"], data["tax_amount"], data["total_amount"], data["item_discount_total"],
+        *[x for b in data["items"] for x in (b["unit_price"], b["discount_amount"], b["net"])])
     return {"credit_note_data": data, "tenant_info": await muat_kop(conn, tid)}

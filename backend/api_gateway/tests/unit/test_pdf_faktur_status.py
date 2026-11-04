@@ -165,7 +165,7 @@ def test_stempel_sekali_di_blok_angka_sebelum_tabel_dan_riwayat_rekening_sesudah
     items = [dict(_inv()["items"][0], description=f"b{i}", product_name=f"b{i}") for i in range(30)]
     h = _html(_inv(paid=1500000, items=items), [DP], cetak=date(2026, 10, 16))
     assert h.count('class="stempel ') == 1
-    i_stempel, i_tabel = h.index('class="stempel '), h.index("<table class=\"items-table")
+    i_stempel, i_tabel = h.index('class="stempel '), h.index('<table class="tabel-barang items-table"')
     i_ring, i_riw, i_rek = h.index('class="summary"'), h.index("Riwayat Pembayaran"), h.index("Rekening Pembayaran")
     assert i_stempel < i_tabel < i_ring < i_riw < i_rek
 
@@ -180,12 +180,12 @@ def test_rekening_tanpa_duplikasi_bank_dan_baris_transfer():
 
 
 def test_kolom_pola_po_dan_header_rata_kanan():
-    """PDF seragam 4 Nov 2026 (permintaan pemilik via MASTER): pola PO -- Qty + satuan satu sel, tanpa kolom Satuan/Disk% (dulu kolom
-    tetap 27 Sep Deskripsi 44 / Satuan 10 / Qty 8 / Harga 19 / Jumlah 19)."""
+    """Tabel SI = makro bersama tabel_barang, konfigurasi PO/FPB/ND (putusan pemilik "tabel pola PO untuk SEMUA dokumen", 4 Nov 2026;
+    dulu .si-table sendiri, kolom tetap 27 Sep Deskripsi/Satuan/Qty/Harga/Jumlah): Nama Barang | Kts. | @Harga | Diskon | Total."""
     h = _html(_inv())
-    assert re.search(r"\.si-table \.col-desc \{ width: (52|42)%; text-align: left; \}", h) and ".si-table .col-price { width: 16%; text-align: right; }" in h
-    assert ">Satuan</th>" not in h and ">Disk%</th>" not in h
-    assert ".si-table thead th.col-qty, .si-table thead th.col-disc, .si-table thead th.col-price, .si-table thead th.col-amount { text-align: right; }" in h
+    assert '<table class="tabel-barang items-table">' in h and "si-table" not in h
+    assert h.index("<th>Nama Barang</th>") < h.index('<th class="r">Kts.</th>') < h.index("@Harga</th>") < h.index("Diskon</th>") < h.index(">Total</th>")
+    assert ">Satuan</th>" not in h and ">Disk%</th>" not in h and ">Deskripsi</th>" not in h
 
 
 def test_tanpa_pill_status_dan_dicetak_tanggal_tenant():

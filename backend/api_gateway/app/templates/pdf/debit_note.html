@@ -51,14 +51,8 @@
       <div class="garis">Tgl.</div>
     </div>
   </div>
-  <div class="sum">
-    <div><span>Subtotal</span><span>Rp {{ dn.subtotal | rupiah(uang) }}</span></div>
-    {% if dn.item_discount_total and dn.item_discount_total|float > 0 %}<div><span>Diskon item</span><span>-Rp {{ dn.item_discount_total | rupiah(uang) }}</span></div>{% endif %}
-    {% if dn.discount_amount and dn.discount_amount|float > 0 %}<div><span>Diskon</span><span>-Rp {{ dn.discount_amount | rupiah(uang) }}</span></div>{% endif %}
-    {% if dn.tax_amount and dn.tax_amount|float > 0 %}<div><span>PPN{% if dn.tax_rate and dn.tax_rate|float > 0 %} {{ "%g" % (dn.tax_rate|float) }}%{% endif %}</span><span>Rp {{ dn.tax_amount | rupiah(uang) }}</span></div>{% endif %}
-    <div class="tot"><span>Total</span><span>Rp {{ dn.total_amount | rupiah(uang) }}</span></div>
-    <div class="terb">{{ dn.total_amount | terbilang }}</div>
-  </div>
+  {% from "_partials/ringkasan.html" import ringkasan %}
+  {{ ringkasan(RC.nota(dn), uang, 'sum', dn.total_amount | terbilang) }}
   </div>
 </div>
 

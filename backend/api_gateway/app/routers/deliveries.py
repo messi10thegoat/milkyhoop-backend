@@ -557,6 +557,7 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             f.asal AS asal,
             si.id AS invoice_id,
             si.invoice_number,
+            so.order_number AS sales_order_number,
             COALESCE(si.customer_id, so.customer_id) AS customer_id,
             c.nama AS customer_name,
             c.telepon AS customer_phone,
@@ -613,6 +614,7 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
         "asal": row["asal"],
         "invoice_id": str(row["invoice_id"]) if row["invoice_id"] else None,
         "invoice_number": row["invoice_number"],
+        "sales_order_number": row["sales_order_number"],   # PDF gudang 4 Nov 2026: referensi pesanan di meta SJ
         "customer_id": str(row["customer_id"]) if row["customer_id"] else None,
         "customer_name": row["customer_name"],
         "customer_phone": row["customer_phone"],

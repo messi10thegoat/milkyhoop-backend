@@ -102,9 +102,11 @@ def test_render_mencetak_angka_tersimpan_dan_menjumlah_di_atas_kertas():
     assert sum((i["net"] for i in d["items"]), Decimal("0")) == d["subtotal"] - d["item_discount_total"]
     html, _ = _html()
     for teks in ("Nota Kredit", "CN-2610-0099", "INV-2610-0007", "SO-2610-0003", "Retur barang", "PT Contoh Pelanggan",
-                 "Rp 300.000", "-Rp 30.000", "-Rp 27.000", "PPN (11%)", "Rp 26.730", "Total Nota Kredit", "Rp 269.730",
+                 "Rp 270.000", "Rp 30.000", "-Rp 27.000", "PPN 11%", "Rp 26.730", "Rp 269.730",
                  "Rp 170.000", "Dua kaos cacat jahitan", "Kaos Biru Konveksi"):
         assert teks in html, teks
+    # 4 Nov 2026 (ringkasan_cetak): Subtotal = SIGMA kolom Total (neto 270.000), diskon baris di kolom -> tanpa "Diskon item"
+    assert "Diskon item" not in html and "Rp 300.000" not in html
     assert "DIBATALKAN" not in html and "DRAF" not in html
 
 
@@ -113,7 +115,8 @@ def test_render_tanpa_diskon_dan_ppn_tak_mencetak_barisnya():
                     tax_rate=Decimal("0"), subtotal=Decimal("270000"), total_amount=Decimal("270000"),
                     items=[{"description": "Kaos", "quantity": Decimal("2.5"), "unit": None, "unit_price": Decimal("108000"),
                             "discount_amount": Decimal("0"), "net": Decimal("270000")}])
-    assert "Diskon" not in html and "PPN" not in html and "-Rp" not in html
+    # tabel = konfigurasi PO (4 Nov 2026): kepala kolom Diskon SELALU ("-"); baris ringkasan diskon/PPN tetap hanya bila ada
+    assert "Diskon item" not in html and "PPN" not in html and "-Rp" not in html and '<td class="r">-</td>' in html
     assert "2.5" in html or "2,5" in html
 
 

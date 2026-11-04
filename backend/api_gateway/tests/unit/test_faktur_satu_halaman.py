@@ -22,7 +22,7 @@ def test_faktur_30_baris_tetap_multi_halaman_dan_bernomor():
     """Multi-halaman tetap: 30 baris -> >= 2 halaman; nomor 'Halaman i dari N' tetap di @bottom-right invoice.css (teks
     PDF per halaman diperiksa di luar suite: 30 baris -> 'Halaman 1/2/3 dari 3')."""
     s = PS.get_pdf_service()
-    baris = [{"product_name": f"Kaos {i}", "qty": 1, "price": 100000, "subtotal": 100000} for i in range(30)]
+    baris = [{"product_name": f"Kaos {i}", "quantity": 1, "unit_price": 100000, "subtotal": 100000} for i in range(30)]   # kunci = muat_pdf_faktur
     data = {"invoice_number": "INV-T", "invoice_date": "2026-10-01", "due_date": "2026-10-08", "items": baris,
             "tenant": {"name": "Usaha"}, "customer": {"name": "Pelanggan"}, "subtotal": 3000000,
             "total_amount": 3000000, "amount_paid": 0, "amount_due": 3000000}

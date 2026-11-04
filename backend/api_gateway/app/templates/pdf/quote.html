@@ -51,19 +51,8 @@
 {{ tabel_barang(quote["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total"}, quote.has_cents) }}
 
 <div class="akhir">
-  <div class="sum">
-    <div><span>Subtotal</span><span>Rp {{ quote.subtotal | rupiah(quote.has_cents) }}</span></div>
-    {% if quote.discount_amount and quote.discount_amount|float > 0 %}
-    <div><span>Diskon{% if quote.discount_type == "percentage" %} {{ "%g" % (quote.discount_value|float) }}%{% endif %}</span><span>-Rp {{ quote.discount_amount | rupiah(quote.has_cents) }}</span></div>
-    {% endif %}
-    {%- if quote.shipping_amount and quote.shipping_amount|float > 0 %}{# P4 (1 Nov 2026): ongkos kirim = baris sendiri, sama dengan faktur (V290/V467); PPN ongkir sudah di baris PPN. Tanda - = HTML tanpa ongkir identik dengan sebelum P4. #}
-    <div><span>Ongkos kirim</span><span>Rp {{ quote.shipping_amount | rupiah(quote.has_cents) }}</span></div>
-    {%- endif %}
-    {% if quote.tax_amount and quote.tax_amount|float > 0 %}
-    <div><span>{{ tampil.label_pajak }}</span><span>Rp {{ quote.tax_amount | rupiah(quote.has_cents) }}</span></div>
-    {% endif %}
-    <div class="tot"><span>Total</span><span>Rp {{ quote.total_amount | rupiah(quote.has_cents) }}</span></div>
-  </div>
+  {% from "_partials/ringkasan.html" import ringkasan %}
+  {{ ringkasan(RC.penawaran(quote, tampil.label_pajak), quote.has_cents, 'sum') }}
   {% if quote.total_in_words %}<div class="terb">{{ quote.total_in_words }}</div>{% endif %}
 
   {% if quote.notes %}<div class="blk"><b>Catatan khusus</b><div class="pre">{{ quote.notes }}</div></div>{% endif %}

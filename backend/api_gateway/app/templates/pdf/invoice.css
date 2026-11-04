@@ -265,3 +265,18 @@ body {
 .riwayat-table .rw-jumlah { width: 20%; text-align: right; }
 .catatan-batal { background: #f5f4f0; border-radius: 8px; padding: 10px 14px; }
 .notes-redup { color: #6b6b6b; }
+
+/* ── Penutup keluarga Penjualan (SI, Nota Kredit): terbilang di bawah ringkasan; Catatan | TTD sebaris (dulu <style> SI, 4 Nov 2026) ── */
+.terbilang { text-align: right; font-style: italic; font-size: 9pt; margin: -10px 0 14px auto; max-width: 60%; }
+.penutup { display: grid; grid-template-columns: 1fr 220px; gap: 32px; margin-top: 8px; align-items: start; break-inside: avoid; }
+.ttd { margin: 0; width: 220px; text-align: right; font-size: 9.5pt; }
+.ttd .garis { border-top: 1px solid #1a1a1a; margin-top: 40px; padding-top: 4px; }
+/* Faktur Penjualan: Catatan + TTD (kiri) | ringkasan + terbilang (kanan) sebaris, utuh (pola FPB; TTD tak yatim di halaman 2) */
+.penutup-si { display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: start; break-inside: avoid; }
+.penutup-si .ttd { text-align: left; margin-top: 4px; }
+.penutup-si .summary { margin-bottom: 18px; }
+.penutup-si .terbilang { margin: -10px 0 14px 0; max-width: 300px; }
+/* tabel_barang (makro bersama) di bingkai invoice.css */
+.tabel-barang.items-table { table-layout: fixed; }
+.tabel-barang.items-table .r { text-align: right; }
+.tabel-barang.items-table .dt { font-size: 8.5pt; }

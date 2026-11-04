@@ -1,0 +1,30 @@
+{#
+  Ringkasan angka dokumen SATU sumber (PDF seragam 4 Nov 2026): baris disusun services/ringkasan_cetak (angka tersimpan; Subtotal =
+  SIGMA kolom Total baris, tanpa "Diskon item"). gaya "tabel" = keluarga invoice.css (SI, Nota Kredit); "sum" = keluarga penawaran.css
+  (Penawaran, PO, FPB, Nota Debit). terb = terbilang di dalam blok ringkasan (gaya sum).
+#}
+{% macro nilai(r, uang) -%}
+{%- if r.kelas == 'status' %}{{ r.nilai }}{% elif r.kelas == 'kurang' %}-Rp {{ r.nilai | rupiah(uang) }}{% else %}Rp {{ r.nilai | rupiah(uang) }}{% endif -%}
+{%- endmacro %}
+{% macro ringkasan(rows, uang, gaya, terb=none) -%}
+{% if gaya == 'tabel' %}
+<div class="summary">
+  <table class="summary-table">
+    {% for r in rows %}
+    <tr{% if 'tot' in r.kelas %} class="total-row"{% elif r.kelas == 'bayar' %} class="paid-row"{% elif r.kelas in ('sisa', 'status') %} class="due-row"{% endif %}>
+      <td class="label">{{ r.label }}</td>
+      <td class="value">{{ nilai(r, uang) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="sum">
+  {% for r in rows %}
+  {% if r.kelas == 'sisa' %}<div><b>{{ r.label }}</b><b>{{ nilai(r, uang) }}</b></div>
+  {% else %}<div{% if 'tot' in r.kelas %} class="tot"{% endif %}><span>{{ r.label }}</span><span{% if 'coret' in r.kelas %} class="coret"{% endif %}>{{ nilai(r, uang) }}</span></div>{% endif %}
+  {% endfor %}
+  {% if terb %}<div class="terb">{{ terb }}</div>{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}

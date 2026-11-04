@@ -187,6 +187,9 @@ class PDFService:
         # PDF keluarga (3 Nov 2026): terbilang SATU sumber (utils.terbilang) untuk semua templat
         from ..utils.terbilang import terbilang_rupiah
         self.jinja_env.filters["terbilang"] = terbilang_rupiah
+        # PDF seragam 4 Nov 2026: ringkasan angka SATU sumber (Subtotal = SIGMA kolom Total baris) -> _partials/ringkasan.html
+        from . import ringkasan_cetak
+        self.jinja_env.globals["RC"] = ringkasan_cetak
         self.jinja_env.filters["logo_rapat"] = logo_rapat   # kop pola Accurate (_partials/kop_usaha) + kwitansi
 
     @classmethod
@@ -504,6 +507,9 @@ class PDFService:
         # supaya kalau template A kelak menampilkannya, angkanya sama persis.
         invoice = dict(invoice)
         invoice.setdefault("terms_label", self._label_terms(invoice))
+        # kolom Total tabel = NETO baris (subtotal tersimpan = bruto, sales_doc_calc.line_net); ringkasan: ringkasan_cetak
+        from .ringkasan_cetak import _d
+        invoice["items"] = [dict(i, neto=_d(i.get("subtotal")) - _d(i.get("discount_amount"))) for i in invoice.get("items") or []]
         return {
             "invoice": invoice,
             "status_label": self.STATUS_LABELS.get(status, status.upper()),
@@ -873,8 +879,8 @@ class PDFService:
         SJ + GRN (kerangka FPB: kop_usaha, .atas, tabel tanpa harga, 3 TTD garis). Konteks = routers/deliveries.muat_pdf_surat_jalan."""
         d, s = delivery, delivery.get("serah") or {}
         metode = s.get("metode") or {}
-        meta = [("No. Surat Jalan", d.get("delivery_number") or "-"), ("Tanggal", self.format_date_indonesian(d.get("delivery_date"))),
-                ("No. Faktur", d.get("invoice_number") or "-")]
+        meta = [("No. Surat Jalan", d.get("delivery_number") or "-"), ("Tanggal", self.format_date_indonesian(d.get("delivery_date")))]
+        meta += [(label, d[k]) for label, k in (("No. Faktur", "invoice_number"), ("No. Pesanan", "sales_order_number")) if d.get(k)]   # kosong = tak dicetak
         if metode.get("jenis") == "ambil_sendiri":
             meta.append(("Cara serah", "Diambil sendiri" + (f" di {s['warehouse_name']}" if s.get("warehouse_name") else "")))
         elif metode.get("nama"):

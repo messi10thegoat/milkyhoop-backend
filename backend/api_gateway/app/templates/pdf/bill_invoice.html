@@ -97,26 +97,9 @@
   </div>
   {% endif %}
   </div>
-  <div class="sum">
-    <div><span>Subtotal</span><span>Rp {{ bill.subtotal | rupiah(uang) }}</span></div>
-    {% if bill.invoice_discount_total and bill.invoice_discount_total|float > 0 %}<div><span>Diskon faktur</span><span>-Rp {{ bill.invoice_discount_total | rupiah(uang) }}</span></div>{% endif %}
-    {% if bill.cash_discount_total and bill.cash_discount_total|float > 0 %}<div><span>Diskon tunai</span><span>-Rp {{ bill.cash_discount_total | rupiah(uang) }}</span></div>{% endif %}
-    {# Tarif nominal: kepala -> mayoritas baris -> efektif dari DPP (sama dgn templat lama) #}
-    {% set trs = namespace(rate=0, mixed=false, found=false) %}
-    {% if bill.tax_rate and bill.tax_rate|float > 0 %}{% set trs.rate = bill.tax_rate|float %}{% set trs.found = true %}
-    {% else %}{% for it in bill["items"] %}{% set r = (it.tax_rate or 0)|float %}{% if r > 0 %}{% if not trs.found %}{% set trs.rate = r %}{% set trs.found = true %}{% elif r != trs.rate %}{% set trs.mixed = true %}{% endif %}{% endif %}{% endfor %}{% endif %}
-    {% if not trs.found and bill.tax_amount and bill.dpp and bill.dpp|float > 0 %}{% set trs.rate = ((bill.tax_amount|float / bill.dpp|float) * 100)|round(2) %}{% set trs.found = true %}{% endif %}
-    {% if bill.tax_amount and bill.tax_amount|float > 0 %}
-    {% if bill.dpp %}<div><span>DPP</span><span>Rp {{ bill.dpp | rupiah(uang) }}</span></div>{% endif %}
-    <div><span>{% if trs.found and not trs.mixed %}PPN {{ trs.rate|round(0)|int }}%{% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</span><span>Rp {{ bill.tax_amount | rupiah(uang) }}</span></div>
-    {% endif %}
-    <div class="tot"><span>Total</span><span{% if c and c.jenis == 'batal' %} class="coret"{% endif %}>Rp {{ total | rupiah(uang) }}</span></div>
-    {% if not (c and c.jenis in ('batal', 'draf')) and bill.amount_paid and bill.amount_paid|float > 0 %}
-    <div><span>Dibayar</span><span>Rp {{ bill.amount_paid | rupiah(uang) }}</span></div>
-    <div><b>Sisa tagihan</b><b>Rp {{ bill.amount_due | rupiah(uang) }}</b></div>
-    {% endif %}
-    <div class="terb">{{ total | terbilang }}</div>
-  </div>
+  {# Ringkasan = SATU sumber services/ringkasan_cetak.faktur_pembelian (Subtotal = SIGMA kolom Total; dulu diskon baris tak tercetak) #}
+  {% from "_partials/ringkasan.html" import ringkasan %}
+  {{ ringkasan(RC.faktur_pembelian(bill), uang, 'sum', total | terbilang) }}
   </div>
 
   {% if c and c.riwayat %}

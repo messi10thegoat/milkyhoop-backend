@@ -15,11 +15,6 @@
   .meta-table { border-spacing: 20px 3px !important; }
   .summary { margin-bottom: 18px !important; }
   .notes-section { margin-bottom: 10px !important; }
-  /* PDF keluarga (3 Nov 2026): terbilang di bawah ringkasan + tanda tangan penjual (pola PO/penawaran) */
-  .terbilang { text-align: right; font-style: italic; font-size: 9pt; margin: -10px 0 14px auto; max-width: 60%; }
-  .penutup { display: grid; grid-template-columns: 1fr 220px; gap: 32px; margin-top: 8px; align-items: start; break-inside: avoid; }
-  .ttd { margin: 0; width: 220px; text-align: right; font-size: 9.5pt; }
-  .ttd .garis { border-top: 1px solid #1a1a1a; margin-top: 40px; padding-top: 4px; }
 </style>
 </head>
 <body>
@@ -43,7 +38,7 @@
             <h1 class="doc-title">Faktur Penjualan</h1>
         </div>
         {% if invoice.tenant and invoice.tenant.logo_data %}
-        <img src="{{ invoice.tenant.logo_data }}" class="company-logo" alt="">
+        <img src="{{ invoice.tenant.logo_data | logo_rapat }}" class="company-logo" alt="">
         {% endif %}
     </div>
 
@@ -140,157 +135,37 @@
 
     <div style="height: 28px;"></div>
 
-    <!-- 5. Line Items — pola PO/FPB (PDF seragam 4 Nov 2026, permintaan pemilik via MASTER; menggantikan kolom tetap 27 Sep
-         "Satuan | Qty | Disk%"): Qty + satuan satu sel, kolom Diskon HANYA bila ada diskon ("-" bila kosong), batch/exp = baris kecil. -->
-    {% set ns = namespace(has_disc=false) %}
-    {% for item in invoice["items"] %}{% if item.discount_percent and item.discount_percent|float > 0 %}{% set ns.has_disc = true %}{% endif %}{% endfor %}
-    <style>
-    .si-table .col-desc { width: {{ '42%' if ns.has_disc else '52%' }}; text-align: left; }
-    .si-table .col-qty { width: 14%; text-align: right; }
-    .si-table .col-disc { width: 10%; text-align: right; }
-    .si-table .col-price { width: 16%; text-align: right; }
-    .si-table .col-amount { width: 18%; text-align: right; }
-    .si-table thead th.col-qty, .si-table thead th.col-disc, .si-table thead th.col-price, .si-table thead th.col-amount { text-align: right; }
-    .si-table .rinci { font-size: 8pt; }
-    </style>
-    <table class="items-table si-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Deskripsi</th>
-                <th class="col-qty">Qty</th>
-                {% if ns.has_disc %}<th class="col-disc">Diskon</th>{% endif %}
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in invoice["items"] %}
-            <tr>
-                <td class="col-desc">{{ item.product_name or item.description or '-' }}
-                    {%- set rinci = [] -%}
-                    {%- if item.batch_no %}{% set _ = rinci.append('Batch ' ~ item.batch_no) %}{% endif -%}
-                    {%- if item.exp_date %}{% set _ = rinci.append('Exp ' ~ (item.exp_date | date_short)) %}{% endif -%}
-                    {% if rinci %}<br><span class="text-muted rinci">{{ rinci | join(' · ') }}</span>{% endif %}</td>
-                <td class="col-qty">{{ (item.qty or item.quantity) | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                {% if ns.has_disc %}<td class="col-disc">{% if item.discount_percent and item.discount_percent|float > 0 %}{{ "%g" % (item.discount_percent|float) }}%{% else %}-{% endif %}</td>{% endif %}
-                <td class="col-price">Rp {{ (item.price or item.unit_price) | rupiah(invoice.has_cents) }}</td>
-                <td class="col-amount">Rp {{ (item.subtotal or item.total) | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    {# 5. Line Items = makro bersama tabel_barang, konfigurasi PO/FPB/ND (putusan pemilik "tabel pola PO untuk SEMUA dokumen",
+         4 Nov 2026; dulu tabel .si-table sendiri): Kode bila ada SKU · Nama Barang · Kts. · @Harga · Diskon · Total.
+         Total = NETO baris (_konteks_faktur: subtotal tersimpan bruto - diskon baris); Subtotal ringkasan = SIGMA kolom ini. #}
+    {% from "_partials/tabel_barang.html" import tabel_barang %}
+    {{ tabel_barang(invoice["items"], {"desk": ["product_name", "description"], "qty": "quantity", "harga": "unit_price", "jumlah": "neto",
+                    "kode": "item_code", "kelas": "items-table", "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"},
+                    "diskon_selalu": true, "harga_dulu": true}, invoice.has_cents) }}
 
-    <!-- 6. Summary -->
-    <div class="summary">
-        <table class="summary-table">
-            <tr>
-                <td class="label">Subtotal</td>
-                <td class="value">Rp {{ invoice.subtotal | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% if invoice.item_discount_total and invoice.item_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon item</td>
-                <td class="value">-Rp {{ invoice.item_discount_total | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if invoice.invoice_discount_total and invoice.invoice_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon faktur</td>
-                <td class="value">-Rp {{ invoice.invoice_discount_total | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if invoice.discount_amount and invoice.discount_amount|float > 0 %}
-            <tr>
-                <td class="label">Diskon</td>
-                <td class="value">-Rp {{ invoice.discount_amount | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if invoice.cash_discount_total and invoice.cash_discount_total|float > 0 %}
-            <tr>
-                <td class="label">Diskon tunai</td>
-                <td class="value">-Rp {{ invoice.cash_discount_total | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {# V290: ongkos kirim = baris sendiri; PPN-nya sudah di baris PPN di bawah. #}
-            {% if invoice.shipping_amount and invoice.shipping_amount|float > 0 %}
-            <tr>
-                <td class="label">Ongkos kirim</td>
-                <td class="value">Rp {{ invoice.shipping_amount | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {# Resolve nominal tax rate: header → items (majority) → fallback effective from DPP #}
-            {% set _tax_amt = (invoice.tax_amount or 0)|float %}
-            {% set _dpp = (invoice.dpp or 0)|float %}
-            {% set trs = namespace(rate=(invoice.tax_rate or 0)|float, mixed=false, found=false) %}
-            {% if trs.rate > 0 %}{% set trs.found = true %}{% endif %}
-            {% if not trs.found and invoice["items"] %}
-                {% for it in invoice["items"] %}
-                    {% set r = (it.tax_rate or 0)|float %}
-                    {% if r > 0 %}
-                        {% if not trs.found %}
-                            {% set trs.rate = r %}
-                            {% set trs.found = true %}
-                        {% elif r != trs.rate %}
-                            {% set trs.mixed = true %}
-                        {% endif %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
-            {# Ongkir dikenai tarif lain dari barang (kode pajak ongkir eksplisit): label
-               satu tarif akan salah -> tampilkan sebagai campuran. #}
-            {% set _srate = (invoice.shipping_tax_rate or 0)|float %}
-            {% if trs.found and (invoice.shipping_tax_amount or 0)|float > 0 and _srate != trs.rate %}{% set trs.mixed = true %}{% endif %}
-            {% if not trs.found and _tax_amt > 0 and _dpp > 0 %}
-                {% set trs.rate = ((_tax_amt / _dpp) * 100)|round(2) %}
-                {% set trs.found = true %}
-            {% endif %}
-            {% if _tax_amt > 0 %}
-            {# 3c: faktor DPP != 1/1 (mis. 11/12) -> cetak dasar harga jual DAN nilai lain, supaya
-               tarif x DPP Nilai Lain = PPN bisa diperiksa dari kertasnya. #}
-            {% if invoice.show_dpp_nilai_lain %}
-            <tr>
-                <td class="label">DPP</td>
-                <td class="value">Rp {{ invoice.dpp_harga_jual_total | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            <tr>
-                <td class="label">DPP Nilai Lain</td>
-                <td class="value">Rp {{ invoice.dpp_nilai_lain_total | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            {% if invoice.dpp and not invoice.show_dpp_nilai_lain %}
-            <tr>
-                <td class="label">DPP</td>
-                <td class="value">Rp {{ invoice.dpp | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            <tr>
-                <td class="label">{% if trs.found and not trs.mixed %}PPN ({{ trs.rate|round(0)|int }}%){% elif trs.mixed %}Pajak (campuran){% else %}Pajak{% endif %}</td>
-                <td class="value">Rp {{ invoice.tax_amount | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-            <tr class="total-row">
-                <td class="label">Total</td>
-                <td class="value">Rp {{ (invoice.total_amount or invoice.amount or invoice.grand_total) | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% if c and c.jenis == 'batal' %}
-            <tr class="due-row">
-                <td class="label">Status</td>
-                <td class="value">Dibatalkan</td>
-            </tr>
-            {% elif (c and c.jenis != 'draf') or (invoice.amount_paid and invoice.amount_paid|float > 0) %}
-            <tr class="paid-row">
-                <td class="label">Dibayar</td>
-                <td class="value">Rp {{ invoice.amount_paid | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            <tr class="due-row">
-                <td class="label">Sisa tagihan</td>
-                <td class="value">Rp {{ invoice.amount_due | rupiah(invoice.has_cents) }}</td>
-            </tr>
-            {% endif %}
-        </table>
+    {# 6. Ringkasan = SATU sumber services/ringkasan_cetak.faktur_penjualan (Subtotal = SIGMA kolom Total; tanpa "Diskon item") #}
+    {# Catatan + TTD (kiri) SEBARIS ringkasan + terbilang (kanan) -- pola FPB (putusan MASTER 4 Nov 2026): riwayat/rekening sesudahnya
+       boleh mengalir, TTD tak pernah yatim di halaman berikutnya (dulu Catatan+TTD di paling akhir). #}
+    {% from "_partials/ringkasan.html" import ringkasan %}
+    <div class="penutup-si">
+    <div>
+    {% if invoice.notes %}
+    <div class="notes-section">
+        <div class="notes-label">Catatan</div>
+        <div class="notes-text">{{ invoice.notes }}</div>
     </div>
-    {# di LUAR .summary (flex rata kanan): di dalamnya terbilang menggeser tabel ringkasan ke kiri #}
+    {% endif %}
+    <div class="ttd">
+        <div>Hormat kami,</div>
+        {% if invoice.tenant and invoice.tenant.name %}<div>{{ invoice.tenant.name }}</div>{% endif %}
+        <div class="garis"></div>
+    </div>
+    </div>
+    <div>
+    {{ ringkasan(RC.faktur_penjualan(invoice), invoice.has_cents, 'tabel') }}
     <div class="terbilang">{{ (invoice.total_amount or invoice.amount or invoice.grand_total) | terbilang }}</div>
+    </div>
+    </div>
 
     {% if c and c.riwayat %}
     <div class="notes-section riwayat">
@@ -322,23 +197,6 @@
     {% if not c or c.tampil_rekening %}
     {% with dok = invoice %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}
     {% endif %}
-
-    {# Catatan + TTD SEBARIS (pola FPB, PDF seragam 4 Nov 2026): logo 96px menambah kepala ~36px -> TTD sendirian di hal. 2 #}
-    <div class="penutup">
-    <div>
-    {% if invoice.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ invoice.notes }}</div>
-    </div>
-    {% endif %}
-    </div>
-    <div class="ttd">
-        <div>Hormat kami,</div>
-        {% if invoice.tenant and invoice.tenant.name %}<div>{{ invoice.tenant.name }}</div>{% endif %}
-        <div class="garis"></div>
-    </div>
-    </div>
 
     <!-- 7. Footer -->
     <div class="footer-line">
