@@ -7,9 +7,9 @@ from app.services import pdf_service as PS
 def test_faktur_a_dicetak_ke_margin_dan_jarak_dirapatkan():
     src = (PS.TEMPLATE_DIR / "sales_invoice.html").read_text()
     kepala = src[:src.index("</head>")]
-    for aturan in (".footer-line { position: running(dicetak);",
-                   "@page { @bottom-left { content: element(dicetak); } }",   # margin 1.4cm + logo: dokumen.css (test_pdf_seragam)
-                   ".header { margin-bottom: 18px !important; }",
+    css = (PS.TEMPLATE_DIR / "invoice.css").read_text()   # 4 Nov 2026: footer "Dicetak" SATU sumber keluarga Penjualan
+    assert ".footer-line { position: running(dicetak);" in css and "@page { @bottom-left { content: element(dicetak); } }" in css
+    for aturan in (".header { margin-bottom: 18px !important; }",
                    ".meta-table { border-spacing: 20px 3px !important; }"):
         assert aturan in kepala, aturan
 

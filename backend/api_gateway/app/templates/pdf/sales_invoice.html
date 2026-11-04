@@ -6,9 +6,6 @@
      "Dicetak"). Pola proforma: "Dicetak…" keluar dari alur -> kotak margin @page bawah-kiri (running element),
      margin bawah 2.2cm -> 1.4cm, jarak vertikal dirapatkan. Teks & urutan isi tak berubah. Template A saja (B punya
      lembar gaya sendiri). !important krn invoice.css dimuat sesudah. */
-  .footer-line { position: running(dicetak); margin-top: 0 !important; padding-top: 0 !important;
-                 border-top: 0 !important; font-size: 8pt; color: #1a1a1a; }
-  @page { @bottom-left { content: element(dicetak); } }   /* margin: dokumen.css */
   .header { margin-bottom: 18px !important; }
   .meta-block { margin-bottom: 18px !important; }
   .parties { margin-bottom: 22px !important; }
