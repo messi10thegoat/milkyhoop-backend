@@ -134,3 +134,9 @@ def test_pemuat_pdf_mengisi_ongkir_dan_sen():
     for k in ('"shipping_amount": _ongkir_tersimpan(quote)[0]', '"shipping_tax_amount"', '"shipping_tax_rate"',
               'quote_data["shipping_amount"],'):
         assert k in src, k
+
+
+def test_logo_penawaran_dipangkas_seperti_kop_pembelian():
+    """Logo ber-padding (grapgrap 295x295, isi baris 88-208) tampil kecil -> filter logo_rapat SAMA dgn kop Pembelian (4 Nov 2026)."""
+    tpl = (pathlib.Path(PSV.__file__).resolve().parents[1] / "templates" / "pdf" / "quote.html").read_text()
+    assert "{{ company.logo_base64 | logo_rapat }}" in tpl and "logo_rapat" in PSV.get_pdf_service().jinja_env.filters

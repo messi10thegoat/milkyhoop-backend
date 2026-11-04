@@ -17,7 +17,7 @@
 
 <header>
   <div><h1>Penawaran Harga</h1><div class="en">Quotation</div></div>
-  {% if company and company.logo_base64 %}<img class="logo" src="{{ company.logo_base64 }}" alt="">{% endif %}
+  {% if company and company.logo_base64 %}<img class="logo" src="{{ company.logo_base64 | logo_rapat }}" alt="">{% endif %}
 </header>
 
 <div class="meta">
