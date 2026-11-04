@@ -14,6 +14,10 @@ class _KonnNeto:
     def __init__(self, bills, items):
         self.bills, self.items, self.sql = bills, items, []
 
+    async def fetchval(self, sql, *a):  # (a) HPP-NETO: neto_tagihan_terposting membaca Tenant.is_pkp (tagihan berpajak) -> PKP = perilaku lama
+        assert 'FROM "Tenant"' in sql
+        return True
+
     async def fetch(self, sql, *a):
         self.sql.append((sql, a))
         if "FROM bills" in sql:

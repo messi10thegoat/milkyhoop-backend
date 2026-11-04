@@ -70,7 +70,7 @@ def test_kartu_fpb_memakai_nilai_baris_bukan_harga_bruto(rel, nama):
 def test_hitung_debit_dan_kartu_satu_sumber_baris():
     hd = ast.unparse(_fungsi("services/tagihan_aksi.py", "hitung_debit"))
     nb = ast.unparse(_fungsi("services/tagihan_aksi.py", "nilai_baris"))
-    assert "neto_baris(rows, subtotal_dec)" in hd and "SQL_BARIS_DEBIT" in hd and "neto_baris(" in nb and "SQL_BARIS_DEBIT" in nb
+    assert "neto_baris(bobot(rows, kapital), subtotal_dec)" in hd and "SQL_BARIS_DEBIT" in hd and "neto_baris(" in nb and "SQL_BARIS_DEBIT" in nb
 
 
 class KonKirim:

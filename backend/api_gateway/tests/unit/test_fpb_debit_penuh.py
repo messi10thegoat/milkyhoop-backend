@@ -31,7 +31,7 @@ def _tubuh_create():
 
 def test_create_posted_memakai_hitung_debit_bukan_salinan():
     src = _tubuh_create()
-    assert "await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id)" in src
+    assert "await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id" in src  # (b) HPP-NETO: + grn None, kapital_ppn
     assert "TA.memo_debit(acct_id, is_inv, vendor_name, None)" in src
     for salinan in ("_accumulate(", "acct_totals", "AccountRole.COGS_SERVICE", "debit_rows"):
         assert salinan not in src, salinan

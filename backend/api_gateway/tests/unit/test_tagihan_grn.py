@@ -80,7 +80,7 @@ def test_memo_grn_dan_lama():
 def test_post_bill_kunci_blok_lewati_inbound_tautan():
     pb = BS[BS.index("    async def post_bill("):BS.index("    async def update_bill_v2(")]
     i_kunci_bill = pb.index("FOR UPDATE")
-    i_grn = pb.index("await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True)")
+    i_grn = pb.index("await TA.rencana_grn(conn, tenant_id, bill_id, Decimal(str(subtotal)), kunci=True")  # (b) + kapital=kapital_ppn
     assert i_kunci_bill < i_grn < pb.index("get_next_journal_number")  # tagihan -> PO -> nomor
     assert 'return {"success": False, "message": _grn["blocks"][0]["message"], "data": None}' in pb
     assert "_total_header," in pb and "bill[\"vendor_name\"], line_number, _grn," in pb
@@ -93,5 +93,5 @@ def test_void_balik_tautan_dan_pratinjau_sama():
     assert "_gt.balik_tautan(conn," in vb and vb.index("_gt.balik_tautan(") < vb.index("pulihkan_tagih(")
     ta = (APP / "services/tagihan_aksi.py").read_text()
     rp = ta[ta.index("async def rencana_posting("):]
-    assert "await rencana_grn(conn, tid, b[\"id\"], total - pajak)" in rp and "bloks += grn[\"blocks\"]" in rp
+    assert "dasar, kapital = dasar_tagihan(total, pajak, akun[\"vat\"])" in rp and "await rencana_grn(conn, tid, b[\"id\"], dasar, kapital=kapital)" in rp and "bloks += grn[\"blocks\"]" in rp  # (b) dasar SAMA dgn post_bill (non-PKP: PPN dikapitalisasi)
     assert "kunci=True" not in rp  # pratinjau tanpa kunci

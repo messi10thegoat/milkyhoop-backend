@@ -55,7 +55,7 @@ def test_jalur_buat_langsung_baris_tanpa_produk_lewat_penentu_satu():
     # FPB-DEBIT-PENUH (30 Okt 2026): jalur buat-langsung kini memanggil TA.hitung_debit SELURUHNYA (tak ada lagi cabang `pid is None`
     # sendiri); baris tanpa produk di hitung_debit -> akun_beban_default(item_type None) -> COGS_SALES (bukan Persediaan, is_inv False).
     src = textwrap.dedent(inspect.getsource(BS.BillsService.create_bill_v2))
-    assert "await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id)" in src
+    assert "await TA.hitung_debit(conn, tenant_id, bill_id, subtotal_dec, debit_acct_id" in src  # (b) HPP-NETO: + grn None, kapital_ppn
     assert "_accumulate(debit_acct_id, net_dec, True)" not in src   # cabang lama Persediaan tak kembali
     rows = [{"id": uuid4(), "product_id": None, "net": Decimal("7"), "item_type": None, "track_inventory": None, "purchase_account_id": None}]
     assert asyncio.run(TA.hitung_debit(_K(rows=rows), "t", uuid4(), Decimal("7"), uuid4())) == [(AKUN["COGS_SALES"], Decimal("7"), False)]
