@@ -80,17 +80,21 @@ async def _blok_qty_po(conn, tid: str, bill_id, items: list) -> list:
     if not ini:
         return []
     out = []
-    for r in await conn.fetch(
+    rows = await conn.fetch(
             """SELECT poi.id, poi.quantity, poi.unit, po.po_number,
                       COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
                                 WHERE bi.purchase_order_item_id = poi.id AND b.id <> $2
                                   AND COALESCE(b.status_v2, b.status) <> 'void'), 0) AS tertagih
                FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id AND po.tenant_id = $1
-               WHERE poi.id = ANY($3::uuid[]) ORDER BY po.po_number, poi.id""", tid, bill_id, list(ini)):
-        dipesan, tertagih = Decimal(str(r["quantity"] or 0)), Decimal(str(r["tertagih"] or 0))
-        if tertagih + ini[r["id"]] > dipesan:
+               WHERE poi.id = ANY($3::uuid[]) ORDER BY po.po_number, poi.id""", tid, bill_id, list(ini))
+    from .grn_rencana import batas_tagih
+    batas = await batas_tagih(conn, tid, list(ini))  # TERIMA-TABEL: MAX(dipesan, diterima GRN aktif) -- SATU sumber dgn to-bill
+    for r in rows:
+        bt, tertagih = batas[str(r["id"])], Decimal(str(r["tertagih"] or 0))
+        if tertagih + ini[r["id"]] > bt["batas"]:
             from .teks_galat import qty as _q
-            out.append(blok("PO_QTY_TERLAMPAUI", f"Jumlah ditagih melebihi pesanan {r['po_number']}: dipesan {_q(dipesan)}, sudah ditagih (termasuk draf) "
+            dasar = f"dipesan {_q(bt['dipesan'])}" if bt["batas"] == bt["dipesan"] else f"diterima {_q(bt['batas'])}"
+            out.append(blok("PO_QTY_TERLAMPAUI", f"Jumlah ditagih melebihi pesanan {r['po_number']}: {dasar}, sudah ditagih (termasuk draf) "
                                                  f"{_q(tertagih)}, tagihan ini {_q(ini[r['id']])}. Kurangi jumlah tagihan."))
     return out
 

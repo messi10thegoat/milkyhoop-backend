@@ -182,11 +182,18 @@ def rencana_hapus(po) -> dict:
 
 
 # ---------------------------------------------------------------- terima
+async def toleransi_terima(conn, tenant_id: str) -> Decimal:
+    """TERIMA-TABEL (V477): persen lebih-terima yang diizinkan per tenant (purchase_settings); tanpa baris = 0 = perilaku lama."""
+    return _d(await conn.fetchval("SELECT penerimaan_toleransi_persen FROM purchase_settings WHERE tenant_id = $1", tenant_id) or 0)
+
+
 async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini, kunci: bool = True, notes: Optional[str] = None,
                          sj_vendor: Optional[str] = None) -> dict:
-    """items: [{po_item_id, quantity_received}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks, baris[], nilai_diterima (penerimaan ini),
-    amount_received_sesudah, status_sesudah, payload}. Aturan & urutan = /receive."""
-    bloks = []
+    """items: [{po_item_id, quantity_received, quantity_rejected?, reject_reason?}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks,
+    notes, baris[], nilai_diterima (penerimaan ini, yang diterima saja), amount_received_sesudah, status_sesudah, toleransi_persen, payload}.
+    Aturan & urutan = /receive. TERIMA-TABEL (4 Nov 2026): DITOLAK hanya dicatat di baris GRN (bukan stok/HPP/jurnal/tagih) dan TIDAK
+    mengurangi sisa (pola NetSuite/Odoo: barang pengganti masih ditunggu). Lebih-terima boleh sampai sisa x (1 + toleransi%)."""
+    bloks, catatan = [], []
     from . import grn_rencana as G
     aturan_d = po["status"] in STATUS_DITAGIH and await G.aktif(conn, po.get("tenant_id"))
     if po["status"] not in (STATUS_BISA_TERIMA_D if aturan_d else STATUS_BISA_TERIMA):
@@ -206,32 +213,60 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
                  for r in semua if _d(r["quantity"]) - _d(r["quantity_received"]) > NOL]
         if not items:
             bloks.append(blok("TAK_ADA_SISA_TERIMA", "Semua barang pesanan ini sudah diterima."))
-    akan = {}
+    toleransi = await toleransi_terima(conn, po.get("tenant_id"))
+    akan, tolak, alasan = {}, {}, {}
     for it in items:
-        pid, qty = str(it["po_item_id"]), _d(it["quantity_received"])
+        pid, qty, ditolak = str(it["po_item_id"]), _d(it["quantity_received"]), _d(it.get("quantity_rejected"))
         r = peta.get(pid)
         if r is None:
             bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
             continue
+        if qty < NOL or ditolak < NOL:
+            if not any(b["code"] == "QTY_NEGATIF" for b in bloks):
+                bloks.append(blok("QTY_NEGATIF", "Jumlah tidak boleh negatif."))
+            continue
+        nama = r.get("description") or pid
         sisa = _d(r["quantity"]) - _d(r["quantity_received"])
-        if qty > sisa:
+        batas = sisa * (1 + toleransi / 100)
+        if toleransi == NOL and qty > sisa:  # toleransi 0 = blok lama PERSIS
             bloks.append(blok("QTY_MELEBIHI_SISA", f"Jumlah diterima ({qty}) melebihi sisa ({sisa})."))
+        elif qty > batas:
+            bloks.append(blok("QTY_MELEBIHI_TOLERANSI", f"Jumlah diterima {nama} ({qty}) melebihi sisa ({sisa}) lebih dari toleransi {toleransi:f}%."))
+        elif qty > sisa:
+            catatan.append({"code": "RECEIPT_LEBIH", "message": f"Diterima {qty - sisa} lebih dari pesanan (dalam toleransi {toleransi:f}%)."})
+        if ditolak > NOL and qty + ditolak > max(batas, sisa):  # yang datang = diterima + ditolak, paling banyak sisa (+ toleransi)
+            bloks.append(blok("QTY_DITOLAK_MELEBIHI", f"Jumlah ditolak {nama} ({ditolak}) melebihi yang datang."))
         akan[pid] = akan.get(pid, NOL) + qty
+        tolak[pid] = tolak.get(pid, NOL) + ditolak
+        if ditolak > NOL and (it.get("reject_reason") or "").strip():
+            alasan[pid] = it["reject_reason"].strip()[:200]
+    if items and not bloks and all(v == NOL for v in akan.values()) and all(v == NOL for v in tolak.values()):
+        bloks.append(blok("BARIS_KOSONG", "Isi jumlah diterima atau ditolak minimal satu barang."))
+    if any(v > NOL for v in tolak.values()) and not await G.aktif(conn, po.get("tenant_id")):
+        bloks.append(blok("DITOLAK_BUTUH_PENERIMAAN", "Pencatatan barang ditolak butuh fitur Penerimaan Barang."))
     sebelum = PD.jumlah_turunan([dict(r) for r in semua])["amount_received"]
     sesudah_baris = [{**dict(r), "quantity_received": _d(r["quantity_received"]) + akan.get(str(r["id"]), NOL)} for r in semua]
     sesudah = PD.jumlah_turunan(sesudah_baris)["amount_received"]
     lengkap = all(_d(r["quantity_received"]) >= _d(r["quantity"]) for r in sesudah_baris)
-    baris = [{"po_item_id": str(r["id"]), "description": r.get("description"), "unit": r.get("unit"), "qty": _d(r["quantity"]),
-              "sudah_diterima": _d(r["quantity_received"]), "sisa": _d(r["quantity"]) - _d(r["quantity_received"]),
-              "akan_diterima": akan.get(str(r["id"]), NOL)} for r in semua]
+    baris = []
+    for r in semua:
+        k, sisa = str(r["id"]), _d(r["quantity"]) - _d(r["quantity_received"])
+        baris.append({"po_item_id": k, "description": r.get("description"), "unit": r.get("unit"), "qty": _d(r["quantity"]),
+                      "sudah_diterima": _d(r["quantity_received"]), "sisa": sisa, "akan_diterima": akan.get(k, NOL),
+                      "akan_ditolak": tolak.get(k, NOL), "sisa_sesudah": max(sisa - akan.get(k, NOL), NOL),
+                      "lebih": max(akan.get(k, NOL) - sisa, NOL), "toleransi_persen": toleransi})
     payload = {"receive_date": receive_date.isoformat(),
-               "items": [{"po_item_id": k, "quantity_received": str(v)} for k, v in akan.items() if v > NOL]}
+               "items": [{"po_item_id": k, "quantity_received": str(akan.get(k, NOL)),
+                          **({"quantity_rejected": str(tolak[k])} if tolak.get(k, NOL) > NOL else {}),
+                          **({"reject_reason": alasan[k]} if k in alasan else {})}
+                         for k in dict.fromkeys([*akan, *tolak]) if akan.get(k, NOL) > NOL or tolak.get(k, NOL) > NOL]}
     # GRN-SJ-VENDOR (2 Nov 2026): payload = badan /receive LENGKAP (catatan + No. SJ vendor); tanpa nilai = kunci tak ditambahkan
     if notes is not None:
         payload["notes"] = notes
     if sj_vendor is not None:
         payload["vendor_delivery_note"] = sj_vendor
-    return {"blocks": bloks, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
+    return {"blocks": bloks, "notes": catatan, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
+            "toleransi_persen": toleransi, "tolak": tolak, "alasan": alasan,
             # (D) PO yang sudah ditagih: status penagihan tetap (penerimaan tak menurunkannya; po_daftar.sinkron_tagih -- tagih menang)
             "status_sesudah": po["status"] if aturan_d else ("received" if lengkap else "partial_received"), "payload": payload, "akan": akan,
             "semua": semua}
@@ -253,11 +288,25 @@ def _po_disc_pct(po_item, qty, unit_price) -> Decimal:
     return Decimal("0")
 
 
+async def kode_pajak_masukan(conn, tenant_id: str, tarif) -> Optional[UUID]:
+    """TERIMA-TABEL (5): kode pajak MASUKAN aktif dengan tarif sama (is_default dulu, lalu kode); tarif 0 / tak ada -> None.
+    purchase_order_items.tax_code (teks) belum pernah terisi di produksi (terukur 4 Nov) -> dipetakan dari tarif."""
+    if _d(tarif) <= NOL:
+        return None
+    return await conn.fetchval(
+        """SELECT id FROM tax_codes WHERE tenant_id = $1 AND is_active AND direction = 'input' AND rate = $2
+           ORDER BY is_default DESC, code LIMIT 1""", tenant_id, _d(tarif))
+
+
 async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> dict:
-    """items: [{po_item_id, quantity_to_bill?}] atau None = semua sisa belum tertagih. Aturan & rumus = /to-bill (BillCalculator per baris
-    HALF_UP + pajak per baris 2dp HALF_UP; satu rumus dgn bill manual create_bill_v2). -> {blocks, lines, bill_subtotal, bill_tax, bill_total}."""
+    """items: [{po_item_id, quantity_to_bill?}] atau None = semua sisa. Aturan & rumus = /to-bill (BillCalculator per baris HALF_UP + pajak per
+    baris 2dp HALF_UP; satu rumus dgn bill manual create_bill_v2). -> {blocks, lines, bill_subtotal, bill_tax, bill_total, tax_rate, tax_code_id}.
+    TERIMA-TABEL (4 Nov 2026, putusan MASTER): 3-ARAH KETAT -- PO dengan GRN aktif: qty dasar = diterima - ditagih (dasar "diterima");
+    tanpa GRN = dipesan - ditagih ("dipesan", perilaku lama). Pajak: kode masukan dari tarif baris (header 0) atau tarif header PO."""
     from decimal import ROUND_HALF_UP
+    from . import grn_rencana as G
     from .bills_service import BillCalculator
+    from .tax_factor import resolve_dpp_factor
     bloks = []
     if po["status"] not in STATUS_BISA_DITAGIH:
         bloks.append(blok("PO_TAK_BISA_DITAGIH", f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibuatkan tagihan."))
@@ -275,21 +324,22 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
             if not po_item:
                 bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
                 continue
-            unbilled = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_billed"] or 0)
+            bt = (await G.batas_tagih(conn, po["tenant_id"], [po_item["id"]]))[str(po_item["id"])]
             q = it.get("quantity_to_bill")
-            qty = Decimal(str(q)) if q else unbilled
-            if qty > unbilled:
-                bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH", f"Jumlah ditagih ({qty}) melebihi sisa belum tertagih ({unbilled})."))
+            qty = Decimal(str(q)) if q else bt["qty_dasar"]
+            if qty > bt["qty_dasar"]:
+                teks = "sisa belum tertagih" if bt["dasar"] == "dipesan" else "yang diterima belum ditagih"
+                bloks.append(blok("QTY_MELEBIHI_SISA_TAGIH", f"Jumlah ditagih ({qty}) melebihi {teks} ({bt['qty_dasar']})."))
                 continue
-            pilih.append({"po_item": po_item, "quantity": qty})
+            pilih.append({"po_item": po_item, "quantity": qty, "batas": bt})
     else:
-        rows = await conn.fetch(
-            "SELECT * FROM purchase_order_items WHERE po_id = $1 AND quantity > COALESCE(quantity_billed, 0) ORDER BY line_number" + kuncian,
-            po["id"])
-        pilih = [{"po_item": r, "quantity": Decimal(r["quantity"]) - Decimal(r["quantity_billed"] or 0)} for r in rows]
+        rows = await conn.fetch("SELECT * FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number" + kuncian, po["id"])
+        bts = await G.batas_tagih(conn, po["tenant_id"], [r["id"] for r in rows]) if rows else {}
+        pilih = [{"po_item": r, "quantity": bts[str(r["id"])]["qty_dasar"], "batas": bts[str(r["id"])]}
+                 for r in rows if bts[str(r["id"])]["qty_dasar"] > NOL]
     if not pilih and not any(b["code"] in ("BARIS_TIDAK_DITEMUKAN", "QTY_MELEBIHI_SISA_TAGIH") for b in bloks):
         bloks.append(blok("TAK_ADA_SISA_TAGIH", "Tidak ada baris yang belum ditagih."))
-    lines = []
+    lines, kode = [], {}
     for item in pilih:
         po_item = item["po_item"]
         qty = Decimal(str(item["quantity"]))
@@ -299,16 +349,24 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
         tax_rate = Decimal(str(po_item["tax_rate"] or 0))
         item_tax = (float((Decimal(str(ic["subtotal"])) * tax_rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                     if tax_rate > 0 else 0)  # DPP = subtotal (cermin create_bill_v2)
+        if tax_rate not in kode:
+            kode[tax_rate] = await kode_pajak_masukan(conn, po["tenant_id"], tax_rate)
         lines.append({"po_item": po_item, "qty": qty, "unit_price": unit_price, "disc_pct": disc_pct, "ic": ic,
-                      "tax_rate": float(po_item["tax_rate"] or 0), "tax": item_tax})
+                      "tax_rate": float(po_item["tax_rate"] or 0), "tax": item_tax, "tax_code_id": kode[tax_rate], "batas": item["batas"]})
+    # pajak header PO (baris tanpa pajak): ikut ke tagihan dengan kode masukan + faktor DPP-nya (dulu hilang diam)
+    tarif_h = _d(po.get("tax_rate")) if not any(ln["tax"] for ln in lines) else NOL
+    kode_h = await kode_pajak_masukan(conn, po["tenant_id"], tarif_h) if tarif_h > NOL else None
     if lines:
+        faktor = await resolve_dpp_factor(conn, po["tenant_id"], kode_h, tarif_h, "input") if tarif_h > NOL else (1, 1)
         calc = BillCalculator.calculate(
             items=[{"qty": ln["qty"], "price": ln["unit_price"], "discount_percent": ln["disc_pct"]} for ln in lines],
             invoice_discount_percent=Decimal("0"), invoice_discount_amount=0.0, cash_discount_percent=Decimal("0"),
-            cash_discount_amount=0.0, tax_rate=0, dpp_factor=(1, 1))  # tarif header 0: pajak PO dijumlah per baris -> tanpa DPP-NL
+            cash_discount_amount=0.0, tax_rate=float(tarif_h), dpp_factor=faktor)  # tarif header 0: pajak per baris dijumlah
         bill_subtotal = calc["subtotal"]
-        bill_tax = float(sum(Decimal(str(ln["tax"])) for ln in lines))
-        bill_total = float((Decimal(str(calc["grand_total"])) + Decimal(str(bill_tax))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        bill_tax = float(sum(Decimal(str(ln["tax"])) for ln in lines)) if tarif_h == NOL else calc["tax_amount"]
+        bill_total = (float((Decimal(str(calc["grand_total"])) + Decimal(str(bill_tax))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                      if tarif_h == NOL else calc["grand_total"])
     else:
         bill_subtotal = bill_tax = bill_total = 0.0
-    return {"blocks": bloks, "lines": lines, "bill_subtotal": bill_subtotal, "bill_tax": bill_tax, "bill_total": bill_total}
+    return {"blocks": bloks, "lines": lines, "bill_subtotal": bill_subtotal, "bill_tax": bill_tax, "bill_total": bill_total,
+            "tax_rate": float(tarif_h), "tax_code_id": kode_h}
