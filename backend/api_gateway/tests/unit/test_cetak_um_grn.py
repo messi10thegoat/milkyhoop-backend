@@ -1,6 +1,6 @@
 """PDF Uang Muka Pembelian + Penerimaan Barang (25 Okt 2026, audit simetri Pembelian WORKSPACE): /documents/{vendor_deposit|goods_receipt}/{id}/html|pdf.
 Kontrak: pemuat services/cetak_<jenis> (tenant eksplisit, 404, saldo UM dari jurnal) + render (UM = kwitansi.html arah KELUAR, stempel DIBAYAR;
-GRN = goods_receipt.html kembaran Surat Jalan, tanpa harga, teks tanpa abu) + routers/dokumen JENIS_CETAK (cetak, BUKAN bagikan) + izin GET R."""
+GRN = dokumen_gudang.html SAMA dengan Surat Jalan, tanpa harga) + routers/dokumen JENIS_CETAK (cetak, BUKAN bagikan) + izin GET R."""
 import asyncio
 import re
 import uuid
@@ -164,8 +164,9 @@ def _gr(**k):
     return d
 
 
-def _brs(desc, qty, ret=0, unit="m", kode=None):
-    return {"description": desc, "item_code": kode, "quantity": Decimal(qty), "quantity_returned": Decimal(ret), "unit": unit}
+def _brs(desc, qty, ret=0, unit="m", kode=None, tolak=0, alasan=None):
+    return {"description": desc, "item_code": kode, "quantity": Decimal(qty), "quantity_returned": Decimal(ret), "unit": unit,
+            "quantity_rejected": Decimal(tolak), "reject_reason": alasan}
 
 
 def test_gr_404_tenant_lain():
@@ -181,10 +182,11 @@ def test_gr_konteks():
     g = _jalan(CG.muat_pdf_goods_receipt(c, {"tenant_id": TID}, gr["id"]))["gr_data"]
     assert g["receipt_number"] == "GRN-2610-0002" and g["po_number"] == "PO-2610-0003" and g["warehouse_name"] == "Gudang Utama"
     assert g["vendor_alamat"] == "Jl. Tekstil 5\nBandung" and g["vendor_telepon"] == "0813"
-    assert [b["description"] for b in g["items"]] == ["Kain katun", "Kancing"] and g["ada_retur"] is True
+    assert [b["description"] for b in g["items"]] == ["Kain katun", "Kancing"] and g["items"][1]["quantity_returned"] == Decimal("5")
+    assert "i.quantity_rejected, i.reject_reason" in c.sql[-1][0] if c.sql[-1][0].lstrip().startswith("SELECT i.") else True
     tanpa = _ConnGR(gr, None, [_brs("Kain katun", "20")])
     g2 = _jalan(CG.muat_pdf_goods_receipt(tanpa, {"tenant_id": TID}, gr["id"]))["gr_data"]
-    assert g2["ada_retur"] is False and g2["vendor_alamat"] is None and g2["vendor_telepon"] is None  # kolom Qty Diretur hanya bila ada retur
+    assert g2["vendor_alamat"] is None and g2["vendor_telepon"] is None
     sql = c.sql[0][0]
     for join in ("po.tenant_id = g.tenant_id", "v.tenant_id = g.tenant_id", "w.tenant_id = g.tenant_id", "g.tenant_id = $2"):
         assert join in sql
@@ -224,30 +226,33 @@ def test_render_vd_draf_tanpa_stempel_batal_bertanda():
     assert "DIBATALKAN" in h and "kw-stempel-diterima" not in h
 
 
+PS_CSS_GUDANG = __import__("app.services.pdf_service", fromlist=["x"]).CSS_PENAWARAN   # = Surat Jalan
+
+
 def _gd(**k):
     d = {"id": "x", "receipt_number": "GRN-2610-0002", "receipt_date": "2026-10-24", "status": "posted", "notes": "Kardus penyok 1",
          "voided_at": None, "voided_reason": None, "po_number": "PO-2610-0003", "po_ref_no": None, "warehouse_name": "Gudang Utama",
          "vendor_name": "PT Kain Jaya", "vendor_alamat": "Jl. Tekstil 5\nBandung", "vendor_telepon": "0813",
-         "items": [_brs("Kain katun", "20", kode="KT-1")], "ada_retur": False}
+         "items": [_brs("Kain katun", "20", kode="KT-1")]}
     d.update(k)
     return d
 
 
 def test_render_gr_isi_tanpa_harga_tanpa_abu():
+    """GRN = dokumen_gudang.html SAMA dengan Surat Jalan (4 Nov 2026; goods_receipt.html lama dihapus)."""
     r = _ps().render_goods_receipt(_gd(), TENANT)
     h = r.html
-    for teks in ("PENERIMAAN BARANG", "GRN-2610-0002", "PO-2610-0003", "Gudang Utama", "PT Kain Jaya", "Kain katun", "Kode: KT-1",
-                 "Kardus penyok 1", "Diserahkan oleh,", "Diterima oleh,", "Usaha Uji"):
+    for teks in ("Penerimaan Barang", "GRN-2610-0002", "PO-2610-0003", "Gudang Utama", "PT Kain Jaya", "Kain katun", "KT-1",
+                 "Kardus penyok 1", "Diserahkan oleh,", "Diterima oleh,", "Diperiksa oleh,", "Usaha Uji", "<th>Kode</th>", ">Diterima</th>"):
         assert teks in h, teks
-    assert "Qty Diretur" not in h and "Rp" not in h and "DIBATALKAN" not in h
-    for abu in ("#666", "#777", "#888", "#999", "#aaa", "#555", "#444"):
-        assert abu not in h.lower(), abu
-    assert "invoice.css" in r.css and r.font
+    assert "Diretur" not in h and "Ditolak" not in h and "Rp" not in h and "DIBATALKAN" not in h
+    assert "_partials/kop_usaha" not in h and 'class="kop"' in h and r.css == PS_CSS_GUDANG and r.font
 
 
-def test_render_gr_retur_dan_batal():
-    h = _ps().render_goods_receipt(_gd(items=[_brs("Kancing", "100", ret="5", unit="pcs")], ada_retur=True), TENANT).html
-    assert "Qty Diretur" in h
+def test_render_gr_retur_ditolak_dan_batal():
+    h = _ps().render_goods_receipt(_gd(items=[_brs("Kancing", "100", ret="5", unit="pcs"),
+                                              _brs("Kain", "18", unit="m", tolak="2", alasan="Robek")]), TENANT).html
+    assert ">Diretur</th>" in h and ">Ditolak</th>" in h and "5 pcs" in h and "2 m · Robek" in h
     h = _ps().render_goods_receipt(_gd(status="void", voided_reason="Salah PO",
                                        voided_at=datetime(2026, 10, 25, 3, tzinfo=timezone.utc)), TENANT).html
     assert "DIBATALKAN" in h and "Salah PO" in h

@@ -147,8 +147,10 @@ def test_pdf_dan_ekspor():
     # pembaca AMAN sebelum/tanpa kolom V472 (urutan migrasi/rollback terbalik): to_jsonb(g)->>'..' + .get; HANYA INSERT wajib kolom
     assert "to_jsonb(g)->>'vendor_delivery_note' AS vendor_delivery_note" in s and '"vendor_delivery_note": gr.get("vendor_delivery_note")' in s
     assert "g.vendor_delivery_note" not in s
-    t = (APP / "templates/pdf/goods_receipt.html").read_text()
-    assert "{% if gr.vendor_delivery_note %}<tr><td>No. SJ Vendor</td><td>:</td><td>{{ gr.vendor_delivery_note }}</td></tr>{% endif %}" in t
+    from app.services.pdf_service import PDFService   # GRN = dokumen_gudang.html (4 Nov 2026): meta "No. SJ Vendor" hanya bila terisi
+    gr = {"receipt_number": "GRN-1", "status": "posted", "items": []}
+    assert "<b>No. SJ Vendor</b><span>SJ-8</span>" in PDFService().render_goods_receipt({**gr, "vendor_delivery_note": "SJ-8"}, {}).html
+    assert "No. SJ Vendor" not in PDFService().render_goods_receipt(gr, {}).html
     spec = BE.SPEC_BELI["goods-receipts"]
     assert "to_jsonb(g)->>'vendor_delivery_note' AS vendor_delivery_note" in spec.sql and "g.vendor_delivery_note" not in spec.sql
     rows = [{"id": 1, "vendor_name": "V", "receipt_number": "GRN-1", "receipt_date": None, "po_number": "PO-1", "warehouse_name": None,
