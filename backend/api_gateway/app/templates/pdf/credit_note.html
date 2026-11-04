@@ -81,82 +81,66 @@
         </div>
     </div>
 
-    <!-- 4. Hero: nilai kredit yang diberikan -->
-    <div class="hero">
-        <div class="hero-amount">Rp {{ credit_note.total_amount | currency }}</div>
-        <div class="hero-due">Kredit untuk pelanggan{% if credit_note.original_invoice_number %} atas faktur {{ credit_note.original_invoice_number }}{% endif %}</div>
-    </div>
+    {# Tanpa angka besar (simetri Nota Debit, putusan MASTER 4 Nov 2026); tabel = makro bersama tabel_barang di bingkai invoice.css #}
+    {% set uang = credit_note.has_cents %}
+    {% from "_partials/tabel_barang.html" import tabel_barang %}
+    {{ tabel_barang(credit_note["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "net", "kelas": "items-table"}, uang) }}
 
-    <div style="height: 16px;"></div>
-
-    <!-- 5. Rincian -->
-    <table class="items-table">
-        <thead>
-            <tr>
-                <th class="col-desc">Keterangan</th>
-                <th class="col-qty">Qty</th>
-                <th class="col-price">Harga satuan</th>
-                <th class="col-amount">Jumlah</th>
-            </tr>
-        </thead>
-        <tbody>
-            {# bracket notation: credit_note["items"] (dot = dict.items()) #}
-            {% for item in credit_note["items"] %}
-            <tr>
-                <td class="col-desc">{{ item.description or '-' }}{% if item.discount_amount and item.discount_amount|float > 0 %}<br><span class="text-muted">Diskon -Rp {{ item.discount_amount | currency }}</span>{% endif %}</td>
-                <td class="col-qty">{{ item.quantity | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-                <td class="col-price">Rp {{ item.unit_price | harga }}</td>
-                <td class="col-amount">Rp {{ item.net | currency }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    {# 6. Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
+    {# Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
     <div class="summary">
         <table class="summary-table">
             <tr>
                 <td class="label">Subtotal</td>
-                <td class="value">Rp {{ credit_note.subtotal | currency }}</td>
+                <td class="value">Rp {{ credit_note.subtotal | rupiah(uang) }}</td>
             </tr>
             {% if credit_note.item_discount_total and credit_note.item_discount_total|float > 0 %}
             <tr>
                 <td class="label">Diskon item</td>
-                <td class="value">-Rp {{ credit_note.item_discount_total | currency }}</td>
+                <td class="value">-Rp {{ credit_note.item_discount_total | rupiah(uang) }}</td>
             </tr>
             {% endif %}
             {% if credit_note.discount_amount and credit_note.discount_amount|float > 0 %}
             <tr>
                 <td class="label">Diskon</td>
-                <td class="value">-Rp {{ credit_note.discount_amount | currency }}</td>
+                <td class="value">-Rp {{ credit_note.discount_amount | rupiah(uang) }}</td>
             </tr>
             {% endif %}
             {% if credit_note.tax_amount and credit_note.tax_amount|float > 0 %}
             <tr>
                 <td class="label">PPN{% if credit_note.tax_rate and credit_note.tax_rate|float > 0 %} ({{ "%g" % (credit_note.tax_rate|float) }}%){% endif %}</td>
-                <td class="value">Rp {{ credit_note.tax_amount | currency }}</td>
+                <td class="value">Rp {{ credit_note.tax_amount | rupiah(uang) }}</td>
             </tr>
             {% endif %}
             <tr class="total-row">
                 <td class="label"><strong>Total Nota Kredit</strong></td>
-                <td class="value"><strong>Rp {{ credit_note.total_amount | currency }}</strong></td>
+                <td class="value"><strong>Rp {{ credit_note.total_amount | rupiah(uang) }}</strong></td>
             </tr>
         </table>
     </div>
+    <div class="terbilang">{{ credit_note.total_amount | terbilang }}</div>
 
+    {# Keterangan alasan + Catatan | TTD sebaris (pola penutup faktur penjualan) #}
+    <div class="penutup">
+    <div>
     {% if credit_note.reason_detail %}
     <div class="notes-section">
         <div class="notes-label">Keterangan Alasan</div>
         <div class="notes-text">{{ credit_note.reason_detail }}</div>
     </div>
     {% endif %}
-
     {% if credit_note.notes %}
     <div class="notes-section">
         <div class="notes-label">Catatan</div>
         <div class="notes-text">{{ credit_note.notes }}</div>
     </div>
     {% endif %}
+    </div>
+    <div class="ttd">
+        <div>Hormat kami,</div>
+        {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
+        <div class="garis"></div>
+    </div>
+    </div>
 
     <!-- 7. Footer (running element -> kotak margin @page) -->
     <div class="footer-running">

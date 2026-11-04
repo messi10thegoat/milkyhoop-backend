@@ -33,7 +33,7 @@ def test_filter_qty_terdaftar_dan_merender():
 
 # PDF seragam 4 Nov 2026: SI satu tabel pola PO (dulu 2); Penawaran/PO/FPB memakai _partials/tabel_barang.html (sel qty di sana)
 BERKAS_QTY = {"delivery_note.html": 1, "sales_invoice.html": 1, "sales_invoice_b.html": 1, "proforma.html": 1,
-              "quote.html": 0, "credit_note.html": 1, "bill_invoice.html": 0}
+              "quote.html": 0, "credit_note.html": 0, "bill_invoice.html": 0}
 
 
 @pytest.mark.parametrize("nama,n", sorted(BERKAS_QTY.items()))

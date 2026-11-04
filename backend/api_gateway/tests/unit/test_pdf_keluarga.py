@@ -280,3 +280,21 @@ def test_fpb_catatan_otomatis_konversi_po_tak_dicetak(tangkap, hari):
     """Catatan otomatis routers/purchase_orders "Dari pesanan pembelian <No. PO>" = dobel meta No. PO -> tak dicetak (data tetap); catatan lain tetap."""
     assert "Dari pesanan pembelian PO-2611-0002" not in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0002")
     assert "Dari pesanan pembelian PO-2611-0001" in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0001")
+
+
+def test_nota_kredit_bingkai_si_tabel_bersama_tanpa_hero_ttd():
+    """PDF seragam 4 Nov 2026 (putusan MASTER): NK = bingkai SI (invoice.css) + tabel_barang bersama + terbilang + TTD "Hormat kami";
+    angka besar & kalimat "Kredit untuk pelanggan" DIBUANG (simetri ND lewat isi); penutup SI satu sumber di invoice.css."""
+    ps = PS.get_pdf_service()
+    cn = {"credit_note_number": "CN-1", "status": "posted", "customer_name": "Toko", "original_invoice_number": "INV-1", "reason_label": "Retur",
+          "reason_detail": "Bocor", "subtotal": 300000, "discount_amount": 0, "tax_amount": 0, "total_amount": 270000, "item_discount_total": 30000,
+          "has_cents": False, "items": [{"description": "Minyak", "quantity": 2, "unit": "dus", "unit_price": 150000, "discount_amount": 30000, "net": 270000}]}
+    r = ps.render_credit_note(cn, {"name": "Grosir"})
+    h = r.html
+    for teks in ('<table class="tabel-barang items-table">', '<th class="r">Diskon</th>', "Rp 30.000", "Rp 270.000", "2 dus",
+                 '<div class="terbilang">', "Hormat kami,", "Grosir", "Keterangan Alasan", "Faktur Asal"):
+        assert teks in h, teks
+    for tak in ('class="hero', "Kredit untuk pelanggan", 'class="col-desc"'):
+        assert tak not in h, tak
+    css = (PS.TEMPLATE_DIR / "invoice.css").read_text()
+    assert ".penutup {" in css and ".ttd .garis" in css and ".penutup {" not in (PS.TEMPLATE_DIR / "sales_invoice.html").read_text()
