@@ -97,7 +97,9 @@ def test_detail_menyebar_penjualan_dan_menjaga_fallback():
     seg = inspect.getsource(CU.get_customer)
     assert "_penjualan = (await penjualan_pelanggan(conn, ctx[\"tenant_id\"], [customer_id]))[str(customer_id)]" in seg
     assert "**_penjualan," in seg
-    assert '"total_value": int(stats["total_nilai"] or 0)' in seg              # fallback lama TETAP (putusan b)
+    # B2 (4 Nov 2026, desain disetujui MASTER): fallback SUM(sales_invoices.total_amount) DIHAPUS -- total_value lama kini =
+    # total_penjualan JURNAL (satu sumber); kunci tetap ada untuk FE lama
+    assert '"total_value": _penjualan["total_penjualan"]' in seg and "SUM(total_amount)" not in seg
 
 
 @pytest.mark.parametrize("model", [CustomerListItem, CustomerDetail])

@@ -331,7 +331,6 @@ def _syarat_vendor(tid: str, search: Optional[str], is_active: Optional[bool], i
         params.append(is_active)
         param_idx += 1
 
-    # Filter by has_balance (vendors with opening_balance > 0)
 
     # Filter by is_pkp (PKP vendors only)
     if is_pkp is True:
@@ -386,6 +385,9 @@ async def list_vendors(
     **Search:** Matches name, code, contact_person, or phone.
     **Filter:** Use is_active=true to show only active vendors.
     """
+    # dipanggil langsung (tes/agen) tanpa FastAPI: default Query(...) -> anggap tak dikirim
+    with_totals = with_totals is True
+    aksi = aksi if isinstance(aksi, str) else None
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -701,7 +703,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
 
             # B2 (4 Nov 2026): saldo / lewat tempo = kontak_daftar (satu penentu dengan daftar + pelanggan); total pembelian TURUNAN
             # JURNAL (services/vendor_pembelian); aksi boleh/alasan dari pemeriksa penulis (cek_jejak, saldo_awal_vendor).
-            # kredit_vendor TIDAK dikirim (belum ada penentu jurnal).
+            # Kredit vendor TIDAK dikirim (belum ada penentu jurnal).
             _hari = await tanggal_dokumen(conn, ctx["tenant_id"])
             _medan = KD.medan_baris("vendor", row, await KD.fakta_kontak(conn, ctx["tenant_id"], "vendor", [str(row["id"])], _hari))
             from ..services.vendor_pembelian import pembelian_vendor
