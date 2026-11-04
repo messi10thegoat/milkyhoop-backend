@@ -465,6 +465,8 @@ def test_cetak_sj_blok_serah_hanya_bila_ada_dan_tanpa_serah_tak_berubah():
     ambil = _render({"metode": {"nama": "Ambil di Toko", "jenis": "ambil_sendiri"}, "kirim_ke": None, "kirim_ke_sumber": None,
                      "resi": [], "warehouse_name": "Toko Manado"})
     assert "Diambil sendiri di Toko Manado" in ambil and "Kirim ke" not in ambil
+    # PDF gudang 4 Nov 2026 (tinjauan MASTER): ambil sendiri = SATU baris "Cara serah", bukan "Cara serah" + "Serah" berulang
+    assert ambil.count("<b>Cara serah</b>") == 1 and "<b>Serah</b>" not in ambil and "Ambil di Toko" not in ambil
     dup = _render({"metode": {"nama": "JNE", "jenis": "kurir"}, "kirim_ke": "Jl. Pelanggan 1", "kirim_ke_sumber": "pelanggan",
                    "resi": [], "warehouse_name": None})
     assert "Kirim ke" not in dup  # alamat pelanggan sudah tercetak di baris Alamat -> tak digandakan
