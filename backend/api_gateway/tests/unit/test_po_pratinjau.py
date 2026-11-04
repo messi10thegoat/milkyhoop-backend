@@ -70,6 +70,9 @@ class Kon:
 
     async def fetch(self, sql, *a):
         q = " ".join(sql.split()); self.q.append(q)
+        if "goods_receipt_items" in q and "AS ada_grn" in q:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
+            return [{"id": i["id"], "quantity": i["quantity"], "ditagih": i["quantity_billed"], "diterima": D(0), "ada_grn": False}
+                    for i in self.items]
         if "FROM purchase_order_items" in q: return self.items
         if "FROM vendor_deposits" in q: return self.deposit
         return []
@@ -173,7 +176,9 @@ def test_terima_bawaan_semua_sisa(kon):
     d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
     assert d["ok"] and d["status_sesudah"] == "received" and d["position_text_sesudah"]
     assert d["items"][0] == {"po_item_id": str(I1), "description": "Kain", "unit": "m", "qty": 10.0, "sudah_diterima": 3.0, "sisa": 7.0,
-                             "akan_diterima": 7.0}
+                             "akan_diterima": 7.0,
+                             # TERIMA-TABEL retarget (b): kolom TabelQty ADITIF (kontrak WORKSPACE), kunci lama + nilainya tetap
+                             "akan_ditolak": 0.0, "sisa_sesudah": 0.0, "lebih": 0.0, "toleransi_persen": 0.0}
     assert d["nilai_diterima"] == 700.0 and d["amount_received_sesudah"] == 1000.0
     assert d["payload"] == {"receive_date": "2026-10-22", "items": [{"po_item_id": str(I1), "quantity_received": "7"}]}
     assert k.writes == [] and k.rollback == 1

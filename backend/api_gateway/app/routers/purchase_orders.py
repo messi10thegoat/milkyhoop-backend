@@ -991,6 +991,17 @@ async def send_purchase_order(request: Request, po_id: UUID, response: Response 
 # =============================================================================
 
 
+def _sidik_terima(body: ReceiveGoodsRequest) -> dict:
+    """Sidik idempotensi /receive (Law 14). TERIMA-TABEL: kunci ditolak bernilai BAWAAN (0 / null) dibuang -> payload bentuk lama = hash
+    lama (kirim ulang melewati rilis tetap = respons asli, bukan 409); penolakan sungguhan tetap masuk hash."""
+    d = body.model_dump(mode="json")
+    for it in d.get("items") or []:
+        if Decimal(str(it.get("quantity_rejected") or 0)) == 0 and it.get("reject_reason") is None:
+            it.pop("quantity_rejected", None)
+            it.pop("reject_reason", None)
+    return d
+
+
 @router.post("/{po_id}/receive", response_model=PurchaseOrderResponse)
 async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest, response: Response = None):
     """
@@ -1013,7 +1024,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 
                 # Law 14 (P-U2): X-Idempotency-Key -> kirim ulang (retry/klik ganda) = respons asli, BUKAN penerimaan kedua
                 kp, sidik, lama = await idem_buat.mulai_aksi(
-                    conn, ctx, _kunci_idem(request), "PO_RECEIVE", po_id, lambda: body.model_dump(mode="json"), response)
+                    conn, ctx, _kunci_idem(request), "PO_RECEIVE", po_id, lambda: _sidik_terima(body), response)
                 if lama is not None:
                     return lama
 
@@ -1043,60 +1054,24 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     _grn = await G.rencana_grn(conn, ctx["tenant_id"], po, _rt, body.warehouse_id)
                     _tolak(_grn["blocks"])
 
+                # qty per baris = keputusan PENENTU di bawah lock (baris milik PO, sisa + toleransi, ditolak bukan penerimaan); baris PO
+                # sudah FOR UPDATE di rencana_terima(kunci=True). Baris yang hanya ditolak tak menggeser penghitung.
                 items_received = []
-
-                for recv_item in body.items:
-                    # Get PO item
-                    po_item = await conn.fetchrow(
-                        """
-                        SELECT * FROM purchase_order_items
-                        WHERE id = $1 AND po_id = $2
-                        FOR UPDATE
-                    """,
-                        UUID(recv_item.po_item_id),
-                        po_id,
-                    )
-
-                    if not po_item:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Baris pesanan {recv_item.po_item_id} tidak ditemukan.",
-                        )
-
-                    # Check quantity (Decimal murni -- Law 25)
-                    _qty_terima = Decimal(str(recv_item.quantity_received))
-                    remaining = Decimal(str(po_item["quantity"])) - Decimal(
-                        str(po_item["quantity_received"] or 0)
-                    )
-                    if _qty_terima > remaining:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Jumlah diterima ({_qty_terima}) melebihi sisa ({remaining}).",
-                        )
-
-                    # Update quantity_received
-                    new_qty_received = (
-                        Decimal(str(po_item["quantity_received"] or 0))
-                        + _qty_terima
-                    )
-
+                _baris = {str(r["id"]): r for r in _rt["semua"]}
+                for _pid, _qty_terima in _rt["akan"].items():
+                    if _qty_terima <= 0:
+                        continue
+                    new_qty_received = Decimal(str(_baris[_pid]["quantity_received"] or 0)) + _qty_terima
                     await conn.execute(
                         """
                         UPDATE purchase_order_items
                         SET quantity_received = $2
                         WHERE id = $1
                     """,
-                        UUID(recv_item.po_item_id),
+                        UUID(_pid),
                         new_qty_received,
                     )
-
-                    items_received.append(
-                        {
-                            "po_item_id": recv_item.po_item_id,
-                            "quantity_received": _qty_terima,
-                            "total_received": new_qty_received,
-                        }
-                    )
+                    items_received.append({"po_item_id": _pid, "quantity_received": _qty_terima, "total_received": new_qty_received})
 
                 # Nilai diterima = TURUNAN baris (qty_diterima x total / qty, 2dp HALF_UP per baris); dulu ::BIGINT memotong sen
                 all_items = await conn.fetch(
@@ -1222,8 +1197,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         tenant_id, invoice_number, vendor_id, vendor_name,
                         issue_date, due_date, amount, grand_total,
                         subtotal, tax_amount,
-                        purchase_order_id, notes, status_v2, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13)
+                        purchase_order_id, notes, status_v2, created_by, tax_rate, tax_code_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'draft', $13, $14, $15)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -1239,6 +1214,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     po_id,
                     body.notes or f"Dari pesanan pembelian {po['po_number']}",
                     ctx["user_id"],
+                    rt["tax_rate"],  # (5) tarif header = pajak yang dipakai; 0 bila pajak per baris
+                    rt["tax_code_id"],
                 )
 
                 # Create bill items (D: pakai _po_lines pra-hitung; nilai == bill manual)
@@ -1253,8 +1230,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                             quantity, unit, unit_price,
                             discount_percent, discount_amount,
                             tax_rate, tax_amount,
-                            subtotal, total, line_number, purchase_order_item_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                            subtotal, total, line_number, purchase_order_item_id, tax_code_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                     """,
                         bill_id,
                         po_item["item_id"],
@@ -1271,6 +1248,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         ic["total"],
                         idx,
                         po_item["id"],  # V436: tautan baris PO -> qty tertagih TURUNAN (PD.sinkron_tagih), pulih saat bill dihapus/void
+                        l["tax_code_id"],  # (5) kode pajak masukan dari tarif baris PO
                     )
 
                 # qty/jumlah tertagih + status PO TURUNAN dari bill_items bertaut (bill tak-void; draf ikut = pola NetSuite 'Partially Billed' sejak
@@ -1494,14 +1472,25 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
         items = [i.model_dump() for i in body.items] if body and body.items else None
         r = await PR.rencana_terima(conn, po, body.receive_date if body else None, items, hari, kunci=False,
                                     notes=body.notes if body else None, sj_vendor=body.vendor_delivery_note if body else None)
+        g = (await _pratinjau_grn(conn, ctx["tenant_id"], po, r, body.warehouse_id if body else None,
+                                  body.vendor_delivery_note if body else None))
+        if g.get("goods_receipt"):  # nomor GRN PERKIRAAN (baca saja, tanpa kunci); final terbit saat simpan
+            from ..services.nomor_jurnal_perkiraan import perkiraan_nomor_jurnal
+            g["goods_receipt"] = {**g["goods_receipt"], "estimated": True, "number_preview": await perkiraan_nomor_jurnal(
+                conn, ctx["tenant_id"], "GRN", date.fromisoformat(r["payload"]["receive_date"]))}
         return {"blocks": r["blocks"], "status_sesudah": r["status_sesudah"], "receive_date": r["payload"]["receive_date"],
-                "items": [{**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
-                           "akan_diterima": _f2(b["akan_diterima"])} for b in r["baris"]],
+                "items": [_baris_terima_json(b) for b in r["baris"]],
+                "toleransi_persen": float(r["toleransi_persen"]),
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
-                "payload": r["payload"],
-                **(await _pratinjau_grn(conn, ctx["tenant_id"], po, r, body.warehouse_id if body else None,
-                                        body.vendor_delivery_note if body else None))}
+                "payload": r["payload"], **g, "notes": r["notes"] + g.get("notes", [])}
     return await _pratinjau(request, po_id, isi)
+
+
+def _baris_terima_json(b: dict) -> dict:
+    """Baris pratinjau TERIMA (kolom TabelQty): angka penentu (Decimal 4dp) -> float 2dp, seragam untuk kolom lama dan baru."""
+    return {**b, "qty": _f2(b["qty"]), "sudah_diterima": _f2(b["sudah_diterima"]), "sisa": _f2(b["sisa"]),
+            "akan_diterima": _f2(b["akan_diterima"]), "akan_ditolak": _f2(b["akan_ditolak"]), "sisa_sesudah": _f2(b["sisa_sesudah"]),
+            "lebih": _f2(b["lebih"]), "toleransi_persen": float(b["toleransi_persen"])}
 
 
 async def _pratinjau_grn(conn, tid: str, po, terima: dict, warehouse_id, sj_vendor=None) -> dict:
@@ -1550,7 +1539,11 @@ async def preview_convert_to_bill(request: Request, po_id: UUID, body: Optional[
                 "items": [{"po_item_id": str(ln["po_item"]["id"]), "description": ln["po_item"]["description"], "unit": ln["po_item"]["unit"],
                            "quantity": _f2(ln["qty"]), "unit_price": _f2(ln["unit_price"]), "discount_percent": float(ln["disc_pct"]),
                            "discount_amount": _f2(ln["ic"]["discount_amount"]), "subtotal": _f2(ln["ic"]["subtotal"]),
-                           "tax_rate": ln["tax_rate"], "tax_amount": _f2(ln["tax"]), "total": _f2(ln["ic"]["total"])} for ln in r["lines"]],
+                           "tax_rate": ln["tax_rate"], "tax_amount": _f2(ln["tax"]), "total": _f2(ln["ic"]["total"]),
+                           "tax_code_id": str(ln["tax_code_id"]) if ln["tax_code_id"] else None,
+                           "dasar": ln["batas"]["dasar"], "qty_dasar": _f2(ln["batas"]["qty_dasar"]),
+                           "sudah_ditagih": _f2(ln["batas"]["sudah_ditagih"]), "akan_ditagih": _f2(ln["qty"])} for ln in r["lines"]],
+                "tax_rate": r["tax_rate"], "tax_code_id": str(r["tax_code_id"]) if r["tax_code_id"] else None,
                 "bill_subtotal": _f2(r["bill_subtotal"]), "bill_tax": _f2(r["bill_tax"]), "bill_total": _f2(r["bill_total"]),
                 "payload": {"bill_date": tgl.isoformat(), "due_date": jatuh.isoformat(),
                             "items": [{"po_item_id": str(ln["po_item"]["id"]), "quantity_to_bill": str(ln["qty"])} for ln in r["lines"]],
