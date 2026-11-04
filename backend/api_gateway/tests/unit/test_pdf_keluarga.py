@@ -291,10 +291,12 @@ def test_nota_kredit_bingkai_si_tabel_bersama_tanpa_hero_ttd():
           "has_cents": False, "items": [{"description": "Minyak", "quantity": 2, "unit": "dus", "unit_price": 150000, "discount_amount": 30000, "net": 270000}]}
     r = ps.render_credit_note(cn, {"name": "Grosir"})
     h = r.html
-    for teks in ('<table class="tabel-barang items-table">', '<th class="r">Diskon</th>', "Rp 30.000", "Rp 270.000", "2 dus",
+    for teks in ('<table class="tabel-barang items-table">', "<th>Nama Barang</th>", '<th class="r">Kts.</th>', '<th class="r">Diskon</th>',
+                 "Rp 30.000", "Rp 270.000", "2 dus",
                  '<div class="terbilang">', "Hormat kami,", "Grosir", "Keterangan Alasan", "Faktur Asal"):
         assert teks in h, teks
     for tak in ('class="hero', "Kredit untuk pelanggan", 'class="col-desc"'):
         assert tak not in h, tak
+    assert h.index("@Harga</th>") < h.index("Diskon</th>") < h.index(">Total</th>")   # urutan = PO/FPB/ND
     css = (PS.TEMPLATE_DIR / "invoice.css").read_text()
     assert ".penutup {" in css and ".ttd .garis" in css and ".penutup {" not in (PS.TEMPLATE_DIR / "sales_invoice.html").read_text()

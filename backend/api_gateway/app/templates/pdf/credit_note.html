@@ -81,10 +81,12 @@
         </div>
     </div>
 
-    {# Tanpa angka besar (simetri Nota Debit, putusan MASTER 4 Nov 2026); tabel = makro bersama tabel_barang di bingkai invoice.css #}
+    {# Tanpa angka besar (simetri Nota Debit, putusan MASTER 4 Nov 2026); tabel = makro bersama tabel_barang di bingkai invoice.css,
+       konfigurasi PO/FPB/ND (putusan pemilik: tabel pola PO untuk SEMUA dokumen) #}
     {% set uang = credit_note.has_cents %}
     {% from "_partials/tabel_barang.html" import tabel_barang %}
-    {{ tabel_barang(credit_note["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "net", "kelas": "items-table"}, uang) }}
+    {{ tabel_barang(credit_note["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "net", "kelas": "items-table",
+                    "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, uang) }}
 
     {# Ringkasan: Subtotal (bruto) - diskon baris - diskon dokumen + PPN = Total (angka tersimpan, tak dihitung ulang) #}
     <div class="summary">
