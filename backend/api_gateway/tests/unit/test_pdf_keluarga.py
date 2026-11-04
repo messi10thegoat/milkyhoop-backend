@@ -171,7 +171,7 @@ def test_fpb_pola_accurate_isi(tangkap, hari):
                  "<b>Syarat bayar</b><span>30 hari</span>", "NPWP 01.234.567.8-901.000", "0811 2", "NPWP 02.345.678.9-012.000",
                  "100 Dus", "50 Dus", '<th class="r">Diskon</th>', ">2%</td>", '<td class="r">-</td>', "Batch B77 · Exp 2027-05-01",
                  "Riwayat pembayaran", "BP-2611-0007", "Pembayaran &middot; Transfer BCA", "Bagian Pembelian,", '<div class="garis">Tgl.</div>',
-                 terbilang_rupiah("36132720.00"), "Sebagian dibayar &middot; sisa Rp 16.132.720"):
+                 terbilang_rupiah("36132720.00"), "<span>Sebagian dibayar</span>"):
         assert teks in h, teks
     for tak in ('class="hero', "<b>Kepada</b>", "Diterima oleh", "No. faktur vendor", "Referensi", "Satuan</th>", "Batch</th>", "Exp</th>", "Bonus</th>", "0%</td>"):
         assert tak not in h, tak
@@ -188,6 +188,7 @@ def test_fpb_diskon_selalu_kode_hanya_bila_sku_noref_strip(tangkap, hari):
     assert "<b>No. Faktur</b><span>—</span>" in h and "Belum dibayar" in h and "Dibayar</span>" not in h
     h = _fpb(tangkap, hari, **{**kw, "items": [{**items[0], "product_code": "MNY-1"}]})
     assert "<th>Kode</th>" in h and "<td>MNY-1</td>" in h
+    assert h.index("@Harga</th>") < h.index("Diskon</th>") < h.index("Total</th>")   # pola Accurate; PO/Penawaran tetap Diskon dulu
     assert "Bagian Pembelian" not in PS.get_pdf_service().render_bill(_lengkap(_bill(**kw)), tampil_ttd=False).html
 
 

@@ -14,7 +14,7 @@
 .rw td { padding: 6px 0; }
 /* FPB pola Accurate (4 Nov 2026, putusan pemilik): kop usaha di kanan judul, Dari + meta sebaris, Keterangan + ringkasan sebaris. */
 .kop { text-align: right; }
-.kop .logo { display: block; margin: 0 0 6px auto; }
+.kop .logo { display: block; margin: 0 0 6px auto; height: auto; }   /* kotak = gambar (maks token) -> nama rapat di bawah logo */
 .atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; }   /* kolom meta = lebar ringkasan */
 .atas .meta { margin-top: 0; }
 .atas > div:first-child { position: relative; }   /* stempel di kanan blok Dari, kiri meta */
@@ -39,7 +39,7 @@
 {#
   PDF Faktur Pembelian = catatan INTERNAL atas tagihan vendor -- pola Accurate (4 Nov 2026, putusan pemilik; acuan Accurate + QBO).
   Atas -> bawah: judul | kop usaha (logo, nama, alamat, telepon, NPWP) · Dari vendor | meta (No. Form = nomor kita, No. Faktur =
-  nomor tagihan vendor, "—" bila kosong) · tabel (Kode bila ada SKU, Diskon selalu) · Keterangan | ringkasan · riwayat
+  nomor tagihan vendor, "—" bila kosong) · tabel (Kode bila ada SKU, @Harga lalu Diskon selalu) · Keterangan | ringkasan · riwayat
   pembayaran · TTD "Bagian Pembelian" (tampil_ttd). Tanpa blok "Kepada" (kita penerimanya). Konteks = services/cetak_bill.
   lengkapi_cetak_bill; stempel LUNAS/TERLAMBAT/BATAL = keadaan_cetak SAMA dgn faktur penjualan. Biaya lain-lain: bills tak
   punya kolomnya (tiket BE), tidak dicetak.
@@ -90,9 +90,9 @@
     {% if c %}<b>Status</b><span>
       {%- if c.jenis == 'batal' -%}Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %}
       {%- elif c.jenis == 'draf' -%}Draf
-      {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{% if c.metode_lunas %} &middot; {{ c.metode_lunas }}{% endif %}
+      {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{# metode & sisa: di riwayat/ringkasan #}
       {%- elif c.jenis == 'terlambat' -%}Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari
-      {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar &middot; sisa Rp {{ bill.amount_due | rupiah(uang) }}
+      {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar
       {%- else -%}Belum dibayar{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}
       {%- endif -%}</span>{% endif %}
   </div>
@@ -100,7 +100,7 @@
 
 {% from "_partials/tabel_barang.html" import tabel_barang %}
 {{ tabel_barang(bill["items"], {"desk": ["product_name", "description"], "qty": "qty", "harga": "price", "jumlah": "total", "kode": "product_code",
-                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true}, uang) }}
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, uang) }}
 
 <div class="akhir">
   <div class="bawah">

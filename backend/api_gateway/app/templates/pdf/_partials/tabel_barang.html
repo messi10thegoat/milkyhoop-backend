@@ -2,7 +2,7 @@
   Tabel barang SATU sumber untuk dokumen gaya penawaran.css (Penawaran, PO, FPB) -- PDF seragam 4 Nov 2026.
   Qty + satuan satu sel; diskon baris = persen, atau nominal bila hanya nominal; batch/exp/bonus = baris kecil.
   k = nama medan per dokumen: {desk: [kunci...] (yang pertama terisi), qty, harga, jumlah: satu kunci}. Opsional (FPB pola Accurate,
-  4 Nov 2026): kode = kunci SKU (kolom Kode HANYA bila ada baris ber-SKU) · judul = {desk, qty, harga, jumlah} · diskon_selalu.
+  4 Nov 2026): kode = kunci SKU (kolom Kode HANYA bila ada baris ber-SKU) · judul = {desk, qty, harga, jumlah} · diskon_selalu · harga_dulu (@Harga sebelum Diskon).
   Tanpa opsional = tampilan Penawaran/PO: kolom Diskon HANYA bila ada baris berdiskon ("-" bila kosong).
 #}
 {% macro tabel_barang(items, k, uang) -%}
@@ -10,9 +10,11 @@
 {% for item in items %}{% if (item.discount_percent and item.discount_percent|float > 0) or (item.discount_amount and item.discount_amount|float > 0) %}{% set ns.disk = true %}{% endif %}{% if k.kode and item[k.kode] %}{% set ns.kode = true %}{% endif %}{% endfor %}
 {% set j = k.judul or {"desk": "Deskripsi", "qty": "Qty", "harga": "Harga satuan", "jumlah": "Jumlah"} %}
 <table>
+{% set kd = '<col style="width:10%">' if ns.disk else '' %}{% set kh = '<col style="width:16%">' %}
   <colgroup>{% if ns.kode %}<col style="width:12%">{% endif %}<col style="width:{{ 52 - (10 if ns.disk else 0) - (12 if ns.kode else 0) }}%"><col style="width:14%">
-    {%- if ns.disk %}<col style="width:10%">{% endif %}<col style="width:16%"><col style="width:18%"></colgroup>
-  <thead><tr>{% if ns.kode %}<th>Kode</th>{% endif %}<th>{{ j.desk }}</th><th class="r">{{ j.qty }}</th>{% if ns.disk %}<th class="r">Diskon</th>{% endif %}<th class="r">{{ j.harga }}</th><th class="r">{{ j.jumlah }}</th></tr></thead>
+    {{- (kh ~ kd if k.harga_dulu else kd ~ kh) | safe }}<col style="width:18%"></colgroup>
+  {% set hd = '<th class="r">Diskon</th>' if ns.disk else '' %}{% set hh = '<th class="r">' ~ j.harga ~ '</th>' %}
+  <thead><tr>{% if ns.kode %}<th>Kode</th>{% endif %}<th>{{ j.desk }}</th><th class="r">{{ j.qty }}</th>{{ (hh ~ hd if k.harga_dulu else hd ~ hh) | safe }}<th class="r">{{ j.jumlah }}</th></tr></thead>
   <tbody>
   {% for item in items %}
     {% set d = namespace(v=none) %}{% for x in k.desk %}{% if not d.v and item[x] %}{% set d.v = item[x] %}{% endif %}{% endfor %}
@@ -25,8 +27,9 @@
         {%- if item.bonus_qty and item.bonus_qty|float > 0 %}{% set _ = rinci.append('Bonus ' ~ (item.bonus_qty | qty)) %}{% endif -%}
         {% if rinci %}<div class="dt">{{ rinci | join(' · ') }}</div>{% endif %}</td>
       <td class="r">{{ item[k.qty] | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
-      {% if ns.disk %}<td class="r">{% if item.discount_percent and item.discount_percent|float > 0 %}{{ "%g" % (item.discount_percent|float) }}%{% elif item.discount_amount and item.discount_amount|float > 0 %}Rp {{ item.discount_amount | rupiah(uang) }}{% else %}-{% endif %}</td>{% endif %}
-      <td class="r">Rp {{ item[k.harga] | rupiah(uang) }}</td>
+      {% set sd %}{% if ns.disk %}<td class="r">{% if item.discount_percent and item.discount_percent|float > 0 %}{{ "%g" % (item.discount_percent|float) }}%{% elif item.discount_amount and item.discount_amount|float > 0 %}Rp {{ item.discount_amount | rupiah(uang) }}{% else %}-{% endif %}</td>{% endif %}{% endset %}
+      {% set sh %}<td class="r">Rp {{ item[k.harga] | rupiah(uang) }}</td>{% endset %}
+      {{ sh ~ sd if k.harga_dulu else sd ~ sh }}
       <td class="r">Rp {{ item[k.jumlah] | rupiah(uang) }}</td>
     </tr>
   {% endfor %}
