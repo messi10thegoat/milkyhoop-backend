@@ -56,8 +56,9 @@ def test_aksi_po(status, tgl, sisa, belum, harap):
 
 
 def test_kosakata_pill_dan_bukan_pill():
-    assert PD.AKSI == ("perlu_dikirim", "telat_terima", "perlu_ditagih")
-    assert "menunggu_barang" not in PD.AKSI and "perlu_ditutup" not in PD.AKSI
+    # PO-DRAF retarget (b), putusan MASTER B 4 Nov: kunci partisi baru draf_tagihan ("Buka faktur draf"); bisa_diterima = saringan, bukan pill
+    assert PD.AKSI == ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan")
+    assert "menunggu_barang" not in PD.AKSI and "perlu_ditutup" not in PD.AKSI and "bisa_diterima" not in PD.AKSI
 
 
 def test_position_text_semua_status_dan_tak_dikenal():
@@ -76,11 +77,13 @@ def test_jumlah_turunan_half_up_per_baris():
 
 
 def test_sql_aksi_partisi_bentuk():
-    a, b, c = (PD.sql_aksi(k, "$2") for k in PD.AKSI)
+    a, b, c, d = (PD.sql_aksi(k, "$2") for k in PD.AKSI)  # PO-DRAF retarget (b): + draf_tagihan
     assert "po.status = 'draft'" in a
     assert "po.expected_date < $2::date" in b and "ag.sisa_terima > 0" in b
-    assert c.startswith("(po.status IN ('partial_received', 'received', 'partial_billed') AND ag.belum_ditagih > 0 AND NOT ")
-    assert b[1:-1] in c                                                              # perlu_ditagih = ... AND NOT telat (partisi)
+    dasar = "(po.status IN ('partial_received', 'received', 'partial_billed') AND ag.belum_ditagih > 0 AND NOT "
+    assert dasar in c and dasar in d                                                 # predikat tagih SAMA, dibelah sesudah-draf
+    assert c.endswith("AND ag.belum_ditagih_sesudah_draf > 0)") and d.endswith("AND ag.belum_ditagih_sesudah_draf <= 0)")
+    assert b[1:-1] in c and b[1:-1] in d                                             # ... AND NOT telat (partisi)
     with pytest.raises(KeyError):
         PD.sql_aksi("menunggu_barang", "$2")
 

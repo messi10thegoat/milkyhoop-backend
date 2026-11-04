@@ -114,13 +114,14 @@ SQL_AGREGAT = f"""
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0)), 0) AS sisa_terima,
                COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - q.posted, 0)), 0) AS belum_ditagih,
-               COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - COALESCE(i.quantity_billed, 0), 0)), 0) AS belum_ditagih_sesudah_draf,
+               COALESCE(SUM(GREATEST(COALESCE(i.quantity_received, 0) - q.pagar, 0)), 0) AS belum_ditagih_sesudah_draf,
                COALESCE(SUM(ROUND(COALESCE(i.quantity_received, 0) * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_received,
                COALESCE(SUM(ROUND(q.posted * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_billed,
                COALESCE(SUM(ROUND(q.draf * i.total / NULLIF(i.quantity, 0), 2)), 0) AS draft_bill_amount
         FROM purchase_order_items i
         CROSS JOIN LATERAL (SELECT {sql_qty_tagih("posted", "i", "po.tenant_id")} AS posted,
-                                   {sql_qty_tagih("draf", "i", "po.tenant_id")} AS draf) q
+                                   {sql_qty_tagih("draf", "i", "po.tenant_id")} AS draf,
+                                   {sql_qty_tagih("pagar", "i", "po.tenant_id")} AS pagar) q
         WHERE i.po_id = po.id
     ) ag ON true"""
 
@@ -189,13 +190,20 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
             "aksi": aksi_po(r["status"], r["expected_date"], r["sisa_terima"], r["belum_ditagih"], hari_ini, r["belum_ditagih_sesudah_draf"]),
             "amount_received": r2(r["amount_received"]), "amount_billed": r2(r["amount_billed"]),
             "sisa_ditagih": max(sisa, NOL), "draft_bill_amount": r2(r["draft_bill_amount"]),
-            "belum_ditagih_sesudah_draf": _d(r["belum_ditagih_sesudah_draf"]), "draft_bills": [],
+            "belum_ditagih_sesudah_draf": _d(r["belum_ditagih_sesudah_draf"]),
         }
-    for r in await conn.fetch(  # faktur DRAF bertaut baris PO (SATU kueri untuk semua po_ids)
-            f"""SELECT DISTINCT poi.po_id, b.id, b.invoice_number FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
-                JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
-                WHERE poi.po_id = ANY($2::uuid[]) AND {PRED_TAGIH["draf"]} ORDER BY b.invoice_number""", tenant_id, list(out)):
-        out[r["po_id"]]["draft_bills"].append({"id": str(r["id"]), "bill_number": r["invoice_number"]})
+    return out
+
+
+async def faktur_draf_po(conn, tenant_id: str, po_ids: list) -> dict:
+    """{po_id: [{id, bill_number}]} faktur DRAF bertaut baris PO (pill draf_tagihan "Buka faktur draf"); SATU kueri untuk daftar + detail."""
+    out = {i: [] for i in po_ids}
+    if po_ids:
+        for r in await conn.fetch(
+                f"""SELECT DISTINCT poi.po_id, b.id, b.invoice_number FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1
+                    JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
+                    WHERE poi.po_id = ANY($2::uuid[]) AND {PRED_TAGIH["draf"]} ORDER BY b.invoice_number""", tenant_id, list(po_ids)):
+            out.setdefault(r["po_id"], []).append({"id": str(r["id"]), "bill_number": r["invoice_number"]})
     return out
 
 

@@ -21,7 +21,8 @@ class _Kon:
 def _r(status, total="350028.00", billed="0", recv="10"):
     return {"id": uuid.uuid4(), "status": status, "expected_date": None, "total_amount": Decimal(total), "sisa_terima": Decimal("0"),
             "belum_ditagih": Decimal(recv) - Decimal("0"), "amount_received": Decimal(total), "amount_billed": Decimal(billed),
-            "draft_bill_amount": Decimal("0")}  # 1 Nov 2026: kolom SQL_AGREGAT porsi bill draf
+            "draft_bill_amount": Decimal("0"),  # 1 Nov 2026: kolom SQL_AGREGAT porsi bill draf
+            "belum_ditagih_sesudah_draf": Decimal(recv) - Decimal("0")}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
 
 
 def test_status_tanpa_sisa_tagih():

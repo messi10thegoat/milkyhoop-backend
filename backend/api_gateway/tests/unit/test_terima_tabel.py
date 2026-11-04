@@ -322,3 +322,18 @@ async def test_diterima_absen_default_sisa_dikurangi_ditolak():
     assert [b["code"] for b in r2["blocks"]] == ["QTY_DITOLAK_MELEBIHI"]  # eksplisit 90 + 5 > 90 tetap diblok
     r3 = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_rejected": D("95")}])
     assert [b["code"] for b in r3["blocks"]] == ["QTY_DITOLAK_MELEBIHI"] and r3["baris"][0]["akan_diterima"] == 0  # default tak negatif
+
+
+@pytest.mark.asyncio
+async def test_kalimat_terima_tanpa_decimal_mentah():
+    # putusan MASTER 4 Nov (temuan kontrak nyata WORKSPACE): "1.0000"/"10.00%" -> teks_galat.qty
+    baris = [{"id": A, "description": "Minyak", "quantity": D("10.0000"), "quantity_received": D("0.0000"), "quantity_billed": D("0"),
+              "unit": "Dus", "total": D("100000")}]
+    r = await _terima(Kon(toleransi=D("10.00"), baris=baris), [{"po_item_id": str(A), "quantity_received": D("11.0000")}])
+    assert [n["message"] for n in r["notes"]] == ["Diterima 1 lebih dari pesanan (dalam toleransi 10%)."]
+    r = await _terima(Kon(toleransi=D("10.00"), baris=baris), [{"po_item_id": str(A), "quantity_received": D("12.0000")}])
+    assert r["blocks"][0]["message"] == "Jumlah diterima Minyak (12) melebihi sisa (10) lebih dari toleransi 10%."
+    r = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_received": D("10.5000")}])
+    assert r["blocks"][0]["message"] == "Jumlah diterima (10,5) melebihi sisa (10)."
+    r = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_received": D("8.0000"), "quantity_rejected": D("3.0000")}])
+    assert r["blocks"][0]["message"] == "Jumlah ditolak Minyak (3) melebihi yang datang."

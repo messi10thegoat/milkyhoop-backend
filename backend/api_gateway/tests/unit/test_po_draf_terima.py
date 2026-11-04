@@ -70,7 +70,9 @@ async def test_fakta_po_membawa_faktur_draf_dan_sisa_sesudah_draf():
     po = uuid.uuid4()
     f = (await PD.fakta_po(KonFakta(po), T, [po], HARI))[po]
     assert f["aksi"] == "draf_tagihan" and f["belum_ditagih_sesudah_draf"] == 0 and f["draft_bill_amount"] == D("500")
-    assert f["draft_bills"] == [{"id": str(uuid.UUID(int=7)), "bill_number": "BILL-2611-0004"}]
+    assert await PD.faktur_draf_po(KonFakta(po), T, [po]) == {po: [{"id": str(uuid.UUID(int=7)), "bill_number": "BILL-2611-0004"}]}
+    assert await PD.faktur_draf_po(KonFakta(po), T, []) == {}  # tanpa PO = tanpa kueri
+    assert "q.pagar" in PD.SQL_AGREGAT and "i.quantity_billed" not in PD.SQL_AGREGAT  # tampilan dari bill bertaut, bukan cache
 
 
 class KonTagih:
@@ -115,4 +117,4 @@ def test_rute_daftar_menerima_kunci_baru_dan_saringan_memakai_flag():
     s = (APP / "routers/purchase_orders.py").read_text()
     assert '"draf_tagihan", "bisa_diterima"]] = Query(None)' in s
     assert "PR.status_bisa_terima(await G.aktif(conn, ctx[\"tenant_id\"]))" in s
-    assert s.count('"draft_bills": f["draft_bills"]') == 2  # daftar + detail (fungsi SAMA)
+    assert s.count("await PD.faktur_draf_po(conn, ctx[\"tenant_id\"]") == 2  # daftar + detail (fungsi SAMA)
