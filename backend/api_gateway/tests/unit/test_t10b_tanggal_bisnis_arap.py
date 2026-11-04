@@ -32,7 +32,8 @@ FUNGSI = {
     # U10 (5 Okt): isi apply/unapply/refund pindah ke inti; void sudah ke inti sejak U5-D (daftar lama menjaga handler kosong)
     "routers/credit_notes.py": ["apply_credit_note", "void_credit_note", "apply_nota_kredit_core", "unapply_nota_kredit_core",
                                 "refund_nota_kredit_core", "void_nota_kredit_core"],
-    "routers/bill_payments.py": ["generate_payment_number", "void_bill_payment"],
+    # NOMOR-PK 4 Nov 2026: generate_payment_number DIHAPUS -> nomor = get_next_journal_number (tanggal_bisnis di fungsi DB, V302)
+    "routers/bill_payments.py": ["void_bill_payment"],
     "routers/vendor_deposits.py": ["apply_vendor_deposit", "void_vendor_deposit"],
     "routers/vendor_credits.py": ["apply_vendor_credit", "void_vendor_credit"],
     "routers/cheques.py": ["cancel_cheque", "delete_cheque"],
@@ -157,31 +158,6 @@ def jam(monkeypatch):
 
 @pytest.mark.parametrize("instant,harap", KASUS)
 @pytest.mark.asyncio
-async def test_nomor_pembayaran_tagihan_ikut_bulan_bisnis(jam, instant, harap):
-    """Jalur NOMOR dokumen: PAY-YYYYMM (18:00Z 30 Sep -> 202610)."""
-    from app.routers import bill_payments as bp
-
-    jam(instant)
-
-    class _C:
-        def __init__(self):
-            self.ym = None
-
-        async def fetchval(self, q, *a):
-            return "Asia/Jakarta" if "timezone" in q else None
-
-        async def fetchrow(self, q, *a):
-            self.ym = a[1]
-            return {"last_number": 1}
-
-    c = _C()
-    nomor = await bp.generate_payment_number(c, TENANT)
-    assert c.ym == harap.strftime("%Y-%m")
-    assert nomor == f"PAY-{harap.strftime('%Y%m')}-0001"
-
-
-@pytest.mark.parametrize("instant,harap", KASUS)
-@pytest.mark.asyncio
 async def test_nomor_jurnal_default_bisnis_dan_tanggal_klien_utuh(jam, instant, harap):
     from app.routers import journals as jr
 
@@ -292,3 +268,15 @@ def test_void_memeriksa_periode_tanggal_pembalik(berkas, nama):
             if nama_f == "check_period_is_open" or any("fiscal_periods" in q for q in sql):
                 ada = True
     assert ada, f"{berkas}::{nama} tak memeriksa periode hari_ini"
+
+
+def test_nomor_pembayaran_keluar_bulan_bisnis_dari_fungsi_db():
+    """PENGGANTI test_nomor_pembayaran_tagihan_ikut_bulan_bisnis (NOMOR-PK 4 Nov 2026): generator PAY- (bulan dari tanggal_dokumen)
+    dihapus; nomor BP- kini dari get_next_journal_number TANPA argumen tanggal -> fungsi DB memakai tanggal_bisnis(tenant) (V302),
+    bukan CURRENT_DATE / jam kontainer. Perkiraan pratinjau = SQL perkiraan_nomor_jurnal yang juga COALESCE(.., tanggal_bisnis)."""
+    import inspect
+    from app.services import nomor_bayar_keluar as NB
+    from app.services.nomor_jurnal_perkiraan import SQL_PERKIRAAN_NOMOR_JURNAL
+    src = inspect.getsource(NB.nomor_pk)
+    assert 'get_next_journal_number($1, $2)", tid, AWALAN' in src and "CURRENT_DATE" not in src and "date.today" not in src
+    assert "tanggal_bisnis($1)" in SQL_PERKIRAAN_NOMOR_JURNAL

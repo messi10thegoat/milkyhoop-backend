@@ -16,6 +16,7 @@ from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama  # noqa: F401
 from ..services import bayar_keluar_rencana as BKR
+from ..services.nomor_bayar_keluar import nomor_pk, perkiraan_nomor_pk
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal pembayaran = nomor PK
 import uuid as uuid_module
 import logging
@@ -155,41 +156,6 @@ def _uang(v):
     ber-sen -> float ("999.9")."""
     d = _q2(Decimal(str(v if v is not None else 0)))
     return int(d) if d == d.to_integral_value() else float(d)
-
-
-def format_nomor_bayar(year_month: str, n: int) -> str:
-    """Format nomor Pembayaran Keluar PAY-YYYYMM-NNNN: SATU penentu untuk penulis (generate_payment_number) dan perkiraan pratinjau."""
-    return f"PAY-{year_month.replace('-', '')}-{n:04d}"
-
-
-async def perkiraan_nomor_bayar(conn, tenant_id: str) -> str:
-    """U-P4c: nomor yang AKAN diberikan generate_payment_number -- bulan & penghitung SAMA (bill_payment_sequences), dibaca TANPA
-    tulis/kunci. PERKIRAAN: penulis paralel bisa mengambilnya dulu (pola NetSuite; cermin _perkiraan_nomor_ovp RP)."""
-    year_month = (await tanggal_dokumen(conn, tenant_id)).strftime("%Y-%m")
-    last = await conn.fetchval("SELECT last_number FROM bill_payment_sequences WHERE tenant_id = $1 AND year_month = $2",
-                               tenant_id, year_month)
-    return format_nomor_bayar(year_month, (last or 0) + 1)
-
-
-async def generate_payment_number(conn, tenant_id: str) -> str:
-    from datetime import datetime
-
-    year_month = (await tanggal_dokumen(conn, tenant_id)).strftime("%Y-%m")  # t10-tanggal-bisnis
-    try:
-        row = await conn.fetchrow(
-            """INSERT INTO bill_payment_sequences (tenant_id, year_month, prefix, last_number)
-               VALUES ($1, $2, 'PAY', 1)
-               ON CONFLICT (tenant_id, year_month)
-               DO UPDATE SET last_number = bill_payment_sequences.last_number + 1
-               RETURNING last_number""",
-            tenant_id,
-            year_month,
-        )
-        return format_nomor_bayar(year_month, row["last_number"])
-    except Exception:
-        return (
-            f"PAY-{year_month.replace('-', '')}-{uuid_module.uuid4().hex[:6].upper()}"
-        )
 
 
 async def create_bill_payment_journal(
@@ -509,7 +475,7 @@ async def preview_create_bill_payment(request: Request, payload: BillPaymentPrev
                             "bill_id": b["id"], "bill_number": b["nomor"], "remaining_before": BKR._f(b["remaining"]),
                             "amount_applied": 0.0, "remaining_after": BKR._f(b["remaining"])}), "preview": True}}
             r = await BKR.rencana_bayar(conn, ctx, payload, pratinjau=True)
-            nomor = await perkiraan_nomor_bayar(conn, ctx["tenant_id"])  # U-P4c: perkiraan, nomor final terbit saat simpan
+            nomor = await perkiraan_nomor_pk(conn, ctx["tenant_id"])  # seri BP- bersama rute lama; perkiraan, nomor final saat simpan
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     blocks = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]] + [{"code": c, "message": m} for c, m in galat]
@@ -1151,7 +1117,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                     _r = await BKR.rencana_bayar(conn, ctx, payload)
                     vendor_name, bank_account_name = _r["vendor_name"], _r["bank_account_name"]
                     allocated_amount, unapplied_amount = _r["allocated_amount"], _r["unapplied_amount"]
-                    payment_number = await generate_payment_number(conn, ctx["tenant_id"])
+                    payment_number = await nomor_pk(conn, ctx["tenant_id"])  # SATU seri BP- dengan /bills/{id}/payments
 
                     status = "draft" if payload.save_as_draft else "posted"
                     payment_id = uuid_module.uuid4()

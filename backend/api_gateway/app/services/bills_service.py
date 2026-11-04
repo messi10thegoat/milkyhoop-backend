@@ -1507,12 +1507,8 @@ class BillsService:
                 ap_account_id, pph_coa_id = _r["ap_account_id"], _r["pph_coa_id"]
 
                 # 6. Generate payment number
-                payment_number = (
-                    await conn.fetchval(
-                        "SELECT get_next_journal_number($1, 'BP')", tenant_id
-                    )
-                    or f"BP-{(await tanggal_dokumen(conn, tenant_id)).strftime('%y%m')}-AUTO"
-                )
+                from .nomor_bayar_keluar import nomor_pk
+                payment_number = await nomor_pk(conn, tenant_id)  # SATU seri BP- dengan POST /bill-payments (lompati terpakai)
 
                 # 7. Create journal DRAFT → lines → POSTED (Law 20)
                 journal_id = uuid_module.uuid4()

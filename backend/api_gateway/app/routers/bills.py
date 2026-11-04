@@ -1350,7 +1350,7 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
     kunci). Bentuk == POST /bill-payments/preview."""
     ctx = get_user_context(request)
     from ..services import bayar_keluar_rencana as BKR
-    from ..services.nomor_jurnal_perkiraan import perkiraan_nomor_jurnal
+    from ..services.nomor_bayar_keluar import perkiraan_nomor_pk
     pool = await get_pool()
     async with pool.acquire() as conn:
         tr = conn.transaction(readonly=True)
@@ -1359,7 +1359,7 @@ async def preview_record_payment(request: Request, bill_id: UUID, body: RecordPa
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             r = await BKR.pratinjau_bayar_tagihan(conn, ctx["tenant_id"], bill_id, body.model_dump())
             # U-BP-NOMOR: perkiraan nomor BP- (rumus SAMA dengan get_next_journal_number(tenant, 'BP') di record_payment), baca saja
-            nomor = await perkiraan_nomor_jurnal(conn, ctx["tenant_id"], "BP")
+            nomor = await perkiraan_nomor_pk(conn, ctx["tenant_id"])  # == POST /bill-payments/preview (satu seri BP-)
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     if r["after"] is None:

@@ -115,7 +115,7 @@ def test_blok_tulis_melempar_pratinjau_mengumpulkan():
 
 def test_penentu_tak_pernah_menyentuh_sequence_atau_menulis():
     kode = _tanpa_docstring((APP / "services/bayar_keluar_rencana.py").read_text())
-    for terlarang in ("get_next_journal_number", "bill_payment_sequences", "generate_payment_number"):
+    for terlarang in ("get_next_journal_number", "bill_payment_sequences", "nomor_pk("):
         assert terlarang not in kode, terlarang
     assert not re.search(r"\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b", kode, re.I)  # FOR UPDATE (kunci) boleh
 
@@ -126,7 +126,7 @@ def test_penulis_memakai_penentu_yang_sama():
     assert "await BKR.baris_jurnal_bayar(" in fn and fn.count("INSERT INTO journal_lines") == 1
     buat = bp[bp.index("async def create_bill_payment(request"):bp.index("async def delete_bill_payment")]
     assert "_r = await BKR.rencana_bayar(conn, ctx, payload)" in buat
-    assert buat.index("BKR.rencana_bayar(") < buat.index("generate_payment_number(")  # nomor lahir SESUDAH semua cek
+    assert buat.index("BKR.rencana_bayar(") < buat.index("nomor_pk(")  # nomor lahir SESUDAH semua cek
     assert 'for _al in _r["alokasi"]' in buat and "await efek_posting_bayar(" in buat  # U2a: cermin bank lewat penulis efek bersama
     efek = bp[bp.index("async def efek_posting_bayar("):bp.index("# === Journal Preview")]
     assert "BKR.cermin_bank(" in efek
