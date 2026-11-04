@@ -664,6 +664,7 @@ PUT /api/recipes/recipes/{recipe_id}
 PUT /api/recurring-expenses/{template_id}
 PUT /api/salary-components/{component_id}
 PUT /api/settings/order-codes
+PUT /api/settings/purchase
 PUT /api/tables/areas/{area_id}
 PUT /api/tables/reservations/{reservation_id}
 PUT /api/tables/tables/{table_id}
