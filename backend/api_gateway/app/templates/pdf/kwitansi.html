@@ -24,8 +24,9 @@
             {% endif %}
         </td>
         {% if company and company.logo_base64 %}
-        {# logo DI SAMPING blok usaha (bukan di atasnya): logo persegi butuh tinggi, A5 tidak punya. #}
-        <td class="kw-logo-sel"><img src="{{ company.logo_base64 }}" class="kw-logo" alt=""></td>
+        {# logo DI SAMPING blok usaha (bukan di atasnya): logo persegi butuh tinggi, A5 tidak punya. Pinggiran polos di dalam gambar
+           dipangkas (logo_rapat, kop keluarga Pembelian 4 Nov 2026) -> logo rapat ke identitas usaha. #}
+        <td class="kw-logo-sel"><img src="{{ company.logo_base64 | logo_rapat }}" class="kw-logo" alt=""></td>
         {% endif %}
     </tr></table>
 

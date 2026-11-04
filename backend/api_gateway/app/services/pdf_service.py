@@ -97,7 +97,7 @@ CSS_KWITANSI = CSS_DOKUMEN + ("kwitansi.css",)   # kwitansi.css SESUDAH dokumen.
 def logo_rapat(data_uri: Optional[str]) -> Optional[str]:
     """Pangkas pinggiran POLOS logo (warna piksel sudut, juga transparan) -> kotak logo = isi gambar, nama usaha rapat di
     bawahnya (FPB nyata grapgrap 4 Nov 2026: PNG 295x295 dengan isi hanya baris 88-208 -> celah ~45 px). Gagal / tanpa
-    pinggiran = data asli; berkas logo tenant tidak diubah."""
+    pinggiran = data asli; berkas logo tenant tidak diubah. Dipakai _partials/kop_usaha (FPB, PO, ND) + kwitansi.html."""
     if not data_uri or ";base64," not in data_uri:
         return data_uri
     try:
@@ -187,7 +187,7 @@ class PDFService:
         # PDF keluarga (3 Nov 2026): terbilang SATU sumber (utils.terbilang) untuk semua templat
         from ..utils.terbilang import terbilang_rupiah
         self.jinja_env.filters["terbilang"] = terbilang_rupiah
-        self.jinja_env.filters["logo_rapat"] = logo_rapat   # kop Pembelian pola Accurate (_partials/kop_usaha)
+        self.jinja_env.filters["logo_rapat"] = logo_rapat   # kop pola Accurate (_partials/kop_usaha) + kwitansi
 
     @classmethod
     def format_date_short(cls, date_value: Any) -> str:

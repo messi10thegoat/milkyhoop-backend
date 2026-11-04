@@ -10,9 +10,12 @@
 {% for item in items %}{% if (item.discount_percent and item.discount_percent|float > 0) or (item.discount_amount and item.discount_amount|float > 0) %}{% set ns.disk = true %}{% endif %}{% if k.kode and item[k.kode] %}{% set ns.kode = true %}{% endif %}{% endfor %}
 {% set j = k.judul or {"desk": "Deskripsi", "qty": "Qty", "harga": "Harga satuan", "jumlah": "Jumlah"} %}
 <table>
-{% set kd = '<col style="width:10%">' if ns.disk else '' %}{% set kh = '<col style="width:16%">' %}
-  <colgroup>{% if ns.kode %}<col style="width:12%">{% endif %}<col style="width:{{ 52 - (10 if ns.disk else 0) - (12 if ns.kode else 0) }}%"><col style="width:14%">
-    {{- (kh ~ kd if k.harga_dulu else kd ~ kh) | safe }}<col style="width:18%"></colgroup>
+{# Lebar kolom (%): tanpa diskon = pola Penawaran/PO lama 52/14/16/18. Dengan diskon (tinjauan MASTER 4 Nov 2026, ND): Kts 11 ·
+   Diskon 14 (nominal "Rp 1.234.567" muat) · @Harga 16 · Total 17 · Kode 10 -> sisanya Nama Barang. #}
+{% set w = {"q": 11, "d": 14, "h": 16, "t": 17} if ns.disk else {"q": 14, "d": 0, "h": 16, "t": 18} %}{% set wk = 10 if ns.kode else 0 %}
+{% set kd = '<col style="width:%d%%">' % w.d if ns.disk else '' %}{% set kh = '<col style="width:%d%%">' % w.h %}
+  <colgroup>{% if ns.kode %}<col style="width:{{ wk }}%">{% endif %}<col style="width:{{ 100 - wk - w.q - w.d - w.h - w.t }}%"><col style="width:{{ w.q }}%">
+    {{- (kh ~ kd if k.harga_dulu else kd ~ kh) | safe }}<col style="width:{{ w.t }}%"></colgroup>
   {% set hd = '<th class="r">Diskon</th>' if ns.disk else '' %}{% set hh = '<th class="r">' ~ j.harga ~ '</th>' %}
   <thead><tr>{% if ns.kode %}<th>Kode</th>{% endif %}<th>{{ j.desk }}</th><th class="r">{{ j.qty }}</th>{{ (hh ~ hd if k.harga_dulu else hd ~ hh) | safe }}<th class="r">{{ j.jumlah }}</th></tr></thead>
   <tbody>

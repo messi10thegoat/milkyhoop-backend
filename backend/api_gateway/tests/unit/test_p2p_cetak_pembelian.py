@@ -265,3 +265,47 @@ def test_nd_kepada_vendor_berkontak_fungsi_sama_po():
     html = get_pdf_service().render_debit_note(d, TENANT).html
     for teks in ("Jl. Benang 7", "0811", "NPWP 01.234.567.8-901.000"):
         assert teks in html, teks
+
+
+def _sel_baris(r):
+    """Tata letak HASIL WeasyPrint: per <tr> tabel -> [(x_kiri_teks, x_kanan_teks, jumlah_baris) per sel]."""
+    from weasyprint import HTML
+    from weasyprint.text.fonts import FontConfiguration
+    def teks(sel):
+        xs, n = [], 0
+        def jalan(b):
+            nonlocal n
+            for c in getattr(b, "children", None) or []:
+                n += type(c).__name__ == "LineBox"
+                if type(c).__name__ == "TextBox":
+                    xs.append((c.position_x, c.position_x + c.width))
+                jalan(c)
+        jalan(sel)
+        return (min(a for a, _ in xs), max(z for _, z in xs), n) if xs else None
+    fc = FontConfiguration()
+    d = HTML(string=r.html).render(stylesheets=get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
+    hasil = []
+    def jalan(b):
+        for c in getattr(b, "children", None) or []:
+            if type(c).__name__ == "TableRowBox":
+                hasil.append([teks(s) for s in c.children])
+            jalan(c)
+    jalan(d.pages[0]._page_box)
+    return hasil
+
+
+def test_tabel_barang_angka_panjang_tak_menempel_tak_terbungkus():
+    """Tinjauan MASTER 4 Nov 2026 (ND): @Harga Rp 12.345.678 + Diskon Rp 1.234.567 + Total 9 digit + nama 2 baris -> setiap angka
+    SATU baris dan jarak antarteks sel bersebelahan >= 16 px (Diskon 10% dulu: 6 px) (tabel bersama FPB/PO/ND)."""
+    items = [{"description": "Mesin Jahit Industri High Speed Juki DDL-9000C Lengkap Meja dan Motor Servo (paket instalasi)",
+              "quantity": Decimal("8"), "unit": "unit", "unit_price": Decimal("12345678"), "discount_amount": Decimal("1234567"),
+              "subtotal": Decimal("98765424")}]
+    vc = _vc(subtotal=Decimal("98765424"), discount_amount=Decimal("0"), tax_amount=Decimal("0"), total_amount=Decimal("97530857"))
+    d = _muat_nd(vc, items)["debit_note_data"]
+    baris = [b for b in _sel_baris(get_pdf_service().render_debit_note(d, TENANT)) if len(b) == 5]
+    assert baris, "baris tabel barang tak ditemukan"
+    for b in baris[1:]:   # [0] = kepala
+        assert b[0][2] >= 2, b                                     # nama panjang memang dibungkus (stimulus nyata)
+        for kiri, kanan in zip(b, b[1:]):
+            assert kanan[0] - kiri[1] >= 16, (kiri, kanan)
+        assert all(s[2] == 1 for s in b[1:]), b                    # Kts / @Harga / Diskon / Total satu baris
