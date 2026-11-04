@@ -46,6 +46,16 @@ async def muat_kop(conn, tenant_id: str) -> dict:
     return info
 
 
+def tanda_lunas(bayar_rows: list) -> dict:
+    """MURNI. Pesanan lunas -> tanggal & metode pembayaran TERAKHIR yang masuk (pola faktur_cetak.keadaan_cetak: riwayat terakhir);
+    baris pengembalian (jumlah < 0) / tanpa tanggal dilewati. Untuk teks "Dibayar lunas <tgl> · <metode>" + stempel bertanggal."""
+    masuk = [b for b in bayar_rows if b["jumlah"] > NOL and b["tanggal"]]
+    if not masuk:
+        return {"tanggal": None, "metode": None}
+    akhir = max(masuk, key=lambda b: b["tanggal"])
+    return {"tanggal": akhir["tanggal"], "metode": (akhir["metode"] or "").strip("-").strip() or None}
+
+
 async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
     """-> {"rekap": {...}, "tenant_info": {...}}. 404 bila SO tak ada di tenant ini."""
     tid = ctx["tenant_id"]
@@ -146,12 +156,14 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
 
     rek = await _fc.muat_rekening(conn, tid)
     status = "batal" if so["status"] == "cancelled" else ("lunas" if sisa <= NOL else "terbuka")
+    lunas = tanda_lunas(bayar_rows) if status == "lunas" else {"tanggal": None, "metode": None}
     rekap = {
         "id": str(sid), "order_number": so["order_number"], "order_date": so["order_date"],
         "customer_name": so["customer_name"], "status": status,
         "total": total, "dibayar": dibayar, "nota_kredit": r["credit_note"],
         "sisa": NOL if status == "batal" else max(sisa, NOL),  # pesanan batal: tak ada yang masih ditagih
         "tagihan": tagihan, "pembayaran": bayar_rows, "selisih_pembayaran": selisih,
+        "lunas_tanggal": lunas["tanggal"], "lunas_metode": lunas["metode"],
         "payment_bank_name": so["payment_bank_name"], "payment_account_number": so["payment_account_number"],
         "rekening_pemilik_cetak": _fc.pemilik_dari(rek, so["payment_bank_name"], so["payment_account_number"],
                                                    so["payment_account_holder"]),

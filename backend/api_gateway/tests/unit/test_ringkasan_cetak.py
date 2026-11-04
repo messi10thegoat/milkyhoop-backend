@@ -166,3 +166,20 @@ def test_rekap_teks_kecil_satu_baris_bila_muat():
             jalan(c)
     jalan(d.pages[0]._page_box)
     assert any("Total pesanan" in g and "nota kredit Rp 100.000" in g for g in garis), garis
+
+
+def test_rekap_lunas_teks_dibayar_lunas_dan_stempel_bertanggal():
+    """Rekap lunas (MASTER 4 Nov 2026): teks kecil "Dibayar lunas <tgl> · <metode>" (tak mengulang Total pesanan) + stempel bertanggal,
+    pola faktur penjualan; tanggal/metode = pembayaran masuk TERAKHIR (rekap_pesanan.tanda_lunas, pengembalian dilewati)."""
+    import datetime as dt
+    from app.services.rekap_pesanan import tanda_lunas
+    bayar = [{"tanggal": dt.date(2026, 10, 28), "metode": "Transfer BCA", "jumlah": D("1000")},
+             {"tanggal": dt.date(2026, 10, 30), "metode": "Tunai", "jumlah": D("500")},
+             {"tanggal": None, "metode": "", "jumlah": D("-100")}]
+    assert tanda_lunas(bayar) == {"tanggal": dt.date(2026, 10, 30), "metode": "Tunai"}
+    assert tanda_lunas([]) == {"tanggal": None, "metode": None}
+    r = {"order_number": "SO-1", "status": "lunas", "total": D("1500"), "dibayar": D("1500"), "nota_kredit": 0, "sisa": 0, "tagihan": [],
+         "pembayaran": bayar, "lunas_tanggal": dt.date(2026, 10, 30), "lunas_metode": "Tunai"}
+    h = PS.get_pdf_service().render_rekap_pesanan(r, {"name": "U"}).html
+    assert "Dibayar lunas 30 Okt 2026 · Tunai" in h and '<div class="stempel-kecil">30 OKT 2026</div>' in h
+    assert 'class="rk-seg">Total pesanan' not in h   # tak berulang dengan angka besar "Total pesanan"

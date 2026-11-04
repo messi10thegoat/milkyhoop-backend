@@ -48,10 +48,11 @@
         <div class="hero-teks">
             <div class="hero-label">{{ 'Total pesanan' if rekap.status in ('lunas', 'batal') else 'Sisa tagihan' }}</div>
             <div class="hero-amount">Rp {{ (rekap.total if rekap.status in ('lunas', 'batal') else rekap.sisa) | currency }}</div>
-            <div class="rk-sub"><span class="rk-seg">Total pesanan Rp {{ rekap.total | currency }}</span> · <span class="rk-seg">sudah dibayar Rp {{ rekap.dibayar | currency }}</span>{% if rekap.nota_kredit and rekap.nota_kredit > 0 %} · <span class="rk-seg">nota kredit Rp {{ rekap.nota_kredit | currency }}</span>{% endif %}</div>
+            {% if rekap.status == 'lunas' %}<div class="rk-sub">Dibayar lunas{% if rekap.lunas_tanggal %} {{ rekap.lunas_tanggal | date_id }}{% endif %}{% if rekap.lunas_metode %} · {{ rekap.lunas_metode }}{% endif %}</div>
+            {%- else %}<div class="rk-sub"><span class="rk-seg">Total pesanan Rp {{ rekap.total | currency }}</span> · <span class="rk-seg">sudah dibayar Rp {{ rekap.dibayar | currency }}</span>{% if rekap.nota_kredit and rekap.nota_kredit > 0 %} · <span class="rk-seg">nota kredit Rp {{ rekap.nota_kredit | currency }}</span>{% endif %}</div>{% endif %}
         </div>
         {% if rekap.status == 'lunas' %}
-        <div class="stempel stempel-lunas"><div class="stempel-teks">LUNAS</div></div>
+        <div class="stempel stempel-lunas"><div class="stempel-teks">LUNAS</div>{% if rekap.lunas_tanggal %}<div class="stempel-kecil">{{ rekap.lunas_tanggal | date_id | upper }}</div>{% endif %}</div>
         {% elif rekap.status == 'batal' %}
         <div class="stempel stempel-batal"><div class="stempel-teks">BATAL</div></div>
         {% endif %}
