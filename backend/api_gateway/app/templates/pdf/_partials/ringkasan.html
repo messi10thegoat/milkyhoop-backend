@@ -1,13 +1,17 @@
 {#
   Ringkasan angka dokumen SATU sumber (PDF seragam 4 Nov 2026): baris disusun services/ringkasan_cetak (angka tersimpan; Subtotal =
-  SIGMA kolom Total baris, tanpa "Diskon item"). gaya "tabel" = keluarga invoice.css (SI, Nota Kredit); "sum" = keluarga penawaran.css
+  SIGMA kolom Total baris, tanpa "Diskon item"). gaya "tabel" = keluarga invoice.css (SI, Nota Kredit); "ringkas" = kwitansi A5; "sum" = keluarga penawaran.css
   (Penawaran, PO, FPB, Nota Debit). terb = terbilang di dalam blok ringkasan (gaya sum).
 #}
 {% macro nilai(r, uang) -%}
 {%- if r.kelas == 'status' %}{{ r.nilai }}{% elif r.kelas == 'kurang' %}-Rp {{ r.nilai | rupiah(uang) }}{% else %}Rp {{ r.nilai | rupiah(uang) }}{% endif -%}
 {%- endmacro %}
 {% macro ringkasan(rows, uang, gaya, terb=none) -%}
-{% if gaya == 'tabel' %}
+{% if gaya == 'ringkas' %}{# kwitansi A5 (kwitansi.css) #}
+{% if rows %}<table class="kw-ringkas">
+  {% for r in rows %}<tr{% if 'tot' in r.kelas %} class="kw-r-total"{% endif %}><td>{{ r.label }}</td><td class="kw-r-nilai">{{ nilai(r, uang) }}</td></tr>{% endfor %}
+</table>{% endif %}
+{% elif gaya == 'tabel' %}
 <div class="summary">
   <table class="summary-table">
     {% for r in rows %}

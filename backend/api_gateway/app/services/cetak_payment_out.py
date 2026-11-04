@@ -9,7 +9,6 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from ..utils.metode_pembayaran import label_metode
-from ..utils.terbilang import terbilang
 from .rekap_pesanan import muat_kop
 
 PESAN_TAK_ADA = "Pembayaran tidak ditemukan."
@@ -20,7 +19,7 @@ LABEL = {
     "party_label": "Dibayarkan Kepada",
     "amount_label": "Jumlah Dibayar",
     "number_label": "No. Pembayaran",
-    "remaining_label": "Sisa Faktur",
+    "remaining_label": "Sisa faktur",
     "signature_label": "Dibayar oleh,",
     "hide_stamp": True,  # BKK (30 Okt 2026): pola remittance advice / payment voucher -- tanpa stempel; batal tetap DIBATALKAN
 }
@@ -60,7 +59,6 @@ async def muat_pdf_payment_out(conn, ctx: dict, payment_id) -> dict:
         "receipt_date": pay["payment_date"],
         "payer_name": pay["vendor_name"],
         "amount": jumlah,
-        "amount_words": terbilang(jumlah),
         "method": label_metode(pay["payment_method"]),
         "bank_name": bank_name,
         "purpose_label": "Faktur Pembelian",

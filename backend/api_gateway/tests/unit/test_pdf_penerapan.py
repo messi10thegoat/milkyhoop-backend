@@ -139,7 +139,7 @@ async def test_jurnal_da_jadi_bukti_penerapan():
     assert (d["receipt_number"], d["payer_name"], d["amount"]) == ("DA-2609-0026", "Nutrindo", 2500000.0)
     assert (d["purpose_ref"], d["source_ref"]) == ("INV-2609-0028", "DEP-2609-0039")
     assert d["method"] is None and d["bank_name"] is None
-    assert d["amount_words"].startswith("Dua Juta Lima Ratus Ribu")
+    assert "amount_words" not in d   # terbilang di templat (4 Nov 2026)
 
 
 @pytest.mark.asyncio

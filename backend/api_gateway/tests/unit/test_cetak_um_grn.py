@@ -112,7 +112,7 @@ def test_vd_konteks_arah_keluar_dan_saldo_dari_jurnal(sisa_jurnal):
     assert r["method"] == "Transfer Bank" and r["bank_name"] == "BCA Operasional"
     assert r["remaining"] == Decimal("1000000.00")  # jurnal, BUKAN cache remaining_amount (999)
     assert sisa_jurnal["ids"] == [vd["id"]]
-    assert "satu juta lima ratus ribu" in r["amount_words"].lower()
+    assert "amount_words" not in r   # 4 Nov 2026: terbilang di templat (filter terbilang = terbilang_rupiah, sen ikut), bukan dari pemuat
     assert m["tenant_info"]["name"] == "Usaha Uji"
     sql = c.sql[0][0]
     for join in ("v.tenant_id = vd.tenant_id", "po.tenant_id = vd.tenant_id", "ba.tenant_id = vd.tenant_id", "je.tenant_id = vd.tenant_id"):
@@ -210,7 +210,7 @@ def _rd(**k):
 def test_render_vd_arah_keluar():
     h = _ps().render_receipt(_rd(), TENANT).html
     for teks in ("Bukti Kas Keluar", "Uang muka pembelian ke pemasok", "Dibayarkan Kepada", "Jumlah Dibayar", "Untuk Pesanan Pembelian",
-                 "PO-2610-0003", "Referensi", "TRF-77", "Saldo Uang Muka", "No. Uang Muka", "Pembayar,"):
+                 "PO-2610-0003", "Referensi", "TRF-77", "Saldo uang muka", "Satu Juta Lima Ratus Ribu Rupiah", "No. Uang Muka", "Pembayar,"):
         assert teks in h, teks
     for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Bukti Pembayaran Uang Muka", "Telah Terima Dari", "Jumlah Diterima",
                  "Penerima,"):

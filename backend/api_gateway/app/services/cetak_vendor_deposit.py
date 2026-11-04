@@ -8,7 +8,6 @@ remaining_amount. Draf/batal: baris saldo tidak dicetak. Tanggal batal = reverse
 Tenant SELALU eksplisit."""
 from fastapi import HTTPException
 
-from ..utils.terbilang import terbilang
 from . import uang_muka_vendor_daftar as UMD
 from .rekap_pesanan import muat_kop
 
@@ -20,7 +19,7 @@ TEKS = {
     "number_label": "No. Uang Muka",
     "purpose_label": "Pesanan Pembelian",
     "source_label": "Referensi",
-    "remaining_label": "Saldo Uang Muka",
+    "remaining_label": "Saldo uang muka",
     "signature_label": "Pembayar,",
     "hide_stamp": True,  # BKK (30 Okt 2026): tanpa stempel (pola payment voucher); batal tetap DIBATALKAN
 }
@@ -57,7 +56,6 @@ async def muat_pdf_vendor_deposit(conn, ctx, deposit_id) -> dict:
         "receipt_date": vd["deposit_date"].isoformat() if vd["deposit_date"] else None,
         "payer_name": vd["vendor_name"],
         "amount": vd["amount"],
-        "amount_words": terbilang(int(vd["amount"] or 0)),
         "method": label_metode(vd["payment_method"]),
         "bank_name": vd["bank_account_name"] or vd["bank_name"],
         "purpose_ref": vd["po_number"],

@@ -158,10 +158,10 @@ def _teks(html):
 
 def test_kwitansi_pelunasan_dan_dp():
     t = _teks(_render(purpose_label=CD._deposit_purpose_label("so", "PELUNASAN")))
-    assert "Untuk Pelunasan Pesanan SO-1" in t and "Total Pembayaran Diterima" in t
+    assert "Untuk Pelunasan Pesanan SO-1" in t and "Total pembayaran diterima" in t   # sentence case (4 Nov 2026), kata = putusan C
     assert "Bukti Penerimaan" in t and "Uang Muka" not in t
     t = _teks(_render(purpose_label=CD._deposit_purpose_label("so", "DP")))
-    assert "Untuk Uang Muka Pesanan SO-1" in t and "Total Pembayaran Diterima" in t
+    assert "Untuk Uang Muka Pesanan SO-1" in t and "Total pembayaran diterima" in t
 
 
 def test_kwitansi_memuat_jenis_efektif_dari_sql():
@@ -263,3 +263,38 @@ def test_riwayat_so_memakai_jenis():
 
 def test_label_medan_jenis():
     assert SR.label_medan(["jenis"]) == "jenis pembayaran"
+
+
+def test_kwitansi_uang_muka_bersen_sen_sama_dengan_proforma(monkeypatch):
+    """PDF seragam 4 Nov 2026: pemuat kwitansi uang muka dulu int() -> sen TERPOTONG, filter currency membulatkan, terbilang tanpa sen.
+    Kini Decimal dari pemuat sampai kertas: kwitansi DP 1.554.186,46 mencetak sen PERSIS seperti Proforma sumbernya (angka + terbilang)."""
+    import asyncio
+    import uuid
+    from decimal import Decimal
+    from app.services import uang_muka_pesanan as UMP
+    so_id = uuid.uuid4()
+
+    async def _ump(conn, tid, ids):
+        return {so_id: {"neto": Decimal("1554186.46")}}
+    monkeypatch.setattr(UMP, "uang_muka_pesanan", _ump)
+    dep = {"amount": Decimal("1554186.46"), "amount_applied": Decimal("0"), "amount_refunded": Decimal("0"), "sales_order_id": so_id,
+           "quote_id": None, "bank_account_id": None, "deposit_number": "DEP-1", "deposit_date": None, "customer_name": "Budi",
+           "payment_method": "transfer", "status": "posted", "voided_at": None, "voided_reason": None, "notes": None, "jenis_efektif": "DP"}
+
+    class _K:
+        async def fetchrow(self, sql, *a):
+            if "FROM customer_deposits" in sql:
+                return dep
+            if "SELECT order_number" in sql:
+                return {"order_number": "SO-1"}
+            if "SELECT total_amount FROM sales_orders" in sql:
+                return {"total_amount": Decimal("3108372.92")}
+            return {"display_name": "U", "address": None, "phone": None, "logo_url": None, "tax_id": None}
+    m = asyncio.run(CD.muat_pdf_kwitansi_uang_muka(_K(), {"tenant_id": "t1"}, str(uuid.uuid4())))
+    kw = _teks(get_pdf_service().render_receipt(m["receipt_data"], m["tenant_info"]).html)
+    pf = _teks(get_pdf_service().render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": Decimal("1554186.46"), "order_items": [],
+                                                  "status": "posted", "has_cents": True}, {"name": "U"}).html)
+    for teks in ("Rp 1.554.186,46", "Empat Puluh Enam Sen"):
+        assert teks in kw, teks
+    assert "Rp 1.554.186,46" in pf
+    assert "Rp 3.108.372,92" in kw and "Rp 1.554.186 " not in kw + " "
