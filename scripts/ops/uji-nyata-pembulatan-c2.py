@@ -1,7 +1,6 @@
 """Harness NYATA c-2 PEMBULATAN PEMBELIAN (kaos SAJA, penanda 'TES E2E PEMBULATAN-C2'): SATU transaksi luar pada satu koneksi SELALU
-di-ROLLBACK (pola FPB-DEBIT-PENUH: pool tertambal, transaksi dalam = savepoint). MIG=1: V479 diterapkan DI DALAM transaksi itu (lock_timeout
-3 dtk; ikut tergulung) -- prod tak berubah. Sesudah ROLLBACK diukur di koneksi LAIN: nol sisa tagihan/ND/jurnal/stok, kolom pembulatan
-tetap seperti sebelum.
+di-ROLLBACK (pola FPB-DEBIT-PENUH: pool tertambal, transaksi dalam = savepoint). PRASYARAT: V479 SUDAH diterapkan (jendela migrasi
+sendiri; MASTER 5 Nov: tanpa DDL di dalam harness). Sesudah ROLLBACK diukur di koneksi LAIN: nol sisa tagihan/ND/jurnal/stok.
 
 Rantai = contoh angka yang disetujui pemilik LANGSUNG 5 Nov (fixture di dalam ROLLBACK: kaos non-PKP, tanpa uang_bersen):
   tagihan 3 x 16.650 + PPN 11% (dikapitalisasi) = 55.444,50 -> draf mentah -> pratinjau posting == jurnal tertulis ->
@@ -64,7 +63,6 @@ from app.utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
 T = "kaos-biru-konveksi"
 VENDOR, STOK = "73a2b4bd-72d3-46cb-8adb-79f14f9e28e7", "862be8e3-b35a-48e3-b8c3-c200f75feba9"  # == harness ND-BUAT / FPB-DEBIT-SATU
 PENANDA = "TES E2E PEMBULATAN-C2"
-MIG = os.environ.get("MIG_V479", "")
 D = Decimal
 
 
@@ -114,7 +112,6 @@ async def main(keluar):
                 "nd": await c2.fetchval("SELECT count(*) FROM vendor_credits WHERE tenant_id = $1 AND notes = $2", T, PENANDA),
                 "jurnal": await c2.fetchval("SELECT count(*) FROM journal_entries WHERE tenant_id = $1", T),
                 "stok": await c2.fetchval("SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1", T),
-                "kolom": await c2.fetchval("SELECT count(*) FROM information_schema.columns WHERE table_name = 'bills' AND column_name = 'pembulatan'"),
                 "peran": await c2.fetchval("SELECT count(*) FROM account_roles WHERE role_key = 'PURCHASE_ROUNDING'")}
 
     async def baris_jurnal(jid):
@@ -136,12 +133,9 @@ async def main(keluar):
     luar = c.transaction()
     await luar.start()
     try:
-        if MIG:
-            await c.execute("SET LOCAL lock_timeout = '3s'")
-            await c.execute(open(MIG).read())
         harus("prasyarat: kolom pembulatan + peran PURCHASE_ROUNDING kaos", await c.fetchval(
             "SELECT count(*) FROM information_schema.columns WHERE table_name = 'bills' AND column_name = 'pembulatan'") == 1
-            and await kode_peran("PURCHASE_ROUNDING") == "5-90100", MIG)
+            and await kode_peran("PURCHASE_ROUNDING") == "5-90100")
         # fixture (di dalam ROLLBACK): non-PKP + presisi 0
         catat["fixture"] = {"is_pkp": await c.fetchval('SELECT is_pkp FROM "Tenant" WHERE id = $1', T),
                             "uang_bersen": await c.fetchval("SELECT count(*) FROM tenant_features WHERE tenant_id = $1 AND feature = 'uang_bersen' AND enabled", T)}
@@ -218,7 +212,7 @@ async def main(keluar):
     finally:
         await luar.rollback()
     sesudah = await saksi()
-    harus("ROLLBACK: dari koneksi LAIN nol sisa tagihan/ND TES E2E, jurnal/stok/kolom/peran tak berubah", sesudah == sebelum, [sebelum, sesudah])
+    harus("ROLLBACK: dari koneksi LAIN nol sisa tagihan/ND TES E2E, jurnal/stok/peran tak berubah", sesudah == sebelum, [sebelum, sesudah])
     harus("nol panggilan kanal keluar", KELUAR == [], KELUAR)
     await c.close()
     await c2.close()
