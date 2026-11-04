@@ -33,6 +33,27 @@ from fastapi import HTTPException
 from typing import Optional
 
 
+async def cek_jejak(conn, entity_id: str, entity_name, ledger_checks: list, has_footprint_error: str = "Tidak bisa dihapus karena "
+                   "masih memiliki transaksi. Nonaktifkan saja.", id_cast: str = "") -> Optional[str]:
+    """BACA SAJA. Kalimat penolakan hapus pertama (jejak transaksi) atau None = boleh dihapus. Dipakai smart_delete (tulis) dan aksi
+    detail Pelanggan / Vendor (B2: boleh + alasan dari server) -- satu aturan."""
+    for check in ledger_checks:
+        # Unpack: (table, fk, custom_msg) or (table, fk, custom_msg, cast_override)
+        if len(check) == 4:
+            check_table, fk_col, custom_msg, cast_override = check
+        else:
+            check_table, fk_col, custom_msg = check
+            cast_override = None
+        _cast = cast_override if cast_override is not None else id_cast
+        count = await conn.fetchval(
+            f"SELECT COUNT(*) FROM {check_table} WHERE {fk_col}{_cast} = $1",
+            entity_id,
+        )
+        if count and count > 0:
+            return (custom_msg or has_footprint_error).format(name=entity_name, count=count)
+    return None
+
+
 async def smart_delete(
     conn,
     tenant_id: str,
@@ -78,25 +99,10 @@ async def smart_delete(
 
     entity_name = existing[name_column]
 
-    # 2. Check ledger footprint — raise on first hit (fast fail)
-    for check in ledger_checks:
-        # Unpack: (table, fk, custom_msg) or (table, fk, custom_msg, cast_override)
-        if len(check) == 4:
-            check_table, fk_col, custom_msg, cast_override = check
-        else:
-            check_table, fk_col, custom_msg = check
-            cast_override = None
-        _cast = cast_override if cast_override is not None else id_cast
-        count = await conn.fetchval(
-            f"SELECT COUNT(*) FROM {check_table} WHERE {fk_col}{_cast} = $1",
-            entity_id,
-        )
-        if count and count > 0:
-            msg = custom_msg or has_footprint_error
-            raise HTTPException(
-                status_code=400,
-                detail=msg.format(name=entity_name, count=count),
-            )
+    # 2. Check ledger footprint — raise on first hit (fast fail); SATU pemeriksa dengan alasan aksi detail (cek_jejak)
+    alasan = await cek_jejak(conn, entity_id, entity_name, ledger_checks, has_footprint_error, id_cast)
+    if alasan:
+        raise HTTPException(status_code=400, detail=alasan)
 
     # 3. No footprint — cascade cleanup (delete rows from non-ledger tables)
     if cascade_tables:

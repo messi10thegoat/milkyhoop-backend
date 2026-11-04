@@ -16,6 +16,8 @@ import logging
 import asyncpg
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pelanggan + Vendor satu penentu
+from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
 from ..services import vendor_unik as VU  # VENDOR-DUPLIKAT (1 Nov 2026): 409 berkode satu bentuk dengan pelanggan
 from ..services import idem_buat  # VENDOR-IDEM (25 Okt 2026): X-Idempotency-Key buat/status/hapus/gabung
 from ..schemas.vendors import (
@@ -288,6 +290,70 @@ async def check_duplicate(
 # =============================================================================
 # LIST VENDORS
 # =============================================================================
+def _syarat_vendor(tid: str, search: Optional[str], is_active: Optional[bool], is_pkp: Optional[bool],
+                   has_overdue: Optional[bool], hari_ini) -> tuple:
+    """Syarat daftar vendor -- SATU pembangun untuk GET /vendors dan /vendors/summary (predikat sama). -> (where, params, idx)."""
+    # Build query conditions.
+    # SEMUA kueri di bawah memakai alias tabel `v` (FROM vendors v),
+    # jadi setiap kondisi ditulis EKSPLISIT ber-prefiks v. — dulu
+    # WHERE dialias lewat str.replace("tenant_id", "v.tenant_id")
+    # yang juga merusak fragmen has_overdue (vendors.tenant_id ->
+    # vendors.v.tenant_id) -> 500 saat has_overdue+sort ap_balance.
+    conditions = ["v.tenant_id = $1"]
+    params = [tid]
+    param_idx = 2
+
+    if search:
+        # Split search into words for fuzzy matching
+        words = search.strip().split()
+        if len(words) == 1:
+            conditions.append(
+                f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
+                f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
+                f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
+            )
+            params.append(f"%{words[0]}%")
+            param_idx += 1
+        else:
+            word_conds = []
+            for word in words:
+                word_conds.append(
+                    f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
+                    f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
+                    f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
+                )
+                params.append(f"%{word}%")
+                param_idx += 1
+            conditions.append(f"({' AND '.join(word_conds)})")
+
+    if is_active is not None:
+        conditions.append(f"v.is_active = ${param_idx}")
+        params.append(is_active)
+        param_idx += 1
+
+    # Filter by has_balance (vendors with opening_balance > 0)
+
+    # Filter by is_pkp (PKP vendors only)
+    if is_pkp is True:
+        conditions.append("v.is_pkp = true")
+
+    # Pure Ledger: has_overdue filter using compute_ap_outstanding() DB function
+    if has_overdue is True:
+        # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
+        conditions.append(
+            f"""EXISTS (
+            SELECT 1 FROM compute_ap_outstanding(v.tenant_id) ap_fn
+            WHERE ap_fn.vendor_id = v.id
+              AND ap_fn.due_date < ${param_idx}::date
+              AND ap_fn.outstanding > 0 AND ap_fn.bill_id IS NOT NULL  -- V457: lewat tempo = tagihan
+        )"""
+        )
+        params.append(hari_ini)
+        param_idx += 1
+
+    return " AND ".join(conditions), params, param_idx
+
+
 @router.get("", response_model=VendorListResponse)
 async def list_vendors(
     request: Request,
@@ -309,9 +375,13 @@ async def list_vendors(
         "name", "code", "created_at", "updated_at", "ap_balance", "company_name"
     ] = Query("created_at", description="Sort field"),
     sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
+    with_totals: bool = Query(False, description="B1: sum_sisa (Σ hutang hasil filter) + urut nama, id"),
+    aksi: Optional[Literal["lewat_jatuh_tempo", "punya_hutang"]] = Query(None, description="B1: saring aksi (kontak_daftar)"),
 ):
     """
     List vendors with search, filtering, and pagination.
+    B1 (4 Nov 2026): tanpa with_totals/aksi = perilaku lama (+ medan aditif); has_balance kini dari JURNAL (aksi punya_hutang,
+    dulu COALESCE(v.opening_balance, 0) > 0); saldo / lewat tempo lewat services/kontak_daftar (satu penentu dengan pelanggan).
 
     **Search:** Matches name, code, contact_person, or phone.
     **Filter:** Use is_active=true to show only active vendors.
@@ -321,68 +391,10 @@ async def list_vendors(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Build query conditions.
-            # SEMUA kueri di bawah memakai alias tabel `v` (FROM vendors v),
-            # jadi setiap kondisi ditulis EKSPLISIT ber-prefiks v. — dulu
-            # WHERE dialias lewat str.replace("tenant_id", "v.tenant_id")
-            # yang juga merusak fragmen has_overdue (vendors.tenant_id ->
-            # vendors.v.tenant_id) -> 500 saat has_overdue+sort ap_balance.
-            conditions = ["v.tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            param_idx = 2
-
-            if search:
-                # Split search into words for fuzzy matching
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
-                        f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
-                        f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(v.name ILIKE ${param_idx} OR v.code ILIKE ${param_idx} "
-                            f"OR v.company_name ILIKE ${param_idx} OR v.display_name ILIKE ${param_idx} "
-                            f"OR v.contact_person ILIKE ${param_idx} OR v.phone ILIKE ${param_idx} OR v.search_text ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
-
-            if is_active is not None:
-                conditions.append(f"v.is_active = ${param_idx}")
-                params.append(is_active)
-                param_idx += 1
-
-            # Filter by has_balance (vendors with opening_balance > 0)
-            if has_balance is True:
-                conditions.append("COALESCE(v.opening_balance, 0) > 0")
-
-            # Filter by is_pkp (PKP vendors only)
-            if is_pkp is True:
-                conditions.append("v.is_pkp = true")
-
-            # Pure Ledger: has_overdue filter using compute_ap_outstanding() DB function
-            if has_overdue is True:
-                # #10b-3a: hari ini = tanggal bisnis tenant, bukan UTC
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-                conditions.append(
-                    f"""EXISTS (
-                    SELECT 1 FROM compute_ap_outstanding(v.tenant_id) ap_fn
-                    WHERE ap_fn.vendor_id = v.id
-                      AND ap_fn.due_date < ${param_idx}::date
-                      AND ap_fn.outstanding > 0 AND ap_fn.bill_id IS NOT NULL  -- V457: lewat tempo = tagihan
-                )"""
-                )
-                params.append(hari_ini)
-                param_idx += 1
-
-            where_clause = " AND ".join(conditions)
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            where_clause, params, param_idx = _syarat_vendor(ctx["tenant_id"], search, is_active, is_pkp, has_overdue, hari_ini)
+            # has_balance lama -> predikat JURNAL yang SAMA dengan ?aksi=punya_hutang (dulu COALESCE(v.opening_balance, 0) > 0)
+            aksi_saring = aksi or ("punya_hutang" if has_balance is True else None)
 
             # Validate sort field
             valid_sorts = {
@@ -396,56 +408,58 @@ async def list_vendors(
             sort_dir = "DESC" if sort_order == "desc" else "ASC"
             use_ap_balance_sort = sort_by == "ap_balance"
 
-            # Get total count
-            count_query = f"SELECT COUNT(*) FROM vendors v WHERE {where_clause}"
-            total = await conn.fetchval(count_query, *params)
-
-            # Get items - handle ap_balance sorting with subquery
-            if use_ap_balance_sort:
-                query = f"""
-                    SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email,
-                           v.payment_terms_days, v.is_active, v.created_at,
-                           COALESCE(ap.ap_balance, 0) as ap_balance
-                    FROM vendors v
-                    LEFT JOIN (
-                        -- Pure Ledger: AP balance from compute_ap_outstanding() DB function
-                        SELECT vendor_id, COALESCE(SUM(outstanding), 0) as ap_balance
-                        FROM compute_ap_outstanding($1)
-                        GROUP BY vendor_id
-                    ) ap ON ap.vendor_id = v.id
-                    WHERE {where_clause}
-                    ORDER BY COALESCE(ap.ap_balance, 0) {sort_dir}
-                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
-                """
+            sum_sisa = None
+            if with_totals or aksi_saring:  # B1: filter aksi + total/sum_sisa dari penentu bersama
+                urut = None
+                if not (with_totals or aksi):  # has_balance lama: urutan lama dipertahankan
+                    urut = f"COALESCE(x.saldo, 0) {sort_dir}" if use_ap_balance_sort else f"v.{sort_field} {sort_dir}"
+                h = await KD.halaman(conn, ctx["tenant_id"], "vendor", "v", where_clause, params, param_idx, hari_ini,
+                                     skip=skip, limit=limit, aksi=aksi_saring, with_totals=with_totals, urut=urut)
+                total, sum_sisa = h["total"], h.get("sum_sisa")
+                pos = {str(i): n for n, i in enumerate(h["ids"])}
+                rows = sorted(await conn.fetch(
+                    """SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
+                              payment_terms_days, is_active, created_at FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])""",
+                    ctx["tenant_id"], h["ids"]), key=lambda r: pos[str(r["id"])])
             else:
-                query = f"""
-                    SELECT id, code, name, company_name, display_name, contact_person, phone, email,
-                           payment_terms_days, is_active, created_at
-                    FROM vendors v
-                    WHERE {where_clause}
-                    ORDER BY {sort_field} {sort_dir}
-                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
-                """
-            params.extend([limit, skip])
+                # Get total count
+                count_query = f"SELECT COUNT(*) FROM vendors v WHERE {where_clause}"
+                total = await conn.fetchval(count_query, *params)
 
-            rows = await conn.fetch(query, *params)
-
-            # Pure Ledger: batch-fetch AP balances from compute_ap_outstanding() DB function
-            vendor_ids = [str(row["id"]) for row in rows]
-            ap_balances = {}
-            if vendor_ids:
-                ap_rows = await conn.fetch(
+                # Get items - handle ap_balance sorting with subquery
+                if use_ap_balance_sort:
+                    query = f"""
+                        SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email, v.city,
+                               v.payment_terms_days, v.is_active, v.created_at,
+                               COALESCE(ap.ap_balance, 0) as ap_balance
+                        FROM vendors v
+                        LEFT JOIN (
+                            -- Pure Ledger: AP balance from compute_ap_outstanding() DB function
+                            SELECT vendor_id, COALESCE(SUM(outstanding), 0) as ap_balance
+                            FROM compute_ap_outstanding($1)
+                            GROUP BY vendor_id
+                        ) ap ON ap.vendor_id = v.id
+                        WHERE {where_clause}
+                        ORDER BY COALESCE(ap.ap_balance, 0) {sort_dir}
+                        LIMIT ${param_idx} OFFSET ${param_idx + 1}
                     """
-                    SELECT vendor_id::text as vid,
-                           COALESCE(SUM(outstanding), 0) as ap_balance
-                    FROM compute_ap_outstanding($1)
-                    WHERE vendor_id::text = ANY($2)
-                    GROUP BY vendor_id
-                """,
-                    ctx["tenant_id"],
-                    vendor_ids,
-                )
-                ap_balances = {row["vid"]: float(row["ap_balance"]) for row in ap_rows}
+                else:
+                    query = f"""
+                        SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
+                               payment_terms_days, is_active, created_at
+                        FROM vendors v
+                        WHERE {where_clause}
+                        ORDER BY {sort_field} {sort_dir}
+                        LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                    """
+                params.extend([limit, skip])
+
+                rows = await conn.fetch(query, *params)
+
+
+            # B1: saldo / lewat tempo dari JURNAL lewat kontak_daftar (satu penentu dengan pelanggan)
+            vendor_ids = [str(row["id"]) for row in rows]
+            fakta = await KD.fakta_kontak(conn, ctx["tenant_id"], "vendor", vendor_ids, hari_ini)
 
             items = [
                 {
@@ -460,12 +474,16 @@ async def list_vendors(
                     "payment_terms_days": row["payment_terms_days"],
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
-                    "ap_balance": ap_balances.get(str(row["id"]), 0),
+                    "ap_balance": KD.medan_baris("vendor", row, fakta)["saldo"],
+                    **KD.medan_baris("vendor", row, fakta),
                 }
                 for row in rows
             ]
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            out = {"items": items, "total": total, "has_more": (skip + limit) < total}
+            if with_totals:
+                out["sum_sisa"] = sum_sisa
+            return out
 
     except HTTPException:
         raise
@@ -477,6 +495,19 @@ async def list_vendors(
 # =============================================================================
 # GET VENDOR DETAIL
 # =============================================================================
+@router.get("/summary")
+async def vendors_summary(request: Request, search: Optional[str] = Query(None), is_active: Optional[bool] = Query(None),
+                          is_pkp: Optional[bool] = Query(None), has_overdue: Optional[bool] = Query(None)):
+    """B1: ringkasan daftar vendor -- predikat SAMA dengan GET /vendors (_syarat_vendor + kontak_daftar). SEBELUM /{vendor_id}."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+        where, params, idx = _syarat_vendor(ctx["tenant_id"], search, is_active, is_pkp, has_overdue, hari_ini)
+        data = await KD.ringkasan(conn, ctx["tenant_id"], "vendor", "v", where, params, idx, hari_ini)
+    return {"success": True, "data": data}
+
+
 @router.get("/next-code")
 async def get_next_vendor_code(request: Request):
     """Get the next available vendor code for auto-generation."""
@@ -585,6 +616,42 @@ async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contact
     return berubah
 
 
+# Jejak transaksi yang menolak hapus vendor -- SATU daftar untuk DELETE (smart_delete) dan aksi detail B2 (cek_jejak)
+JEJAK_VENDOR = [
+        (
+            "bills",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang sudah memiliki tagihan. Nonaktifkan saja.",
+        ),
+        (
+            "accounts_payable",
+            "supplier_id",
+            "Tidak bisa menghapus vendor yang memiliki catatan utang. Nonaktifkan saja.",
+        ),
+        (
+            "vendor_credits",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki kredit. Nonaktifkan saja.",
+        ),
+        (
+            "vendor_deposits",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki deposit. Nonaktifkan saja.",
+        ),
+    ]
+
+
+async def saldo_awal_vendor(conn, tid: str, vendor_id) -> Optional[str]:
+    """Nomor saldo awal vendor yang masih berlaku (tagihan pembuka tak-void, atau jurnal VENDOR_OPENING_BALANCE lama belum dibalik);
+    None = belum ada. SATU pemeriksa untuk POST /opening-balance dan aksi detail B2."""
+    ada = await conn.fetchval(
+        "SELECT invoice_number FROM bills WHERE tenant_id = $1 AND vendor_id = $2 AND is_opening_balance AND status_v2 <> 'void'",
+        tid, vendor_id)
+    return ada or await conn.fetchval(  # jurnal VENDOR_OPENING_BALANCE lama (terbalik) yang belum dibalik
+        """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'VENDOR_OPENING_BALANCE' AND source_id = $2
+           AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", tid, vendor_id)
+
+
 @router.get("/{vendor_id}", response_model=VendorDetailResponse)
 async def get_vendor(request: Request, vendor_id: UUID):
     """Get detailed information for a single vendor."""
@@ -632,15 +699,17 @@ async def get_vendor(request: Request, vendor_id: UUID):
             )
             has_transactions = tx_count > 0
 
-            # Pure Ledger: AP balance from compute_vendor_ap() DB function
-            ap_balance_val = await conn.fetchval(
-                """
-                SELECT COALESCE(SUM(outstanding), 0)
-                FROM compute_vendor_ap($1, $2)
-            """,
-                ctx["tenant_id"],
-                vendor_id,
-            )
+            # B2 (4 Nov 2026): saldo / lewat tempo = kontak_daftar (satu penentu dengan daftar + pelanggan); total pembelian TURUNAN
+            # JURNAL (services/vendor_pembelian); aksi boleh/alasan dari pemeriksa penulis (cek_jejak, saldo_awal_vendor).
+            # kredit_vendor TIDAK dikirim (belum ada penentu jurnal).
+            _hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+            _medan = KD.medan_baris("vendor", row, await KD.fakta_kontak(conn, ctx["tenant_id"], "vendor", [str(row["id"])], _hari))
+            from ..services.vendor_pembelian import pembelian_vendor
+            from ..services.smart_delete import cek_jejak
+            from ..services import kontak_detail as KDT
+            _beli = (await pembelian_vendor(conn, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
+            _aksi = KDT.aksi_detail(row["is_active"], await cek_jejak(conn, str(row["id"]), row["name"], JEJAK_VENDOR),
+                                    await saldo_awal_vendor(conn, ctx["tenant_id"], row["id"]))
 
             shipping_address, contacts = await _baca_anak_pemasok(conn, ctx["tenant_id"], vendor_id)
 
@@ -697,7 +766,17 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "updated_at": row["updated_at"].isoformat(),
                     # Transaction check
                     "has_transactions": has_transactions,
-                    "ap_balance": float(ap_balance_val) if ap_balance_val else 0,
+                    "ap_balance": _medan["saldo"],
+                    "saldo": _medan["saldo"],
+                    "lewat_tempo_nilai": _medan["lewat_tempo_nilai"],
+                    "lewat_tempo_jumlah": _medan["lewat_tempo_jumlah"],
+                    **_beli,
+                    "jumlah_dokumen": _beli["jumlah_tagihan"],
+                    "kontak_teks": _medan["kontak_teks"],
+                    "status_text": _medan["status_text"],
+                    "tipe_text": KDT.tipe_text(row["vendor_type"]),
+                    "termin_text": KDT.termin_text(row["payment_terms_days"]),
+                    "aksi": _aksi,
                 },
             }
 
@@ -1277,28 +1356,7 @@ async def delete_vendor(request: Request, vendor_id: UUID, response: Response = 
                     entity_id=str(vendor_id),
                     table="vendors",
                     name_column="name",
-                    ledger_checks=[
-                        (
-                            "bills",
-                            "vendor_id",
-                            "Tidak bisa menghapus vendor yang sudah memiliki tagihan. Nonaktifkan saja.",
-                        ),
-                        (
-                            "accounts_payable",
-                            "supplier_id",
-                            "Tidak bisa menghapus vendor yang memiliki catatan utang. Nonaktifkan saja.",
-                        ),
-                        (
-                            "vendor_credits",
-                            "vendor_id",
-                            "Tidak bisa menghapus vendor yang memiliki kredit. Nonaktifkan saja.",
-                        ),
-                        (
-                            "vendor_deposits",
-                            "vendor_id",
-                            "Tidak bisa menghapus vendor yang memiliki deposit. Nonaktifkan saja.",
-                        ),
-                    ],
+                    ledger_checks=JEJAK_VENDOR,
                 )
                 resp = {
                     "success": True,
@@ -1518,12 +1576,7 @@ async def set_vendor_opening_balance(request: Request, vendor_id: str, response:
                 raise HTTPException(status_code=422, detail={
                     "code": KODE_AKUN_SALDO_AWAL_BELUM_DIPETAKAN,
                     "message": "Akun Hutang Usaha atau Modal Saldo Awal belum dipetakan. Atur di Pengaturan, Akun Default."})
-            ada = await conn.fetchval(
-                "SELECT invoice_number FROM bills WHERE tenant_id = $1 AND vendor_id = $2 AND is_opening_balance AND status_v2 <> 'void'",
-                ctx["tenant_id"], vendor["id"])
-            ada = ada or await conn.fetchval(  # jurnal VENDOR_OPENING_BALANCE lama (terbalik) yang belum dibalik
-                """SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND source_type = 'VENDOR_OPENING_BALANCE' AND source_id = $2
-                   AND status = 'POSTED' AND reversed_by_id IS NULL AND reversal_of_id IS NULL""", ctx["tenant_id"], vendor["id"])
+            ada = await saldo_awal_vendor(conn, ctx["tenant_id"], vendor["id"])
             if ada:
                 raise HTTPException(status_code=409, detail={
                     "code": KODE_SALDO_AWAL_VENDOR_SUDAH_ADA,
@@ -1946,6 +1999,20 @@ async def get_vendor_journal_entries(
 # =============================================================================
 
 
+@router.get("/{vendor_id}/history")
+async def get_vendor_history(request: Request, vendor_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """B4: riwayat bentuk /sales-orders/{id}/history (services/kontak_riwayat, sumber SAMA dengan /activity); dokumen tersaring
+    izin BACA pemanggil -> omitted."""
+    from ..services.dashboard_izin import boleh_baca
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        data = await KR.riwayat(conn, ctx["tenant_id"], "vendor", vendor_id, lambda m: boleh_baca(request, m), limit)
+    return {"success": True, "data": data}
+
+
 @router.get("/{vendor_id}/activity", response_model=VendorActivityResponse)
 async def get_vendor_activity(
     request: Request,
@@ -1971,62 +2038,8 @@ async def get_vendor_activity(
             raise HTTPException(status_code=404, detail="Vendor not found")
 
         # Get total count (including transaction events)
-        count_query = """
-            SELECT (
-                SELECT COUNT(*) FROM vendor_activities
-                WHERE vendor_id = $1 AND tenant_id = $2
-            ) + (
-                SELECT COUNT(*) FROM bills
-                WHERE vendor_id = $1 AND tenant_id = $2
-                  AND status_v2 NOT IN ('draft', 'void')
-            ) + (
-                SELECT COUNT(*) FROM bill_payments_v2
-                WHERE vendor_id = $1 AND tenant_id = $2
-                  AND status NOT IN ('draft', 'void')
-            )
-        """
-        total = await conn.fetchval(count_query, vendor_id, ctx["tenant_id"])
-
-        # Get activities (UNION with transaction events)
-        query = """
-            SELECT id::text, type, description, details, actor_name, timestamp,
-                   NULL as document_number, NULL::numeric as total,
-                   field_name, old_value, new_value
-            FROM vendor_activities
-            WHERE vendor_id = $1 AND tenant_id = $2
-
-            UNION ALL
-
-            SELECT b.id::text, 'bill' as type,
-                   'Faktur pembelian ' || b.invoice_number as description,
-                   'Total: ' || COALESCE(b.grand_total, b.amount)::text as details,
-                   NULL as actor_name,
-                   b.created_at as timestamp,
-                   b.invoice_number as document_number,
-                   COALESCE(b.grand_total, b.amount)::numeric as total,
-                   NULL as field_name, NULL as old_value, NULL as new_value
-            FROM bills b
-            WHERE b.vendor_id = $1 AND b.tenant_id = $2
-              AND b.status_v2 NOT IN ('draft', 'void')
-
-            UNION ALL
-
-            SELECT bp.id::text, 'payment' as type,
-                   'Pembayaran ' || bp.payment_number as description,
-                   'Total: ' || bp.total_amount::text as details,
-                   NULL as actor_name,
-                   bp.created_at as timestamp,
-                   bp.payment_number as document_number,
-                   bp.total_amount::numeric as total,
-                   NULL as field_name, NULL as old_value, NULL as new_value
-            FROM bill_payments_v2 bp
-            WHERE bp.vendor_id = $1 AND bp.tenant_id = $2
-              AND bp.status NOT IN ('draft', 'void')
-
-            ORDER BY timestamp DESC
-            LIMIT $3 OFFSET $4
-        """
-        rows = await conn.fetch(query, vendor_id, ctx["tenant_id"], limit, offset)
+        # B4 (4 Nov 2026): sumber BERSAMA dengan GET /vendor_id/history (services/kontak_riwayat)
+        rows, total = await KR.baris(conn, "vendor", vendor_id, ctx["tenant_id"], limit, offset)
 
         activities = [
             VendorActivity(
@@ -2037,7 +2050,7 @@ async def get_vendor_activity(
                 actor_name=row.get("actor_name"),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
                 document_number=row.get("document_number"),
-                total=int(row["total"]) if row.get("total") is not None else None,
+                total=KR.total_aktivitas(row),
                 field_name=row.get("field_name"),
                 old_value=row.get("old_value"),
                 new_value=row.get("new_value"),
