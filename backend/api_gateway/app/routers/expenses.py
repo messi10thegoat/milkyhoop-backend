@@ -35,7 +35,6 @@ from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
     resolve_account_id_by_role_if_pkp,
-    PESAN_NON_PKP_PEMBELIAN,
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..services.storage_service import get_storage_service
@@ -236,21 +235,20 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                     expense_code = row["account_code"]
             except Exception:
                 pass
+        from ..services import tagihan_aksi as TA
+        vat_input_id = await resolve_account_id_by_role_if_pkp(conn, ctx["tenant_id"], AccountRole.VAT_INPUT) if tax_amount > 0 else None
+        dasar, _kapital = TA.dasar_tagihan(Decimal(str(subtotal)) + Decimal(str(tax_amount)), Decimal(str(tax_amount)), vat_input_id)
         lines.append(
             {
                 "account_name": expense_name,
                 "account_code": expense_code,
-                "debit": subtotal,
+                "debit": float(dasar),  # non-PKP: termasuk PPN (== penulis)
                 "credit": 0,
             }
         )
 
-        # Dr. PPN Masukan (if tax) — PKP-gated via role resolver.
-        # Non-PKP tenants: skip line entirely (no PPN in journal).
+        # Dr. PPN Masukan -- PKP saja (non-PKP: dikapitalisasi ke beban, == create_expense_journal)
         if tax_amount > 0:
-            vat_input_id = await resolve_account_id_by_role_if_pkp(
-                conn, ctx["tenant_id"], AccountRole.VAT_INPUT
-            )
             if vat_input_id is not None:
                 ppn_row = await conn.fetchrow(
                     "SELECT name, account_code FROM chart_of_accounts "
@@ -265,12 +263,6 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                         "debit": tax_amount,
                         "credit": 0,
                     }
-                )
-            else:
-                logger.warning(
-                    "Non-PKP tenant %s previewed expense with tax_amount > 0; "
-                    "VAT line skipped",
-                    ctx["tenant_id"],
                 )
 
         # Cr. Bank/Kas
@@ -1536,10 +1528,15 @@ async def create_expense_journal(
     )
 
     line_number = 1
+    from ..services import tagihan_aksi as TA
+    vat_input_id = await resolve_account_id_by_role_if_pkp(conn, tenant_id, AccountRole.VAT_INPUT) if tax_amount > 0 else None
+    # non-PKP berpajak: PPN DIKAPITALISASI ke baris beban, tanpa Dr PPN Masukan -- penentu SAMA dgn tagihan (dasar_tagihan + neto_baris)
+    dasar, kapital = TA.dasar_tagihan(Decimal(str(subtotal)) + Decimal(str(tax_amount)), tax_amount, vat_input_id)
+    nilai = TA.neto_baris([{"id": k, "net": i.amount} for k, i in enumerate(line_items or [])], dasar) if kapital else {}
 
     # DEBIT: Expense account(s)
     if is_itemized and line_items:
-        for item in line_items:
+        for k, item in enumerate(line_items):
             await conn.execute(
                 """
                 INSERT INTO journal_lines (
@@ -1549,7 +1546,7 @@ async def create_expense_journal(
                 str(journal_id),
                 line_number,
                 str(item.account_id),
-                item.amount,
+                nilai.get(k, item.amount),
                 item.notes or "Expense item",
             )
             line_number += 1
@@ -1564,23 +1561,13 @@ async def create_expense_journal(
                 str(journal_id),
                 line_number,
                 str(account_id),
-                subtotal,
+                dasar,
                 "Expense",
             )
             line_number += 1
 
-    # DEBIT: PPN Masukan (if tax) — PKP toggle via role resolver.
-    # Non-PKP tenants must NOT submit tax_amount > 0; that would break Law 4
-    # (no VAT_INPUT account to debit). Reject with 422 instead of silent skip.
-    vat_input_id = await resolve_account_id_by_role_if_pkp(
-        conn, tenant_id, AccountRole.VAT_INPUT
-    )
-    if tax_amount > 0:
-        if vat_input_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail=PESAN_NON_PKP_PEMBELIAN,
-            )
+    # DEBIT: PPN Masukan -- PKP saja (non-PKP: sudah dikapitalisasi ke baris beban di atas)
+    if tax_amount > 0 and vat_input_id is not None:
         await conn.execute(
             """
             INSERT INTO journal_lines (
