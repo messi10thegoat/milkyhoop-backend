@@ -178,3 +178,15 @@ def rekap(r: dict) -> list:
              {"label": "Sudah dibayar", "nilai": dibayar, "kelas": "kurang" if dibayar > NOL else ""}]
             + _jika("Nota kredit", r.get("nota_kredit"), "kurang")
             + [{"label": "Sisa tagihan", "nilai": _d(r.get("sisa")), "kelas": "sisa"}])
+
+
+def kwitansi(r: dict) -> list:
+    """Kwitansi A5 (semua bukti penerimaan/pembayaran): uang muka bertambat pesanan -> Nilai pesanan / Total pembayaran diterima / Sisa nilai pesanan
+    (customer_deposits, T199); selain itu satu baris sisa berlabel dari pemuat (tanpa label bawaan "Sisa / Saldo")."""
+    if r.get("order_total") is not None:
+        return [{"label": "Nilai pesanan", "nilai": _d(r["order_total"]), "kelas": ""},
+                {"label": "Total pembayaran diterima", "nilai": _d(r.get("dp_received_total")), "kelas": ""},   # kata = putusan C (T199)
+                {"label": "Sisa nilai pesanan", "nilai": _d(r.get("order_remaining")), "kelas": "tot"}]
+    if r.get("remaining") is not None:
+        return [{"label": r.get("remaining_label") or "Sisa", "nilai": _d(r["remaining"]), "kelas": "tot"}]
+    return []

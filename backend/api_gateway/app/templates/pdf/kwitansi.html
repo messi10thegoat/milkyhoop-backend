@@ -39,8 +39,8 @@
                 </div>
                 <div class="kw-baris">
                     <div class="kw-label">{{ receipt.get('amount_label') or 'Jumlah Diterima' }}</div>
-                    <div class="kw-jumlah">Rp {{ receipt.amount | currency }}</div>
-                    {% if receipt.amount_words %}<div class="kw-terbilang">Terbilang: {{ receipt.amount_words }}</div>{% endif %}
+                    <div class="kw-jumlah">Rp {{ receipt.amount | rupiah(uang) }}</div>
+                    <div class="kw-terbilang">Terbilang: {{ receipt.amount | terbilang }}</div>
                 </div>
                 {% if receipt.purpose_ref %}
                 <div class="kw-baris">
@@ -67,17 +67,8 @@
                 <tr><td class="kw-m-label">{{ receipt.get('number_label') or 'No. Kwitansi' }}</td><td>{{ receipt.receipt_number or '-' }}</td></tr>
                 <tr><td class="kw-m-label">Tanggal</td><td>{{ receipt.receipt_date | date_id }}</td></tr>
             </table>
-            {% if receipt.get('order_total') is not none %}
-            <table class="kw-ringkas">
-                <tr><td>Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_total | currency }}</td></tr>
-                <tr><td>Total Pembayaran Diterima</td><td class="kw-r-nilai">Rp {{ receipt.dp_received_total | currency }}</td></tr>
-                <tr class="kw-r-total"><td>Sisa Nilai Pesanan</td><td class="kw-r-nilai">Rp {{ receipt.order_remaining | currency }}</td></tr>
-            </table>
-            {% elif receipt.get('remaining') is not none %}
-            <table class="kw-ringkas">
-                <tr class="kw-r-total"><td>{{ receipt.get('remaining_label') or 'Sisa / Saldo' }}</td><td class="kw-r-nilai">Rp {{ receipt.remaining | currency }}</td></tr>
-            </table>
-            {% endif %}
+            {% from "_partials/ringkasan.html" import ringkasan %}
+            {{ ringkasan(RC.kwitansi(receipt), uang, 'ringkas') }}
             {% if receipt.notes %}
             <div class="kw-catatan"><span class="kw-label">Catatan</span><br>{{ receipt.notes }}</div>
             {% endif %}
@@ -101,7 +92,7 @@
         </td>
     </tr></table>
 
-    <div class="kw-dicetak">Dicetak {{ generated_at | date_id }}</div>
+    <div class="footer-line">Dicetak {{ generated_at | date_id }}</div>{# footer bersama invoice.css: margin bawah-kiri, sebaris nomor halaman #}
 
 </div>
 </body>

@@ -942,7 +942,7 @@ class PDFService:
 
         Args:
             receipt_data: Receipt data dict (receipt_number, receipt_date,
-                payer_name, amount, amount_words, method, bank_name,
+                payer_name, amount, method, bank_name,
                 purpose_label, purpose_ref, remaining, notes).
             tenant_info: Tenant info dict with name, address, phone, email, logo_data.
 
@@ -963,12 +963,14 @@ class PDFService:
             "logo_base64": tenant_info.get("logo_data"),
         }
 
-        # Render HTML
+        # PDF seragam 4 Nov 2026: sen ikut (dulu filter currency membulatkan + terbilang memotong) -> has_cents dari angka pemuat
+        uang = self.money_has_cents(*[receipt_data.get(k) for k in ("amount", "remaining", "order_total", "dp_received_total", "order_remaining")])
         html_content = template.render(
             receipt=receipt_data,
             company=company,
             generated_at=datetime.now(),
             batal=self._tanda_batal(receipt_data),
+            uang=uang,
         )
         # P3d: SEMUA kwitansi A5 melintang (putusan pemilik 1 Okt 2026) -- kwitansi.css sesudah invoice.css.
         return Render(html_content, CSS_KWITANSI, font=True)

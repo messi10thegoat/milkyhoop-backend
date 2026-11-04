@@ -3559,7 +3559,6 @@ import base64 as _base64
 from pathlib import Path as _Path
 
 
-from ..utils.terbilang import terbilang as _terbilang  # noqa: E402  satu sumber (P3, 1 Okt 2026)
 
 
 # ---------------------------------------------------------------------------
@@ -3651,7 +3650,7 @@ async def _pdf_dari_jurnal(conn, payment_id: str, tenant_id: str):
     if not faktur and dok and dok["faktur_asal"]:
         faktur = [dok["faktur_asal"]]
     status = (je["status"] or "POSTED").upper()
-    _amt = float(jumlah or 0)
+    _amt = Decimal(str(jumlah or 0))
     return None, {
         "status": "posted" if status == "POSTED" else "draft" if status == "DRAFT" else "void",
         "voided_at": None,
@@ -3660,7 +3659,6 @@ async def _pdf_dari_jurnal(conn, payment_id: str, tenant_id: str):
         "receipt_date": je["journal_date"].isoformat() if je["journal_date"] else None,
         "payer_name": dok["customer_name"] if dok else None,
         "amount": _amt,
-        "amount_words": _terbilang(_amt),
         "method": None,
         "bank_name": None,
         "purpose_label": "Faktur",
@@ -3726,9 +3724,9 @@ async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
             if _nums:
                 invoice_number = ", ".join(_nums)
             if len(allocs) == 1 and allocs[0]["remaining_after"] is not None:
-                remaining = float(allocs[0]["remaining_after"])
+                remaining = Decimal(str(allocs[0]["remaining_after"]))
 
-        _amt = float(pay["total_amount"] or 0)
+        _amt = Decimal(str(pay["total_amount"] or 0))
         method_label = label_metode(pay["payment_method"])
         receipt_number = pay["payment_number"] or pay["reference_number"]
 
@@ -3742,12 +3740,12 @@ async def muat_pdf_kwitansi_penerimaan(conn, ctx, payment_id: str) -> dict:
             if pay["payment_date"] else None,
             "payer_name": pay["customer_name"],
             "amount": _amt,
-            "amount_words": _terbilang(_amt),
             "method": method_label,
             "bank_name": bank_name,
             "purpose_label": "Pelunasan Faktur",
             "purpose_ref": invoice_number,
             "remaining": remaining,
+            "remaining_label": "Sisa faktur",
             "notes": pay["notes"],
         }
 
