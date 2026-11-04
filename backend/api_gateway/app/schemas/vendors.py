@@ -410,9 +410,10 @@ class VendorDetail(BaseModel):
     lewat_tempo_nilai: Optional[UangJson] = 0
     lewat_tempo_jumlah: int = 0
     total_pembelian: Optional[UangJson] = 0
-    jumlah_tagihan: int = 0
+    jumlah_tagihan: Optional[int] = 0  # K2b: null bila tanpa izin BACA faktur pembelian (omitted)
     last_bill_date: Optional[str] = None
-    jumlah_dokumen: int = 0
+    jumlah_dokumen: Optional[int] = 0
+    omitted: List[str] = []  # K2b: modul dokumen yang agregatnya disaring izin (pola riwayat B4)
     kontak_teks: Optional[str] = None
     status_text: Optional[str] = None
     tipe_text: Optional[str] = None

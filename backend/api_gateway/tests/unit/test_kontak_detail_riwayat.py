@@ -113,3 +113,35 @@ def test_activity_lama_dan_history_satu_sumber():
     from app.middleware.permission_middleware import izin_untuk_jalur
     assert izin_untuk_jalur("/api/customers/abc/history", "GET") == ("customer", "R")
     assert izin_untuk_jalur("/api/vendors/abc/history", "GET") == ("supplier", "R")
+
+
+# ── K2b (putusan MASTER 4 Nov 2026): agregat detail disaring izin BACA modul dokumen ───────────────────────────────
+
+def test_saring_agregat_tanpa_izin_null_dan_omitted():
+    async def tidak(modul):
+        return False
+
+    async def boleh(modul):
+        return True
+    d = {"total_penjualan": 1500000.0, "jumlah_faktur": 2, "jumlah_dokumen": 2, "total_value": 1500000.0, "total_transactions": 2,
+         "last_invoice_date": "2026-11-01", "last_transaction_at": "2026-11-01", "saldo": 500000}
+    tertutup = asyncio.run(KDT.saring_agregat("customer", dict(d), tidak))
+    assert tertutup["omitted"] == ["sales_invoice"] and all(tertutup[k] is None for k in KDT.AGREGAT["customer"][1])
+    assert tertutup["saldo"] == 500000  # saldo piutang = izin modul pelanggan (rute), bukan agregat dokumen
+    terbuka = asyncio.run(KDT.saring_agregat("customer", dict(d), boleh))
+    assert terbuka["omitted"] == [] and terbuka["total_penjualan"] == 1500000.0
+    v = asyncio.run(KDT.saring_agregat("vendor", {"total_pembelian": 10, "jumlah_tagihan": 1, "jumlah_dokumen": 1, "last_bill_date": None}, tidak))
+    assert v["omitted"] == ["purchase_invoice"] and v["total_pembelian"] is None and v["jumlah_tagihan"] is None
+
+
+def test_detail_memanggil_saring_agregat_dan_skema_menerima_null():
+    for fn, jenis in ((CU.get_customer, "customer"), (VE.get_vendor, "vendor")):
+        assert f'await KDT.saring_agregat("{jenis}", _hasil["data"], lambda m: boleh_baca(request, m))' in inspect.getsource(fn)
+    from app.schemas.customers import CustomerDetail
+    from app.schemas.vendors import VendorDetail
+    for m, kunci in ((CustomerDetail, KDT.AGREGAT["customer"][1]), (VendorDetail, KDT.AGREGAT["vendor"][1])):
+        for k in kunci:
+            assert k in m.model_fields, (m.__name__, k)
+            f = m.model_fields[k]
+            assert f.annotation is not int and f.annotation is not float, (m.__name__, k)  # harus Optional (null = disaring)
+        assert "omitted" in m.model_fields

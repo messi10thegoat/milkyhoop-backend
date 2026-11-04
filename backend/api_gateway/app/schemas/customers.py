@@ -293,13 +293,14 @@ class CustomerDetail(BaseModel):
     total_transactions: Optional[int] = 0
     total_value: Optional[UangJson] = 0  # B2: = total_penjualan jurnal (dulu SUM(total_amount))
     # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan)
-    total_penjualan: float = 0
-    jumlah_faktur: int = 0
+    total_penjualan: Optional[float] = 0  # K2b: null bila tanpa izin BACA faktur penjualan (omitted)
+    jumlah_faktur: Optional[int] = 0
     last_invoice_date: Optional[str] = None
     outstanding_balance: Optional[UangJson] = 0  # B2: jurnal (kontak_daftar), JSON number
     last_transaction_at: Optional[str] = None
     # B2 (4 Nov 2026, kontak_daftar / kontak_detail): medan baru, aditif
-    jumlah_dokumen: int = 0
+    jumlah_dokumen: Optional[int] = 0
+    omitted: List[str] = []  # K2b: modul dokumen yang agregatnya disaring izin (pola riwayat B4)
     saldo: Optional[UangJson] = 0
     lewat_tempo_nilai: Optional[UangJson] = 0
     lewat_tempo_jumlah: int = 0
