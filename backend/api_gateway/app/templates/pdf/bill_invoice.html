@@ -12,21 +12,8 @@
 .stempel-batal { color: #8E3B2E; border-color: #8E3B2E; }
 .coret { text-decoration: line-through; }
 .rw td { padding: 6px 0; }
-/* FPB pola Accurate (4 Nov 2026, putusan pemilik): kop usaha di kanan judul, Dari + meta sebaris, Keterangan + ringkasan sebaris. */
-.kop { text-align: right; }
-.kop .logo { display: block; margin: 0 0 6px auto; height: auto; }   /* kotak = gambar (maks token) -> nama rapat di bawah logo */
-.atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; }   /* kolom meta = lebar ringkasan */
-.atas .meta { margin-top: 0; }
-.atas > div:first-child { position: relative; }   /* stempel di kanan blok Dari, kiri meta */
-.atas b { display: block; margin-bottom: 3px; }
-.atas .meta b { display: inline; margin: 0; white-space: nowrap; }
 /* .akhir penawaran.css = satu blok utuh; di FPB hanya Keterangan+ringkasan dan TTD yang utuh (riwayat boleh mengalir). */
 .akhir { break-inside: auto; }
-.bawah { display: grid; grid-template-columns: 1fr 42%; gap: 32px; align-items: start; margin-top: 14px; break-inside: avoid; }
-.bawah .sum { margin-top: 0; }
-.bawah .sum { width: auto; }
-.bawah .sign { margin: 18px 0 0; text-align: left; }   /* TTD di bawah Keterangan (kolom kiri, pola Accurate): hemat satu blok */
-.bawah .blk { margin-top: 0; }
 </style>
 {% set c = bill.cetak %}
 {% if c and c.jenis == 'batal' %}
@@ -53,16 +40,11 @@
 {% set total = bill.grand_total or bill.amount or 0 %}
 {% set v = bill.vendor_kontak or {} %}
 
+{% from "_partials/kop_usaha.html" import kop_usaha %}
 <header>
   <div><h1>Faktur Pembelian</h1></div>
   {% set t = bill.tenant or {} %}
-  <div class="kop">
-    {% if t.logo_data %}<img class="logo" src="{{ t.logo_data }}" alt="">{% endif %}
-    {% if t.name %}<b>{{ t.name }}</b>{% endif %}
-    {% if t.address %}<div class="pre">{{ t.address }}</div>{% endif %}
-    {% if t.phone %}<div>{{ t.phone }}</div>{% endif %}
-    {% if t.npwp %}<div>NPWP {{ t.npwp }}</div>{% endif %}
-  </div>
+  {{ kop_usaha(t.name, t.address, t.phone, t.npwp, t.logo_data) }}
 </header>
 
 {# Kita sendiri penerima tagihan -> tanpa blok "Kepada" (catatan internal atas tagihan vendor, pola Accurate). #}
@@ -107,7 +89,7 @@
   <div>
   {% if c and c.jenis == 'batal' %}
   <div class="blk"><b>Keterangan</b><div>Faktur ini telah dibatalkan dan tidak berlaku sebagai tagihan.{% if batal and batal.alasan %} Alasan: {{ batal.alasan }}{% endif %}</div></div>
-  {% elif bill.notes %}<div class="blk"><b>Keterangan</b><div class="pre">{{ bill.notes }}</div></div>{% endif %}
+  {% elif bill.notes and bill.notes != 'Dari pesanan pembelian ' ~ bill.po_number %}<div class="blk"><b>Keterangan</b><div class="pre">{{ bill.notes }}</div></div>{% endif %}{# catatan otomatis konversi PO (routers/purchase_orders) = dobel meta No. PO -> tak dicetak; data tetap #}
   {% if tampil_ttd %}
   <div class="sign">
     <div>Bagian Pembelian,</div>

@@ -225,9 +225,13 @@ def test_po_keluarga(tangkap):
     ps = PS.get_pdf_service()
     ps.tulis_pdf(ps.render_purchase_order(m["po_data"], m["tenant_info"]))
     h = tangkap["isi"]
-    for teks in ("<b>Jadwal terima</b>", "Jl. Pelabuhan 3", "NPWP 02.345.678.9-012.000", "Seratus Rupiah", 'class="garis"'):
+    # PO = TURUNAN FPB pola Accurate (4 Nov 2026): kop usaha, Kepada vendor + Kirim ke gudang, meta No. PO, tabel konfigurasi FPB, TTD Pemesan
+    for teks in ('<div class="kop">', "<b>Kepada</b>", '<b class="kirim">Kirim ke</b>', "<b>No. PO</b>", "<b>Jadwal terima</b>", "Jl. Pelabuhan 3",
+                 "NPWP 02.345.678.9-012.000", "Seratus Rupiah", "Pemesan,", '<div class="garis">Bagian Pembelian</div>',
+                 "<th>Nama Barang</th>", '<th class="r">Kts.</th>', '<th class="r">Diskon</th>'):
         assert teks in h, teks
-    for tak in ("Purchase Order", "Tanggal kirim", "Diskon</th>", "Syarat bayar"):
+    assert h.index("@Harga</th>") < h.index("Diskon</th>") and "<th>Kode</th>" not in h
+    for tak in ("Purchase Order", "Tanggal kirim", "Syarat bayar", "<b>Nomor</b>"):
         assert tak not in h, tak
 
 
@@ -270,3 +274,9 @@ def test_fpb_satu_halaman_ttd_di_kolom_keterangan(hari):
     d = HTML(string=r.html).render(stylesheets=PS.get_pdf_service()._lembar_gaya(r, fc), font_config=fc)
     assert len(d.pages) == 1, len(d.pages)
     assert r.html.index("Bagian Pembelian,") < r.html.index('<div class="sum">') < r.html.index("Riwayat pembayaran")
+
+
+def test_fpb_catatan_otomatis_konversi_po_tak_dicetak(tangkap, hari):
+    """Catatan otomatis routers/purchase_orders "Dari pesanan pembelian <No. PO>" = dobel meta No. PO -> tak dicetak (data tetap); catatan lain tetap."""
+    assert "Dari pesanan pembelian PO-2611-0002" not in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0002")
+    assert "Dari pesanan pembelian PO-2611-0001" in _fpb(tangkap, hari, notes="Dari pesanan pembelian PO-2611-0001")

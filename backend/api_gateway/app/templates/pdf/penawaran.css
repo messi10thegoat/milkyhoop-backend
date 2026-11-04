@@ -44,3 +44,18 @@ td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
 .sign { margin: 18px 0 0 auto; width: 220px; text-align: right; break-inside: avoid; }   /* WeasyPrint: max-content = auto -> lebar tetap */
 .sign .sp { height: 40px; }
 .sign .garis { border-top: 1px solid var(--teks); margin-top: 40px; padding-top: 4px; }
+
+/* Tata letak Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): kop usaha (_partials/kop_usaha) di kanan judul, pihak + meta
+   sebaris (.atas), Keterangan+TTD | ringkasan sebaris (.bawah). Penawaran tak memakai kelas ini. */
+.kop { text-align: right; }
+.kop .logo { display: block; margin: 0 0 6px auto; height: auto; }   /* kotak = gambar (maks token) -> nama rapat di bawah logo */
+.atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; align-items: start; }   /* meta tak meregang ikut tinggi blok pihak */   /* kolom meta = lebar ringkasan */
+.atas .meta { margin-top: 0; }
+.atas > div:first-child { position: relative; }   /* stempel di kanan blok Dari, kiri meta */
+.atas b { display: block; margin-bottom: 3px; }
+.atas .meta b { display: inline; margin: 0; white-space: nowrap; }
+.atas .kirim { margin-top: 10px; }
+.bawah { display: grid; grid-template-columns: 1fr 42%; gap: 32px; align-items: start; margin-top: 14px; break-inside: avoid; }
+.bawah .sum { margin-top: 0; width: auto; }
+.bawah .sign { margin: 18px 0 0; text-align: left; }   /* TTD di bawah Keterangan (kolom kiri, pola Accurate): hemat satu blok */
+.bawah .blk { margin-top: 0; }

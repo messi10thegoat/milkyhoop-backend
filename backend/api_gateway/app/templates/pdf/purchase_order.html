@@ -2,13 +2,11 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title></head>
 {#
-  PDF Pesanan Pembelian (22 Okt 2026, tiket WORKSPACE "PDF PO"). Kerangka & gaya = PDF penawaran (penawaran.css), supaya
-  dokumen keluar usaha seragam. Acuan isi: NetSuite/QBO Purchase Order. Stempel DRAF untuk status draft (belum dikirim ke
-  vendor); stempel DIBATALKAN untuk status cancelled (pdf_service._tanda_batal: cancelled_at + alasan).
+  PDF Pesanan Pembelian -- TURUNAN Faktur Pembelian pola Accurate (4 Nov 2026, putusan pemilik: FPB acuan, dokumen Pembelian lain
+  diturunkan). Kop usaha (_partials/kop_usaha) di kanan judul; PO DIKIRIM ke vendor -> "Kepada" vendor (+ "Kirim ke" bila gudang /
+  alamat kirim) | meta No. PO, Tanggal, Jadwal terima, Referensi; tabel konfigurasi FPB; Catatan + TTD Pemesan | ringkasan.
+  Syarat bayar BELUM (purchase_orders tanpa kolom termin -- tiket). Stempel DRAF (belum dikirim) / DIBATALKAN (_tanda_batal).
   Konteks = services/po_cetak.muat_pdf_po.
-  PDF keluarga (3 Nov 2026, putusan MASTER): subjudul Inggris dibuang (skill pdf 5 Mar) · "Jadwal terima" (label form PO) ·
-  alamat gudang tujuan · NPWP pemesan (kop) · kolom Diskon seragam FPB ("-" bila kosong, kolom hanya bila ada diskon) ·
-  terbilang total · garis tanda tangan. Syarat bayar BELUM (purchase_orders tanpa kolom termin -- tiket snapshot).
 #}
 <body>
 {% include "_partials/tanda_draf.html" %}
@@ -16,41 +14,47 @@
 <div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
 <div class="doc">
 
+{% from "_partials/kop_usaha.html" import kop_usaha %}
 <header>
   <div><h1>Pesanan Pembelian</h1></div>
-  {% if company and company.logo_base64 %}<img class="logo" src="{{ company.logo_base64 }}" alt="">{% endif %}
+  {% set t = company or {} %}
+  {{ kop_usaha(t.name, t.address, t.phone, t.npwp, t.logo_base64) }}
 </header>
 
-<div class="meta">
-  <b>Nomor</b><span>{{ po.po_number or '-' }}</span>
-  <b>Tanggal</b><span>{{ po.po_date | date_id }}</span>
-  {% if po.expected_date %}<b>Jadwal terima</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
-  {% if po.ref_no %}<b>Referensi</b><span>{{ po.ref_no }}</span>{% endif %}
-</div>
-
-<div class="parties">
+<div class="atas">
   <div>
     <b>Kepada</b>
     <div>{{ po.vendor_name or '-' }}</div>
     {% if po.vendor_alamat %}<div class="pre">{{ po.vendor_alamat }}</div>{% endif %}
     {% if po.vendor_telepon %}<div>{{ po.vendor_telepon }}</div>{% endif %}
     {% if po.vendor_npwp %}<div>NPWP {{ po.vendor_npwp }}</div>{% endif %}
-  </div>
-  <div>
-    <b>Kirim ke</b>
-    <div>{{ company.name if company else '' }}</div>
+    {% if po.ship_to_address or po.warehouse_name %}
+    <b class="kirim">Kirim ke</b>
     {% if po.ship_to_address %}<div class="pre">{{ po.ship_to_address }}</div>
-    {% elif po.warehouse_name %}<div>{{ po.warehouse_name }}</div>{% if po.warehouse_alamat %}<div class="pre">{{ po.warehouse_alamat }}</div>{% endif %}
-    {% elif company and company.address %}<div>{{ company.address }}</div>{% endif %}
-    {% if company and company.phone %}<div>{{ company.phone }}</div>{% endif %}
-    {% if company and company.npwp %}<div>NPWP {{ company.npwp }}</div>{% endif %}
+    {% else %}<div>{{ po.warehouse_name }}</div>{% if po.warehouse_alamat %}<div class="pre">{{ po.warehouse_alamat }}</div>{% endif %}{% endif %}
+    {% endif %}
+  </div>
+  <div class="meta">
+    <b>No. PO</b><span>{{ po.po_number or '-' }}</span>
+    <b>Tanggal</b><span>{{ po.po_date | date_id }}</span>
+    {% if po.expected_date %}<b>Jadwal terima</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
+    {% if po.ref_no %}<b>Referensi</b><span>{{ po.ref_no }}</span>{% endif %}
   </div>
 </div>
 
 {% from "_partials/tabel_barang.html" import tabel_barang %}
-{{ tabel_barang(po["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total"}, po.has_cents) }}
+{{ tabel_barang(po["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total", "kode": "item_code",
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, po.has_cents) }}
 
 <div class="akhir">
+  <div class="bawah">
+  <div>
+    {% if po.notes %}<div class="blk"><b>Catatan</b><div class="pre">{{ po.notes }}</div></div>{% endif %}
+    <div class="sign">
+      <div>Pemesan,</div>
+      <div class="garis">Bagian Pembelian</div>
+    </div>
+  </div>
   <div class="sum">
     <div><span>Subtotal</span><span>Rp {{ po.subtotal | rupiah(po.has_cents) }}</span></div>
     {% if po.discount_amount and po.discount_amount|float > 0 %}
@@ -62,13 +66,6 @@
     <div class="tot"><span>Total</span><span>Rp {{ po.total_amount | rupiah(po.has_cents) }}</span></div>
     <div class="terb">{{ po.total_amount | terbilang }}</div>
   </div>
-
-  {% if po.notes %}<div class="blk"><b>Catatan</b><div class="pre">{{ po.notes }}</div></div>{% endif %}
-
-  <div class="sign">
-    <div>Pemesan,</div>
-    {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
-    <div class="garis"></div>
   </div>
 </div>
 

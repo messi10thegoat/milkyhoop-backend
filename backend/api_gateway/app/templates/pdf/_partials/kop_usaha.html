@@ -1,0 +1,10 @@
+{# Kop usaha dokumen Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): logo + identitas SATU blok rapat di kanan judul; kosong = tak dicetak. #}
+{% macro kop_usaha(nama, alamat, telepon, npwp, logo) -%}
+<div class="kop">
+    {% if logo %}<img class="logo" src="{{ logo }}" alt="">{% endif %}
+    {% if nama %}<b>{{ nama }}</b>{% endif %}
+    {% if alamat %}<div class="pre">{{ alamat }}</div>{% endif %}
+    {% if telepon %}<div>{{ telepon }}</div>{% endif %}
+    {% if npwp %}<div>NPWP {{ npwp }}</div>{% endif %}
+</div>
+{%- endmacro %}
