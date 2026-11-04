@@ -26,3 +26,9 @@ def test_join_ber_tenant_difilter_eksplisit():
 def test_item_dari_id_sj_yang_lolos_filter_tenant():
     s = " ".join(_src().split())
     assert 'ORDER BY fi.created_at """, row["id"], ctx["tenant_id"], )' in s
+
+
+def test_pemuat_meneruskan_kolom_batal_untuk_stempel():
+    """Stempel DIBATALKAN Surat Jalan bertanggal + alasan (pola GRN; tinjauan MASTER 4 Nov 2026): kolom dipilih DAN diteruskan."""
+    s = " ".join(_src().split())
+    assert "f.voided_at, f.voided_reason," in s and '"voided_at": row["voided_at"], "voided_reason": row["voided_reason"]' in s

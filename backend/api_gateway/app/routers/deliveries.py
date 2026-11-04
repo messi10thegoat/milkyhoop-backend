@@ -553,6 +553,8 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
             f.fulfillment_number AS delivery_number,
             f.fulfillment_date AS delivery_date,
             f.status,
+            f.voided_at,
+            f.voided_reason,
             f.notes,
             f.asal AS asal,
             si.id AS invoice_id,
@@ -610,6 +612,7 @@ async def muat_pdf_surat_jalan(conn, ctx, delivery_id: str) -> dict:
         if row["delivery_date"]
         else None,
         "status": row["status"],
+        "voided_at": row["voided_at"], "voided_reason": row["voided_reason"],   # stempel DIBATALKAN bertanggal + alasan (pola GRN)
         "notes": row["notes"],
         "asal": row["asal"],
         "invoice_id": str(row["invoice_id"]) if row["invoice_id"] else None,
