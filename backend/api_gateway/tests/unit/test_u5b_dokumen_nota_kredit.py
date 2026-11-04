@@ -113,7 +113,8 @@ def test_render_tanpa_diskon_dan_ppn_tak_mencetak_barisnya():
                     tax_rate=Decimal("0"), subtotal=Decimal("270000"), total_amount=Decimal("270000"),
                     items=[{"description": "Kaos", "quantity": Decimal("2.5"), "unit": None, "unit_price": Decimal("108000"),
                             "discount_amount": Decimal("0"), "net": Decimal("270000")}])
-    assert "Diskon" not in html and "PPN" not in html and "-Rp" not in html
+    # tabel = konfigurasi PO (4 Nov 2026): kepala kolom Diskon SELALU ("-"); baris ringkasan diskon/PPN tetap hanya bila ada
+    assert "Diskon item" not in html and "PPN" not in html and "-Rp" not in html and '<td class="r">-</td>' in html
     assert "2.5" in html or "2,5" in html
 
 
