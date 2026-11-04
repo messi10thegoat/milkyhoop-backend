@@ -1051,8 +1051,15 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     if _qty_terima <= 0:
                         continue
                     new_qty_received = Decimal(str(_baris[_pid]["quantity_received"] or 0)) + _qty_terima
-                    await conn.execute("UPDATE purchase_order_items SET quantity_received = $2 WHERE id = $1 AND po_id = $3",
-                                       UUID(_pid), new_qty_received, po_id)
+                    await conn.execute(
+                        """
+                        UPDATE purchase_order_items
+                        SET quantity_received = $2
+                        WHERE id = $1
+                    """,
+                        UUID(_pid),
+                        new_qty_received,
+                    )
                     items_received.append({"po_item_id": _pid, "quantity_received": _qty_terima, "total_received": new_qty_received})
 
                 # Nilai diterima = TURUNAN baris (qty_diterima x total / qty, 2dp HALF_UP per baris); dulu ::BIGINT memotong sen
