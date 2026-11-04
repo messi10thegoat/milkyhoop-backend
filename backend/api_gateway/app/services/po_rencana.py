@@ -219,6 +219,7 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
                  for r in semua if _d(r["quantity"]) - _d(r["quantity_received"]) > NOL]
         if not items:
             bloks.append(blok("TAK_ADA_SISA_TERIMA", "Semua barang pesanan ini sudah diterima."))
+    from .teks_galat import qty as _q
     toleransi = await toleransi_terima(conn, po.get("tenant_id"))
     akan, tolak, alasan = {}, {}, {}
     for it in items:
@@ -238,14 +239,16 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
         nama = r.get("description") or pid
         sisa = _d(r["quantity"]) - _d(r["quantity_received"])
         batas = sisa * (1 + toleransi / 100)
-        if toleransi == NOL and qty > sisa:  # toleransi 0 = blok lama PERSIS
-            bloks.append(blok("QTY_MELEBIHI_SISA", f"Jumlah diterima ({qty}) melebihi sisa ({sisa})."))
+        # angka kalimat lewat teks_galat.qty (putusan MASTER 4 Nov: tanpa Decimal mentah "1.0000"/"10.00%"; sama dengan to-bill)
+        if toleransi == NOL and qty > sisa:
+            bloks.append(blok("QTY_MELEBIHI_SISA", f"Jumlah diterima ({_q(qty)}) melebihi sisa ({_q(sisa)})."))
         elif qty > batas:
-            bloks.append(blok("QTY_MELEBIHI_TOLERANSI", f"Jumlah diterima {nama} ({qty}) melebihi sisa ({sisa}) lebih dari toleransi {toleransi:f}%."))
+            bloks.append(blok("QTY_MELEBIHI_TOLERANSI",
+                              f"Jumlah diterima {nama} ({_q(qty)}) melebihi sisa ({_q(sisa)}) lebih dari toleransi {_q(toleransi)}%."))
         elif qty > sisa:
-            catatan.append({"code": "RECEIPT_LEBIH", "message": f"Diterima {qty - sisa} lebih dari pesanan (dalam toleransi {toleransi:f}%)."})
+            catatan.append({"code": "RECEIPT_LEBIH", "message": f"Diterima {_q(qty - sisa)} lebih dari pesanan (dalam toleransi {_q(toleransi)}%)."})
         if ditolak > NOL and qty + ditolak > max(batas, sisa):  # yang datang = diterima + ditolak, paling banyak sisa (+ toleransi)
-            bloks.append(blok("QTY_DITOLAK_MELEBIHI", f"Jumlah ditolak {nama} ({ditolak}) melebihi yang datang."))
+            bloks.append(blok("QTY_DITOLAK_MELEBIHI", f"Jumlah ditolak {nama} ({_q(ditolak)}) melebihi yang datang."))
         akan[pid] = akan.get(pid, NOL) + qty
         tolak[pid] = tolak.get(pid, NOL) + ditolak
         if ditolak > NOL and (it.get("reject_reason") or "").strip():

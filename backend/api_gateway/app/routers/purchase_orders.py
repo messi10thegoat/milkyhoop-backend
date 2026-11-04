@@ -291,6 +291,7 @@ async def list_purchase_orders(
 
             ids = [row["id"] for row in rows]
             fakta = await PD.fakta_po(conn, ctx["tenant_id"], ids, hari_ini)
+            draf = await PD.faktur_draf_po(conn, ctx["tenant_id"], ids)
             kel = await PD.dokumen_po(conn, ctx["tenant_id"], ids)
 
             items = []
@@ -310,7 +311,7 @@ async def list_purchase_orders(
                     "sisa_ditagih": float(f["sisa_ditagih"]),
                     "draft_bill_amount": float(f["draft_bill_amount"]),
                     "belum_ditagih_sesudah_draf": float(PD.r2(f["belum_ditagih_sesudah_draf"])),  # qty; 0 + draft_bills = "Buka faktur draf"
-                    "draft_bills": f["draft_bills"],
+                    "draft_bills": draf.get(row["id"], []),
                     "status": row["status"],
                     "ref_no": row["ref_no"],
                     "created_at": row["created_at"].isoformat(),
@@ -565,6 +566,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
             # paritas detail == baris: fungsi SAMA dengan daftar (services/po_daftar)
             hari_ini = await PD.tanggal_hari_ini(conn, ctx["tenant_id"])
             f = (await PD.fakta_po(conn, ctx["tenant_id"], [po_id], hari_ini))[po_id]
+            draf = await PD.faktur_draf_po(conn, ctx["tenant_id"], [po_id])
             dok = PD.documents_baris((await PD.dokumen_po(conn, ctx["tenant_id"], [po_id])).get(po_id, []))
 
             return {
@@ -585,7 +587,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "sisa_ditagih": float(f["sisa_ditagih"]),
                     "draft_bill_amount": float(f["draft_bill_amount"]),
                     "belum_ditagih_sesudah_draf": float(PD.r2(f["belum_ditagih_sesudah_draf"])),  # qty; 0 + draft_bills = "Buka faktur draf"
-                    "draft_bills": f["draft_bills"],
+                    "draft_bills": draf.get(po_id, []),
                     "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
                     "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
                     "position_text": f["position_text"], "aksi": f["aksi"],

@@ -67,7 +67,7 @@ class _ConnFakta:
 def test_fakta_sisa_per_status_dan_draf_terpisah(status, sisa):
     pid = uuid.uuid4()
     r = {"id": pid, "status": status, "expected_date": None, "total_amount": D("1000"), "sisa_terima": D(0), "belum_ditagih": D(0),
-         "amount_received": D(0), "amount_billed": D("400"), "draft_bill_amount": D("250.004")}
+         "amount_received": D(0), "amount_billed": D("400"), "draft_bill_amount": D("250.004"), "belum_ditagih_sesudah_draf": D(0)}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
     f = _jalan(PD.fakta_po(_ConnFakta([r]), T, [pid], None))[pid]
     assert f["sisa_ditagih"] == sisa and f["draft_bill_amount"] == D("250.00") and f["amount_billed"] == D("400.00")
 
@@ -175,7 +175,8 @@ class _ConnAgg:
     async def fetch(self, sql, *a):
         if "ag.draft_bill_amount" in sql:
             return [{"id": p["id"], "status": "partial_billed", "expected_date": None, "total_amount": p["total"], "sisa_terima": D(0),
-                     "belum_ditagih": D(0), "amount_received": p["total"], "amount_billed": p["posted"], "draft_bill_amount": p["draf"]}
+                     "belum_ditagih": D(0), "amount_received": p["total"], "amount_billed": p["posted"], "draft_bill_amount": p["draf"],
+                     "belum_ditagih_sesudah_draf": D(0)}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
                     for p in self.po if p["id"] in set(a[1])]
         return [{"id": p["id"], "po_number": p["no"], "vendor_id": None, "vendor_name": "V", "po_date": __import__("datetime").date(2026, 10, 1),
                  "status": "partial_billed", "total_amount": p["total"]} for p in self.po]
