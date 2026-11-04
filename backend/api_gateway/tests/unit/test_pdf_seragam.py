@@ -171,8 +171,7 @@ def _semua_dokumen(lg=None, npwp=None):
     }
 
 
-@pytest.mark.parametrize("nama", ["si", "nk", "proforma", "rekap", "penawaran", "po", "fpb", "nd", "sj", "kwitansi", pytest.param(
-    "grn", marks=pytest.mark.xfail(strict=True, reason="goods_receipt.html lama: Dicetak di badan; pindah ke dokumen_gudang sesudah Terima-tabel"))])
+@pytest.mark.parametrize("nama", ["si", "nk", "proforma", "rekap", "penawaran", "po", "fpb", "nd", "sj", "grn", "kwitansi"])
 def test_dicetak_di_kaki_halaman_pdf_dan_layar(nama):
     """"Dicetak" (temuan MASTER 4 Nov 2026, panel PO-2611-0011: tampil DI ATAS judul). PDF: teksnya di kotak margin @bottom-left, nol di isi.
     HTML panel (html_layar, browser tanpa position: running()): elemennya ditaruh absolut di kaki kertas oleh @media screen dokumen.css."""
@@ -197,12 +196,10 @@ def test_identitas_usaha_satu_sumber_npwp_bila_ada():
     tanpa tax_id tak ada baris. Satu partial _partials/identitas_usaha (kop_usaha Pembelian + blok Dari Penjualan + kwitansi)."""
     ada, tanpa = _semua_dokumen(npwp="01.234.567.8-901.000"), _semua_dokumen()
     for n in ada:
-        if n == "grn":   # goods_receipt.html lama (pindah ke dokumen_gudang sesudah Terima-tabel)
-            continue
         assert ada[n].html.count("NPWP 01.234.567.8-901.000") == 1, n
         assert "NPWP" not in re.sub(r"<!--.*?-->", "", tanpa[n].html, flags=re.S), n
     for p in sorted(TPL.glob("*.html")) + sorted((TPL / "_partials").glob("*.html")):
-        if p.name in ("identitas_usaha.html", "sales_invoice_b.html", "goods_receipt.html") or p.name.startswith(("laba_rugi", "neraca", "arus_kas")):
+        if p.name in ("identitas_usaha.html", "sales_invoice_b.html") or p.name.startswith(("laba_rugi", "neraca", "arus_kas")):
             continue
         t = p.read_text()   # tak ada salinan baris identitas usaha di luar partial
         assert not re.search(r"\b(company|tenant|kop|t)\.(address|phone|npwp)\b", t), p.name
@@ -218,7 +215,7 @@ def test_kop_tenant_satu_pemuat_satu_pembentuk():
         if f.name not in ("rekap_pesanan.py", "auth.py", "user.py", "akun_saya.py", "tenant_profile.py"):   # 4 terakhir: profil/sesi, bukan PDF
             assert '"static" / "logos"' not in t and not re.search(r'logo_url[^\n]*FROM "Tenant"', t), f.name
     src = (app / "services" / "pdf_service.py").read_text()
-    assert src.count('tenant_info.get("logo_data")') == 1 and src.count("company = self._usaha(tenant_info)") == 7
+    assert src.count('tenant_info.get("logo_data")') == 1 and src.count('"logo_base64":') == 1   # satu-satunya dict company = _usaha
 
 
 @pytest.mark.parametrize("npwp", [None, "", "01.234.567.8-901.000"])
@@ -228,3 +225,13 @@ def test_si_templat_b_baris_tax_hanya_bila_npwp_pelanggan(npwp):
            "items": [], "subtotal": 0, "total_amount": 0, "amount_due": 0}
     h = PS.get_pdf_service().render_sales_invoice(inv, template="b").html
     assert h.count("TAX :") == (1 if npwp else 0) and (not npwp or f"TAX : {npwp}" in h), npwp
+
+
+def test_dokumen_gudang_stempel_batal_sj_dan_grn():
+    """Templat gudang SATU (SJ + GRN): stempel DIBATALKAN dari _tanda_batal (dulu hanya goods_receipt.html lama; SJ tak pernah)."""
+    s = PS.get_pdf_service()
+    for hidup, batal in ((s.render_delivery_note({"delivery_number": "SJ-1", "status": "posted", "items": []}),
+                          s.render_delivery_note({"delivery_number": "SJ-1", "status": "voided", "items": []})),
+                         (s.render_goods_receipt({"receipt_number": "GRN-1", "status": "posted", "items": []}, {}),
+                          s.render_goods_receipt({"receipt_number": "GRN-1", "status": "void", "voided_reason": "Salah PO", "items": []}, {}))):
+        assert "DIBATALKAN" not in hidup.html and "DIBATALKAN" in batal.html

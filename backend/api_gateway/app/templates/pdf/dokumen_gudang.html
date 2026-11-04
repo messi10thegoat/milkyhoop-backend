@@ -2,12 +2,13 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>{{ g.judul }} {{ g.meta[0][1] }}</title></head>
 {#
-  Dokumen GUDANG -- SATU templat untuk Surat Jalan (arah keluar) dan Penerimaan Barang (arah masuk, menyusul) -- PDF gudang
+  Dokumen GUDANG -- SATU templat untuk Surat Jalan (arah keluar) dan Penerimaan Barang (arah masuk) -- PDF gudang
   4 Nov 2026 (putusan MASTER): kerangka keluarga Pembelian/FPB tanpa uang. Kop usaha (_partials/kop_usaha) · pihak (+ Kirim ke) |
   meta · tabel_barang tanpa harga · Catatan · 3 TTD gaya garis. Konteks `g` disusun pdf_service.render_* per dokumen
   (judul, pihak_label, pihak, kirim_ke, meta [(label, nilai)], items, kolom = k makro, catatan, ttd [label]).
 #}
 <body>
+{% include "_partials/tanda_batal.html" %}
 <div class="kaki-kiri">Dicetak {{ generated_at | date_id }}</div>
 <div class="doc">
 
