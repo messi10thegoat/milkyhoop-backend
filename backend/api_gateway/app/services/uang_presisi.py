@@ -6,6 +6,7 @@ pembulatan. Pintu keluar per tenant: flag `uang_bersen` (tenant_features) = 2 de
 tidak disentuh. Data lama tidak diubah.
 """
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional
 
 FLAG_BERSEN = "uang_bersen"
 _SATUAN = {0: Decimal("1"), 2: Decimal("0.01")}
@@ -53,3 +54,23 @@ async def presisi_dari(conn, tid: str, tabel: str, doc_id) -> int:
         raise ValueError(f"tabel dokumen tak dikenal: {tabel}")
     row = await conn.fetchrow(f"SELECT * FROM {tabel} WHERE id = $1 AND tenant_id = $2", doc_id, tid)  # nosec B608 (daftar tetap)
     return await presisi_dokumen(conn, tid, row)
+
+
+KODE_NOMINAL_RUPIAH = "NOMINAL_HARUS_RUPIAH"
+PESAN_NOMINAL_RUPIAH = "Nominal harus rupiah penuh."
+
+
+def tolak_bersen(presisi: int, nominal: list, pelunasan: list = ()) -> Optional[str]:
+    """Pembayaran pada presisi 0 (putusan pemilik LANGSUNG 5 Nov 2026): nominal bersen DITOLAK (transfer bank tak bisa sen), KECUALI
+    melunasi sisa lama bersen PERSIS -- pelunasan = [(dialokasikan, sisa_sebelum)]; jumlah alokasi yang semuanya persis juga boleh
+    (total pembayaran = pelunasan sisa lama). -> kalimat galat atau None. Satu pemeriksa untuk ketiga penentu bayar / terima."""
+    if presisi == 2:
+        return None
+    pas = [(Decimal(str(a)), Decimal(str(s))) for a, s in pelunasan]
+    boleh = {a for a, s in pas if a == s}
+    if pas and all(a == s for a, s in pas if bersen(a)):
+        boleh.add(sum((a for a, _ in pas), Decimal("0")))
+    for v in nominal:
+        if v is not None and bersen(v) and Decimal(str(v)) not in boleh:
+            return PESAN_NOMINAL_RUPIAH
+    return None
