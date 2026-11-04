@@ -29,5 +29,6 @@ def test_nota_kredit_label_meta_no_pesanan():
 def test_proforma_kalimat_atas_pesanan_nomor_tetap(tangkap):  # noqa: F811
     PS.get_pdf_service().generate_proforma_pdf(_pf(), {"name": "T"})
     html = tangkap["isi"]
-    assert "atas Sales Order" not in html
-    assert re.search(r"atas Pesanan\s+SO-2609-0031", html)
+    assert "atas Sales Order" not in html and "Sales Order" not in html
+    # 4 Nov 2026: baris "… atas Pesanan SO-…" di tabel diganti baris ringkasan "… yang Ditagih"; nomor pesanan tetap di meta
+    assert re.search(r"No\. Pesanan</td>\s*<td[^>]*>SO-2609-0031", html)

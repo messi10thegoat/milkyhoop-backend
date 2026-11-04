@@ -12,8 +12,10 @@
   <table class="summary-table">
     {% for r in rows %}
     <tr{% if 'tot' in r.kelas %} class="total-row"{% elif r.kelas == 'bayar' %} class="paid-row"{% elif r.kelas in ('sisa', 'status') %} class="due-row"{% endif %}>
-      <td class="label">{{ r.label }}</td>
-      <td class="value">{{ nilai(r, uang) }}</td>
+      {% if 'tebal' in r.kelas %}<td class="label"><strong>{{ r.label }}</strong></td>
+      <td class="value"><strong>{{ nilai(r, uang) }}</strong></td>
+      {% else %}<td class="label">{{ r.label }}</td>
+      <td class="value">{{ nilai(r, uang) }}</td>{% endif %}
     </tr>
     {% endfor %}
   </table>
