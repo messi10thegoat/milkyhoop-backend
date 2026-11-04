@@ -231,7 +231,7 @@ def test_dokumen_gudang_stempel_batal_sj_dan_grn():
     """Templat gudang SATU (SJ + GRN): stempel DIBATALKAN dari _tanda_batal (dulu hanya goods_receipt.html lama; SJ tak pernah)."""
     s = PS.get_pdf_service()
     for hidup, batal in ((s.render_delivery_note({"delivery_number": "SJ-1", "status": "posted", "items": []}),
-                          s.render_delivery_note({"delivery_number": "SJ-1", "status": "voided", "items": []})),
+                          s.render_delivery_note({"delivery_number": "SJ-1", "status": "voided", "voided_reason": "Salah PO", "items": []})),
                          (s.render_goods_receipt({"receipt_number": "GRN-1", "status": "posted", "items": []}, {}),
                           s.render_goods_receipt({"receipt_number": "GRN-1", "status": "void", "voided_reason": "Salah PO", "items": []}, {}))):
-        assert "DIBATALKAN" not in hidup.html and "DIBATALKAN" in batal.html
+        assert "DIBATALKAN" not in hidup.html and "DIBATALKAN" in batal.html and "Salah PO" in batal.html
