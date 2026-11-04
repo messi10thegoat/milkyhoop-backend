@@ -25,6 +25,23 @@ def _berlaku(r, tanggal: date) -> bool:
     return (r["start_date"] is None or r["start_date"] <= tanggal) and (r["end_date"] is None or r["end_date"] >= tanggal)
 
 
+STATUS_DAFTAR = {"aktif": "Aktif", "nonaktif": "Nonaktif", "kedaluwarsa": "Kedaluwarsa", "belum_berlaku": "Belum berlaku"}
+
+
+def status_daftar(r, tanggal) -> dict:
+    """Status berlaku daftar harga untuk tampilan (ANDROID U3b, 4 Nov 2026) -- aturan SAMA dengan penentu harga (_berlaku):
+    nonaktif > kedaluwarsa (end_date < tanggal) > belum berlaku (start_date > tanggal) > aktif. tanggal = tanggal bisnis tenant."""
+    if not r["is_active"]:
+        k = "nonaktif"
+    elif r["end_date"] is not None and r["end_date"] < tanggal:
+        k = "kedaluwarsa"
+    elif r["start_date"] is not None and r["start_date"] > tanggal:
+        k = "belum_berlaku"
+    else:
+        k = "aktif"
+    return {"status": k, "status_text": STATUS_DAFTAR[k], "is_expired": k == "kedaluwarsa"}
+
+
 async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[dict]:
     """Daftar yang berlaku: milik pelanggan (aktif + berlaku) -> asal 'pelanggan'; selain itu daftar bawaan tenant -> 'bawaan'; None."""
     q = "SELECT id, code, name, is_active, start_date, end_date FROM price_lists WHERE tenant_id = $1 AND "
