@@ -883,7 +883,7 @@ class PDFService:
                        "kolom": [{"judul": "Keterangan", "kunci": "notes"}] if any(i.get("notes") for i in items) else []},
              "ttd": ["Diterima oleh,", "Pengantar,", "Gudang,"]}
         html_content = self.jinja_env.get_template("dokumen_gudang.html").render(
-            g=g, kop=d.get("tenant") or {}, generated_at=datetime.now())
+            g=g, kop=d.get("tenant") or {}, generated_at=datetime.now(), batal=self._tanda_batal(d))
         return Render(html_content, CSS_PENAWARAN, font=True)
 
     def generate_credit_note_pdf(self, credit_note_data: dict, tenant_info: dict) -> bytes:
@@ -960,11 +960,25 @@ class PDFService:
 
 
     def render_goods_receipt(self, gr_data: dict, tenant_info: dict) -> Render:
-        """Penerimaan Barang (25 Okt 2026) -- kembaran render_delivery_note (kerangka SAMA, arah masuk). Konteks = services/cetak_goods_receipt."""
-        company = self._usaha(tenant_info)
-        html_content = self.jinja_env.get_template("goods_receipt.html").render(
-            gr=gr_data, company=company, generated_at=datetime.now(), batal=self._tanda_batal(gr_data))
-        return Render(html_content, CSS_DOKUMEN, font=True)
+        """Penerimaan Barang = dokumen GUDANG arah masuk: templat dokumen_gudang.html SAMA dengan Surat Jalan (4 Nov 2026; goods_receipt.html
+        lama dihapus). Konteks = services/cetak_goods_receipt. Kolom Diretur / Ditolak (qty · alasan, V477) hanya bila ada barisnya."""
+        d = gr_data
+        items = [{**i, "ditolak": " · ".join(x for x in (f"{format_qty(i['quantity_rejected'])} {i.get('unit') or ''}".strip(),
+                                                          i.get("reject_reason")) if x) if i.get("quantity_rejected") else ""}
+                 for i in d.get("items") or []]
+        meta = [("No. Penerimaan", d.get("receipt_number") or "-"), ("Tanggal", self.format_date_indonesian(d.get("receipt_date")))]
+        meta += [(label, d[k]) for label, k in (("No. Pesanan", "po_number"), ("No. SJ Vendor", "vendor_delivery_note"),
+                                                ("No. Referensi", "po_ref_no"), ("Gudang", "warehouse_name")) if d.get(k)]
+        kolom = [{"judul": "Diretur", "kunci": "quantity_returned", "qty": True}] if any(i.get("quantity_returned") for i in items) else []
+        kolom += [{"judul": "Ditolak", "kunci": "ditolak"}] if any(i["ditolak"] for i in items) else []
+        g = {"judul": "Penerimaan Barang", "pihak_label": "Dari", "kirim_ke": None, "meta": meta, "items": items, "catatan": d.get("notes"),
+             "pihak": {"nama": d.get("vendor_name"), "alamat": d.get("vendor_alamat"), "telepon": d.get("vendor_telepon")},
+             "kolom": {"desk": ["description"], "qty": "quantity", "kode": "item_code", "judul": {"desk": "Nama Barang", "qty": "Diterima"},
+                       "kolom": kolom},
+             "ttd": ["Diserahkan oleh,", "Diterima oleh,", "Diperiksa oleh,"]}
+        html_content = self.jinja_env.get_template("dokumen_gudang.html").render(
+            g=g, kop=tenant_info, generated_at=datetime.now(), batal=self._tanda_batal(d))
+        return Render(html_content, CSS_PENAWARAN, font=True)
 
 
 # Singleton instance
