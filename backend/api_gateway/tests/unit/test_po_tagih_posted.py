@@ -128,6 +128,8 @@ class _ConnPagar:
     def __init__(self, tertagih): self.tertagih, self.sql = tertagih, None
 
     async def fetch(self, sql, *a):
+        if "goods_receipt_items" in sql and "AS ada_grn" in sql:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
+            return [{"id": "L1", "quantity": D(10), "ditagih": D(0), "diterima": D(0), "ada_grn": False}]
         self.sql = sql
         return [{"id": "L1", "quantity": D(10), "unit": "pcs", "po_number": "PO-1", "tertagih": self.tertagih}]
 
@@ -142,9 +144,10 @@ def test_pagar_posting_batas_qty(tertagih, ini, blok):
 
 
 def test_pagar_to_bill_tetap_cache_non_void():
-    src = inspect.getsource(PR)
-    assert 'unbilled = Decimal(po_item["quantity"]) - Decimal(po_item["quantity_billed"] or 0)' in src
-    assert "quantity > COALESCE(quantity_billed, 0)" in src
+    # TERIMA-TABEL retarget (b): invarian (to-bill = cache quantity_billed non-void) kini di SATU sumber batas grn_rencana.batas_tagih
+    from app.services import grn_rencana as G
+    assert "COALESCE(poi.quantity_billed, 0) AS ditagih" in inspect.getsource(G.batas_tagih)
+    assert "G.batas_tagih" in inspect.getsource(PR.rencana_tagih)
 
 
 # ---------------- (1) tampil: daftar, detail, summary, agregat ----------------
