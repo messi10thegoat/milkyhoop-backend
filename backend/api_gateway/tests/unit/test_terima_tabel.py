@@ -287,3 +287,23 @@ def test_kolom_baru_pratinjau_float_2dp_seragam_kolom_lama():
     j = RPO._baris_terima_json(b)
     assert {k: (type(j[k]), j[k]) for k in ("akan_ditolak", "sisa_sesudah", "lebih", "toleransi_persen", "qty")} == {
         "akan_ditolak": (float, 1.23), "sisa_sesudah": (float, 0.0), "lebih": (float, 1.23), "toleransi_persen": (float, 12.5), "qty": (float, 10.12)}
+
+
+# hash BEKU dari bentuk model master (ReceiveGoodsRequest sebelum unit ini: receive_date, items[{po_item_id, quantity_received}], notes,
+# warehouse_id, vendor_delivery_note) -- dibekukan, BUKAN dihitung ulang. Kesetaraan dengan kode master sungguhan dibuktikan SETARA s1
+# (INSERT idempotency_keys dasar == cabang).
+HASH_MASTER_TERIMA = "81ba0d01355533efac944bd09341150ae5acd8d26bd264b62dfa752393a0b14f"
+PO_ITEM_BEKU = "00000000-0000-0000-0000-0000000000a1"
+
+
+def test_sidik_idempotensi_terima_bentuk_lama_tak_berubah():
+    from app.routers import purchase_orders as RPO
+    from app.schemas.purchase_orders import ReceiveGoodsRequest as RGR
+    from app.utils.idempotency import hash_payload
+    lama = RGR(receive_date=HARI, items=[{"po_item_id": PO_ITEM_BEKU, "quantity_received": D("3")}])
+    assert hash_payload(RPO._sidik_terima(lama)) == HASH_MASTER_TERIMA
+    tolak = RGR(receive_date=HARI, items=[{"po_item_id": PO_ITEM_BEKU, "quantity_received": D("3"), "quantity_rejected": D("2")}])
+    assert hash_payload(RPO._sidik_terima(tolak)) != HASH_MASTER_TERIMA
+    alasan = RGR(receive_date=HARI, items=[{"po_item_id": PO_ITEM_BEKU, "quantity_received": D("3"), "reject_reason": "pecah"}])
+    assert hash_payload(RPO._sidik_terima(alasan)) != HASH_MASTER_TERIMA
+    assert "lambda: _sidik_terima(body)" in ast.unparse(_fungsi("routers/purchase_orders.py", "receive_goods"))  # rute memakai sidik ini

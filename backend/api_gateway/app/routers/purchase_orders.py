@@ -991,6 +991,17 @@ async def send_purchase_order(request: Request, po_id: UUID, response: Response 
 # =============================================================================
 
 
+def _sidik_terima(body: ReceiveGoodsRequest) -> dict:
+    """Sidik idempotensi /receive (Law 14). TERIMA-TABEL: kunci ditolak bernilai BAWAAN (0 / null) dibuang -> payload bentuk lama = hash
+    lama (kirim ulang melewati rilis tetap = respons asli, bukan 409); penolakan sungguhan tetap masuk hash."""
+    d = body.model_dump(mode="json")
+    for it in d.get("items") or []:
+        if Decimal(str(it.get("quantity_rejected") or 0)) == 0 and it.get("reject_reason") is None:
+            it.pop("quantity_rejected", None)
+            it.pop("reject_reason", None)
+    return d
+
+
 @router.post("/{po_id}/receive", response_model=PurchaseOrderResponse)
 async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest, response: Response = None):
     """
@@ -1013,7 +1024,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
 
                 # Law 14 (P-U2): X-Idempotency-Key -> kirim ulang (retry/klik ganda) = respons asli, BUKAN penerimaan kedua
                 kp, sidik, lama = await idem_buat.mulai_aksi(
-                    conn, ctx, _kunci_idem(request), "PO_RECEIVE", po_id, lambda: body.model_dump(mode="json"), response)
+                    conn, ctx, _kunci_idem(request), "PO_RECEIVE", po_id, lambda: _sidik_terima(body), response)
                 if lama is not None:
                     return lama
 
