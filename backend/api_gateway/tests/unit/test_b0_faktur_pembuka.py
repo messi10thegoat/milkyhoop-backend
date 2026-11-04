@@ -82,3 +82,22 @@ def test_v478_kolom_bawaan_false_dan_satu_pembuka_aktif():
     s = MIG.read_text()
     assert "ADD COLUMN IF NOT EXISTS is_opening_balance boolean NOT NULL DEFAULT false" in s
     assert "UNIQUE INDEX IF NOT EXISTS uq_si_saldo_awal_pelanggan ON sales_invoices (tenant_id, customer_id) WHERE is_opening_balance AND status <> 'void'" in s
+
+
+class KonPeriksa:
+    def __init__(self, faktur=None, jurnal=None):
+        self.faktur, self.jurnal, self.q = faktur, jurnal, []
+
+    async def fetchval(self, sql, *a):
+        q = " ".join(sql.split()); self.q.append((q, a))
+        uuid.UUID(a[1])  # parameter = str UUID nyata (bukan objek lain)
+        assert "$2::uuid" in q and "::text" not in q  # cast di PARAMETER (indeks kolom uuid tetap terpakai)
+        return self.faktur if "FROM sales_invoices" in q else self.jurnal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("faktur,jurnal,harap", [("INV-1", None, "INV-1"), (None, "OB-1", "OB-1"), (None, None, None)])
+async def test_pemeriksa_saldo_awal_cast_parameter_uuid(faktur, jurnal, harap):
+    k = KonPeriksa(faktur, jurnal)
+    assert await RC.saldo_awal_pelanggan(k, "t", uuid.uuid4()) == harap
+    assert "reversed_by_id IS NULL" in k.q[-1][0] or faktur  # jurnal OPENING lama yang SUDAH dibalik tak menahan
