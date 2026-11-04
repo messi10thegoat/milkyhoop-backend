@@ -29,7 +29,8 @@ def test_hasil_sama_dengan_neto_baris_dasar_posting_dan_lintas_tagihan():
     b1, b2 = uuid.uuid4(), uuid.uuid4()
     i1, i2, i3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     items = {b1: [{"id": i1, "net": D("1000")}, {"id": i2, "net": D("2000")}], b2: [{"id": i3, "net": D("500")}]}
-    bills = [{"id": b1, "grand_total": D("2970"), "tax_amount": D("270")}, {"id": b2, "grand_total": D("555"), "tax_amount": D("55")}]
+    bills = [{"id": b1, "grand_total": D("2970"), "tax_amount": D("270"), "pembulatan": D("0")},
+             {"id": b2, "grand_total": D("555"), "tax_amount": D("55"), "pembulatan": D("0")}]
     k = _KonnNeto(bills, items)
     out = asyncio.run(TA.neto_tagihan_terposting(k, "t", [b1, b2]))
     assert out == {**TA.neto_baris(items[b1], D("2700")), **TA.neto_baris(items[b2], D("500"))}
@@ -37,6 +38,17 @@ def test_hasil_sama_dengan_neto_baris_dasar_posting_dan_lintas_tagihan():
     s, a = k.sql[0]
     assert a[0] == "t" and "tenant_id = $1" in s and "status_v2 NOT IN ('draft', 'void')" in s
     assert "ORDER BY bi.line_number" in k.sql[1][0]  # urutan SAMA dgn rencana_grn (sisa sen ke baris terakhir bernilai)
+
+
+def test_tagihan_dibulatkan_neto_tetap_nilai_baris_asli():
+    """c-2 (V479): grand_total tersimpan = total BULAT; dasar neto (kartu GRN / HPP) = grand_total - pembulatan - pajak = nilai baris asli."""
+    b, i = uuid.uuid4(), uuid.uuid4()
+    items = {b: [{"id": i, "net": D("49950")}]}
+    mentah = _KonnNeto([{"id": b, "grand_total": D("55444.50"), "tax_amount": D("5494.50"), "pembulatan": D("0")}], items)
+    bulat = _KonnNeto([{"id": b, "grand_total": D("55445"), "tax_amount": D("5494.50"), "pembulatan": D("0.50")}], items)
+    a = asyncio.run(TA.neto_tagihan_terposting(mentah, "t", [b]))
+    assert a == asyncio.run(TA.neto_tagihan_terposting(bulat, "t", [b])) == {i: D("49950.00")}
+    assert "pembulatan" in bulat.sql[0][0]  # kolom dibaca dari baris tersimpan
 
 
 def test_baca_saja_tanpa_kunci():

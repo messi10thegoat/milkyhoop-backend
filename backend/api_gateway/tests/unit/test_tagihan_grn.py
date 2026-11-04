@@ -93,5 +93,5 @@ def test_void_balik_tautan_dan_pratinjau_sama():
     assert "_gt.balik_tautan(conn," in vb and vb.index("_gt.balik_tautan(") < vb.index("pulihkan_tagih(")
     ta = (APP / "services/tagihan_aksi.py").read_text()
     rp = ta[ta.index("async def rencana_posting("):]
-    assert "dasar, kapital = dasar_tagihan(total, pajak, akun[\"vat\"])" in rp and "await rencana_grn(conn, tid, b[\"id\"], dasar, kapital=kapital)" in rp and "bloks += grn[\"blocks\"]" in rp  # (b) dasar SAMA dgn post_bill (non-PKP: PPN dikapitalisasi)
+    assert "dasar, kapital = dasar_tagihan(total, pajak, akun[\"vat\"], akun[\"bulat\"][\"selisih\"])" in rp and "await rencana_grn(conn, tid, b[\"id\"], dasar, kapital=kapital)" in rp and "bloks += grn[\"blocks\"]" in rp  # (b) dasar SAMA dgn post_bill (non-PKP: PPN dikapitalisasi)
     assert "kunci=True" not in rp  # pratinjau tanpa kunci
