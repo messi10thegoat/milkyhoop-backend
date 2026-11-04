@@ -23,14 +23,8 @@
 <div class="invoice">
 
     <!-- 1. Header -->
-    <div class="header">
-        <div>
-            <h1 class="doc-title">{{ judul or 'Tagihan Uang Muka' }}</h1>
-        </div>
-        {% if company and company.logo_base64 %}
-        <img src="{{ company.logo_base64 | logo_rapat }}" class="company-logo" alt="">
-        {% endif %}
-    </div>
+    {% from "_partials/kepala_si.html" import kepala %}
+    {{ kepala(judul or 'Tagihan Uang Muka', company.logo_base64 if company else none) }}
 
     <!-- 2. Meta -->
     <div class="meta-block">

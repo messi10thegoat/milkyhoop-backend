@@ -1,0 +1,10 @@
+{# Kepala keluarga Penjualan (Faktur Penjualan, Nota Kredit, Proforma, Rekap Pesanan) SATU sumber -- PDF seragam 4 Nov 2026: judul kiri,
+   logo kanan lewat logo_rapat (pinggiran polos dipangkas -> kotak logo sama di semua dokumen); tanpa logo = kosong bersih. #}
+{% macro kepala(judul, logo) -%}
+<div class="header">
+    <div>
+        <h1 class="doc-title">{{ judul }}</h1>
+    </div>
+    {% if logo %}<img src="{{ logo | logo_rapat }}" class="company-logo" alt="">{% endif %}
+</div>
+{%- endmacro %}
