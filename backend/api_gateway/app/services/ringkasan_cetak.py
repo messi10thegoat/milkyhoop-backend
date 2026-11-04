@@ -169,3 +169,12 @@ def proforma(p: dict, batal=None) -> list:
                      pajak=("PPN", p.get("order_tax")), total=p.get("order_total_amount"), label_total="Nilai Pesanan", akhir=tagih)
     awal = [{"label": "Nilai Pesanan", "nilai": _d(p.get("order_total_amount")), "kelas": ""}] if p.get("order_total_amount") else []
     return awal + tagih
+
+
+def rekap(r: dict) -> list:
+    """Rekap Pesanan (services/rekap_pesanan): Total pesanan -> Sudah dibayar -> [Nota kredit] -> Sisa tagihan; angka pemuat apa adanya."""
+    dibayar = _d(r.get("dibayar"))
+    return ([{"label": "Total pesanan", "nilai": _d(r.get("total")), "kelas": ""},
+             {"label": "Sudah dibayar", "nilai": dibayar, "kelas": "kurang" if dibayar > NOL else ""}]
+            + _jika("Nota kredit", r.get("nota_kredit"), "kurang")
+            + [{"label": "Sisa tagihan", "nilai": _d(r.get("sisa")), "kelas": "sisa"}])

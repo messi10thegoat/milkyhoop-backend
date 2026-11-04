@@ -147,4 +147,9 @@ def test_kotak_logo_keluarga_penjualan_sama_untuk_logo_sama():
     nk = _kotak_logo(s.render_credit_note({"credit_note_number": "CN-1", "status": "posted", "items": [], "total_amount": 0}, {"name": "U", "logo_data": lg}))
     pf = _kotak_logo(s.render_proforma({"proforma_number": "PRO-1", "purpose": "DP", "amount": 0, "order_items": [], "status": "posted"},
                                        {"name": "U", "logo_data": lg}))
-    assert si == nk == pf, (si, nk, pf)
+    rk = _kotak_logo(s.render_rekap_pesanan({"order_number": "SO-1", "status": "sebagian", "total": 1, "dibayar": 0, "sisa": 1, "tagihan": [],
+                                             "pembayaran": []}, {"name": "U", "logo_data": lg}))
+    assert si == nk == pf == rk, (si, nk, pf, rk)
+    for f in ("sales_invoice.html", "credit_note.html", "proforma.html", "rekap_pesanan.html"):   # kepala SATU partial, tanpa salinan <img>
+        t = (TPL / f).read_text()
+        assert '{% from "_partials/kepala_si.html" import kepala %}' in t and 'class="company-logo"' not in t, f
