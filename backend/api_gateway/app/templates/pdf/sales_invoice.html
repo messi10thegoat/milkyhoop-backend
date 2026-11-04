@@ -68,13 +68,7 @@
         {% if invoice.tenant %}
         <div class="party">
             <div class="party-label">Dari</div>
-            <div class="party-name">{{ invoice.tenant.name }}</div>
-            {% if invoice.tenant.address %}
-            <div class="party-detail">{{ invoice.tenant.address }}</div>
-            {% endif %}
-            {% if invoice.tenant.phone %}
-            <div class="party-detail">{{ invoice.tenant.phone }}</div>
-            {% endif %}
+            {% from "_partials/identitas_usaha.html" import identitas %}{{ identitas(invoice.tenant, "party-name", "party-detail") }}
         </div>
         {% endif %}
         <div class="party">

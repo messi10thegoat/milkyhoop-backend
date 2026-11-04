@@ -14,7 +14,6 @@ body { margin: 0; font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; }  
 .kaki-kiri { position: running(kakiKiri); font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: var(--huruf-kecil);
              padding-top: 6px; }
 b { font-weight: 600; }
-.pre { white-space: pre-line; }
 header { display: flex; justify-content: space-between; align-items: flex-start; }
 header > div:first-child { flex: 1 1 auto; }
 h1 { white-space: nowrap; }
@@ -47,6 +46,7 @@ td { padding: 10px 0; border-bottom: 1px solid #EFEDE8; vertical-align: top; }
 /* Tata letak Pembelian pola Accurate (FPB 4 Nov 2026, PO turunannya): kop usaha (_partials/kop_usaha) di kanan judul, pihak + meta
    sebaris (.atas), Keterangan+TTD | ringkasan sebaris (.bawah). Penawaran tak memakai kelas ini. */
 .kop { text-align: right; }
+.kop .usaha-nama { font-weight: 600; }
 .kop .logo { display: block; margin: 0 0 6px auto; }   /* nama rapat di bawah logo */
 .atas { display: grid; grid-template-columns: 1fr 42%; gap: 32px; margin-top: 24px; align-items: start; }   /* meta tak meregang ikut tinggi blok pihak */   /* kolom meta = lebar ringkasan */
 .atas .meta { margin-top: 0; }

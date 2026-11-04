@@ -1,0 +1,9 @@
+{# Identitas usaha SATU sumber (4 Nov 2026): nama, alamat, telepon, NPWP -- kop Pembelian (kop_usaha) dan blok "Dari" keluarga Penjualan,
+   Penawaran, kwitansi. u = company (pdf_service._usaha) / tenant_info (rekap_pesanan.muat_kop). Kosong = baris tak dicetak.
+   kn / kd = kelas baris nama / baris rinci di bingkai pemakai; telepon = tampilan lain (Penawaran: format 0812 4306 5632). #}
+{% macro identitas(u, kn, kd, telepon=none) -%}
+{% if u.name %}<div class="{{ kn }}">{{ u.name }}</div>{% endif %}
+{% if u.address %}<div class="{{ kd }} pre">{{ u.address }}</div>{% endif %}
+{% if telepon or u.phone %}<div class="{{ kd }}">{{ telepon or u.phone }}</div>{% endif %}
+{% if u.npwp %}<div class="{{ kd }}">NPWP {{ u.npwp }}</div>{% endif %}
+{%- endmacro %}

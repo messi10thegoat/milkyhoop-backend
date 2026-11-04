@@ -18,7 +18,7 @@
 <header>
   <div><h1>Pesanan Pembelian</h1></div>
   {% set t = company or {} %}
-  {{ kop_usaha(t.name, t.address, t.phone, t.npwp, t.logo_base64) }}
+  {{ kop_usaha(t, t.logo_base64) }}
 </header>
 
 <div class="atas">

@@ -30,13 +30,15 @@ def _d(v) -> Decimal:
     return Decimal(str(v)) if v is not None else NOL
 
 
-async def muat_kop(conn, tenant_id: str) -> dict:
-    """Kop usaha (nama/alamat/telepon/NPWP/logo) -- bentuk SAMA dengan pemuat PDF lain. npwp = "Tenant".tax_id (profil, V211;
-    PDF keluarga 3 Nov 2026); kosong = tak dicetak."""
-    row = await conn.fetchrow('SELECT display_name, address, phone, logo_url, tax_id FROM "Tenant" WHERE id = $1', tenant_id)
+async def muat_kop(conn, tenant_id: str, *tambahan: str) -> dict:
+    """Kop usaha (nama/alamat/telepon/NPWP/logo) SATU sumber semua PDF. npwp = "Tenant".tax_id (profil, V211; PDF keluarga 3 Nov 2026);
+    kosong = tak dicetak. tambahan = kolom "Tenant" lain yang dibutuhkan pemuat (mis. is_pkp, setelan SI templat B), apa adanya."""
+    kolom = ", ".join(("display_name", "address", "phone", "logo_url", "tax_id") + tambahan)
+    row = await conn.fetchrow(f'SELECT {kolom} FROM "Tenant" WHERE id = $1', tenant_id)
     info = {"name": row["display_name"] if row else tenant_id, "address": row["address"] if row else None,
             "phone": row["phone"] if row else None, "logo_url": row["logo_url"] if row else None,
-            "npwp": ((row.get("tax_id") or "").strip() or None) if row else None}
+            "npwp": ((row.get("tax_id") or "").strip() or None) if row else None,
+            **{k: row[k] if row else None for k in tambahan}}
     logo = None
     if info["logo_url"]:
         p = Path(__file__).parent.parent / "static" / "logos" / info["logo_url"]

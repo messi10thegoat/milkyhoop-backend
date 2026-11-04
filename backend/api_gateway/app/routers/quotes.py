@@ -2724,8 +2724,6 @@ async def preview_convert_to_sales_order(
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from ..services.pdf_service import get_pdf_service
-import base64
-from pathlib import Path as _Path
 
 
 async def _alamat_pelanggan_cetak(conn, tenant_id: str, customer_id) -> dict:
@@ -2764,38 +2762,9 @@ async def muat_pdf_penawaran(conn, ctx, quote_id: str) -> dict:
         uuid_module.UUID(quote_id),
     )
 
-    # Fetch tenant info for PDF header
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
-    if tenant_row:
-        tenant_info = {
-            "name": tenant_row["display_name"],
-            "address": tenant_row["address"],
-            "phone": tenant_row["phone"],
-            "logo_url": tenant_row["logo_url"],
-        }
-    else:
-        tenant_info = {
-            "name": ctx["tenant_id"],
-            "address": None,
-            "phone": None,
-            "logo_url": None,
-        }
-
-    # Resolve logo to base64 data URI for PDF embedding
-    _logo_data = None
-    _logo_filename = tenant_info.get("logo_url")
-    if _logo_filename:
-        _logo_path = (
-            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-        )
-        if _logo_path.exists():
-            with open(_logo_path, "rb") as _lf:
-                _logo_b64 = base64.b64encode(_lf.read()).decode()
-            _logo_data = f"data:image/png;base64,{_logo_b64}"
-    tenant_info["logo_data"] = _logo_data
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo)
+    from ..services.rekap_pesanan import muat_kop
+    tenant_info = await muat_kop(conn, ctx["tenant_id"])
 
     # Build quote data dict for template
     from ..services import faktur_cetak as _fc

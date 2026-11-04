@@ -33,9 +33,7 @@
         {% if company %}
         <div class="party">
             <div class="party-label">Dari</div>
-            <div class="party-name">{{ company.name }}</div>
-            {% if company.address %}<div class="party-detail">{{ company.address }}</div>{% endif %}
-            {% if company.phone %}<div class="party-detail">{{ company.phone }}</div>{% endif %}
+            {% from "_partials/identitas_usaha.html" import identitas %}{{ identitas(company, "party-name", "party-detail") }}
         </div>
         {% endif %}
         <div class="party">

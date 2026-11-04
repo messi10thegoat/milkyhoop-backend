@@ -14,13 +14,11 @@ Dua aturan yang menopang kebenarannya:
      (tanggal pecah pada cicilan / dua proforma di hari yang sama).
 """
 
-import base64
 import logging
 import uuid as uuid_module
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
-from pathlib import Path as _Path
 from typing import Literal, Optional
 
 import asyncpg
@@ -1539,41 +1537,12 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
             for r in _oi
         ]
 
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url, is_pkp FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo) + is_pkp.
+    from ..services.rekap_pesanan import muat_kop
+    tenant_info = await muat_kop(conn, ctx["tenant_id"], "is_pkp")
     # 12 Okt 2026 (putusan pemilik): catatan "BUKAN faktur pajak" HANYA untuk tenant PKP. Sumber SAMA dengan penjaga PPN
     # faktur (pkp_guard: "Tenant".is_pkp); ketat `is True` -- tak pernah bawaan (Law-34: V154 dulu DEFAULT true).
-    _catatan_pajak = bool(tenant_row and tenant_row["is_pkp"] is True)
-    if tenant_row:
-        tenant_info = {
-            "name": tenant_row["display_name"],
-            "address": tenant_row["address"],
-            "phone": tenant_row["phone"],
-            "logo_url": tenant_row["logo_url"],
-        }
-    else:
-        tenant_info = {
-            "name": ctx["tenant_id"],
-            "address": None,
-            "phone": None,
-            "logo_url": None,
-        }
-
-    _logo_data = None
-    _logo_filename = tenant_info.get("logo_url")
-    if _logo_filename:
-        _logo_path = (
-            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-        )
-        if _logo_path.exists():
-            with open(_logo_path, "rb") as _lf:
-                _logo_data = (
-                    "data:image/png;base64,"
-                    + base64.b64encode(_lf.read()).decode()
-                )
-    tenant_info["logo_data"] = _logo_data
+    _catatan_pajak = tenant_info["is_pkp"] is True
 
     amount = _f(row["amount"]) or 0.0
     # Tanggal lunas JUJUR: bila uang muka yang TERTAUT ke proforma ini (proforma_id) sendiri menutupinya = tanggal
