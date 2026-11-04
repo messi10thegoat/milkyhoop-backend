@@ -2,10 +2,7 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>Nota Kredit {{ credit_note.credit_note_number or '-' }}</title>
 <style>
-  /* Pola yang sama dengan proforma.html: "Dicetak…" ke kotak margin @page (running element) supaya tak mendorong isi
-     ke halaman 2; !important krn invoice.css dimuat sesudah. */
-  .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
-  @page { @bottom-left { content: element(dicetak); } }   /* margin: dokumen.css */
+  /* "Dicetak…" = .footer-line invoice.css (kotak margin @page). Jarak dirapatkan; !important krn invoice.css dimuat sesudah. */
   .header { margin-bottom: 18px !important; }
   .meta-block { margin-bottom: 18px !important; }
   .parties { margin-bottom: 22px !important; }
@@ -92,7 +89,7 @@
     {% endcall %}
 
     <!-- 7. Footer (running element -> kotak margin @page) -->
-    <div class="footer-running">
+    <div class="footer-line">
         Dicetak {{ generated_at | date_id }}
     </div>
 
