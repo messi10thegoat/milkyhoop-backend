@@ -22,7 +22,7 @@ def test_proforma_harga_berdesimal_jumlah_tersimpan():
     html = _render("proforma.html", proforma={
         "proforma_number": "PRO-UJI", "order_items": [
             {"description": "Kaos", "quantity": 26, "unit": "pcs", "unit_price": 236538.46, "line_total": 6150000}],
-        "order_subtotal": 6150000})
+        "order_subtotal": 6150000, "has_cents": True})   # 4 Nov 2026: has_cents dari pemuat (proformas.muat_pdf_proforma)
     assert "236.538,46" in html and "6.150.000" in html
 
 

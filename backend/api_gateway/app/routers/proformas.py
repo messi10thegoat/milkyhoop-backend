@@ -1517,7 +1517,7 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
     if row["sales_order_id"]:
         _oi = await conn.fetch(
             """
-            SELECT description, quantity, unit, unit_price, line_total, tax_amount
+            SELECT description, quantity, unit, unit_price, discount_percent, line_total, tax_amount
             FROM sales_order_items
             WHERE sales_order_id = $1
             ORDER BY sort_order, id  -- 6 Okt 2026: penentu stabil = id (dulu description = urut abjad, beda dari isian)
@@ -1530,6 +1530,7 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
                 "quantity": _f(r["quantity"]),
                 "unit": r["unit"],
                 "unit_price": _f(r["unit_price"]),
+                "discount_percent": _f(r["discount_percent"]),   # PDF seragam 4 Nov 2026: kolom Diskon tabel_barang
                 # 30 Sep: jumlah baris = NETO (line_total SO = neto + PPN baris). Dasar SAMA dengan
                 # subtotal SO (Σ neto) -> baris Subtotal/Diskon/Ongkir/PPN di bawahnya tak menghitung
                 # PPN dua kali. Tanpa PPN (grapgrap) = line_total, tak berubah.
@@ -1663,6 +1664,11 @@ async def muat_pdf_proforma(conn, ctx, row) -> dict:
         "cancelled_reason": row["cancelled_reason"],
     }
     # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
+    from ..services.pdf_service import PDFService   # PDF seragam 4 Nov 2026: tabel_barang + ringkasan bersama -> rupiah(has_cents)
+    proforma_data["has_cents"] = PDFService.money_has_cents(
+        *[proforma_data.get(k) for k in ("amount", "order_subtotal", "order_discount", "order_shipping", "order_tax", "order_total_amount",
+                                         "paid_amount", "outstanding_amount", "received_before", "remaining_after_this")],
+        *[x for i in _order_items for x in (i["unit_price"], i["line_total"])])
     return {"proforma_data": proforma_data, "tenant_info": tenant_info}
 
 

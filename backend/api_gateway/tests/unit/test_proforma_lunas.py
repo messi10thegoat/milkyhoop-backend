@@ -40,7 +40,7 @@ def test_lunas_angka_besar_nominal_bukan_rp0(tangkap):
     t = _render(tangkap, _pf())
     assert "TAGIHAN PELUNASAN" in t.upper() and "Rp 2.405.000 Dibayar lunas 30 Sep 2026" in t
     assert "LUNAS 30 SEP 2026" in t
-    assert "Sudah Dibayar -Rp 2.405.000 Sisa Tagihan Ini Rp 0" in t
+    assert "Sudah dibayar -Rp 2.405.000 Sisa tagihan ini Rp 0" in t
     assert "Mohon dibayar" not in t and "Rekening Pembayaran" not in t
 
 
