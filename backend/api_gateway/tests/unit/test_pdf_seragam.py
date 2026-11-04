@@ -113,3 +113,6 @@ def test_logo_rapat_pangkas_pinggiran_polos():
     penuh = _logo()   # putih polos seluruhnya = tak ada isi -> apa adanya
     assert PS.logo_rapat(penuh) == penuh and PS.logo_rapat(None) is None and PS.logo_rapat("data:image/png;base64,rusak") == "data:image/png;base64,rusak"
     assert "{{ logo | logo_rapat }}" in (TPL / "_partials" / "kop_usaha.html").read_text()
+    # cetak massal: hasil pangkas di-cache per proses (kunci = data URI = isi gambar), PIL tak dijalankan ulang
+    sebelum = PS.logo_rapat.cache_info().hits
+    assert PS.logo_rapat(uri) is hasil and PS.logo_rapat.cache_info().hits == sebelum + 1
