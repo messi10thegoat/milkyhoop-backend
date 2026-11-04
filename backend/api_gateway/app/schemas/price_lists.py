@@ -87,6 +87,9 @@ class PriceListListItem(BaseModel):
     is_active: bool
     is_default: bool
     item_count: int = 0
+    status: str = "aktif"  # services/harga_jual.status_daftar (tanggal bisnis tenant)
+    status_text: str = "Aktif"
+    is_expired: bool = False
 
 
 class PriceListListResponse(BaseModel):
@@ -108,6 +111,9 @@ class PriceListDetail(BaseModel):
     description: Optional[str] = None
     is_active: bool
     is_default: bool
+    status: str = "aktif"  # services/harga_jual.status_daftar
+    status_text: str = "Aktif"
+    is_expired: bool = False
     items: List[PriceListItemResponse] = []
     created_at: str
     updated_at: str

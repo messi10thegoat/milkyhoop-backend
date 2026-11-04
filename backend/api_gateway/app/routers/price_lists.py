@@ -164,6 +164,7 @@ async def list_price_lists(
                 params.append(is_active)
                 idx += 1
             where = " AND ".join(conditions)
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # status berlaku: tanggal zona tenant
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM price_lists p WHERE {where}", *params
             )
@@ -193,6 +194,7 @@ async def list_price_lists(
                         "is_active": r["is_active"],
                         "is_default": r["is_default"],
                         "item_count": r["item_count"],
+                        **HJ.status_daftar(r, hari_ini),
                     }
                     for r in rows
                 ],
@@ -244,6 +246,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                     "description": row["description"],
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
+                    **HJ.status_daftar(row, await tanggal_dokumen(conn, ctx["tenant_id"])),
                     "items": [
                         {
                             "id": str(i["id"]),
