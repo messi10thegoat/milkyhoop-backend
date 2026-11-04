@@ -208,7 +208,7 @@ async def list_purchase_orders(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
-    aksi: Optional[Literal["perlu_dikirim", "telat_terima", "perlu_ditagih"]] = Query(None),
+    aksi: Optional[Literal["perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "bisa_diterima"]] = Query(None),
     with_totals: bool = Query(False),
 ):
     """Daftar Pesanan Pembelian. Aditif (P-U2): terima_*, position_text, aksi (pill PARTISI), amount_*/sisa_ditagih TURUNAN dari baris,
@@ -260,6 +260,8 @@ async def list_purchase_orders(
 
             if isinstance(aksi, str) and aksi in PD.AKSI:  # panggilan langsung tanpa aksi = objek Query -> mati
                 conditions.append(PD.sql_aksi(aksi, "$2"))
+            elif isinstance(aksi, str) and aksi in PD.SARINGAN:  # bisa_diterima: status = penentu terima (aturan D per flag)
+                conditions.append(PD.sql_aksi(aksi, "$2", status_terima=PR.status_bisa_terima(await G.aktif(conn, ctx["tenant_id"]))))
 
             where_clause = " AND ".join(conditions)
             dari = f"FROM purchase_orders po {PD.SQL_AGREGAT}"
@@ -307,6 +309,8 @@ async def list_purchase_orders(
                     "amount_billed": float(f["amount_billed"]),
                     "sisa_ditagih": float(f["sisa_ditagih"]),
                     "draft_bill_amount": float(f["draft_bill_amount"]),
+                    "belum_ditagih_sesudah_draf": float(PD.r2(f["belum_ditagih_sesudah_draf"])),  # qty; 0 + draft_bills = "Buka faktur draf"
+                    "draft_bills": f["draft_bills"],
                     "status": row["status"],
                     "ref_no": row["ref_no"],
                     "created_at": row["created_at"].isoformat(),
@@ -580,6 +584,8 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "amount_billed": float(f["amount_billed"]),
                     "sisa_ditagih": float(f["sisa_ditagih"]),
                     "draft_bill_amount": float(f["draft_bill_amount"]),
+                    "belum_ditagih_sesudah_draf": float(PD.r2(f["belum_ditagih_sesudah_draf"])),  # qty; 0 + draft_bills = "Buka faktur draf"
+                    "draft_bills": f["draft_bills"],
                     "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
                     "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
                     "position_text": f["position_text"], "aksi": f["aksi"],
