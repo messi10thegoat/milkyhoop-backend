@@ -42,7 +42,7 @@ def _bill(total, paid):
 
 @pytest.mark.parametrize("total,paid,status,stempel", [
     (2421900, 2421900, "Lunas", "LUNAS"),                              # LUNAS -> status + stempel, BUKAN "Rp 0" / jatuh tempo
-    (2421900, 421900, "Sebagian dibayar &middot; sisa Rp 2.000.000", None),
+    (2421900, 421900, "Sebagian dibayar</span>", None),           # FPB pola Accurate (4 Nov 2026): sisa HANYA di ringkasan
     (630000, 0, "Belum dibayar", None),
 ])
 def test_faktur_pembelian_status_bukan_angka_sisa(tangkap, total, paid, status, stempel):
@@ -59,6 +59,8 @@ def test_faktur_pembelian_status_bukan_angka_sisa(tangkap, total, paid, status, 
     assert 'class="hero' not in isi
     assert re.search(r"<b>Status</b><span>\s*" + re.escape(status), isi), status
     assert ('stempel-teks">' + stempel) in isi if stempel else 'class="stempel' not in isi
+    if paid and paid < total:
+        assert "<b>Sisa tagihan</b><b>Rp 2.000.000</b>" in isi
     # baris Total di ringkasan tetap nominal penuh
     assert re.search(r'class="tot"><span>Total</span><span>Rp ' + re.escape(f"{total:,}".replace(",", ".")), isi)
 
