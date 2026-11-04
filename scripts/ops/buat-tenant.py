@@ -3,6 +3,8 @@
 
     echo '<kata-sandi>' | python3 scripts/ops/buat-tenant.py <email> "<Nama Bisnis>"
     python3 scripts/ops/buat-tenant.py --periksa <email>      # gerbang saja
+    ... buat-tenant.py <email> "<Nama Bisnis>" --kategori grosir_distribusi   # + preset flag kategori usaha
+        (services/preset_kategori; lewat terapkan-preset.sh, hanya MENAMBAH flag; sesudah gerbang lulus)
 
 DIJALANKAN DI SERVER (butuh docker + akses :8001).
 
@@ -38,6 +40,7 @@ membuatkan akun atas alamat email orang lain tanpa sepengetahuannya --
 klik-email itulah persetujuannya, dan skrip ini melewatinya.
 """
 import json
+import os
 import subprocess
 import sys
 import urllib.error
@@ -184,6 +187,14 @@ def periksa(email, sandi=None):
 
 def main():
     arg = sys.argv[1:]
+    kategori = None
+    if "--kategori" in arg:
+        i = arg.index("--kategori")
+        if i + 1 >= len(arg):
+            print("pemakaian: --kategori <kode>  (lihat services/preset_kategori.PRESET)")
+            return 2
+        kategori = arg[i + 1]
+        del arg[i:i + 2]
     if not arg or arg[0] in ("-h", "--help"):
         print(__doc__)
         return 2
@@ -219,6 +230,11 @@ def main():
             print("  - " + g)
         return 1
     print("OK: tenant sehat dan terisolasi.")
+    if kategori and arg[0] != "--periksa":
+        slug = sql(f"SELECT \"tenantId\" FROM \"User\" WHERE email='{arg[0]}'")
+        print(f"\n=== PRESET {kategori} -> {slug} ===")
+        preset = os.path.join(os.path.dirname(os.path.abspath(__file__)), "terapkan-preset.sh")
+        return subprocess.run([preset, slug, kategori, "--jalankan"]).returncode
     return 0
 
 
