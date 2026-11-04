@@ -136,3 +136,15 @@ def test_rekap_ringkasan_akun_tanpa_ttd():
                                                                     ("Nota kredit", D("100000"), "kurang"), ("Sisa tagihan", D("1454186"), "sisa")]
     assert RC.rekap({"total": 1, "dibayar": 0, "sisa": 1})[1]["kelas"] == ""   # belum dibayar = "Rp 0", bukan "-Rp 0"
     assert "Hormat kami" not in (PS.TEMPLATE_DIR / "rekap_pesanan.html").read_text()   # putusan MASTER: Rekap TANPA TTD
+
+
+def test_rekap_footer_sebaris_halaman_dan_subteks_menyebut_nota_kredit():
+    """Rekap (tinjauan MASTER 4 Nov 2026): "Dicetak" = footer bersama invoice.css (margin bawah-kiri), bukan di badan; teks kecil di
+    bawah angka besar menyebut nota kredit bila ada (angka sama dengan ringkasan)."""
+    r = {"order_number": "SO-1", "status": "sebagian", "total": D("3108372"), "dibayar": D("1554186"), "nota_kredit": D("100000"),
+         "sisa": D("1454186"), "tagihan": [], "pembayaran": []}
+    h = PS.get_pdf_service().render_rekap_pesanan(r, {"name": "U"}).html
+    assert "· nota kredit Rp 100.000" in h and '<div class="footer-line">Dicetak' in h
+    assert "nota kredit Rp" not in PS.get_pdf_service().render_rekap_pesanan({**r, "nota_kredit": 0}, {"name": "U"}).html
+    for f in ("sales_invoice.html", "credit_note.html", "proforma.html", "rekap_pesanan.html"):
+        assert "running(dicetak)" not in (PS.TEMPLATE_DIR / f).read_text(), f   # tak ada salinan aturan footer per templat

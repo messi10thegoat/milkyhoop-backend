@@ -229,14 +229,10 @@ body {
     line-height: 1.55;
 }
 
-/* ── 7. Footer ── */
-.footer-line {
-    margin-top: 40px;
-    padding-top: 16px;
-    border-top: 1px solid #e5e7eb;
-    font-size: 8pt;
-    color: #1a1a1a;
-}
+/* ── 7. Footer: "Dicetak …" = elemen berjalan ke margin bawah-kiri, sebaris "Halaman x dari y" (SATU sumber keluarga Penjualan:
+   SI, Nota Kredit, Proforma, Rekap -- 4 Nov 2026; dulu <style> per templat, Rekap melayang di badan dengan garis). ── */
+.footer-line { position: running(dicetak); font-size: 8pt; }
+@page { @bottom-left { content: element(dicetak); } }
 
 
 /* ── Faktur per status pembayaran (pemilik 27 Sep 2026) ── */

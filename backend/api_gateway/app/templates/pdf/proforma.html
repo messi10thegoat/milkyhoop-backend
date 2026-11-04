@@ -2,12 +2,7 @@
 <html lang="id">
 <head><meta charset="UTF-8"><title>Proforma {{ proforma.proforma_number or '-' }}</title>
 <style>
-  /* "Dicetak…" keluar dari alur -> ke kotak margin @page bawah-kiri (running element),
-     jadi tak lagi mendorong isi ke halaman 2. Nomor halaman tetap di @bottom-right (invoice.css).
-     Margin bawah 2.2cm (invoice.css) berlebih utk footer sebaris -> rapatkan ke 1.4cm supaya
-     proforma ber-catatan (mis. 0001) pun muat 1 halaman. !important krn invoice.css dimuat sesudah. */
-  .footer-running { position: running(dicetak); font-size: 8pt; color: #1a1a1a; }
-  @page { @bottom-left { content: element(dicetak); } }   /* margin: dokumen.css */
+  /* "Dicetak…" = .footer-line invoice.css (kotak margin @page bawah-kiri, sebaris nomor halaman; SATU sumber 4 Nov 2026). */
   /* 1 Okt 2026 (pemilik: PRO-2610-0001 PELUNASAN + logo = 2 halaman, catatan penutup tumpah): jarak vertikal
      dirapatkan untuk proforma saja (~50px); teks & urutan tak berubah. !important krn invoice.css dimuat sesudah. */
   .header { margin-bottom: 18px !important; }
@@ -138,8 +133,8 @@
     </div>
     {% endif %}
 
-    <!-- 7. Footer (running element -> kotak margin @page, lihat <style> di head) -->
-    <div class="footer-running">
+    <!-- 7. Footer (running element -> kotak margin @page, invoice.css .footer-line) -->
+    <div class="footer-line">
         Dicetak {{ generated_at | date_id }}
     </div>
 
