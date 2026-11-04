@@ -1020,6 +1020,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customer\-deposits/[^/]+/attachments$", ["GET"], "customer_deposit", "R"),
     (r"^/api/customer\-deposits/[^/]+/attachments/[^/]+/download$", ["GET"], "customer_deposit", "R"),  # Unit 1a
     (r"^/api/customers/[^/]+/activity$", ["GET"], "customer", "R"),
+    (r"^/api/customers/[^/]+/history$", ["GET"], "customer", "R"),  # B4 riwayat (sumber sama dengan /activity)
     (r"^/api/customers/[^/]+/available\-deposits$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/balance$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/credit$", ["GET"], "customer", "R"),
@@ -1227,6 +1228,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/tables/waitlist$", ["GET"], "tables", "R"),
     (r"^/api/team\-members/roles/list$", ["GET"], "team_management", "R"),
     (r"^/api/vendors/[^/]+/activity$", ["GET"], "supplier", "R"),
+    (r"^/api/vendors/[^/]+/history$", ["GET"], "supplier", "R"),  # B4 riwayat (sumber sama dengan /activity)
     (r"^/api/vendors/[^/]+/balance$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+/journal\-entries$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+/open\-bills$", ["GET"], "supplier", "R"),

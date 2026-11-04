@@ -11,6 +11,7 @@ from uuid import UUID
 import re
 
 from .identitas_pajak import IdentitasPajakPembeli
+from .uang_json import UangJson
 
 
 # =============================================================================
@@ -203,7 +204,15 @@ class CustomerListItem(BaseModel):
     points: Optional[int] = 0
     total_transactions: Optional[int] = 0
     total_value: Optional[int] = 0
-    outstanding_balance: Optional[int] = 0
+    outstanding_balance: Optional[UangJson] = 0  # B1 4 Nov: jurnal, tak dipotong sen (dulu int); tetap JSON number
+    # B1 (kontak_daftar, satu penentu dengan vendor): medan baru, aditif
+    saldo: Optional[UangJson] = 0
+    lewat_tempo_nilai: Optional[UangJson] = 0
+    lewat_tempo_jumlah: int = 0
+    kontak_teks: Optional[str] = None
+    status_text: Optional[str] = None
+    aksi: Optional[str] = None  # kunci aksi pertama (urut desak) atau null
+    aksi_semua: List[str] = []  # SEMUA kunci yang berlaku untuk baris ini
     # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan)
     total_penjualan: float = 0
     jumlah_faktur: int = 0
@@ -222,6 +231,7 @@ class CustomerListResponse(BaseModel):
     items: List[CustomerListItem]
     total: int
     has_more: bool
+    sum_sisa: Optional[UangJson] = None  # with_totals=true: Σ saldo piutang seluruh hasil filter (kontak_daftar)
 
 
 # =============================================================================
@@ -281,13 +291,24 @@ class CustomerDetail(BaseModel):
     points: Optional[int] = 0
     points_per_50k: Optional[int] = 0
     total_transactions: Optional[int] = 0
-    total_value: Optional[int] = 0
+    total_value: Optional[UangJson] = 0  # B2: = total_penjualan jurnal (dulu SUM(total_amount))
     # 26 Sep 2026: penjualan TURUNAN JURNAL (services/pelanggan_penjualan)
     total_penjualan: float = 0
     jumlah_faktur: int = 0
     last_invoice_date: Optional[str] = None
-    outstanding_balance: Optional[int] = 0
+    outstanding_balance: Optional[UangJson] = 0  # B2: jurnal (kontak_daftar), JSON number
     last_transaction_at: Optional[str] = None
+    # B2 (4 Nov 2026, kontak_daftar / kontak_detail): medan baru, aditif
+    jumlah_dokumen: int = 0
+    saldo: Optional[UangJson] = 0
+    lewat_tempo_nilai: Optional[UangJson] = 0
+    lewat_tempo_jumlah: int = 0
+    uang_muka: Optional[UangJson] = 0
+    kontak_teks: Optional[str] = None
+    status_text: Optional[str] = None
+    tipe_text: Optional[str] = None
+    termin_text: Optional[str] = None
+    aksi: List[Dict[str, Any]] = []  # [{kunci, label, utama?, bahaya?, boleh, alasan?}]
     
     # Metadata
     default_currency_id: Optional[str] = None
