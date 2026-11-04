@@ -294,6 +294,8 @@ class FakeConnGet(FakeConn):
         self.sql.append((" ".join(q.split()), a))
         if "FROM vendor_addresses" in q:
             return {"street": "Gudang", "city": "Bitung", "province": None, "postal_code": None}
+        if "FROM account_roles" in q:  # K2b+: uang muka vendor (peran AP_PREPAID) -> tak dipetakan -> uang_muka null
+            return None
         return self.VENDOR
 
     async def fetchval(self, q, *a):
