@@ -51,7 +51,9 @@ from ..services.pihak_helpers import rupiah, segarkan_cache_piutang_faktur, pela
 
 from ..schemas.receive_payments import (
     UnapplyAllocationRequest,
+    AllocationInput,
     CreateReceivePaymentRequest,
+    ReceivePaymentPreviewRequest,
     ReceivePaymentDetail,
     ReceivePaymentDetailResponse,
     ReceivePaymentListResponse,
@@ -1692,33 +1694,78 @@ async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentReque
     return hasil
 
 
+async def kolam_faktur(conn, tid: str, body) -> tuple:
+    """PRATINJAU (bayar banyak faktur, 4 Nov 2026). invoice_ids -> alokasi tertua-dulu (services/alokasi_tertua; sisa =
+    get_invoice_remaining_from_journal = sumber validator _periksa_penerimaan). -> (CreateReceivePaymentRequest TERSELESAIKAN,
+    baris urut, galat [(code, pesan)])."""
+    from ..services.alokasi_tertua import selesaikan_kolam
+
+    async def muat(ids):
+        sah = []
+        for i in ids:
+            try:
+                sah.append(UUID(i))
+            except ValueError:
+                pass
+        rows = {str(r["id"]): r for r in await conn.fetch(
+            """SELECT id, invoice_number, customer_id, due_date, invoice_date FROM sales_invoices
+               WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tid, sah)}
+        out = {}
+        for i in ids:
+            r = rows.get(i)
+            if not r:  # kalimat == _periksa_penerimaan
+                out[i] = {"galat": ("RP_INVOICE_NOT_FOUND", "Faktur yang dialokasikan tidak ditemukan.")}
+                continue
+            lain = str(r["customer_id"]) != body.customer_id
+            out[i] = {"nomor": r["invoice_number"], "jatuh_tempo": r["due_date"], "tanggal": r["invoice_date"],
+                      "galat": ("RP_INVOICE_OTHER_CUSTOMER", f"Faktur {r['invoice_number']} milik pelanggan lain.") if lain else None}
+        return out
+
+    baris, galat = await selesaikan_kolam([(a.invoice_id, a.amount_applied) for a in body.allocations], body.invoice_ids, muat,
+                                          lambda i: get_invoice_remaining_from_journal(conn, tid, UUID(i)),
+                                          body.total_amount + body.discount_amount)
+    tulis = CreateReceivePaymentRequest(**body.model_dump(exclude={"invoice_ids", "allocations"}), allocations=[
+        AllocationInput(invoice_id=b["id"], amount_applied=b["applied"]) for b in baris if b["applied"] > 0])
+    return tulis, baris, galat
+
+
 @router.post("/preview")
-async def preview_create_receive_payment(request: Request, body: CreateReceivePaymentRequest):
+async def preview_create_receive_payment(request: Request, body: ReceivePaymentPreviewRequest):
     """U-P4b-1 (2 Nov 2026): pratinjau BUAT penerimaan -- READ ONLY tanpa kunci, nol tulis; penentu = rencana_penerimaan_ro
     (pemeriksaan + baris jurnal SAMA dengan POST /receive-payments). Bentuk = pola Pembayaran Keluar (POST /bill-payments/preview).
     Nomor = PERKIRAAN (payment_number_estimated: true); nomor final terbit saat simpan."""
     ctx = get_user_context(request)
     pool = await get_pool()
     await _ensure_receive_payments_role_preconditions(pool, ctx["tenant_id"])
+    from ..services import alokasi_tertua as AT
+    kolam, galat = None, []
     async with pool.acquire() as conn:
         async with conn.transaction(readonly=True):
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            if body.invoice_ids:
+                body, kolam, galat = await kolam_faktur(conn, ctx["tenant_id"], body)
             r = await rencana_penerimaan_ro(conn, ctx, body)
-    ok = not r["blocks"]
+    blocks = r["blocks"] + [{"code": c, "message": m} for c, m in galat]
+    ok = not blocks
+    invoices = r["invoices"] if kolam is None else AT.gabung_baris(kolam, r["invoices"], "invoice_id", lambda b: {
+        "invoice_id": b["id"], "invoice_number": b["nomor"], "remaining_before": _f_rp(b["remaining"]), "amount_applied": 0.0,
+        "remaining_after": _f_rp(b["remaining"]), "status_after": None})
+    lebih = r["cek"]["unapplied_amount"] if r["cek"] else 0
+    notes = AT.catatan_tanpa_sisa(kolam or [], "RP_TANPA_SISA") + ([AT.catatan_lebih_pelanggan(lebih)] if lebih > 0 else [])
     status = "draft" if body.save_as_draft else "posted"
     return {"success": True, "data": {
         "payment_id": None, "action": "create", "can_proceed": ok,
-        "blocks": r["blocks"],
+        "blocks": blocks, "notes": notes,
         "before": {"exists": False},
         "after": ({"exists": True, "status": status, "payment_number": r["payment_number"], "total_amount": _f_rp(body.total_amount),
                    "allocated_amount": _f_rp(r["cek"]["allocated_amount"]), "unapplied_amount": _f_rp(r["cek"]["unapplied_amount"]),
                    "payment_method": r["payment_method"]} if r["cek"] else {"exists": False}),
         "journals": r["journals"] if ok else [],
         "bank_transactions": r["bank_transactions"] if ok else [],
-        "invoices": r["invoices"],
+        "invoices": invoices,
         "overpayment_deposit_number": r["overpayment_deposit_number"] if ok else None,
         "payment_number": r["payment_number"], "payment_number_estimated": True,
-        "payload": body.model_dump(mode="json") if ok else None, "preview": True}}
+        "payload": body.model_dump(mode="json", exclude={"invoice_ids"}) if ok else None, "preview": True}}
 
 
 @router.post("", response_model=ReceivePaymentResponse, status_code=201)

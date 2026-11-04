@@ -25,6 +25,7 @@ from decimal import Decimal
 from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP
 
 from ..schemas.bill_payments import (
+    BillPaymentPreviewRequest,
     CreateBillPaymentRequest,
     VoidBillPaymentRequest,
     BillPaymentDetailResponse,
@@ -485,24 +486,35 @@ async def preview_journal(request: Request, body: dict = Body(...)):
 
 
 @router.post("/preview")
-async def preview_create_bill_payment(request: Request, payload: CreateBillPaymentRequest):
+async def preview_create_bill_payment(request: Request, payload: BillPaymentPreviewRequest):
+    """bill_ids (kolam) -> alokasi tertua-dulu (BKR.kolam_tagihan) lalu penentu YANG SAMA; payload = alokasi TERSELESAIKAN."""
+    from ..services import alokasi_tertua as AT
     ctx = get_user_context(request)
     pool = await get_pool()
+    kolam, galat = None, []
     async with pool.acquire() as conn:
         tr = conn.transaction(readonly=True)
         await tr.start()
         try:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            if payload.bill_ids:
+                payload, kolam, galat = await BKR.kolam_tagihan(conn, ctx["tenant_id"], payload)
             r = await BKR.rencana_bayar(conn, ctx, payload, pratinjau=True)
             nomor = await perkiraan_nomor_bayar(conn, ctx["tenant_id"])  # U-P4c: perkiraan, nomor final terbit saat simpan
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
+    blocks = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]] + [{"code": c, "message": m} for c, m in galat]
+    bills = r["bills"] if kolam is None else AT.gabung_baris(kolam, r["bills"], "bill_id", lambda b: {
+        "bill_id": b["id"], "bill_number": b["nomor"], "remaining_before": BKR._f(b["remaining"]), "amount_applied": 0.0,
+        "remaining_after": BKR._f(b["remaining"])})
+    notes = AT.catatan_tanpa_sisa(kolam or [], "BP_TANPA_SISA") \
+        + ([AT.catatan_lebih_vendor(r["unapplied_amount"])] if r["unapplied_amount"] > 0 else [])
     return {"success": True, "data": {
-        "payment_id": None, "action": "create", "can_proceed": not r["blocks"],
+        "payment_id": None, "action": "create", "can_proceed": not blocks,
         "payment_number_preview": nomor, "payment_number_estimated": True,
-        "blocks": [{"code": b["code"], "message": b["message"]} for b in r["blocks"]],
+        "blocks": blocks, "notes": notes,
         "before": r["before"], "after": r["after"], "journals": r["journals"], "bank_transactions": r["bank_transactions"],
-        "bills": r["bills"], "pph": r.get("pph"), "payload": payload.model_dump(mode="json"), "preview": True}}
+        "bills": bills, "pph": r.get("pph"), "payload": payload.model_dump(mode="json", exclude={"bill_ids"}), "preview": True}}
 
 
 # === PRATINJAU AKSI (AS-GP3, 24 Okt 2026): void / posting draf / hapus draf. READ ONLY tanpa kunci; penentu == penulis

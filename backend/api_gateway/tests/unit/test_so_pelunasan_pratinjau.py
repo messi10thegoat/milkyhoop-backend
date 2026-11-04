@@ -122,7 +122,6 @@ class _C:
             return []
         if "FROM sales_invoices" in sql:
             assert a[0] == T and "sales_order_id = $2" in sql
-            assert "ORDER BY invoice_date, invoice_number, id" in sql  # tertua-dulu ditentukan SQL
             return list(self.fak)
         if "compute_ar_outstanding" in sql:
             src = self.sisa_sesudah if (self.inti_jalan and self.sisa_sesudah is not None) else self.sisa
@@ -202,10 +201,12 @@ async def _pv(**badan):
 # ---------- alokasi ----------
 
 def test_alokasi_tertua_dulu_literal():
-    f = [{"remaining": Decimal("300000")}, {"remaining": Decimal("500000")}, {"remaining": Decimal("0")}]
-    assert SP.alokasi_tertua_dulu(f, Decimal("450000")) == [Decimal("300000"), Decimal("150000"), Decimal("0")]
-    assert SP.alokasi_tertua_dulu(f, Decimal("900000")) == [Decimal("300000"), Decimal("500000"), Decimal("0")]
-    assert SP.alokasi_tertua_dulu(f, Decimal("100000.50")) == [Decimal("100000.50"), Decimal("0"), Decimal("0")]
+    from app.services.alokasi_tertua import selesaikan
+    f = [{"remaining": Decimal("300000"), "manual": None}, {"remaining": Decimal("500000"), "manual": None},
+         {"remaining": Decimal("0"), "manual": None}]
+    assert selesaikan(f, Decimal("450000")) == [Decimal("300000"), Decimal("150000"), Decimal("0")]
+    assert selesaikan(f, Decimal("900000")) == [Decimal("300000"), Decimal("500000"), Decimal("0")]
+    assert selesaikan(f, Decimal("100000.50")) == [Decimal("100000.50"), Decimal("0"), Decimal("0")]
 
 
 # ---------- rencana + inti ----------

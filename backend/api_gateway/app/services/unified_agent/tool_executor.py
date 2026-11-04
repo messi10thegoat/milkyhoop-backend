@@ -822,6 +822,8 @@ def _amankan_nomor_dokumen(payload: dict, action_key: str) -> None:
             )
             _simpan_ke_ref(_inv.strip())
 
+from ..alokasi_tertua import alokasi_chat as _alokasi_tertua, sisa_atau_nol as _sisa_atau_nol  # noqa: E402  SATU penentu
+
 class TenantContext:
     """Tenant context passed to tool executor."""
 
@@ -6503,37 +6505,14 @@ class ToolExecutor:
                             inv_list = invs.get("items") or invs.get("data") or []
                         elif isinstance(invs, list):
                             inv_list = invs
-                        remaining = total_f
-                        built = []
-                        inv_numbers = []
-                        for inv in inv_list:
-                            if remaining <= 0:
-                                break
-                            inv_id = inv.get("id") or inv.get("invoice_id")
-                            if not inv_id:
-                                continue
-                            try:
-                                outstanding = float(
-                                    inv.get("outstanding_amount")
-                                    or inv.get("balance_due")
-                                    or inv.get("amount_due")
-                                    or 0
-                                )
-                            except Exception:
-                                outstanding = 0.0
-                            if outstanding <= 0:
-                                continue
-                            apply_amt = min(outstanding, remaining)
-                            built.append(
-                                {
-                                    "invoice_id": inv_id,
-                                    "amount_applied": apply_amt,
-                                }
-                            )
-                            inv_num = inv.get("invoice_number") or inv.get("number")
-                            if inv_num:
-                                inv_numbers.append(str(inv_num))
-                            remaining -= apply_amt
+                        # SATU penentu tertua-dulu (services/alokasi_tertua, Decimal); dulu loop float sendiri
+                        rows = [{"inv": inv, "remaining": _sisa_atau_nol(inv.get("outstanding_amount") or inv.get("balance_due")
+                                                                         or inv.get("amount_due")), "manual": None}
+                                for inv in inv_list if inv.get("id") or inv.get("invoice_id")]
+                        built, inv_numbers = _alokasi_tertua(
+                            rows, total_f, lambda b: (b["inv"].get("id") or b["inv"].get("invoice_id"),
+                                                        b["inv"].get("invoice_number") or b["inv"].get("number"),
+                                                        b["inv"].get("due_date"), b["inv"].get("invoice_date")))
                         if built:
                             payload["allocations"] = built
                             if inv_numbers and "invoice_numbers" not in payload:
@@ -6573,36 +6552,17 @@ class ToolExecutor:
                             )
                             _ra_rows = await _ra_conn.fetch(
                                 """
-                                SELECT invoice_id, invoice_number, outstanding
+                                SELECT invoice_id, invoice_number, outstanding, due_date, invoice_date
                                 FROM compute_ar_outstanding($1)
                                 WHERE customer_id = $2 AND outstanding > 0
-                                ORDER BY due_date ASC NULLS LAST, invoice_number ASC
                                 """,
                                 self.context.tenant_id,
                                 str(_cid_alloc),
                             )
-                    _ra_remaining = _ra_total
-                    _ra_built = []
-                    _ra_nums = []
-                    for _ra_r in _ra_rows:
-                        if _ra_remaining <= 0:
-                            break
-                        try:
-                            _ra_out = float(_ra_r["outstanding"] or 0)
-                        except Exception:
-                            _ra_out = 0.0
-                        if _ra_out <= 0:
-                            continue
-                        _ra_apply = min(_ra_out, _ra_remaining)
-                        _ra_built.append(
-                            {
-                                "invoice_id": str(_ra_r["invoice_id"]),
-                                "amount_applied": _ra_apply,
-                            }
-                        )
-                        if _ra_r["invoice_number"]:
-                            _ra_nums.append(str(_ra_r["invoice_number"]))
-                        _ra_remaining -= _ra_apply
+                    _ra_built, _ra_nums = _alokasi_tertua(
+                        [{"r": _ra_r, "remaining": _sisa_atau_nol(_ra_r["outstanding"]), "manual": None} for _ra_r in _ra_rows],
+                        _ra_total, lambda b: (str(b["r"]["invoice_id"]), b["r"]["invoice_number"], b["r"]["due_date"],
+                                                  b["r"]["invoice_date"]))
                     if _ra_built:
                         payload["allocations"] = _ra_built
                         if _ra_nums and "invoice_numbers" not in payload:
