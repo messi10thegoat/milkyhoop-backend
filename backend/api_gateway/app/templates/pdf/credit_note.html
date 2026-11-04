@@ -24,7 +24,7 @@
             <h1 class="doc-title">Nota Kredit</h1>
         </div>
         {% if company and company.logo_base64 %}
-        <img src="{{ company.logo_base64 }}" class="company-logo" alt="">
+        <img src="{{ company.logo_base64 | logo_rapat }}" class="company-logo" alt="">
         {% endif %}
     </div>
 
@@ -89,32 +89,13 @@
                     "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, uang) }}
 
     {# Ringkasan = SATU sumber services/ringkasan_cetak.nota (Subtotal = SIGMA kolom Total; tanpa "Diskon item") #}
+    {# Ringkasan (services/ringkasan_cetak.nota) + penutup keluarga Penjualan SATU sumber (_partials/penutup) #}
     {% from "_partials/ringkasan.html" import ringkasan %}
+    {% from "_partials/penutup.html" import penutup %}
+    {% call penutup([("Keterangan Alasan", credit_note.reason_detail), ("Catatan", credit_note.notes)], company.name if company else none) %}
     {{ ringkasan(RC.nota(credit_note), uang, 'tabel') }}
     <div class="terbilang">{{ credit_note.total_amount | terbilang }}</div>
-
-    {# Keterangan alasan + Catatan | TTD sebaris (pola penutup faktur penjualan) #}
-    <div class="penutup">
-    <div>
-    {% if credit_note.reason_detail %}
-    <div class="notes-section">
-        <div class="notes-label">Keterangan Alasan</div>
-        <div class="notes-text">{{ credit_note.reason_detail }}</div>
-    </div>
-    {% endif %}
-    {% if credit_note.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ credit_note.notes }}</div>
-    </div>
-    {% endif %}
-    </div>
-    <div class="ttd">
-        <div>Hormat kami,</div>
-        {% if company and company.name %}<div>{{ company.name }}</div>{% endif %}
-        <div class="garis"></div>
-    </div>
-    </div>
+    {% endcall %}
 
     <!-- 7. Footer (running element -> kotak margin @page) -->
     <div class="footer-running">

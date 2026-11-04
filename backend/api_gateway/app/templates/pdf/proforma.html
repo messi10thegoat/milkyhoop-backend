@@ -119,17 +119,14 @@
                     "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, uang) }}
     {% endif %}
     {% from "_partials/ringkasan.html" import ringkasan %}
+    {% from "_partials/penutup.html" import penutup %}
+    {% call penutup([("Catatan", proforma.notes)], company.name if company else none) %}
     {{ ringkasan(RC.proforma(proforma, batal), uang, 'tabel') }}
+    {% endcall %}
 
     {# Rekening hanya bila masih ada yang dibayar (03-DOKUMEN: "rekening bila belum lunas"). #}
     {% if not proforma.get('is_paid') %}{% with dok = proforma %}{% include "_partials/rekening_pembayaran.html" %}{% endwith %}{% endif %}
 
-    {% if proforma.notes %}
-    <div class="notes-section">
-        <div class="notes-label">Catatan</div>
-        <div class="notes-text">{{ proforma.notes }}</div>
-    </div>
-    {% endif %}
 
     {% if proforma.terms %}
     <div class="notes-section">
