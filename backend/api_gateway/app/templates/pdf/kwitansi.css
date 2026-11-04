@@ -7,20 +7,20 @@
     @bottom-right {
         content: "Halaman " counter(page) " dari " counter(pages);
         font-family: 'Inter', 'DejaVu Sans', sans-serif;
-        font-size: 7pt;
+        font-size: 7pt;   /* = --a5-mini (kotak margin @page tak mewarisi :root) */
         color: #1a1a1a;
     }
 }
 
-body { font-size: 9pt; line-height: 1.4; }
+body { font-size: var(--a5-isi); line-height: 1.4; }
 
 .kw-kepala { width: 100%; border-collapse: collapse; margin-bottom: 4mm; }
 .kw-kepala td { vertical-align: top; padding: 0; }
 .kw-kepala td:first-child { white-space: nowrap; width: 40%; padding-right: 4mm; }  /* judul tak pecah; alamat panjang membungkus di kanan */
 .kw-judul { font-size: 16pt; font-weight: 700; line-height: 1.15; }
-.kw-subjudul { font-size: 9pt; }
+.kw-subjudul { font-size: var(--a5-isi); }
 .kw-usaha { text-align: right; font-size: 8pt; }
-.kw-usaha .kw-usaha-nama { font-weight: 600; font-size: 9pt; }
+.kw-usaha .kw-usaha-nama { font-weight: 600; font-size: var(--a5-isi); }
 .kw-logo-sel { width: 1%; padding-left: 4mm !important; }
 .kw-logo { max-height: var(--logo-kecil-tinggi); max-width: var(--logo-kecil-lebar); object-fit: contain; }  /* persegi 295px (grapgrap) -> 64px masih terbaca */
 
@@ -32,13 +32,13 @@ body { font-size: 9pt; line-height: 1.4; }
 .kw-kotak { border: 1px solid #1a1a1a; border-radius: 4px; padding: 3mm 4mm; }
 .kw-baris { margin-bottom: 2.2mm; }
 .kw-baris:last-child { margin-bottom: 0; }
-.kw-label { font-size: 7.5pt; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.kw-label { font-size: var(--a5-kecil); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .kw-nilai { font-size: 10pt; }
 .kw-jumlah { font-size: 17pt; font-weight: 700; line-height: 1.2; }
-.kw-terbilang { font-style: italic; font-size: 9pt; }
+.kw-terbilang { font-style: italic; font-size: var(--a5-isi); }
 
 .kw-meta { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
-.kw-meta td { padding: 0.6mm 0; font-size: 9pt; vertical-align: top; }
+.kw-meta td { padding: 0.6mm 0; font-size: var(--a5-isi); vertical-align: top; }
 .kw-meta td.kw-m-label { font-weight: 600; width: 46%; }
 .kw-ringkas { width: 100%; border-collapse: collapse; }
 .kw-ringkas td { padding: 0.8mm 0; font-size: 8.5pt; border-bottom: 1px solid #E6E3DC; }
@@ -48,7 +48,7 @@ body { font-size: 9pt; line-height: 1.4; }
 
 .kw-kaki { width: 100%; border-collapse: collapse; margin-top: 5mm; }
 .kw-kaki td { vertical-align: bottom; padding: 0; }
-.kw-ttd { text-align: center; width: 42%; font-size: 9pt; }
+.kw-ttd { text-align: center; width: 42%; font-size: var(--a5-isi); }
 .kw-ttd-ruang { height: 15mm; }
 .kw-ttd-garis { border-top: 1px solid #1a1a1a; padding-top: 1mm; }
 
@@ -56,7 +56,7 @@ body { font-size: 9pt; line-height: 1.4; }
 .kw-stempel { display: inline-block; transform: rotate(-8deg); border: 2.6px solid; border-radius: 6px;
               padding: 1.5mm 4mm; opacity: .85; text-align: center; }
 .kw-stempel-teks { font-size: 15pt; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
-.kw-stempel-kecil { font-size: 7.5pt; font-weight: 700; letter-spacing: 1px; }
+.kw-stempel-kecil { font-size: var(--a5-kecil); font-weight: 700; letter-spacing: 1px; }
 .kw-stempel-diterima { color: #4F6B2E; border-color: #4F6B2E; }
 
-.kw-dicetak { font-size: 7pt; margin-top: 2mm; }
+.footer-line { font-size: var(--a5-mini); }   /* footer bersama invoice.css (margin bawah-kiri), skala A5 */

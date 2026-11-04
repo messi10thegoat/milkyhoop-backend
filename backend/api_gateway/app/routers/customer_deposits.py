@@ -3244,11 +3244,6 @@ async def list_customer_deposits_by_customer(
 from io import BytesIO as _BytesIO
 from fastapi.responses import StreamingResponse as _StreamingResponse
 from ..services.pdf_service import get_pdf_service as _get_pdf_service
-import base64 as _base64
-from pathlib import Path as _Path
-
-
-from ..utils.terbilang import terbilang as _terbilang  # noqa: E402  satu sumber (P3, 1 Okt 2026)
 
 
 def _deposit_purpose_label(sales_order_id, jenis=None) -> str:
@@ -3300,9 +3295,10 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
             purpose_ref = q_row["quote_number"]
 
     # Remaining = amount - applied - refunded (SALDO UANG MUKA, konsep internal)
-    _amt = int(dep["amount"] or 0)
-    _applied = int(dep["amount_applied"] or 0)
-    _refunded = int(dep["amount_refunded"] or 0)
+    # Decimal (PDF seragam 4 Nov 2026): int() dulu MEMOTONG sen uang muka bersen di kwitansi
+    _amt = Decimal(str(dep["amount"] or 0))
+    _applied = Decimal(str(dep["amount_applied"] or 0))
+    _refunded = Decimal(str(dep["amount_refunded"] or 0))
     remaining = _amt - _applied - _refunded
 
     # T199: baris "Sisa / Saldo" menyesatkan pelanggan pada kwitansi DP.
@@ -3314,7 +3310,7 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
     order_total = None
     dp_received_total = None
     order_remaining = None
-    remaining_label = "Saldo Uang Muka"
+    remaining_label = "Saldo uang muka"
     if dep["sales_order_id"]:
         so_total_row = await conn.fetchrow(
             "SELECT total_amount FROM sales_orders "
@@ -3323,14 +3319,14 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
             ctx["tenant_id"],
         )
         if so_total_row is not None:
-            order_total = int(float(so_total_row["total_amount"] or 0))
+            order_total = Decimal(str(so_total_row["total_amount"] or 0))
             # SELURUH DP untuk pesanan ini (termasuk yang sedang dicetak),
             # supaya kwitansi cicilan kedua menunjukkan sisa yang benar.
             # KONTRAK-dp-neto: uang yang SUDAH diterima neto refund (tanpa draf) -- bukan plafon
             from ..services.uang_muka_pesanan import uang_muka_pesanan as _ump
-            dp_received_total = int(
+            dp_received_total = Decimal(str(
                 (await _ump(conn, ctx["tenant_id"], [dep["sales_order_id"]]))[dep["sales_order_id"]]["neto"]
-            )
+            ))
             order_remaining = order_total - dp_received_total
             # Baris saldo internal disembunyikan di kasus A.
             remaining = None
@@ -3350,7 +3346,6 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
         if dep["deposit_date"] else None,
         "payer_name": dep["customer_name"],
         "amount": _amt,
-        "amount_words": _terbilang(_amt),
         "method": method_label,
         "bank_name": bank_name,
         "purpose_label": _deposit_purpose_label(dep["sales_order_id"], dep["jenis_efektif"]),
@@ -3364,37 +3359,9 @@ async def muat_pdf_kwitansi_uang_muka(conn, ctx, deposit_id: str) -> dict:
         "notes": dep["notes"],
     }
 
-    # Tenant info for header
-    tenant_row = await conn.fetchrow(
-        'SELECT display_name, address, phone, logo_url FROM "Tenant" WHERE id = $1',
-        ctx["tenant_id"],
-    )
-    if tenant_row:
-        tenant_info = {
-            "name": tenant_row["display_name"],
-            "address": tenant_row["address"],
-            "phone": tenant_row["phone"],
-            "logo_url": tenant_row["logo_url"],
-        }
-    else:
-        tenant_info = {
-            "name": ctx["tenant_id"],
-            "address": None,
-            "phone": None,
-            "logo_url": None,
-        }
-
-    _logo_data = None
-    _logo_filename = tenant_info.get("logo_url")
-    if _logo_filename:
-        _logo_path = (
-            _Path(__file__).parent.parent / "static" / "logos" / _logo_filename
-        )
-        if _logo_path.exists():
-            with open(_logo_path, "rb") as _lf:
-                _logo_b64 = _base64.b64encode(_lf.read()).decode()
-            _logo_data = f"data:image/png;base64,{_logo_b64}"
-    tenant_info["logo_data"] = _logo_data
+    # Kop = muat_kop SATU sumber (nama/alamat/telepon/NPWP/logo; PDF seragam 4 Nov 2026 -- dulu kueri "Tenant" + logo sendiri)
+    from ..services.rekap_pesanan import muat_kop
+    tenant_info = await muat_kop(conn, ctx["tenant_id"])
     # 12 Okt 2026 (putusan pemilik, pola SAP/NetSuite/Accurate): No. SPK/kode order = nomor INTERNAL produksi, TIDAK dicetak di dokumen konsumen.
     return {"receipt_data": receipt_data, "tenant_info": tenant_info, "dep": dep}
 

@@ -11,6 +11,9 @@
     --huruf: 9.5pt;
     --huruf-kecil: 8.5pt;
     --judul: 22pt;
+    --a5-isi: 9pt;        /* kwitansi setengah A4 (A5 melintang): skala tipografi A diperkecil, SATU sumber (4 Nov 2026) */
+    --a5-kecil: 7.5pt;
+    --a5-mini: 7pt;
     --logo-tinggi: 96px;
     --logo-lebar: 180px;
     --logo-kecil-tinggi: 64px;      /* kwitansi setengah A4: persegi 295px (grapgrap) -> 64px masih terbaca */
