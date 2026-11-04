@@ -91,7 +91,7 @@
       {%- if c.jenis == 'batal' -%}Dibatalkan{% if c.tanggal_batal %} {{ c.tanggal_batal | date_id }}{% endif %}
       {%- elif c.jenis == 'draf' -%}Draf
       {%- elif c.jenis == 'lunas' -%}Lunas{% if c.tanggal_lunas %} {{ c.tanggal_lunas | date_id }}{% endif %}{# metode & sisa: di riwayat/ringkasan #}
-      {%- elif c.jenis == 'terlambat' -%}Lewat jatuh tempo &middot; terlambat {{ c.hari_terlambat }} hari
+      {%- elif c.jenis == 'terlambat' -%}Terlambat {{ c.hari_terlambat }} hari
       {%- elif c.jenis == 'sebagian' -%}Sebagian dibayar
       {%- else -%}Belum dibayar{% if c.hari_lagi == 0 %} &middot; jatuh tempo hari ini{% elif c.hari_lagi %} &middot; {{ c.hari_lagi }} hari lagi{% endif %}
       {%- endif -%}</span>{% endif %}
