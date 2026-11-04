@@ -18,7 +18,7 @@ Journal Entry on POST (Cash/Bank):
 This mirrors ReceivePayments for the payable side.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Dict, Optional, List, Literal
 from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; U-AP-SEN: masukan sen
 from datetime import date
@@ -132,6 +132,14 @@ class BillPaymentPreviewRequest(CreateBillPaymentRequest):
     sisa (total + potongan - allocations manual). Payload balasan = alokasi TERSELESAIKAN untuk POST /bill-payments."""
 
     bill_ids: List[str] = Field(default_factory=list)
+    # kolam tanpa total = "bayar semua" (total diselesaikan server = sisa kolam + manual - potongan); tanpa kolam tetap wajib
+    total_amount: Optional[UangMasuk] = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _total_wajib_tanpa_kolam(self):
+        if self.total_amount is None and not self.bill_ids:
+            raise ValueError("total_amount wajib bila tanpa bill_ids")
+        return self
 
 
 class UpdateBillPaymentRequest(BaseModel):

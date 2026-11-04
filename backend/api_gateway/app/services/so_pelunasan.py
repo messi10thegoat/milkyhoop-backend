@@ -268,9 +268,48 @@ async def pratinjau_pelunasan_so(conn, ctx: dict, so_id: UUID, body: SOReceivePa
 class SIReceivePaymentPreviewRequest(BaseModel):
     payment_date: Optional[date] = None           # kosong -> tanggal bisnis tenant
     bank_account_id: Optional[str] = None         # bank_accounts.id ATAU CoA id; kosong -> bawaan server
-    amount: Optional[Decimal] = None              # kosong -> lunasi sisa faktur
+    amount: Optional[Decimal] = None              # kosong -> lunasi sisa faktur (+ faktur kolam: bayar semua)
+    # U-B (4 Nov 2026): faktur LAIN pelanggan yang sama ikut dilunasi tertua-dulu (services/alokasi_tertua); kosong = faktur ini saja
+    invoice_ids: Optional[List[str]] = None
     reference_number: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
+
+
+async def _kolam_pelanggan(conn, tid: str, inv: dict, ids: list, blocks: list, notes: list) -> list:
+    """Faktur kolam milik pelanggan YANG SAMA (selain faktur ini, dedup). Pelanggan lain / tak ada -> blok; tanpa sisa -> catatan."""
+    kecil, sah = [], []
+    for i in ids:
+        k = str(i).strip().lower()
+        if k and k != str(inv["id"]) and k not in kecil:
+            kecil.append(k)
+    for k in kecil:
+        try:
+            sah.append(UUID(k))
+        except ValueError:
+            pass
+    rows = {str(r["id"]): r for r in await conn.fetch(
+        """SELECT id, invoice_number, invoice_date, due_date, status, customer_id FROM sales_invoices
+           WHERE tenant_id = $1 AND id = ANY($2::uuid[])""", tid, sah)}
+    sisa = {str(r["invoice_id"]): Decimal(str(r["s"] or 0)) for r in await conn.fetch(
+        """SELECT invoice_id, SUM(outstanding) s FROM compute_ar_outstanding($1) WHERE invoice_id = ANY($2::uuid[])
+           GROUP BY invoice_id""", tid, sah)} if sah else {}
+    out, nol = [], []
+    for k in kecil:
+        r = rows.get(k)
+        if not r:
+            blocks.append({"code": "RP_INVOICE_NOT_FOUND", "message": "Faktur yang dialokasikan tidak ditemukan."})
+            continue
+        if str(r["customer_id"]) != str(inv["customer_id"]):
+            blocks.append({"code": "RP_INVOICE_OTHER_CUSTOMER", "message": f"Faktur {r['invoice_number']} milik pelanggan lain."})
+            continue
+        s = max(sisa.get(k, _NOL), _NOL) if r["status"] not in ("draft", "void") else _NOL
+        if s <= 0:
+            nol.append(r["invoice_number"])
+        out.append({"invoice_id": r["id"], "invoice_number": r["invoice_number"], "invoice_date": r["invoice_date"],
+                    "due_date": r["due_date"], "status": r["status"], "remaining": s})
+    if nol:
+        notes.append({"code": "RP_TANPA_SISA", "message": f"Faktur {', '.join(nol)} tanpa sisa tagihan — tidak ikut dibayar."})
+    return out
 
 
 async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIReceivePaymentPreviewRequest) -> dict:
@@ -300,14 +339,20 @@ async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIRe
             blocks.append({"code": "RP_NOTHING_DUE", "message": f"Faktur {inv['invoice_number']} sudah lunas."})
     faktur = [{"invoice_id": inv["id"], "invoice_number": inv["invoice_number"], "invoice_date": inv["invoice_date"],
                "due_date": inv["due_date"], "status": inv["status"], "remaining": sisa}]
+    if body.invoice_ids:  # U-B: kolam pelanggan sama, urut tertua-dulu (faktur ini ikut diurutkan)
+        faktur = sorted(faktur + await _kolam_pelanggan(conn, tid, inv, body.invoice_ids, blocks, notes),
+                        key=lambda f: AT.kunci_tertua(f["due_date"], f["invoice_date"], f["invoice_number"], f["invoice_id"]))
+    total_sisa = sum((f["remaining"] for f in faktur), _NOL)
 
-    jumlah = body.amount if body.amount is not None else sisa
+    jumlah = body.amount if body.amount is not None else total_sisa
     if body.amount is not None and body.amount <= 0:
         blocks.append({"code": "RP_AMOUNT_INVALID", "message": "Jumlah diterima harus lebih dari 0."})
-    a = min(sisa, jumlah) if jumlah > 0 and sisa > 0 else _NOL
-    faktur[0]["applied"] = a
-    faktur[0]["remaining_after"] = sisa - a
-    kelebihan = max(jumlah - a, _NOL) if sisa > 0 else _NOL
+    applied = AT.selesaikan([{"remaining": f["remaining"], "manual": None} for f in faktur], jumlah if jumlah > 0 else _NOL)
+    for f, x in zip(faktur, applied):
+        f["applied"] = x
+        f["remaining_after"] = f["remaining"] - x
+    a = sum(applied, _NOL)
+    kelebihan = max(jumlah - a, _NOL) if total_sisa > 0 else _NOL
     if kelebihan > 0:
         notes.append(AT.catatan_lebih_pelanggan(kelebihan))
     if not inv["customer_id"]:
@@ -347,12 +392,12 @@ async def rencana_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SIRe
             "payment_date": tgl.isoformat(),
             "bank_account_id": rekening["id"],
             "total_amount": str(jumlah),
-            "allocations": [{"invoice_id": str(inv["id"]), "amount_applied": str(a)}] if a > 0 else [],
+            "allocations": [{"invoice_id": str(f["invoice_id"]), "amount_applied": str(f["applied"])} for f in faktur if f["applied"] > 0],
             "reference_number": body.reference_number,
             "notes": body.notes,
             "save_as_draft": False,
         }
-    return {"doc": inv, "blocks": blocks, "notes": notes, "invoices": faktur, "total_remaining": sisa,
+    return {"doc": inv, "blocks": blocks, "notes": notes, "invoices": faktur, "total_remaining": total_sisa,
             "total_applied": a, "amount": jumlah, "overpayment": kelebihan, "bank_account": rekening,
             "bank_account_source": sumber_rek, "payment_date": tgl, "deposits_unapplied": dp, "payload": payload}
 
@@ -363,7 +408,6 @@ async def pratinjau_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SI
     r = await rencana_pelunasan_faktur(conn, ctx, invoice_id, body)
     hasil = await _jalankan_inti(conn, ctx, r)
     inv = r["doc"]
-    f = r["invoices"][0]
     return {
         "invoice_id": str(inv["id"]),
         "invoice_number": inv["invoice_number"],
@@ -375,10 +419,10 @@ async def pratinjau_pelunasan_faktur(conn, ctx: dict, invoice_id: UUID, body: SI
                       "invoice_date": f["invoice_date"].isoformat() if f["invoice_date"] else None,
                       "due_date": f["due_date"].isoformat() if f["due_date"] else None,
                       "status": f["status"], "remaining": _f(f["remaining"]), "applied": _f(f["applied"]),
-                      "remaining_after": _f(f["remaining_after"])}],
+                      "remaining_after": _f(f["remaining_after"])} for f in r["invoices"]],
         "total_remaining": _f(r["total_remaining"]),
         "total_applied": _f(r["total_applied"]),
-        "total_remaining_after": _f(f["remaining_after"]),
+        "total_remaining_after": _f(sum((f["remaining_after"] for f in r["invoices"]), _NOL)),
         "amount": _f(r["amount"]),
         "overpayment": _f(r["overpayment"]),
         "overpayment_deposit_number": hasil["overpayment_deposit_number"] if hasil else None,

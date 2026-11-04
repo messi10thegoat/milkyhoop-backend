@@ -20,7 +20,7 @@ Journal Entry on POST (From Deposit):
 """
 
 from decimal import Decimal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Literal, Dict
 from datetime import date
 
@@ -95,6 +95,14 @@ class ReceivePaymentPreviewRequest(CreateReceivePaymentRequest):
     sisa (total + potongan - allocations manual). Payload balasan = alokasi TERSELESAIKAN untuk POST /receive-payments."""
 
     invoice_ids: List[str] = Field(default_factory=list)
+    # kolam tanpa total = "bayar semua" (total diselesaikan server = sisa kolam + manual - potongan); tanpa kolam tetap wajib
+    total_amount: Optional[Decimal] = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _total_wajib_tanpa_kolam(self):
+        if self.total_amount is None and not self.invoice_ids:
+            raise ValueError("total_amount wajib bila tanpa invoice_ids")
+        return self
 
 class UpdateReceivePaymentRequest(BaseModel):
     """Request body for updating a draft receive payment."""

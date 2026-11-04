@@ -74,7 +74,7 @@ INFO = {A: {"nomor": "F-A", "jatuh_tempo": date(2026, 9, 30), "tanggal": date(20
 SISA = {A: D("400"), B: D("250.50"), C: D("1000"), X: D("1")}
 
 
-def _kolam(manual, ids, total):
+def _kolam(manual, ids, total=None):
     async def muat(ids):
         return {i: INFO[i] for i in ids}
 
@@ -84,15 +84,34 @@ def _kolam(manual, ids, total):
 
 
 def test_kolam_urut_jatuh_tempo_dedup_dan_galat():
-    baris, galat = _kolam([], [A, C, B, A.upper(), X], D("700"))
+    baris, galat, batas = _kolam([], [A, C, B, A.upper(), X], D("700"))
     assert [b["nomor"] for b in baris] == ["F-B", "F-A", "F-C"]          # jatuh tempo; kosong akhir; duplikat dibuang
     assert [b["applied"] for b in baris] == [D("250.50"), D("400"), D("49.50")]
     assert galat == [("LAIN", "Faktur F-X milik pihak lain.")]
 
 
 def test_kolam_tak_mengulang_baris_manual():
-    baris, _ = _kolam([(A, D("100"))], [A, B], D("300"))
+    baris, _, _ = _kolam([(A, D("100"))], [A, B], D("300"))
     assert [(b["nomor"], b["source"], b["applied"]) for b in baris] == [("F-B", "otomatis", D("200")), ("F-A", "manual", D("100"))]
+
+
+def test_kolam_tanpa_total_bayar_semua():
+    baris, galat, batas = _kolam([(A, D("100"))], [B, C])
+    assert batas == D("100") + D("250.50") + D("1000")
+    assert [(b["nomor"], b["applied"]) for b in baris] == [("F-B", D("250.50")), ("F-A", D("100")), ("F-C", D("1000"))]
+
+
+def test_skema_pratinjau_total_opsional_hanya_dengan_kolam():
+    from pydantic import ValidationError
+    from app.schemas.bill_payments import BillPaymentPreviewRequest, CreateBillPaymentRequest
+    from app.schemas.receive_payments import CreateReceivePaymentRequest, ReceivePaymentPreviewRequest
+    dasar = {"payment_date": date(2026, 11, 4), "bank_account_id": str(uuid4())}
+    assert BillPaymentPreviewRequest(vendor_id=str(uuid4()), bill_ids=[A], **dasar).total_amount is None
+    assert ReceivePaymentPreviewRequest(customer_id=str(uuid4()), invoice_ids=[A], **dasar).total_amount is None
+    for m, kw in ((BillPaymentPreviewRequest, {"vendor_id": str(uuid4())}), (ReceivePaymentPreviewRequest, {"customer_id": "c"}),
+                  (CreateBillPaymentRequest, {"vendor_id": str(uuid4())}), (CreateReceivePaymentRequest, {"customer_id": "c"})):
+        with pytest.raises(ValidationError):  # tanpa kolam / skema tulis: total tetap wajib
+            m(**kw, **dasar)
 
 
 def test_kolam_tagihan_payload_terselesaikan(monkeypatch):
@@ -115,6 +134,16 @@ def test_kolam_tagihan_payload_terselesaikan(monkeypatch):
     assert type(tulis).__name__ == "CreateBillPaymentRequest" and "bill_ids" not in tulis.model_dump()
     assert [(a.bill_id, a.amount_applied) for a in tulis.allocations] == [(B, D("250")), (A, D("50"))]
     assert [c for c, _ in galat] == ["TAGIHAN_VENDOR_LAIN", "TAGIHAN_TIDAK_DITEMUKAN"]
+    # tanpa total = bayar semua; total terselesaikan = sisa - potongan, dikirim di payload
+    semua = p.model_copy(update={"total_amount": None, "discount_amount": D("50"), "bill_ids": [A, B]})
+    tulis, _, galat = asyncio.run(BKR.kolam_tagihan(Conn(), "t", semua))
+    assert galat == [] and tulis.total_amount == D("600") and [a.amount_applied for a in tulis.allocations] == [D("250"), D("400")]
+
+    async def nol(conn, tid, i):
+        return D("0")
+    monkeypatch.setattr(BKR, "sisa_tagihan", nol)
+    tulis, _, galat = asyncio.run(BKR.kolam_tagihan(Conn(), "t", semua))
+    assert tulis is None and galat[-1][0] == "TAGIHAN_TANPA_SISA"
 
 
 # ── satu penentu: salinan lama dihapus ──────────────────────────────────────────────────────────────────────────
@@ -183,3 +212,35 @@ def test_pratinjau_tanpa_kolam_payload_tanpa_kunci_baru():
     src_rp = inspect.getsource(__import__("app.routers.receive_payments", fromlist=["x"]).preview_create_receive_payment)
     assert 'exclude={"bill_ids"}' in src_bp and "if payload.bill_ids:" in src_bp
     assert 'exclude={"invoice_ids"}' in src_rp and "if body.invoice_ids:" in src_rp
+
+
+# ── U-B: pratinjau pelunasan FAKTUR menerima invoice_ids pelanggan yang sama (4 Nov 2026) ─────────────────────────
+
+class _ConnKolamSI:
+    def __init__(self, cust, lain):
+        self.cust, self.lain = cust, lain
+
+    async def fetch(self, sql, tid, ids):
+        if "FROM sales_invoices" in sql:
+            meta = {A: ("INV-A", self.cust, "posted"), B: ("INV-B", self.lain, "posted"), C: ("INV-C", self.cust, "draft")}
+            return [{"id": i, "invoice_number": meta[str(i)][0], "invoice_date": date(2026, 9, 1), "due_date": None,
+                     "status": meta[str(i)][2], "customer_id": meta[str(i)][1]} for i in ids if str(i) in meta]
+        assert "compute_ar_outstanding" in sql
+        return [{"invoice_id": i, "s": D("500")} for i in ids]
+
+
+def test_kolam_pelanggan_sama_pelanggan_lain_diblok_draf_tanpa_sisa():
+    cust, lain = uuid4(), uuid4()
+    inv = {"id": uuid4(), "customer_id": cust}
+    blocks, notes = [], []
+    out = asyncio.run(SP._kolam_pelanggan(_ConnKolamSI(cust, lain), "t", inv, [A, B, C, A, str(inv["id"]), "bukan"], blocks, notes))
+    assert [(o["invoice_number"], o["remaining"]) for o in out] == [("INV-A", D("500")), ("INV-C", D("0"))]
+    assert [b["code"] for b in blocks] == ["RP_INVOICE_OTHER_CUSTOMER", "RP_INVOICE_NOT_FOUND"]
+    assert blocks[0]["message"] == "Faktur INV-B milik pelanggan lain."
+    assert [n["code"] for n in notes] == ["RP_TANPA_SISA"]
+
+
+def test_pelunasan_faktur_memakai_penentu_bersama_dan_tanpa_kolam_setara():
+    src = inspect.getsource(SP.rencana_pelunasan_faktur)
+    assert "AT.selesaikan(" in src and "AT.kunci_tertua(" in src and "if body.invoice_ids:" in src
+    assert "a = min(sisa, jumlah)" not in src  # salinan alokasi satu-faktur dihapus

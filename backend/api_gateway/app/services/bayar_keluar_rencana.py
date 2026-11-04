@@ -287,10 +287,16 @@ async def kolam_tagihan(conn, tid: str, payload) -> tuple:
             out[i] = {"nomor": r["invoice_number"], "jatuh_tempo": r["due_date"], "tanggal": r["issue_date"], "galat": galat}
         return out
 
-    baris, galat = await selesaikan_kolam([(a.bill_id, a.amount_applied) for a in payload.allocations], payload.bill_ids, muat,
-                                          lambda i: sisa_tagihan(conn, tid, i), payload.total_amount + payload.discount_amount)
-    tulis = CreateBillPaymentRequest(**payload.model_dump(exclude={"bill_ids", "allocations"}), allocations=[
-        BillAllocationInput(bill_id=b["id"], amount_applied=b["applied"]) for b in baris if b["applied"] > 0])
+    semua = payload.total_amount is None  # "bayar semua": batas = sisa kolam + manual; total = batas - potongan
+    baris, galat, batas = await selesaikan_kolam(
+        [(a.bill_id, a.amount_applied) for a in payload.allocations], payload.bill_ids, muat, lambda i: sisa_tagihan(conn, tid, i),
+        None if semua else payload.total_amount + payload.discount_amount)
+    total = batas - payload.discount_amount if semua else payload.total_amount
+    if total <= 0:
+        return None, baris, galat + [("TAGIHAN_TANPA_SISA", "Faktur yang dipilih tidak punya sisa tagihan untuk dibayar.")]
+    tulis = CreateBillPaymentRequest(**payload.model_dump(exclude={"bill_ids", "allocations", "total_amount"}), total_amount=total,
+                                     allocations=[BillAllocationInput(bill_id=b["id"], amount_applied=b["applied"])
+                                                  for b in baris if b["applied"] > 0])
     return tulis, baris, galat
 
 

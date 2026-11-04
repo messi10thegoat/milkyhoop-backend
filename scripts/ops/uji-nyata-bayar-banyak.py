@@ -105,6 +105,41 @@ async def main():
                 cek(set(b.split("/")[0] for b in beda) <= set(berubah_urut) and not [b for b in beda if b.endswith("bawaan")],
                     f"H1 {t}: pratinjau SO == LAMA kecuali SO berurutan baru (separuh)", f"beda={beda}")
 
+            # ── H1b pelunasan FAKTUR (U-B): tanpa invoice_ids == LAMA; BARU dengan faktur lain pelanggan sama: tertua-dulu ──
+            fk = await c.fetch("""SELECT o.invoice_id, si.customer_id FROM (SELECT invoice_id, SUM(outstanding) s FROM compute_ar_outstanding($1)
+                                   GROUP BY invoice_id) o JOIN sales_invoices si ON si.id = o.invoice_id WHERE o.s > 0
+                                   ORDER BY si.invoice_number LIMIT 30""", t)
+            beda_fk = []
+            for r in fk:
+                tr = c.transaction(readonly=True)
+                await tr.start()
+                try:
+                    out = await SP.pratinjau_pelunasan_faktur(c, ctx, r["invoice_id"], SP.SIReceivePaymentPreviewRequest())
+                finally:
+                    await tr.rollback()
+                k = f"{t}|si|{r['invoice_id']}"
+                hasil[k] = j(out)
+                if MODE == "BARU" and lama.get(k) != hasil[k]:
+                    beda_fk.append(out["invoice_number"])
+            if MODE == "BARU":
+                cek(not beda_fk, f"H1b {t}: pratinjau pelunasan faktur tanpa invoice_ids == LAMA ({len(fk)} faktur)", str(beda_fk))
+                per_cust = {}
+                for r in fk:
+                    per_cust.setdefault(str(r["customer_id"]), []).append(r["invoice_id"])
+                ids = max(per_cust.values(), key=len, default=[])
+                if len(ids) > 1:
+                    tr = c.transaction(readonly=True)
+                    await tr.start()
+                    try:
+                        rek = await c.fetchval("SELECT id FROM bank_accounts WHERE tenant_id = $1 AND is_active ORDER BY created_at LIMIT 1", t)
+                        out = await SP.pratinjau_pelunasan_faktur(c, ctx, ids[0], SP.SIReceivePaymentPreviewRequest(
+                            invoice_ids=[str(x) for x in ids[1:]], bank_account_id=str(rek)))
+                    finally:
+                        await tr.rollback()
+                    cek(len(out["invoices"]) == len(ids) and out["total_applied"] == out["total_remaining"]
+                        and len(out["payload"]["allocations"] if out["payload"] else []) == len(ids),
+                        f"H1b {t}: faktur + {len(ids) - 1} faktur lain pelanggan sama, bayar semua", str(out["blocks"]))
+
             # ── data uji H2/H3 ──
             ap = await c.fetch("""SELECT r.bill_id, r.outstanding, b.vendor_id, b.invoice_number, b.due_date, b.issue_date
                                   FROM compute_ap_rincian($1) r JOIN bills b ON b.id = r.bill_id AND b.tenant_id = $1
@@ -133,7 +168,7 @@ async def main():
             b0 = sorted(vend[1], key=lambda r: urut_db(r, "due_date", "issue_date", "invoice_number"))[0]
             dasar = {"vendor_id": vend[0], "payment_date": hari, "bank_account_id": str(bank["id"]), "total_amount": Decimal("1000"),
                      "allocations": [{"bill_id": str(b0["bill_id"]), "amount_applied": min(Decimal("1000"), Decimal(str(b0["outstanding"])))}]}
-            Mdl = BPR.CreateBillPaymentRequest if MODE == "LAMA" else BPR.BillPaymentPreviewRequest
+            Mdl = getattr(BPR, "BillPaymentPreviewRequest", BPR.CreateBillPaymentRequest)  # master sudah ber-kolam sejak 4323c112
             r = (await BPR.preview_create_bill_payment(req, Mdl(**dasar)))["data"]
             k = f"{t}|bp|tanpa-kolam"
             hasil[k] = j({x: v for x, v in r.items() if x not in ("notes",)})
@@ -142,18 +177,21 @@ async def main():
                 # ── H3 kolam ──
                 bills = sorted(vend[1], key=lambda r: urut_db(r, "due_date", "issue_date", "invoice_number"))
                 tot_sisa = sum((Decimal(str(x["outstanding"])) for x in bills), Decimal("0"))
-                for nama, total in (("sebagian", (tot_sisa * Decimal("0.6")).quantize(Decimal("0.01"))), ("lebih", tot_sisa + 1000)):
+                for nama, total in (("sebagian", (tot_sisa * Decimal("0.6")).quantize(Decimal("0.01"))), ("lebih", tot_sisa + 1000),
+                                    ("semua", None)):
                     p = BPR.BillPaymentPreviewRequest(**{**dasar, "allocations": [], "total_amount": total,
                                                          "bill_ids": [str(x["bill_id"]) for x in reversed(bills)]})
                     r = (await BPR.preview_create_bill_payment(req, p))["data"]
-                    sisa_t, harap = total, []
+                    sisa_t, harap = (tot_sisa if total is None else total), []
                     for x in bills:
                         a = min(Decimal(str(x["outstanding"])), max(sisa_t, Decimal("0")))
                         harap.append((str(x["bill_id"]), a))
                         sisa_t -= a
                     dapat = [(str(x["bill_id"]), Decimal(str(x["amount_applied"]))) for x in r["bills"]]
                     cek(dapat == harap, f"H3 {t} bill {nama}: urutan + nominal == hitungan sendiri", f"{len(bills)} tagihan")
-                    cek(sum(a for _, a in dapat) == min(total, tot_sisa), f"H3 {t} bill {nama}: Σapplied = min(total, Σsisa)")
+                    cek(sum(a for _, a in dapat) == min(total or tot_sisa, tot_sisa), f"H3 {t} bill {nama}: Σapplied = min(total, Σsisa)")
+                    if total is None:
+                        cek(Decimal(str(r["payload"]["total_amount"])) == tot_sisa, f"H3 {t} bill semua: total terselesaikan == Σsisa")
                     ulang = (await BPR.preview_create_bill_payment(req, BPR.BillPaymentPreviewRequest(**r["payload"])))["data"]
                     cek(r["can_proceed"] and ulang["can_proceed"]
                         and [(x["bill_id"], x["amount_applied"]) for x in ulang["bills"]] == [(x["bill_id"], x["amount_applied"])
@@ -168,7 +206,7 @@ async def main():
             i0 = sorted(cust[1], key=lambda r: urut_db(r, "due_date", "invoice_date", "invoice_number"))[0]
             dasar = {"customer_id": cust[0], "payment_date": hari, "bank_account_id": str(bank["coa_id"]), "total_amount": Decimal("1000"),
                      "allocations": [{"invoice_id": str(i0["invoice_id"]), "amount_applied": min(Decimal("1000"), Decimal(str(i0["outstanding"])))}]}
-            Mdl = RPR.CreateReceivePaymentRequest if MODE == "LAMA" else RPR.ReceivePaymentPreviewRequest
+            Mdl = getattr(RPR, "ReceivePaymentPreviewRequest", RPR.CreateReceivePaymentRequest)
             r = (await RPR.preview_create_receive_payment(req, Mdl(**dasar)))["data"]
             k = f"{t}|rp|tanpa-kolam"
             hasil[k] = j({x: v for x, v in r.items() if x not in ("notes",)})
@@ -176,11 +214,12 @@ async def main():
                 cek(lama.get(k) == hasil[k], f"H2 {t}: /receive-payments/preview tanpa kolam == LAMA")
                 invs = sorted(cust[1], key=lambda r: urut_db(r, "due_date", "invoice_date", "invoice_number"))
                 tot_sisa = sum((Decimal(str(x["outstanding"])) for x in invs), Decimal("0"))
-                for nama, total in (("sebagian", (tot_sisa * Decimal("0.6")).quantize(Decimal("0.01"))), ("lebih", tot_sisa + 1000)):
+                for nama, total in (("sebagian", (tot_sisa * Decimal("0.6")).quantize(Decimal("0.01"))), ("lebih", tot_sisa + 1000),
+                                    ("semua", None)):
                     p = RPR.ReceivePaymentPreviewRequest(**{**dasar, "allocations": [], "total_amount": total,
                                                             "invoice_ids": [str(x["invoice_id"]) for x in reversed(invs)]})
                     r = (await RPR.preview_create_receive_payment(req, p))["data"]
-                    sisa_t, harap = total, []
+                    sisa_t, harap = (tot_sisa if total is None else total), []
                     for x in invs:
                         a = min(Decimal(str(x["outstanding"])), max(sisa_t, Decimal("0")))
                         harap.append((str(x["invoice_id"]), a))
@@ -188,6 +227,8 @@ async def main():
                     dapat = [(str(x["invoice_id"]), Decimal(str(x["amount_applied"]))) for x in r["invoices"]]
                     cek(dapat == harap, f"H3 {t} faktur {nama}: urutan + nominal == hitungan sendiri", f"{len(invs)} faktur")
                     cek(r["can_proceed"] and r["payload"] is not None, f"H3 {t} faktur {nama}: bisa disimpan", str(r["blocks"]))
+                    if total is None:
+                        cek(Decimal(str(r["payload"]["total_amount"])) == tot_sisa, f"H3 {t} faktur semua: total terselesaikan == Σsisa")
                     if nama == "lebih":
                         cek("RP_OVERPAYMENT_DEPOSIT" in [n["code"] for n in r["notes"]], f"H3 {t} faktur lebih: catatan uang muka")
         else:

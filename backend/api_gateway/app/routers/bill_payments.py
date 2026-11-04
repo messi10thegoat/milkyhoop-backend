@@ -499,6 +499,15 @@ async def preview_create_bill_payment(request: Request, payload: BillPaymentPrev
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             if payload.bill_ids:
                 payload, kolam, galat = await BKR.kolam_tagihan(conn, ctx["tenant_id"], payload)
+                if payload is None:  # "bayar semua" tanpa sisa sama sekali: tak ada pembayaran untuk dipratinjau
+                    return {"success": True, "data": {
+                        "payment_id": None, "action": "create", "can_proceed": False, "payment_number_preview": None,
+                        "payment_number_estimated": True, "blocks": [{"code": c, "message": m} for c, m in galat],
+                        "notes": AT.catatan_tanpa_sisa(kolam, "BP_TANPA_SISA"), "before": {"exists": False},
+                        "after": {"exists": False}, "journals": [], "bank_transactions": [], "pph": None, "payload": None,
+                        "bills": AT.gabung_baris(kolam, [], "bill_id", lambda b: {
+                            "bill_id": b["id"], "bill_number": b["nomor"], "remaining_before": BKR._f(b["remaining"]),
+                            "amount_applied": 0.0, "remaining_after": BKR._f(b["remaining"])}), "preview": True}}
             r = await BKR.rencana_bayar(conn, ctx, payload, pratinjau=True)
             nomor = await perkiraan_nomor_bayar(conn, ctx["tenant_id"])  # U-P4c: perkiraan, nomor final terbit saat simpan
         finally:

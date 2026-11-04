@@ -34,11 +34,12 @@ def selesaikan(baris: list, total) -> list:
     return keluar
 
 
-async def selesaikan_kolam(manual: list, kolam_ids: list, muat, sisa, total) -> tuple:
+async def selesaikan_kolam(manual: list, kolam_ids: list, muat, sisa, total=None) -> tuple:
     """Pratinjau "bayar banyak faktur". manual = [(id, nominal)] dari allocations (dipakai apa adanya); kolam_ids = id tanpa
     nominal (duplikat / yang sudah manual dibuang). muat(ids) -> {id_kecil: {"nomor","jatuh_tempo","tanggal","galat"}} milik
     tenant (galat = (code, pesan) bila bukan milik pihak pembayaran); sisa(id) -> Decimal = sumber yang SAMA dengan validator
-    tulis. -> (baris urut tertua [{id, nomor, manual, remaining, applied, source}], galat [(code, pesan)])."""
+    tulis. total None = "bayar semua": jumlah sisa kolam + jumlah manual. -> (baris urut tertua [{id, nomor, manual, remaining,
+    applied, source}], galat [(code, pesan)], batas yang dipakai)."""
     kecil = [str(i).strip().lower() for i, _ in manual]
     kolam = []
     for i in kolam_ids:
@@ -59,9 +60,11 @@ async def selesaikan_kolam(manual: list, kolam_ids: list, muat, sisa, total) -> 
         baris.append({"id": k, "nomor": d["nomor"], "manual": None, "remaining": max(await sisa(k), NOL), "source": "otomatis",
                       "_k": kunci_tertua(d["jatuh_tempo"], d["tanggal"], d["nomor"], k)})
     baris.sort(key=lambda b: b.pop("_k"))
+    if total is None:
+        total = sum((b["manual"] if b["manual"] is not None else b["remaining"] for b in baris), NOL)
     for b, a in zip(baris, selesaikan(baris, total)):
         b["applied"] = a
-    return baris, galat
+    return baris, galat, Decimal(str(total))
 
 
 def gabung_baris(kolam: list, hasil: list, kunci_id: str, baris_nol) -> list:

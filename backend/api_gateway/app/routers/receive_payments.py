@@ -1721,11 +1721,16 @@ async def kolam_faktur(conn, tid: str, body) -> tuple:
                       "galat": ("RP_INVOICE_OTHER_CUSTOMER", f"Faktur {r['invoice_number']} milik pelanggan lain.") if lain else None}
         return out
 
-    baris, galat = await selesaikan_kolam([(a.invoice_id, a.amount_applied) for a in body.allocations], body.invoice_ids, muat,
-                                          lambda i: get_invoice_remaining_from_journal(conn, tid, UUID(i)),
-                                          body.total_amount + body.discount_amount)
-    tulis = CreateReceivePaymentRequest(**body.model_dump(exclude={"invoice_ids", "allocations"}), allocations=[
-        AllocationInput(invoice_id=b["id"], amount_applied=b["applied"]) for b in baris if b["applied"] > 0])
+    semua = body.total_amount is None  # "terima semua": batas = sisa kolam + manual; total = batas - potongan
+    baris, galat, batas = await selesaikan_kolam(
+        [(a.invoice_id, a.amount_applied) for a in body.allocations], body.invoice_ids, muat,
+        lambda i: get_invoice_remaining_from_journal(conn, tid, UUID(i)), None if semua else body.total_amount + body.discount_amount)
+    total = batas - body.discount_amount if semua else body.total_amount
+    if total <= 0:
+        return None, baris, galat + [("RP_NOTHING_DUE", "Faktur yang dipilih tidak punya sisa tagihan untuk diterima.")]
+    tulis = CreateReceivePaymentRequest(**body.model_dump(exclude={"invoice_ids", "allocations", "total_amount"}), total_amount=total,
+                                        allocations=[AllocationInput(invoice_id=b["id"], amount_applied=b["applied"])
+                                                     for b in baris if b["applied"] > 0])
     return tulis, baris, galat
 
 
@@ -1744,6 +1749,16 @@ async def preview_create_receive_payment(request: Request, body: ReceivePaymentP
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             if body.invoice_ids:
                 body, kolam, galat = await kolam_faktur(conn, ctx["tenant_id"], body)
+                if body is None:  # "terima semua" tanpa sisa sama sekali
+                    return {"success": True, "data": {
+                        "payment_id": None, "action": "create", "can_proceed": False,
+                        "blocks": [{"code": c, "message": m} for c, m in galat], "notes": AT.catatan_tanpa_sisa(kolam, "RP_TANPA_SISA"),
+                        "before": {"exists": False}, "after": {"exists": False}, "journals": [], "bank_transactions": [],
+                        "invoices": AT.gabung_baris(kolam, [], "invoice_id", lambda b: {
+                            "invoice_id": b["id"], "invoice_number": b["nomor"], "remaining_before": _f_rp(b["remaining"]),
+                            "amount_applied": 0.0, "remaining_after": _f_rp(b["remaining"]), "status_after": None}),
+                        "overpayment_deposit_number": None, "payment_number": None, "payment_number_estimated": True,
+                        "payload": None, "preview": True}}
             r = await rencana_penerimaan_ro(conn, ctx, body)
     blocks = r["blocks"] + [{"code": c, "message": m} for c, m in galat]
     ok = not blocks
