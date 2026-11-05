@@ -3,7 +3,8 @@
     terapkan-preset.sh <tenant> <kategori>              # KERING (bawaan): cetak rencana, nol tulis
     terapkan-preset.sh <tenant> <kategori> --jalankan   # tulis (perubahan flag = izin pemilik langsung)
     terapkan-preset.sh <tenant> <kategori> --uji        # tulis di transaksi lalu ROLLBACK: rencana == hasil, net 0
-MERAH=preset (hanya --uji): satu kunci preset dibuang dari pembanding -> WAJIB merah. Tenant tak ada = galat."""
+MERAH=preset (hanya --uji): kunci terakhir YANG DIUBAH dibuang dari pembanding -> WAJIB merah; tak ada yang diubah = kontrol
+buta -> GAGAL (dulu kunci[-1] tetap: sudah aktif di tenant = PASS palsu). Tenant tak ada = galat."""
 import asyncio
 import os
 import sys
@@ -37,7 +38,14 @@ async def main(tid, kategori, mode):
             sebelum = set(await fitur_aktif(c, tid))
             await PK.terapkan_preset(c, tid, kategori)
             sesudah = set(await fitur_aktif(c, tid))
-            harap = set(kunci) - ({kunci[-1]} if os.environ.get("MERAH") == "preset" and mode == "uji" else set())
+            harap = set(kunci)
+            if os.environ.get("MERAH") == "preset" and mode == "uji":
+                berubah = r["tambah"] + r["nyalakan"]
+                if not berubah:
+                    print("GAGAL kontrol merah buta: preset sudah aktif penuh di tenant ini, tak ada kunci yang diubah.")
+                    await tx.rollback()
+                    return 1
+                harap -= {berubah[-1]}
             ok = sesudah - sebelum == set(r["tambah"] + r["nyalakan"]) and sesudah == sebelum | harap and sebelum <= sesudah
             ulang = await PK.rencana_preset(c, tid, kategori)  # idempoten: kedua kali tak ada yang diubah
             ok = ok and not ulang["tambah"] and not ulang["nyalakan"]
