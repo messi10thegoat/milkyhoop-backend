@@ -188,3 +188,53 @@ def test_daftar_kas_bank_mengembalikan_mata_uang(monkeypatch):
     out = asyncio.run(RB.list_bank_accounts(_req(), None, None, None, 0, 20, "account_name", "asc"))
     assert out["items"][0]["currency"] == "USD"
     assert BankAccountListResponse(**out).items[0].currency == "USD"  # response_model tak membuang kuncinya
+
+
+# ---------------------------------------------------------------- lewat RUTE (temuan WORKSPACE: tes fungsi tak menjangkau response_model/urutan rute)
+def _klien(db, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    async def pool():
+        return _Pool(db)
+    monkeypatch.setattr(RB, "get_pool", pool)
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _masuk(request, call_next):
+        request.state.user = {"tenant_id": "t1", "user_id": "00000000-0000-0000-0000-000000000001"}
+        return await call_next(request)
+    app.include_router(RI.router, prefix="/api")
+    app.include_router(RU.router, prefix="/api/units")
+    app.include_router(RB.router, prefix="/api/bank-accounts")
+    return TestClient(app)
+
+
+def test_rute_halaman_satuan_post_lalu_get_dan_dropdown_form_barang(db, monkeypatch):
+    k = _klien(db, monkeypatch)
+    g0 = k.get("/api/items/units")
+    assert g0.status_code == 200 and g0.json()["default_units"] == DEFAULT_UNITS and g0.json()["custom_units"] == []
+    p = k.post("/api/items/units", json={"name": "Jerigen 18 liter", "abbreviation": "Jerigen"})
+    assert p.status_code == 200 and p.json()["unit"] == "Jerigen"
+    g = k.get("/api/items/units")
+    assert g.status_code == 200 and g.json()["custom_units"] == ["Jerigen"]
+    d = k.get("/api/units/dropdown").json()["items"]
+    assert {"Pcs", "Jerigen"} <= {u["abbreviation"] for u in d}
+    dup = k.post("/api/units", json={"name": "jerigen", "abbreviation": "jerigen"})
+    assert dup.status_code == 400 and "sudah ada" in dup.text
+    assert k.post("/api/items/units", json={"name": "PCS"}).status_code == 400
+
+
+def test_rute_daftar_kas_bank_ada_mata_uang(monkeypatch):
+    baris = {"id": "b1", "account_name": "BCA", "account_number": "1", "bank_name": "BCA", "account_holder_name": None,
+             "account_type": "bank", "currency": "USD", "coa_id": "c1", "coa_code": "1-10100", "coa_name": "Bank",
+             "ledger_balance": 0, "is_active": True, "is_default": False, "created_at": datetime(2026, 11, 5)}
+
+    class _C:
+        async def fetchval(self, sql, *a):
+            return 1
+
+        async def fetch(self, sql, *a):
+            return [baris]
+    r = _klien(_C(), monkeypatch).get("/api/bank-accounts")
+    assert r.status_code == 200 and r.json()["items"][0]["currency"] == "USD"
