@@ -1422,8 +1422,9 @@ async def get_cash_flow_trends(
                   AND je.journal_date = $2::date
                   AND je.status = 'POSTED'
                   AND is_effective_journal(je.id) = true
+                  AND je.source_type <> ALL($3::text[])  -- BUG-020: saldo awal bukan transaksi (pola Accurate/QBO)
             """
-            today_trx = await conn.fetchrow(today_trx_query, tenant_id, hari_ini)
+            today_trx = await conn.fetchrow(today_trx_query, tenant_id, hari_ini, list(DA.SUMBER_SALDO_AWAL))
 
             return CashFlowTrendsResponse(
                 kas_masuk=total_masuk,

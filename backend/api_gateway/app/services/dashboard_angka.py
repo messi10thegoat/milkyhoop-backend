@@ -5,7 +5,8 @@ report_engine.compute_balance status POSTED saja: 16 void beban lama kaos membal
 pembalik POSTED terhitung tanpa aslinya (kas +65.218), dan arus kas v2 menghitung pasangan asli+pembalik yang dibatalkan sebagai arus.
 Maka SEMUA angka dashboard = jurnal EFEKTIF (`is_effective_journal`: POSTED, bukan asli yang dibalik, bukan pembalik):
   kas_per_akun     saldo akun kas/bank s.d. hari ini (compute_balance_detail + filter efektif)
-  arus_kas_harian  {tanggal: (masuk, keluar)} = baris akun kas BRUTO pada jurnal efektif, jurnal transfer antar-kas murni dikecualikan
+  arus_kas_harian  {tanggal: (masuk, keluar)} = baris akun kas BRUTO pada jurnal efektif, jurnal transfer antar-kas murni dikecualikan,
+                   jurnal saldo awal (SUMBER_SALDO_AWAL) dikecualikan (BUG-020)
                    (definisi /all yang terukur benar; == neto per jurnal efektif pada data 22 Okt)
   laba_rugi        pendapatan = REVENUE + OTHER_INCOME; beban = COGS + EXPENSE + OTHER_EXPENSE (rumus report_engine.income_statement), per akun
   saldo_kontrol    saldo GL akun kontrol (RECEIVABLE / PAYABLE / is_cash) s.d. tanggal -- satu definisi untuk 'kini' dan 'sebelumnya' (change_pct)
@@ -21,12 +22,17 @@ EFEKTIF = {"efektif": True}
 TIPE_PENDAPATAN = ("REVENUE", "OTHER_INCOME")
 TIPE_BEBAN = ("COGS", "EXPENSE", "OTHER_EXPENSE")
 
-SQL_ARUS_KAS_HARIAN = """
+# BUG-020 (5 Nov 2026, pola SaaS): saldo awal bukan arus kas -- jurnal saldo awal (journal_source_types) tak dihitung sebagai uang masuk/keluar.
+# Pembaliknya (OPENING_BALANCE_REVERSAL, ..._REVERSED) sudah tersingkir is_effective_journal. Saldo kas (kas_per_akun) tetap memuatnya.
+SUMBER_SALDO_AWAL = ("OPENING", "OPENING_BALANCE", "BANK_OPENING_BALANCE", "VENDOR_OPENING_BALANCE")
+
+SQL_ARUS_KAS_HARIAN = f"""
     WITH non_transfer AS (
         SELECT je.id, je.journal_date
         FROM journal_entries je
         WHERE je.tenant_id = $1 AND je.journal_date >= $2 AND je.journal_date <= $3
           AND je.status = 'POSTED' AND is_effective_journal(je.id) = true
+          AND je.source_type NOT IN ({", ".join(f"'{s}'" for s in SUMBER_SALDO_AWAL)})
           AND EXISTS (SELECT 1 FROM journal_lines jl2 JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
                       WHERE jl2.journal_id = je.id AND COALESCE(c2.is_cash, false) = false)
     )
