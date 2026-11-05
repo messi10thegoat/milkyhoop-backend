@@ -1370,6 +1370,9 @@ class BillsService:
 
                 # Update items if provided
                 if "items" in request and request["items"]:
+                    _tautan, _bl = await TR.tautan_po(conn, tenant_id, bill_id, request["items"])  # BUG-036: penentu SAMA dgn v2
+                    if _bl:
+                        raise HTTPException(status_code=422, detail={"code": _bl[0]["code"], "message": _bl[0]["message"]})
                     # Delete existing items
                     await conn.execute(
                         "DELETE FROM bill_items WHERE bill_id = $1", bill_id
@@ -1387,8 +1390,8 @@ class BillsService:
                             """
                             INSERT INTO bill_items (
                                 bill_id, product_id, description, quantity,
-                                unit, unit_price, subtotal, line_number
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                unit, unit_price, subtotal, line_number, purchase_order_item_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                         """,
                             bill_id,
                             item.get("product_id"),
@@ -1398,6 +1401,7 @@ class BillsService:
                             price,
                             subtotal,
                             idx,
+                            UUID(_tautan[idx - 1]) if _tautan[idx - 1] else None,
                         )
 
                     # Update bill amount
@@ -3753,6 +3757,7 @@ class BillsService:
                     # Kalkulator SATU (tagihan_rencana.hitung == create v2 == /calculate == edit/preview); angka tak berubah
                     _h = await TR.hitung(conn, tenant_id, request)
                     calc = dict(_h["header"])
+                    _tautan, _ = await TR.tautan_po(conn, tenant_id, bill_id, items)  # BUG-036: SEBELUM DELETE (blok sudah di blok_ubah)
 
                     # Delete existing items
                     await conn.execute(
@@ -3793,8 +3798,8 @@ class BillsService:
                                 description, quantity, unit, unit_price,
                                 discount_percent, discount_amount, total, subtotal,
                                 batch_no, exp_date, bonus_qty, line_number,
-                                tax_code_id, tax_rate, tax_amount, dpp
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                                tax_code_id, tax_rate, tax_amount, dpp, purchase_order_item_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                         """,
                             bill_id,
                             item.get("product_id"),
@@ -3816,6 +3821,7 @@ class BillsService:
                             item_tax_rate,
                             item_tax_amount,
                             item_dpp,
+                            UUID(_tautan[idx - 1]) if _tautan[idx - 1] else None,
                         )
 
                 # Recalculate header tax from per-item sums

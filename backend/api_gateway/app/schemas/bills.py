@@ -365,6 +365,8 @@ class BillItemRequestV2(BaseModel):
     tax_rate: Optional[float] = Field(
         None, ge=0, le=100, description="Per-item tax rate %"
     )
+    # BUG-036: tautan baris pesanan pembelian (absen = dicocokkan server dari baris lama; services/tagihan_rencana.tautan_po)
+    purchase_order_item_id: Optional[UUID] = None
 
     @field_validator("discount_percent", "bonus_qty", mode="before")
     @classmethod

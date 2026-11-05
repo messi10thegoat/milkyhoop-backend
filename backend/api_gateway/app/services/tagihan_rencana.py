@@ -58,6 +58,59 @@ def blok_baris(items: list) -> list:
     return bloks
 
 
+async def tautan_po(conn, tenant_id: str, bill_id, items: list) -> tuple:
+    """BUG-036 (5 Nov 2026): ubah draf = GANTI SEMUA baris (DELETE+INSERT); dulu baris baru ditulis TANPA purchase_order_item_id ->
+    tagihan dari PO kehilangan tautan PO/GRN -> posting memilih jalur "tagihan tanpa penerimaan" (stok masuk KEDUA + Dr Persediaan,
+    bukan Dr BDBD; nyawit BILL-2611-0001). Pola NetSuite/SAP: baris tagihan tetap tertaut ke baris pesanan saat diubah.
+    Penentu SATU untuk pratinjau ubah (blok_ubah) DAN tulis (update_bill v1/v2). -> ([po_item_id|None per item], blok[]).
+      1. item.purchase_order_item_id eksplisit -> wajib baris PO tagihan ini (Law 24), tiap baris PO maks sekali;
+      2. selain itu: baris lama TERTAUT dengan product_id sama, tepat satu tersisa -> tautan itu dipakai ulang (urut baris lama);
+      3. barang itu ada di PO tapi tak bisa dicocokkan (ganda/terpakai) -> BLOK (bukan diam jadi tanpa penerimaan);
+      4. barang di luar PO (mis. ongkir) -> tanpa tautan (perilaku tagihan biasa).
+    Tagihan bukan dari PO -> semua None, tanpa blok."""
+    po_id = await conn.fetchval("SELECT purchase_order_id FROM bills WHERE id = $1 AND tenant_id = $2", bill_id, tenant_id)
+    if not po_id:
+        return [None] * len(items), []
+    po_baris = {str(r["id"]): (str(r["item_id"]) if r["item_id"] else None) for r in await conn.fetch(
+        """SELECT poi.id, poi.item_id FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id
+           WHERE poi.po_id = $1 AND po.tenant_id = $2""", po_id, tenant_id)}
+    lama = [(str(r["purchase_order_item_id"]), str(r["product_id"]) if r["product_id"] else None) for r in await conn.fetch(
+        """SELECT bi.purchase_order_item_id, bi.product_id FROM bill_items bi JOIN bills b ON b.id = bi.bill_id
+           WHERE bi.bill_id = $1 AND b.tenant_id = $2 AND bi.purchase_order_item_id IS NOT NULL ORDER BY bi.line_number""",
+        bill_id, tenant_id)]
+    pid_ = lambda i: str(i["product_id"]) if i.get("product_id") else None  # noqa: E731
+    eksplisit = {str(i["purchase_order_item_id"]) for i in items if i.get("purchase_order_item_id")}
+    antre, butuh = {}, {}
+    for poi_lama, pid in lama:
+        if poi_lama not in eksplisit:
+            antre.setdefault(pid, []).append(poi_lama)
+    for i in items:
+        if not i.get("purchase_order_item_id"):
+            butuh[pid_(i)] = butuh.get(pid_(i), 0) + 1
+    hasil, bloks, dipakai = [], [], set()
+    for idx, it in enumerate(items, 1):
+        pid = pid_(it)
+        poi = str(it["purchase_order_item_id"]) if it.get("purchase_order_item_id") else None
+        if poi is None:
+            q = antre.get(pid) or []
+            if q and len(q) == butuh[pid]:  # jumlah baris barang ini sama dengan sebelum diubah -> urutan lama
+                poi = q.pop(0)
+                butuh[pid] -= 1
+            elif q or (pid is not None and pid in po_baris.values()):
+                bloks.append(blok("TAUTAN_PO_HILANG", f"Item {idx}: barang ini ada di pesanan pembelian, tetapi barisnya tak bisa "
+                                                      "dicocokkan ke baris pesanan (jumlah baris barang ini berubah, atau tautan "
+                                                      "sudah hilang). Hapus draf ini lalu buat ulang dari pesanan."))
+        if poi is not None and (poi not in po_baris or (pid and po_baris[poi] and po_baris[poi] != pid)):
+            bloks.append(blok("TAUTAN_PO_TIDAK_SAH", f"Item {idx}: baris pesanan bukan milik pesanan faktur ini atau barangnya lain."))
+            poi = None
+        if poi is not None and poi in dipakai:
+            bloks.append(blok("TAUTAN_PO_GANDA", f"Item {idx}: baris pesanan yang sama dipakai dua kali."))
+        if poi is not None:
+            dipakai.add(poi)
+        hasil.append(poi)
+    return hasil, bloks
+
+
 async def blok_ubah(conn, tenant_id: str, bill, req: dict) -> list:
     """Blok PATCH /bills/v2/{id}: hanya draf; vendor_id baru wajib milik tenant (Law 24; dulu id asing tetap ditulis); due_date eksplisit
     kosong ditolak; items eksplisit kosong ditolak."""
@@ -74,6 +127,8 @@ async def blok_ubah(conn, tenant_id: str, bill, req: dict) -> list:
     if "items" in req and req["items"] is not None and len(req["items"]) == 0:
         bloks.append(blok("ITEM_KOSONG", "Minimal satu item harus diisi"))
     bloks += blok_baris(req.get("items") or [])
+    if req.get("items"):
+        bloks += (await tautan_po(conn, tenant_id, bill["id"], req["items"]))[1]
     return bloks
 
 
