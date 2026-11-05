@@ -793,8 +793,9 @@ def blok_dari_galat(e: HTTPException) -> dict:
 
 
 def blok_validasi(err) -> list:
-    """pydantic ValidationError -> blok DATA_TIDAK_SAH per medan (pratinjau 200; tulis tetap 422)."""
-    return [{"code": "DATA_TIDAK_SAH", "message": x.get("msg", "Data tidak sah"),
+    """pydantic ValidationError -> blok DATA_TIDAK_SAH per medan (pratinjau 200; tulis tetap 422). Kalimat Indonesia = T-G5 galat_validasi."""
+    from ..services.galat_validasi import kalimat
+    return [{"code": "DATA_TIDAK_SAH", "message": kalimat(x),
              "field": ".".join(str(p) for p in x.get("loc", ()) if p != "body")} for x in err.errors()]
 
 

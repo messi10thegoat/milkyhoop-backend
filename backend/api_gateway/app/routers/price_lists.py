@@ -35,6 +35,10 @@ def _galat_unik(e) -> GalatBerkode:
         return GalatBerkode(409, "DAFTAR_BAWAAN_GANDA", "Usaha ini sudah punya daftar harga bawaan. Jadikan bawaan yang lama bukan bawaan dulu.")
     if "satuan" in n or "items" in n:
         return GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+    return _kode_ganda()
+
+
+def _kode_ganda() -> GalatBerkode:
     return GalatBerkode(409, "KODE_DAFTAR_GANDA", "Kode daftar harga itu sudah dipakai.", field="code")
 
 
@@ -82,6 +86,41 @@ async def tulis_baris_harga(conn, tid: str, pl_id, item, line_id=None) -> object
                 item.discount_percent, item.start_date, item.end_date, item.is_default_unit)
     except asyncpg.exceptions.UniqueViolationError as e:
         raise _galat_unik(e)
+
+async def siapkan_buat_daftar(conn, tid: str, b: CreatePriceListRequest) -> dict:
+    """PENENTU BERSAMA POST /price-lists + POST /price-lists/preview (BUG-027, BACA SAJA; kalimat == tulis). -> rencana = medan yang
+    disimpan (kode/nama dirapikan spasinya) + baris. Kode unik per usaha (uq_price_lists_tenant_code), satu bawaan aktif
+    (uq_price_lists_bawaan), periode, baris lewat siapkan_baris_harga + unik di badan (kunci uq_price_list_items_satuan)."""
+    kode, nama = " ".join(b.code.split()), " ".join(b.name.split())
+    if not kode:
+        raise GalatBerkode(400, "KODE_DAFTAR_KOSONG", "Kode daftar harga wajib diisi.", field="code")
+    if not nama:
+        raise GalatBerkode(400, "NAMA_DAFTAR_KOSONG", "Nama daftar harga wajib diisi.", field="name")
+    if b.start_date and b.end_date and b.end_date < b.start_date:
+        raise GalatBerkode(400, "PERIODE_TIDAK_SAH", "Tanggal berakhir tidak boleh sebelum tanggal mulai.", field="end_date")
+    if await conn.fetchval("SELECT 1 FROM price_lists WHERE tenant_id = $1 AND code = $2", tid, kode):
+        raise _kode_ganda()
+    if b.is_default and await conn.fetchval("SELECT 1 FROM price_lists WHERE tenant_id = $1 AND is_default AND is_active", tid):
+        raise GalatBerkode(409, "DAFTAR_BAWAAN_GANDA", "Usaha ini sudah punya daftar harga bawaan. Jadikan bawaan yang lama bukan bawaan dulu.",
+                           field="is_default")
+    baris, kunci = [], set()
+    for i, item in enumerate(b.items or []):
+        try:
+            pid = await siapkan_baris_harga(conn, tid, None, item)
+        except GalatBerkode as e:
+            raise GalatBerkode(e.status_code, e.code, e.detail, field=f"items.{i}.{e.field}" if e.field else f"items.{i}")
+        k = (pid, (_satuan(item.unit) or "").lower(), item.min_quantity)
+        if k in kunci:
+            raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.",
+                               field=f"items.{i}")
+        kunci.add(k)
+        baris.append({"item_id": str(pid), "item_code": item.item_code, "unit": _satuan(item.unit), "price": item.price,
+                      "min_quantity": item.min_quantity, "discount_percent": item.discount_percent, "start_date": item.start_date,
+                      "end_date": item.end_date, "is_default_unit": item.is_default_unit})
+    return {"code": kode, "name": nama, "price_type": b.price_type, "default_discount": b.default_discount,
+            "default_markup": b.default_markup, "start_date": b.start_date, "end_date": b.end_date, "priority": b.priority,
+            "description": b.description, "is_default": b.is_default, "items": baris}
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -281,6 +320,34 @@ async def get_price_list(request: Request, price_list_id: UUID):
         raise HTTPException(status_code=500, detail=GAGAL)
 
 
+@router.post("/preview")
+async def preview_create_price_list(request: Request, body: dict):
+    """Pratinjau BUAT daftar harga (BUG-027, pola /customers/preview): penentu SAMA dengan POST /price-lists (siapkan_buat_daftar)
+    di transaksi READ ONLY, nol tulis. 200 {success, data:{ok, blocks[{code,message,field?}], rencana, payload}}; badan = badan POST
+    byte-identik (payload dikembalikan apa adanya untuk dikirim saat simpan); galat skema -> blok DATA_TIDAK_SAH per medan."""
+    from pydantic import ValidationError
+    from .customers import blok_dari_galat, blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        b = CreatePriceListRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "rencana": None, "payload": payload}}
+    bloks, rencana = [], None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            try:
+                rencana = await siapkan_buat_daftar(conn, ctx["tenant_id"], b)
+            except HTTPException as e:
+                bloks.append(blok_dari_galat(e))
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
+
+
 @router.post("", response_model=PriceListResponse, status_code=201)
 async def create_price_list(request: Request, body: CreatePriceListRequest):
     try:
@@ -289,11 +356,12 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
         async with pool.acquire() as conn:
             try:  # kode / bawaan ganda (uq_price_lists_tenant_code, uq_price_lists_bawaan) -> 409 berkalimat
                 async with conn.transaction():
+                    r = await siapkan_buat_daftar(conn, ctx["tenant_id"], body)  # BUG-027: penentu SAMA dengan pratinjau
                     pl_id = await conn.fetchval(
                         """INSERT INTO price_lists (tenant_id, code, name, price_type, default_discount, default_markup, start_date,
                                                    end_date, priority, description, is_default, created_by)
                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id""",
-                        ctx["tenant_id"], body.code, body.name, body.price_type, body.default_discount, body.default_markup,
+                        ctx["tenant_id"], r["code"], r["name"], body.price_type, body.default_discount, body.default_markup,
                         body.start_date, body.end_date, body.priority, body.description, body.is_default, ctx["user_id"],
                     )
                     for item in body.items or []:
@@ -303,7 +371,7 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
             return {
                 "success": True,
                 "message": "Daftar harga dibuat.",
-                "data": {"id": str(pl_id), "code": body.code},
+                "data": {"id": str(pl_id), "code": r["code"]},
             }
     except HTTPException:
         raise

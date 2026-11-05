@@ -441,6 +441,7 @@ POST /api/payroll/{run_id}/void
 POST /api/periods/{period_id}/close
 POST /api/periods/{period_id}/reopen
 POST /api/price-lists
+POST /api/price-lists/preview
 POST /api/price-lists/resolve/{modul}
 POST /api/price-lists/{price_list_id}/items
 POST /api/price-lists/{price_list_id}/items/preview
