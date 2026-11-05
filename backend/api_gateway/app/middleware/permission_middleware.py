@@ -791,6 +791,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/resolve/sales_order$", ["POST"], "sales_order", "R"),
     (r"^/api/price-lists/resolve/quote$", ["POST"], "quote", "R"),
     (r"^/api/price-lists/resolve/sales_invoice$", ["POST"], "sales_invoice", "R"),
+    (r"^/api/price-lists/resolve/purchase_order$", ["POST"], "purchase_order", "R"),  # BUG-032-BE harga beli saran
+    (r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
     (r"^/api/price-lists", ["POST"], "price_list", "C"),
     (r"^/api/price-lists", ["PUT", "PATCH"], "price_list", "U"),

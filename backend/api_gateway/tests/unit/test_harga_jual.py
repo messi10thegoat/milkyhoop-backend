@@ -27,7 +27,7 @@ def _daftar(i, kode, bawaan=False, aktif=True, mulai=None, akhir=None):
 
 
 class Kon:
-    def __init__(self, daftar=None, baris=None, harga_dasar=None, konversi=None):
+    def __init__(self, daftar=None, baris=None, harga_dasar=None, konversi=None, harga_beli=None):
         self.daftar = daftar if daftar is not None else [_daftar(WARUNG, "WARUNG"), _daftar(ECERAN, "ECERAN", bawaan=True),
                                                           _daftar(LAMA, "LAMA", aktif=False)]
         self.pelanggan = {C_WARUNG: WARUNG, C_POLOS: None, C_LAMA: LAMA}
@@ -41,6 +41,8 @@ class Kon:
         self.konversi = konversi if konversi is not None else [
             {"product_id": P, "base_unit": "Dus", "conversion_unit": "Karton", "conversion_factor": Decimal("12"), "sales_price": None},
             {"product_id": P, "base_unit": "Dus", "conversion_unit": "Pak", "conversion_factor": Decimal("6"), "sales_price": Decimal("600000")}]
+        self.harga_beli = harga_beli if harga_beli is not None else {P: Decimal("80000"), P2: Decimal("9000.5")}
+        self.tanya = []
 
     async def fetchval(self, sql, *a):
         q = " ".join(sql.split())
@@ -62,12 +64,15 @@ class Kon:
             return [{"name": "Dus", "abbreviation": "dus"}, {"name": "Kilogram", "abbreviation": "kg"}, {"name": "Karton", "abbreviation": "krt"}]
         if "FROM products" in q and "AS dasar" in q:
             return [{"id": P, "nama_produk": "Minyak 1L", "dasar": "Dus"}, {"id": P2, "nama_produk": "Gula", "dasar": "Kilogram"}]
-        if "FROM products" in q and "sales_price" in q:
-            return [{"id": k, "sales_price": v} for k, v in self.harga_dasar.items()]
+        self.tanya.append(q)
+        if "FROM products" in q and ("sales_price AS harga" in q or "purchase_price AS harga" in q):  # BUG-032-BE: kolom per arah
+            sumber = self.harga_dasar if "sales_price" in q else self.harga_beli
+            return [{"id": k, "harga": v} for k, v in sumber.items()]
         if "FROM unit_conversions" in q and "conversion_factor" in q:
             return [k for k in self.konversi]
-        if "FROM unit_conversions" in q and "sales_price" in q:
-            return [k for k in self.konversi if k["sales_price"] is not None]
+        if "FROM unit_conversions" in q and ("sales_price AS harga" in q or "purchase_price AS harga" in q):
+            kol = "sales_price" if "sales_price AS harga" in q else "purchase_price"
+            return [{**k, "harga": k.get(kol)} for k in self.konversi if k.get(kol) is not None]
         if "FROM price_list_items" in q:
             return [{**b, "start_date": None, "end_date": None} for b in self.baris if b["pl"] == a[0]]
         raise AssertionError(q[:90])
@@ -198,7 +203,7 @@ async def test_peran_staf_hanya_baca_satu_modul_hanya_resolve_modul_itu(monkeypa
 def test_rute_resolve_dibatasi_tiga_modul_penjualan():
     a = _fungsi("routers/price_lists.py", "resolve_harga")
     assert "@router.post('/resolve/{modul}')" in ast.unparse(a).split("\n")[0]
-    assert "Literal['sales_order', 'quote', 'sales_invoice']" in ast.unparse(a.args)
+    assert "Literal['sales_order', 'quote', 'sales_invoice', 'purchase_order', 'bill']" in ast.unparse(a.args)
 
 
 def test_jalur_harga_lama_dihapus_bukan_dibiarkan():
@@ -212,3 +217,50 @@ def test_detail_pelanggan_memuat_daftar_harganya():
     assert "price_list_id" in g and "price_list_name" in g
     from app.schemas.customers import CustomerDetail
     assert {"price_list_id", "price_list_name"} <= set(CustomerDetail.model_fields)
+
+
+# ---------------------------------------------------------------- BUG-032-BE harga BELI saran (putusan pemilik LANGSUNG 5 Nov 2026)
+async def _beli(kon, item, unit, qty):
+    r = await HJ.harga_saran(kon, T, C_WARUNG, HARI, [{"key": "k1", "item_id": item, "unit": unit, "quantity": qty}], "beli")
+    return r["price_list"], r["lines"][0]
+
+
+@pytest.mark.asyncio
+async def test_beli_konversi_tanpa_harga_beli_jatuh_ke_dasar_kali_faktor():
+    """Kasus tester BUG-032: konversi karton purchase_price NULL -> 80.000 x 12 (dulu FE mendapat 0)."""
+    kon = Kon()
+    daftar, b = await _beli(kon, P, "Karton", 5)
+    assert daftar is None and b["harga"] == 960000.0 and b["sumber"] == "harga_dasar" and b["faktor"] == 12.0
+    assert not any("price_list" in q or "FROM customers" in q for q in kon.tanya)  # beli tak memakai daftar harga pelanggan
+
+
+@pytest.mark.asyncio
+async def test_beli_harga_konversi_diisi_menang():
+    kon = Kon(konversi=[{"product_id": P, "base_unit": "Dus", "conversion_unit": "Karton", "conversion_factor": Decimal("12"),
+                         "sales_price": Decimal("1300000"), "purchase_price": Decimal("950000")}])
+    _, b = await _beli(kon, P, "krt", 1)
+    assert b["harga"] == 950000.0 and b["sumber"] == "harga_satuan"
+
+
+@pytest.mark.asyncio
+async def test_beli_satuan_dasar_dan_sen_dan_kosong():
+    kon = Kon()
+    assert (await _beli(kon, P, None, 1))[1]["harga"] == 80000.0
+    assert (await _beli(kon, P2, "kg", 1))[1]["harga"] == 9000.5
+    _, b = await _beli(Kon(harga_beli={P: None, P2: None}), P, "Karton", 1)
+    assert b["harga"] is None and b["sumber"] == "kosong"
+
+
+@pytest.mark.asyncio
+async def test_jual_tetap_memakai_sales_price():
+    _, b = await _satu(Kon(daftar=[]), None, P, "Karton", 1)
+    assert b["harga"] == 1260000.0 and b["sumber"] == "harga_dasar"  # 105.000 x 12, bukan harga beli
+
+
+def test_rute_resolve_modul_beli_dan_izin():
+    src = (APP / "routers" / "price_lists.py").read_text()
+    assert 'modul: Literal["sales_order", "quote", "sales_invoice", "purchase_order", "bill"]' in src
+    assert 'arah = "beli" if modul in ("purchase_order", "bill") else "jual"' in src
+    mid = (APP / "middleware" / "permission_middleware.py").read_text()
+    assert '(r"^/api/price-lists/resolve/purchase_order$", ["POST"], "purchase_order", "R")' in mid
+    assert '(r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R")' in mid

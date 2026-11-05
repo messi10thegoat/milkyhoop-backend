@@ -592,7 +592,7 @@ async def remove_item_from_price_list(
 
 @router.post("/resolve/{modul}")
 async def resolve_harga(request: Request, body: ResolveHargaRequest,
-                       modul: Literal["sales_order", "quote", "sales_invoice"]):
+                       modul: Literal["sales_order", "quote", "sales_invoice", "purchase_order", "bill"]):
     """DAFTAR-HARGA (4 Nov 2026): harga jual SARAN per baris (form SO/SI/Penawaran memanggil tiap barang/satuan/qty/pelanggan/tanggal
     berubah). Penentu SATU services/harga_jual: daftar pelanggan (atau bawaan) x satuan x tingkat qty -> harga per satuan konversi ->
     harga dasar x faktor. READ ONLY. Pengguna boleh menimpa harga di dokumen. {modul} = modul form pemanggil (izin R modul itu,
@@ -603,8 +603,11 @@ async def resolve_harga(request: Request, body: ResolveHargaRequest,
     async with pool.acquire() as conn:
         async with conn.transaction(readonly=True):
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
-            if body.customer_id and not await conn.fetchval("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", body.customer_id, tid):
+            arah = "beli" if modul in ("purchase_order", "bill") else "jual"  # BUG-032-BE: harga BELI saran per satuan
+            if arah == "jual" and body.customer_id and not await conn.fetchval(
+                    "SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", body.customer_id, tid):
                 raise GalatBerkode(400, "PELANGGAN_TIDAK_DITEMUKAN", "Pelanggan tidak ditemukan di usaha ini.", field="customer_id")
             tgl = body.tanggal or await tanggal_dokumen(conn, tid)
-            data = await HJ.harga_saran(conn, tid, body.customer_id, tgl, [b.model_dump() for b in body.lines])
+            data = await HJ.harga_saran(conn, tid, body.customer_id if arah == "jual" else None, tgl,
+                                        [b.model_dump() for b in body.lines], arah)
     return {"success": True, "data": {"tanggal": tgl.isoformat(), **data}}

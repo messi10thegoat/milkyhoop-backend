@@ -44,6 +44,7 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
 from ..services import po_agregat as PA  # #4 agregat Workspace (cermin so_agregat Q-012)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
+from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor bukan PKP (non-fatal)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
@@ -1444,11 +1445,12 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
     HALF_UP). Bentuk sejajar SO /calculate (per baris + header). vendor_id dicek milik tenant (blok, bukan galat). payload = badan create."""
     ctx = get_user_context(request)
     pool = await get_pool()
+    h = PR.hitung([i.model_dump() for i in body.items], body.discount_percent, body.discount_amount, body.tax_rate)
     async with pool.acquire() as conn:
         _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
+        peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], body.vendor_id, h["header"]["tax_amount"])  # BUG-030-BE non-fatal
     bloks = list(bloks) + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
-    h = PR.hitung([i.model_dump() for i in body.items], body.discount_percent, body.discount_amount, body.tax_rate)
-    return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), **PR.hitung_json(h),
+    return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), "peringatan": peringatan, **PR.hitung_json(h),
                                       "payload": body.model_dump(mode="json")}}
 
 

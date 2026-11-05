@@ -57,21 +57,27 @@ async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[d
     return None
 
 
-async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list) -> dict:
+KOLOM_HARGA = {"jual": "sales_price", "beli": "purchase_price"}
+
+
+async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, arah: str = "jual") -> dict:
     """baris = [{key?, item_id, unit?, quantity}] -> {price_list, lines: [{key, item_id, unit, quantity, harga, sumber, daftar,
-    tingkat_min_qty, satuan_dasar, faktor, blok}]}."""
-    daftar = await daftar_untuk(conn, tid, customer_id, tanggal)
+    tingkat_min_qty, satuan_dasar, faktor, blok}]}.
+    arah "beli" (BUG-032-BE, putusan pemilik LANGSUNG 5 Nov 2026 "konversi lalu dasar x faktor"): tanpa daftar harga (daftar = penjualan
+    per pelanggan); unit_conversions.purchase_price bila diisi -> products.purchase_price x faktor. Urutan & bentuk SAMA dengan jual."""
+    kolom = KOLOM_HARGA[arah]
+    daftar = await daftar_untuk(conn, tid, customer_id, tanggal) if arah == "jual" else None
     ids = list({str(b["item_id"]) for b in baris if b.get("item_id")})
     ktx = await SD.muat(conn, tid, ids)  # dasar + alias + konversi (sumber yang SAMA dengan jalur stok)
     alias = ktx["alias"]
     dasar_harga, harga_konv, baris_daftar = {}, {}, {}
     if ids:
-        for r in await conn.fetch("SELECT id, sales_price FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids):
-            dasar_harga[str(r["id"])] = r["sales_price"]
+        for r in await conn.fetch(f"SELECT id, {kolom} AS harga FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids):
+            dasar_harga[str(r["id"])] = r["harga"]
         for r in await conn.fetch(
-                """SELECT product_id, conversion_unit, sales_price FROM unit_conversions WHERE tenant_id = $1 AND product_id = ANY($2::uuid[])
-                   AND COALESCE(is_active, true) AND sales_price IS NOT NULL""", tid, ids):
-            harga_konv.setdefault(str(r["product_id"]), {}).setdefault(SD.kanon(r["conversion_unit"], alias), r["sales_price"])
+                f"""SELECT product_id, conversion_unit, {kolom} AS harga FROM unit_conversions WHERE tenant_id = $1
+                    AND product_id = ANY($2::uuid[]) AND COALESCE(is_active, true) AND {kolom} IS NOT NULL""", tid, ids):
+            harga_konv.setdefault(str(r["product_id"]), {}).setdefault(SD.kanon(r["conversion_unit"], alias), r["harga"])
         if daftar:
             for r in await conn.fetch(
                     """SELECT item_id, unit, price, min_quantity, start_date, end_date FROM price_list_items

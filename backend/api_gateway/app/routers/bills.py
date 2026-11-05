@@ -16,6 +16,7 @@ import asyncpg
 
 from ..services.nama_pengguna import nama_pengguna, nama_untuk
 from ..services import idem_buat  # AS-GP2: idempotensi aksi post/void/hapus/ubah v2 (kunci klien saja)
+from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor bukan PKP (non-fatal)
 from ..services.fitur_parkir import fitur_belum_tersedia  # P2P-1 (25 Okt): rute tagihan v1 dipensiunkan
 from ..utils.sorting import parse_sort_param
 
@@ -1887,6 +1888,7 @@ async def calculate_bill_totals(request: Request, body: CalculateBillRequestV2):
             async with conn.transaction(readonly=True):
                 bloks = await TR.blok_buat(conn, ctx["tenant_id"], req)
                 h = await TR.hitung(conn, ctx["tenant_id"], req)
+                peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], req.get("vendor_id"), h["akhir"]["tax_amount"])  # BUG-030-BE
                 if req.get("status") == "posted":  # QTY-DASAR R1: == create_bill_v2 posted (blok_satuan_buat SAMA)
                     from ..services.bills_service import blok_satuan_buat
                     bs = [{"code": x["code"], "message": x["message"]} for x in await blok_satuan_buat(conn, ctx["tenant_id"], req.get("items") or [])]
@@ -1898,7 +1900,7 @@ async def calculate_bill_totals(request: Request, body: CalculateBillRequestV2):
         j = TR.hitung_json(req, h)
         kepala = {k: j[k] for k in ("subtotal", "item_discount_total", "invoice_discount_total", "cash_discount_total", "dpp", "tax_amount", "grand_total")}
         return {"success": True, "calculation": kepala,
-                "data": {"ok": not bloks, "blocks": bloks, **j, "payload": body.model_dump(mode="json")}}
+                "data": {"ok": not bloks, "blocks": bloks, "peringatan": peringatan, **j, "payload": body.model_dump(mode="json")}}
     except HTTPException:
         raise
     except Exception as e:
