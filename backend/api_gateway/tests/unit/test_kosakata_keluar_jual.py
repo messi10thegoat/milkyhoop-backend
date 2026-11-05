@@ -68,6 +68,7 @@ PENULIS_SQL = {
     ("services/inventory_helpers.py", "record_inventory_outbound"), ("services/inventory_helpers.py", "record_inventory_inbound"),
     ("services/inventory_helpers.py", "record_inventory_reversal"),
     ("services/kernel_document_executor.py", "_create_inventory_movements"),
+    ("services/revaluasi_ppv.py", "_baris"),  # 6 Nov: pasangan revaluasi selisih harga (PPV_REVALUASI[_VOID], di BUKAN_JUAL)
 }
 
 

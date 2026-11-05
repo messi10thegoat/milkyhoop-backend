@@ -206,7 +206,8 @@ def test_grn_menulis_kartu_stok_qty_kali_faktor_dan_biaya_dibagi_faktor():
     pang = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "record_inventory_inbound"]
     assert len(pang) == 1
     args = [ast.unparse(a) for a in pang[0].args]
-    assert "p['qty_stok'] * f" in args and "b['harga_satuan'] / f" in args
+    # ppv-revaluasi-wac: biaya masuk = biaya_dasar hasil lipat (flag nyala) atau harga terima / faktor
+    assert "p['qty_stok'] * f" in args and "p.get('biaya_dasar') or b['harga_satuan'] / f" in args
 
 
 def test_fpb_langsung_menulis_qty_dasar_dan_biaya_per_dasar():

@@ -96,6 +96,15 @@ async def test_nyawit_bimoli_stok_utuh_wac_naik_tepat_dan_gl_sama_dengan_kartu()
 
 
 @pytest.mark.asyncio
+async def test_pembulatan_jurnal_sama_dengan_delta_kartu_bukan_selisih_mentah():
+    k = _Kartu([_masuk(3, 10)])
+    rv = await RV.rencana(k, "t", P, D("100"), D("3"), [GI])  # 100/3 -> WAC 43,33 -> Δ 99,99 (0,01 ke PPV)
+    sebelum = k._agr(P)[1]
+    await RV.tulis(k, CTX, rv, "bill", "BILL-2", "jid", None)
+    assert rv["persediaan"] == D("99.99") == k._agr(P)[1] - sebelum
+
+
+@pytest.mark.asyncio
 async def test_sebagian_sudah_keluar_porsi_stok_saja():
     k = _Kartu([_masuk(240, 35000), {**_masuk(0, 35000), "quantity_out": D(120)}])
     rv = await RV.rencana(k, "t", P, D("924000"), D("240"), [GI])
