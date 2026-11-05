@@ -59,6 +59,7 @@ PENANDA = "TES E2E GROSIR"
 D = Decimal
 SABOT = os.environ.get("SABOT", "")
 PROFIL = os.environ.get("PROFIL", "")
+POLIS = os.environ.get("POLIS", "")  # revenue_recognition_policy kaos diganti DALAM rollback (invoice = kirim otomatis saat faktur; delivery = tunggu kirim)
 # PROFIL=nyawit: flag kaos dibuat SEPERTI pt-kita-nyawit-bersama (dibaca MASTER 5 Nov, izin pemilik) DI DALAM rollback -> jalur stok
 # nyawit sebenarnya: stok keluar saat FAKTUR (kirim otomatis), bukan saat SJ; pemindahan barang mati.
 NYAWIT_HAPUS = ("pengiriman_stok_sebelum_faktur", "pemindahan_barang", "milkybook_v2")
@@ -187,13 +188,19 @@ async def main(keluar):
             || COALESCE((SELECT string_agg(id::text||COALESCE(price_list_id::text, '-'), ',' ORDER BY id) FROM customers WHERE tenant_id = $1), ''))""", LAIN)
 
     async def sidik_pelanggan_kaos():
-        return await c.fetchval("SELECT md5(string_agg(id::text||COALESCE(price_list_id::text, '-'), ',' ORDER BY id)) FROM customers WHERE tenant_id = $1", T)
+        return await c.fetchval("""SELECT md5((SELECT string_agg(id::text||COALESCE(price_list_id::text, '-'), ',' ORDER BY id) FROM customers WHERE tenant_id = $1)
+            || COALESCE((SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id = $1), '-')
+            || COALESCE((SELECT string_agg(feature||enabled::text, ',' ORDER BY feature) FROM tenant_features WHERE tenant_id = $1), ''))""", T)
     awal, s0, sp0 = await hitung(), await sidik(), await sidik_pelanggan_kaos()
     harus("persiapan: kaos non-PKP, vendor uji, 2 gudang", pkp is False and vendor is not None and g_utama and g_lain, {"pkp": pkp, "g": [g_utama, g_lain]})
 
     luar = c.transaction()
     await luar.start()
     try:
+        if POLIS:
+            await c.execute("UPDATE tenant_config SET revenue_recognition_policy = $1 WHERE tenant_id = $2", POLIS, T)
+            harus(f"kebijakan pengakuan pendapatan = {POLIS} (dalam rollback)",
+                  await c.fetchval("SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id = $1", T) == POLIS)
         if PROFIL == "nyawit":
             await c.execute("DELETE FROM tenant_features WHERE tenant_id = $1 AND feature = ANY($2::text[])", T, list(NYAWIT_HAPUS))
             await c.execute("""INSERT INTO tenant_features (tenant_id, feature, enabled) SELECT $1, f, true FROM unnest($2::text[]) f
@@ -331,8 +338,18 @@ async def main(keluar):
         si = await c.fetchrow("SELECT total_amount, status, subtotal, tax_amount FROM sales_invoices WHERE id = $1", inv) if inv else None
         j_si = await jurnal(inv) if inv else []
         hpp, out_si = D(str(await dr_cogs())) - hpp0, D(str(await keluar_p())) - out0
+        kirim_faktur = PROFIL == "nyawit" and POLIS != "invoice"
+        if kirim_faktur and inv:  # jalur sah tanpa flag stok + kebijakan delivery: Kirim dari FAKTUR (SJ asal faktur)
+            print(f"INFO L2d sesudah terbit (sebelum kirim): stok keluar={out_si} HPP={hpp} status={str(b)[:0]}"
+                  f"{await c.fetchval('SELECT fulfillment_status FROM sales_invoices WHERE id = $1', inv)}", flush=True)
+            baris_si = await c.fetch("SELECT id, quantity FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number", inv)
+            stf, bf = await jalan("L2e kirim dari faktur", lambda: RSI.fulfill_invoice(req(uid, "gr-ff", badan={
+                "warehouse_id": str(g_utama), "items": [{"invoice_item_id": str(r["id"]), "quantity": float(r["quantity"])} for r in baris_si]}), inv))
+            harus("L2e(nyawit): Kirim dari faktur 200 (SJ asal faktur)", stf == 200, {"st": stf, "b": str(bf)[:500]})
+            j_si = j_si + [r for r in await jurnal(uu(data(bf).get("fulfillment_id") or data(bf).get("id")))] if stf == 200 else j_si
+            hpp, out_si = D(str(await dr_cogs())) - hpp0, D(str(await keluar_p())) - out0
         harus("L2d: SI terbit total 405.000 rupiah penuh, jurnal seimbang, HPP (Δ akun COGS_SALES) = 377.400, stok utama 223; "
-              + ("stok keluar 17 Botol SAAT FAKTUR (kirim otomatis)" if PROFIL == "nyawit" else "tanpa keluar stok kedua (sudah di SJ)"),
+              + (("stok keluar 17 Botol saat KIRIM DARI FAKTUR" if kirim_faktur else "stok keluar 17 Botol SAAT FAKTUR (kirim otomatis)") if PROFIL == "nyawit" else "tanpa keluar stok kedua (sudah di SJ)"),
               inv and si and D(str(si["total_amount"])) == D("405000") and bulat(si["total_amount"]) and seimbang(j_si) and hpp == D("377400")
               and out_si == (D("17") if PROFIL == "nyawit" else D("0")) and await stok(g_utama) == D("223"),
               {"st": st, "b": str(b)[:400], "si": dict(si) if si else None, "hpp": hpp, "out": out_si, "j": j_si})
@@ -450,7 +467,7 @@ async def main(keluar):
         pass
     finally:
         await luar.rollback()
-    harus("L6a: ROLLBACK net 0 (barang, konversi, daftar harga, PO, GRN, FPB, SO, SJ, SI, bayar, pindah, ND, jurnal, kartu, stok, audit)",
+    harus("L6a: ROLLBACK net 0 + sidik kaos (pelanggan.price_list_id, kebijakan pendapatan, flag) sama (barang, konversi, daftar harga, PO, GRN, FPB, SO, SJ, SI, bayar, pindah, ND, jurnal, kartu, stok, audit)",
           awal == await hitung() and sp0 == await sidik_pelanggan_kaos(), {"awal": awal, "akhir": await hitung()})
     harus("L6b: grapgrap-manado read-only: sidik md5 kartu + jurnal + stok + pelanggan SAMA", s0 == await sidik())
     harus("L6c: kanal keluar 0", KELUAR == [], KELUAR)
