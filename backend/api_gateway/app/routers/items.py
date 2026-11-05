@@ -26,6 +26,7 @@ from datetime import date as dateclass
 from decimal import Decimal
 
 from ..services import teks_galat as tg
+from ..services import satuan_master as SM
 from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -1605,40 +1606,22 @@ async def list_all_conversions(request: Request):
 
 @router.get("/items/units", response_model=UnitListResponse)
 async def list_units(request: Request):
-    """Get list of available units (default + custom)."""
+    """Satuan bawaan + kustom tenant (SATU sumber dengan /api/units/dropdown: services/satuan_master.daftar)."""
     tenant_id = get_tenant_id(request)
     conn = None
 
     try:
         conn = await get_db_connection()
-
-        # Get custom units from existing products
-        custom_units_query = """
-            SELECT DISTINCT base_unit FROM products WHERE tenant_id = $1 AND base_unit IS NOT NULL
-            UNION
-            SELECT DISTINCT satuan FROM products WHERE tenant_id = $1 AND satuan IS NOT NULL
-            UNION
-            SELECT DISTINCT conversion_unit FROM unit_conversions WHERE tenant_id = $1
-        """
-        rows = await conn.fetch(custom_units_query, tenant_id)
-
-        # Filter out default units
-        default_lower = [u.lower() for u in DEFAULT_UNITS]
-        custom_units = [
-            row["base_unit"]
-            for row in rows
-            if row["base_unit"] and row["base_unit"].lower() not in default_lower
-        ]
-
+        semua = await SM.daftar(conn, tenant_id)
         return UnitListResponse(
             success=True,
             default_units=DEFAULT_UNITS,
-            custom_units=sorted(set(custom_units)),
+            custom_units=[u["abbreviation"] for u in semua if not u["bawaan"]],
         )
 
     except Exception as e:
         logger.error(f"Error listing units: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Gagal memuat satuan")
     finally:
         if conn:
             await conn.close()
@@ -1646,19 +1629,14 @@ async def list_units(request: Request):
 
 @router.post("/items/units", response_model=CreateUnitResponse)
 async def create_unit(request: Request, body: CreateUnitRequest):
-    """
-    Create a custom unit.
-    Note: Custom units are stored implicitly when used in products.
-    This endpoint is for pre-creating units for the dropdown.
-    """
-    # For now, we just validate the unit name
-    # Custom units are created implicitly when products use them
-    if body.name.lower() in [u.lower() for u in DEFAULT_UNITS]:
-        raise HTTPException(status_code=400, detail="Unit already exists in defaults")
-
-    return CreateUnitResponse(
-        success=True, message=f"Unit '{body.name}' siap digunakan", unit=body.name
-    )
+    """Buat satuan kustom -> product_units (BUG-014: dulu membalas 200 tanpa menyimpan apa pun)."""
+    tenant_id = get_tenant_id(request)
+    conn = await get_db_connection()
+    try:
+        u = await SM.buat(conn, tenant_id, body.name, body.abbreviation)
+    finally:
+        await conn.close()
+    return CreateUnitResponse(success=True, message=f"Satuan '{u['abbreviation']}' tersimpan", unit=u["abbreviation"])
 
 
 # =============================================================================

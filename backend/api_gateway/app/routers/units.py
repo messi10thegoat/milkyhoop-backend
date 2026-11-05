@@ -11,6 +11,7 @@ import logging
 
 from ..services.db_pool import get_db_pool
 from ..services import satuan_dasar as SD  # P1: konversi terpakai terkunci
+from ..services import satuan_master as SM
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -102,49 +103,18 @@ async def list_units(
 # =============================================================================
 @router.get("/dropdown")
 async def units_dropdown(request: Request, search: Optional[str] = Query(None)):
-    """Active units for pickers — lightweight."""
+    """Satuan untuk picker = bawaan + kustom tenant (SATU sumber dengan halaman Satuan: services/satuan_master.daftar)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            if search:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, name, abbreviation
-                    FROM product_units
-                    WHERE tenant_id = $1 AND is_active = true
-                      AND (name ILIKE $2 OR abbreviation ILIKE $2)
-                    ORDER BY is_system DESC, name ASC LIMIT 50
-                """,
-                    ctx["tenant_id"],
-                    f"%{search}%",
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, name, abbreviation
-                    FROM product_units
-                    WHERE tenant_id = $1 AND is_active = true
-                    ORDER BY is_system DESC, name ASC LIMIT 100
-                """,
-                    ctx["tenant_id"],
-                )
-
-            return {
-                "items": [
-                    {
-                        "id": str(r["id"]),
-                        "name": r["name"],
-                        "abbreviation": r["abbreviation"],
-                    }
-                    for r in rows
-                ]
-            }
+            semua = await SM.daftar(conn, ctx["tenant_id"], search)
+            return {"items": [{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"]} for u in semua[: 50 if search else 100]]}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in units dropdown: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get units")
+        raise HTTPException(status_code=500, detail="Gagal memuat satuan")
 
 
 # =============================================================================
@@ -152,55 +122,14 @@ async def units_dropdown(request: Request, search: Optional[str] = Query(None)):
 # =============================================================================
 @router.post("", status_code=201)
 async def create_unit(request: Request):
-    """Create a custom unit."""
+    """Create a custom unit (services/satuan_master.buat, sama dengan POST /api/items/units)."""
     try:
         ctx = get_user_context(request)
         body = await request.json()
-        name = (body.get("name") or "").strip()
-        abbreviation = (body.get("abbreviation") or "").strip().lower()
-
-        if not name or not abbreviation:
-            raise HTTPException(
-                status_code=400, detail="Nama dan singkatan wajib diisi"
-            )
-        if len(name) > 50:
-            raise HTTPException(status_code=400, detail="Nama maksimal 50 karakter")
-        if len(abbreviation) > 20:
-            raise HTTPException(
-                status_code=400, detail="Singkatan maksimal 20 karakter"
-            )
-
         pool = await get_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchval(
-                "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = $2",
-                ctx["tenant_id"],
-                abbreviation,
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400, detail=f"Satuan '{abbreviation}' sudah ada"
-                )
-
-            unit_id = await conn.fetchval(
-                """
-                INSERT INTO product_units (tenant_id, name, abbreviation, is_system)
-                VALUES ($1, $2, $3, false) RETURNING id
-            """,
-                ctx["tenant_id"],
-                name,
-                abbreviation,
-            )
-
-            return {
-                "success": True,
-                "message": "Satuan berhasil dibuat",
-                "data": {
-                    "id": str(unit_id),
-                    "name": name,
-                    "abbreviation": abbreviation,
-                },
-            }
+            u = await SM.buat(conn, ctx["tenant_id"], body.get("name"), body.get("abbreviation"))
+            return {"success": True, "message": "Satuan berhasil dibuat", "data": u}
     except HTTPException:
         raise
     except Exception as e:
@@ -237,10 +166,10 @@ async def update_unit(request: Request, unit_id: UUID):
                 idx += 1
 
             if "abbreviation" in body:
-                new_abbr = body["abbreviation"].strip().lower()
+                new_abbr = " ".join(body["abbreviation"].split())  # apa adanya; bentrok dicocokkan tanpa beda huruf (BUG-014)
                 if new_abbr != existing["abbreviation"]:
                     dup = await conn.fetchval(
-                        "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = $2 AND id != $3",
+                        "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = LOWER($2) AND id != $3",
                         ctx["tenant_id"],
                         new_abbr,
                         unit_id,

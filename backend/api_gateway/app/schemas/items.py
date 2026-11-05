@@ -285,6 +285,7 @@ class UpdateItemRequest(_BadanItem):
 class CreateUnitRequest(BaseModel):
     """Request body for creating a custom unit."""
     name: str = Field(..., min_length=1, max_length=50, description="Unit name")
+    abbreviation: Optional[str] = Field(None, max_length=20, description="Singkatan (bawaan = name)")
 
 
 # =============================================================================
