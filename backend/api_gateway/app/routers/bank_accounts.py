@@ -270,7 +270,7 @@ async def list_bank_accounts(
             query = f"""
                 SELECT ba.id, ba.account_name, ba.account_number, ba.bank_name,
                        ba.account_holder_name,
-                       ba.account_type, ba.coa_id,
+                       ba.account_type, ba.currency, ba.coa_id,
                        ba.is_active, ba.is_default, ba.created_at,
                        coa.account_code as coa_code, coa.name as coa_name,
                        COALESCE(lb.ledger_balance, 0) as ledger_balance  -- Law 21: journal-derived balance
@@ -300,6 +300,7 @@ async def list_bank_accounts(
                     "bank_name": row["bank_name"],
                     "account_holder_name": row["account_holder_name"],
                     "account_type": row["account_type"],
+                    "currency": row["currency"],  # BUG-015: dulu tak di-SELECT -> kolom Mata uang kosong di daftar
                     "coa_id": str(row["coa_id"]),
                     "coa_code": row["coa_code"],
                     "coa_name": row["coa_name"],

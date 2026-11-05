@@ -136,6 +136,7 @@ class BankAccountListItem(BaseModel):
     bank_name: Optional[str] = None
     account_holder_name: Optional[str] = None  # V329
     account_type: str
+    currency: Optional[str] = None  # BUG-015 (pola BankAccountDetail)
     coa_id: str
     coa_code: Optional[str] = None
     coa_name: Optional[str] = None
