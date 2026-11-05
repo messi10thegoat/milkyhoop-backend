@@ -164,6 +164,11 @@ def konversi_terpakai(satuan) -> str:
     return f"Konversi {satuan} sudah dipakai transaksi. Buat satuan baru."
 
 
+def satuan_dasar_terpakai(dasar) -> str:
+    """Satuan dasar barang yang sudah punya riwayat stok/dokumen tak boleh diganti (pola NetSuite)."""
+    return f"Satuan dasar {dasar} sudah dipakai transaksi. Buat barang baru untuk satuan lain."
+
+
 def satuan_tak_terkonversi(satuan, nama, dasar) -> str:
     """QTY-DASAR: satuan dokumen tanpa konversi ke satuan dasar barang (dulu dianggap 1:1 diam -> stok & HPP salah)."""
     return f"Satuan {satuan} untuk {nama} belum punya konversi ke {dasar}. Atur konversinya di Barang › Satuan."

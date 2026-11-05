@@ -155,3 +155,21 @@ async def tolak_ubah_konversi(conn, tid: str, product_id, lama: list, baru: Opti
             continue
         if await konversi_terpakai(conn, tid, product_id, r["conversion_unit"]):
             raise GalatBerkode(409, KODE_KONVERSI_TERPAKAI, tg.konversi_terpakai(r["conversion_unit"]))
+
+
+SQL_BARANG_TERPAKAI = "SELECT EXISTS (" + " UNION ALL ".join(
+    [f"SELECT 1 FROM {t} WHERE {k} = $1" for t, k in BARIS_BERSATUAN]
+    + ["SELECT 1 FROM inventory_ledger WHERE tenant_id = $2 AND product_id = $1"]) + ")"
+KODE_SATUAN_DASAR_TERPAKAI = "SATUAN_DASAR_TERPAKAI"
+
+
+async def tolak_ubah_dasar(conn, tid: str, product_id, dasar_lama: Optional[str], dasar_baru: Optional[str]) -> None:
+    """Satuan DASAR barang terkunci sesudah barang punya riwayat stok / baris dokumen (putusan pemilik LANGSUNG 5 Nov, pola NetSuite
+    units type): mengganti dasar = menafsir ulang seluruh riwayat. Sama (alias kamus) atau belum terpakai -> boleh; else 409."""
+    if dasar_baru is None or not normal(dasar_lama):
+        return
+    alias = await _alias(conn, tid)
+    if kanon(dasar_baru, alias) == kanon(dasar_lama, alias):
+        return
+    if await conn.fetchval(SQL_BARANG_TERPAKAI, product_id, tid):
+        raise GalatBerkode(409, KODE_SATUAN_DASAR_TERPAKAI, tg.satuan_dasar_terpakai(dasar_lama))
