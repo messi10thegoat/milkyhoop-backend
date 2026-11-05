@@ -74,6 +74,7 @@ class _Kartu:
 
 P = uuid4()
 CTX = {"tenant_id": "t", "user_id": None}
+GI = str(uuid4())
 
 
 def _masuk(q, c, g="G-A", src="GOODS_RECEIPT"):
@@ -84,7 +85,7 @@ def _masuk(q, c, g="G-A", src="GOODS_RECEIPT"):
 @pytest.mark.asyncio
 async def test_nyawit_bimoli_stok_utuh_wac_naik_tepat_dan_gl_sama_dengan_kartu():
     k = _Kartu([_masuk(240, 35000)])
-    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), ["gi"])
+    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), [GI])
     assert (rv["wac_lama"], rv["wac_baru"], rv["persediaan"], rv["rata"]) == (D("35000"), D("38850.00"), D("924000.00"), D("38850.00"))
     sebelum = k._agr(P)[1]
     await RV.tulis(k, CTX, rv, "bill", "BILL-1", "jid", None)
@@ -97,27 +98,27 @@ async def test_nyawit_bimoli_stok_utuh_wac_naik_tepat_dan_gl_sama_dengan_kartu()
 @pytest.mark.asyncio
 async def test_sebagian_sudah_keluar_porsi_stok_saja():
     k = _Kartu([_masuk(240, 35000), {**_masuk(0, 35000), "quantity_out": D(120)}])
-    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), ["gi"])
+    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), [GI])
     assert rv["q"] == 120 and rv["persediaan"] == D("462000.00")      # sisanya 462.000 ke PPV (pemanggil: selisih - persediaan)
 
 
 @pytest.mark.asyncio
 async def test_stok_habis_atau_tanpa_gudang_tanpa_revaluasi():
-    assert await RV.rencana(_Kartu([_masuk(240, 35000), {**_masuk(0, 35000), "quantity_out": D(240)}]), "t", P, D("9"), D("240"), ["gi"]) is None
+    assert await RV.rencana(_Kartu([_masuk(240, 35000), {**_masuk(0, 35000), "quantity_out": D(240)}]), "t", P, D("9"), D("240"), [GI]) is None
     assert await RV.rencana(_Kartu([_masuk(240, 35000)]), "t", P, D("924000"), D("240"), []) is None
 
 
 @pytest.mark.asyncio
 async def test_tagihan_lebih_murah_wac_tak_pernah_negatif():
     k = _Kartu([_masuk(2, 10)])
-    rv = await RV.rencana(k, "t", P, D("-1000"), D("2"), ["gi"])
+    rv = await RV.rencana(k, "t", P, D("-1000"), D("2"), [GI])
     assert rv["wac_baru"] == D("0") and rv["persediaan"] == D("-20.00")   # sisa -980 ke PPV
 
 
 @pytest.mark.asyncio
 async def test_void_bolak_balik_nilai_dan_wac_kembali_persis_walau_stok_pindah_gudang():
     k = _Kartu([_masuk(240, 35000)])
-    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), ["gi"])
+    rv = await RV.rencana(k, "t", P, D("924000"), D("240"), [GI])
     awal = k._agr(P)
     await RV.tulis(k, CTX, rv, "bill", "BILL-1", "jid", None)
     k.rows.append({**_masuk(0, 38850, g="G-A", src="RELOKASI_KELUAR"), "quantity_out": D(240)})  # pindah gudang A -> B
