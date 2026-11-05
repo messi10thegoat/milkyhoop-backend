@@ -360,10 +360,15 @@ async def sinkron_tagih(conn, tenant_id: str, po_id) -> dict:
 
 
 async def po_terkait_bill(conn, tenant_id: str, bill_id) -> list:
-    """id PO yang terkait bill ini lewat bill_items.purchase_order_item_id. Panggil SEBELUM bill DIHAPUS (baris tertaut ikut hilang); untuk void cukup sesudah."""
+    """id PO yang terkait bill ini lewat bill_items.purchase_order_item_id ATAU kepala bills.purchase_order_id (BUG-057, 6 Nov: tagihan dari PO
+    yang tautan barisnya hilang -- data BUG-036 -- dulu tak memulihkan qty tertagih PO saat void -> to-bill "tak ada baris"). Panggil SEBELUM
+    bill DIHAPUS (baris tertaut ikut hilang); untuk void cukup sesudah."""
     return [r["po_id"] for r in await conn.fetch(
-        """SELECT DISTINCT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id
-           JOIN purchase_orders po ON po.id = i.po_id WHERE bi.bill_id = $1 AND po.tenant_id = $2""", bill_id, tenant_id)]
+        """SELECT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id
+           JOIN purchase_orders po ON po.id = i.po_id WHERE bi.bill_id = $1 AND po.tenant_id = $2
+           UNION
+           SELECT b.purchase_order_id FROM bills b JOIN purchase_orders po ON po.id = b.purchase_order_id
+           WHERE b.id = $1 AND b.tenant_id = $2 AND po.tenant_id = $2""", bill_id, tenant_id)]
 
 
 async def sinkron_po_bill(conn, tenant_id: str, bill_id) -> list:
