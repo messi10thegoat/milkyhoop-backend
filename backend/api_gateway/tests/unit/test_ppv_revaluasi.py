@@ -61,7 +61,8 @@ class _Kartu:
         return self._agr(a[1])[0]
 
     async def fetch(self, sql, *a):
-        return [r for r in reversed(self.rows) if r["source_type"] == a[1] and r["source_id"] == a[2]]
+        cocok = [r for r in self.rows if r["source_type"] == a[1] and r["source_id"] == a[2]]  # urutan sisip = created_at
+        return list(reversed(cocok)) if "created_at DESC" in sql else cocok  # IKUT ORDER BY (fake buta urutan = gerbang buta)
 
     async def execute(self, sql, *a):
         r = dict(zip(["id", "tenant_id", "product_id", "product_code", "product_name", "movement_type", "movement_date", "source_type",
