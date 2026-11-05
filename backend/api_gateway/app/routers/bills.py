@@ -1285,6 +1285,16 @@ async def delete_bill(request: Request, bill_id: UUID, response: Response = None
 # =============================================================================
 # RECORD PAYMENT
 # =============================================================================
+def _galat_bayar(result: dict) -> HTTPException:
+    """Hasil gagal service.record_payment -> galat. Blok penentu bayar_keluar_rencana membawa kode (mis. NOMINAL_HARUS_RUPIAH) ->
+    galat BERKODE; selain itu kalimat polos seperti dulu (U2a: tagihan draf 422)."""
+    status = result.get("status_code", 400)
+    if result.get("code"):
+        from ..services.galat_berkode import GalatBerkode
+        return GalatBerkode(status, result["code"], result["message"])
+    return HTTPException(status_code=status, detail=result["message"])
+
+
 @router.post(
     "/{bill_id}/payments", response_model=RecordPaymentResponse, status_code=201
 )
@@ -1316,7 +1326,7 @@ async def record_payment(request: Request, bill_id: UUID, body: RecordPaymentReq
         )
 
         if not result["success"]:
-            raise HTTPException(status_code=result.get("status_code", 400), detail=result["message"])  # U2a: tagihan draf 422
+            raise _galat_bayar(result)
 
         return result
 
@@ -1384,7 +1394,7 @@ async def mark_bill_paid(request: Request, bill_id: UUID, body: MarkPaidRequest)
         )
 
         if not result["success"]:
-            raise HTTPException(status_code=result.get("status_code", 400), detail=result["message"])  # U2a: tagihan draf 422
+            raise _galat_bayar(result)
 
         return result
 

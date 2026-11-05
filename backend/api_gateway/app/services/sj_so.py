@@ -309,7 +309,10 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
                                         409, bid))
         lines.append(ln)
     if not lines and not any(b["code"] != "SJ_SO_STATUS_TIDAK_BOLEH" for b in blocks):
-        blocks.append(_blok("SJ_SO_TANPA_SISA", "Tidak ada barang yang tersisa untuk dikirim di pesanan ini."))
+        if any(d["alasan"] == "SJ_SO_STOK_BELUM_DIDUKUNG" for d in dilewati):  # T-G4: sisa ada tapi tersaring flag stok -> kalimat jujur
+            blocks.append(_blok("SJ_SO_STOK_BELUM_DIDUKUNG", "Surat Jalan tanpa faktur untuk barang ber-stok belum didukung."))
+        else:
+            blocks.append(_blok("SJ_SO_TANPA_SISA", "Tidak ada barang yang tersisa untuk dikirim di pesanan ini."))
 
     flag = await serah_mod.aktif(conn, tid)
     serah = None

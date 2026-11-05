@@ -203,6 +203,19 @@ def test_tanpa_sisa_dan_baris_ganda():
     assert "SJ_SO_BARIS_GANDA" in kodes(r2)
 
 
+def test_tg4_semua_sisa_tersaring_flag_stok_kalimat_jujur_bukan_tanpa_sisa():
+    # T-G4 (uji grosir 5 Nov 2026): SO berbaris stok tanpa flag stok -> dulu SJ_SO_TANPA_SISA "Tidak ada barang yang tersisa" (bohong)
+    r = jalan(S.rencana(Konek(rows=[baris(L1, P1, 10, stok=True, desc="Minyak")]), ctx(), SO, S.SJSOIn()))
+    assert [(b["code"], b["message"], b["status"]) for b in r["blocks"]] == [
+        ("SJ_SO_STOK_BELUM_DIDUKUNG", "Surat Jalan tanpa faktur untuk barang ber-stok belum didukung.", 409)]
+    # campuran: non-stok sudah terkirim penuh + stok tersaring -> tetap STOK_BELUM_DIDUKUNG
+    c = Konek(rows=[baris(L1, P1, 10), baris(L2, P2, 5, stok=True, desc="Minyak")], terkirim={L1: Decimal("10")})
+    assert kodes(jalan(S.rencana(c, ctx(), SO, S.SJSOIn()))) == ["SJ_SO_STOK_BELUM_DIDUKUNG"]
+    # flag stok aktif + stok terkirim penuh -> TANPA_SISA tetap (bukan tersaring)
+    c = Konek(rows=[baris(L1, P1, 10, stok=True, desc="Minyak")], terkirim={L1: Decimal("10")}, flag_stok=True)
+    assert kodes(jalan(S.rencana(c, ctx(), SO, S.SJSOIn()))) == ["SJ_SO_TANPA_SISA"]
+
+
 def test_so_tak_ada_404():
     class K(Konek):
         async def fetchrow(self, sql, *a):

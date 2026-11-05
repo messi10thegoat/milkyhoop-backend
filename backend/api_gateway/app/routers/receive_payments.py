@@ -1611,7 +1611,7 @@ async def buat_penerimaan(conn, ctx: dict, body: CreateReceivePaymentRequest) ->
         post_result = await _post_payment(conn, ctx, payment_id)
         result["data"]["status"] = "posted"
         result["data"]["journal_id"] = post_result.get("journal_id")
-        result["message"] = "Receive payment created and posted"
+        result["message"] = "Penerimaan dibuat dan diposting"
 
     return result
 

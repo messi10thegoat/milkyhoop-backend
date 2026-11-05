@@ -18,6 +18,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from .galat_berkode import GalatBerkode
 from .resolve_account import resolve_account_id_or_none
 from .role_resolver import AccountRole, resolve_account_id_by_role
 
@@ -35,8 +36,8 @@ class Blok:
         self.daftar: list = []
 
     def galat(self, code: str, status: int, detail) -> None:
-        if not self.pratinjau:
-            raise HTTPException(status_code=status, detail=detail)
+        if not self.pratinjau:  # T-G: kalimat -> galat BERKODE (detail tetap kalimat; kode = kode blok pratinjau)
+            raise GalatBerkode(status, code, detail) if isinstance(detail, str) else HTTPException(status_code=status, detail=detail)
         self.daftar.append({"code": code, "message": detail if isinstance(detail, str) else str(detail), "status": status})
 
     async def coba(self, code: str, aw):

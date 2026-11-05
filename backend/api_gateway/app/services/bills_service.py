@@ -1499,7 +1499,7 @@ class BillsService:
                 _r = await BKR.rencana_bayar_tagihan(conn, tenant_id, bill_id, request)
                 if _r["blocks"]:
                     _b = _r["blocks"][0]
-                    return {"success": False, "message": _b["message"], "data": None,
+                    return {"success": False, "message": _b["message"], "code": _b["code"], "data": None,
                             **({"status_code": _b["status"]} if _b["status"] != 400 else {})}  # U2a: tagihan draf -> 422
                 bill, remaining, payment_amount = _r["bill"], _r["remaining"], _r["payment_amount"]
                 payment_date, pph_tax_code_id, pph_amount = _r["payment_date"], _r["pph_tax_code_id"], _r["pph_amount"]

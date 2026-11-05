@@ -71,6 +71,8 @@ def test_status_v2_bukan_draf_menang_atas_status_lama():
 
 def test_router_meneruskan_status_422():
     bl = (APP / "routers/bills.py").read_text()
-    assert bl.count('raise HTTPException(status_code=result.get("status_code", 400), detail=result["message"])') == 2
+    # T-G1 (5 Nov 2026): kedua rute lewat _galat_bayar -- status_code diteruskan, blok berkode -> galat berkode
+    assert bl.count("raise _galat_bayar(result)") == 2
+    assert 'status = result.get("status_code", 400)' in bl and "HTTPException(status_code=status, detail=result[\"message\"])" in bl
     bs = (APP / "services/bills_service.py").read_text()
     assert '**({"status_code": _b["status"]} if _b["status"] != 400 else {})' in bs
