@@ -18,4 +18,6 @@ echo "=== LAJUR 2 SABOT=sd (harus merah)"; jalan sd sabot.json; r=$?; echo "rc_m
 echo "=== LAJUR 3a PROFIL=nyawit POLIS=invoice (kirim otomatis saat faktur, harus lulus)"; jalan "" nyawit-inv.json nyawit invoice; r=$?; echo "rc=$r"; [ $r = 0 ] || rc=1
 echo "=== LAJUR 3b PROFIL=nyawit POLIS=delivery (kirim dari faktur, harus lulus)"; jalan "" nyawit-del.json nyawit delivery; r=$?; echo "rc=$r"; [ $r = 0 ] || rc=1
 echo "=== LAJUR 4 PROFIL=nyawit POLIS=invoice SABOT=sd (harus merah)"; jalan sd nyawit-sabot.json nyawit invoice; r=$?; echo "rc_merah=$r (harus 1)"; [ $r = 1 ] || rc=1
+echo "=== LAJUR 5 PROFIL=nyawit-preset POLIS=invoice (nyawit + preset grosir baru, harus lulus = alur kaos)"; jalan "" preset.json nyawit-preset invoice; r=$?; echo "rc=$r"; [ $r = 0 ] || rc=1
+echo "=== LAJUR 6 PROFIL=nyawit-preset POLIS=invoice SABOT=sd (harus merah)"; jalan sd preset-sabot.json nyawit-preset invoice; r=$?; echo "rc_merah=$r (harus 1)"; [ $r = 1 ] || rc=1
 echo "RC=$rc"; exit $rc

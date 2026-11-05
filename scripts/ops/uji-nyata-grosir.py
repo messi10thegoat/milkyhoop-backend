@@ -63,6 +63,7 @@ POLIS = os.environ.get("POLIS", "")  # revenue_recognition_policy kaos diganti D
 # PROFIL=nyawit: flag kaos dibuat SEPERTI pt-kita-nyawit-bersama (dibaca MASTER 5 Nov, izin pemilik) DI DALAM rollback -> jalur stok
 # nyawit sebenarnya: stok keluar saat FAKTUR (kirim otomatis), bukan saat SJ; pemindahan barang mati.
 NYAWIT_HAPUS = ("pengiriman_stok_sebelum_faktur", "pemindahan_barang", "milkybook_v2")
+PRESET_GROSIR = ("pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang")  # putusan pemilik 5 Nov
 NYAWIT_TAMBAH = ("modul_batch_mati", "modul_conversational_mati", "modul_gaji_mati", "modul_manufaktur_mati", "modul_pajak_mati")
 TABEL = ("products", "unit_conversions", "price_lists", "price_list_items", "purchase_orders", "goods_receipts", "bills", "sales_orders",
          "invoice_fulfillments", "sales_invoices", "receive_payments", "stock_transfers", "vendor_credits", "journal_entries",
@@ -201,14 +202,15 @@ async def main(keluar):
             await c.execute("UPDATE tenant_config SET revenue_recognition_policy = $1 WHERE tenant_id = $2", POLIS, T)
             harus(f"kebijakan pengakuan pendapatan = {POLIS} (dalam rollback)",
                   await c.fetchval("SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id = $1", T) == POLIS)
-        if PROFIL == "nyawit":
+        if PROFIL in ("nyawit", "nyawit-preset"):  # nyawit-preset = nyawit + 3 kunci preset grosir_distribusi baru
             await c.execute("DELETE FROM tenant_features WHERE tenant_id = $1 AND feature = ANY($2::text[])", T, list(NYAWIT_HAPUS))
+            tambah = NYAWIT_TAMBAH + (PRESET_GROSIR if PROFIL == "nyawit-preset" else ())
             await c.execute("""INSERT INTO tenant_features (tenant_id, feature, enabled) SELECT $1, f, true FROM unnest($2::text[]) f
-                               ON CONFLICT (tenant_id, feature) DO UPDATE SET enabled = true""", T, list(NYAWIT_TAMBAH))
+                               ON CONFLICT (tenant_id, feature) DO UPDATE SET enabled = true""", T, list(tambah))
             aktif = {r["feature"] for r in await c.fetch("SELECT feature FROM tenant_features WHERE tenant_id = $1 AND enabled", T)}
-            harus("profil nyawit: 3 flag mati + 5 flag hidup (dalam rollback); pengiriman_sebelum_faktur, pengiriman_serah, dashboard_v2 tetap",
-                  not aktif & set(NYAWIT_HAPUS) and set(NYAWIT_TAMBAH) <= aktif
-                  and {"pengiriman_sebelum_faktur", "pengiriman_serah", "dashboard_v2"} <= aktif, sorted(aktif))
+            mati = set(NYAWIT_HAPUS) - set(tambah)
+            harus(f"profil {PROFIL}: mati {sorted(mati)} + hidup {len(tambah)} flag (dalam rollback); pengiriman_serah, dashboard_v2 tetap",
+                  not aktif & mati and set(tambah) <= aktif and {"pengiriman_sebelum_faktur", "pengiriman_serah", "dashboard_v2"} <= aktif, sorted(aktif))
         # ================= L0 barang uji (dalam rollback)
         nama = f"Minyak uji {PENANDA} {uuid.uuid4().hex[:6]}"
         st, b = await jalan("L0 buat barang", lambda: RI.create_item(req(uid), CIR(
