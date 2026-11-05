@@ -1131,6 +1131,11 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             tenant_id,
         )
 
+        # Satuan dasar terkunci sesudah ada riwayat (putusan pemilik LANGSUNG 5 Nov; penentu SATU satuan_dasar)
+        from ..services import satuan_dasar as _SDK
+        if body.base_unit is not None and old_item:
+            await _SDK.tolak_ubah_dasar(conn, tenant_id, str(item_id), old_item["base_unit"] or old_item["satuan"], body.base_unit)
+
         # Ubah tipe/pelacakan: SATU aturan per arah, sama dengan impor massal (_alasan_tolak_ubah_tipe).
         # Pelacakan dinormalkan ke tipe (jasa/non_inventory tak pernah dilacak).
         _tipe_lama = old_item["item_type"] if old_item else None
@@ -1278,7 +1283,6 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             # Update conversions if provided
             if body.conversions is not None:
                 # P1 (putusan pemilik 5 Nov): konversi aktif yang hilang / berubah faktor DAN sudah terpakai transaksi -> 409
-                from ..services import satuan_dasar as _SDK
                 await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
                     """SELECT conversion_unit, conversion_factor FROM unit_conversions
                        WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),

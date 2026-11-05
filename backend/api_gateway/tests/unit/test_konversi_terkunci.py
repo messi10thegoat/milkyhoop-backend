@@ -66,3 +66,31 @@ def test_ketiga_penulis_konversi_memakai_penentu():
     assert "SD.tolak_ubah_konversi(" in inspect.getsource(RU.delete_conversion)
     s = inspect.getsource(RI.update_item)
     assert "_SDK.tolak_ubah_konversi(" in s and s.index("_SDK.tolak_ubah_konversi(") < s.index("Deactivate all existing conversions")
+
+
+class _KDasar(_K):
+    def __init__(self, terpakai_barang, alias=()):
+        super().__init__(set(), alias)
+        self.barang = terpakai_barang
+
+    async def fetchval(self, sql, *a):
+        self.tanya.append((sql, a))
+        return self.barang
+
+
+def test_satuan_dasar_terkunci_bila_barang_punya_riwayat():
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(SD.tolak_ubah_dasar(_KDasar(True), "t", "p", "Botol", "Dus"))
+    assert e.value.status_code == 409 and e.value.code == SD.KODE_SATUAN_DASAR_TERPAKAI and "Botol" in e.value.detail
+    asyncio.run(SD.tolak_ubah_dasar(_KDasar(False), "t", "p", "Botol", "Dus"))  # belum ada riwayat -> boleh
+    c = _KDasar(True, alias=[("Botol", "btl")])
+    asyncio.run(SD.tolak_ubah_dasar(c, "t", "p", "Botol", "btl"))  # alias = satuan yang sama -> boleh, tanpa baca riwayat
+    assert c.tanya == []
+    asyncio.run(SD.tolak_ubah_dasar(_KDasar(True), "t", "p", "Botol", None))  # tak diubah
+
+
+def test_sql_barang_terpakai_semua_tabel_dan_update_item_memanggilnya_sebelum_update():
+    for t, k in SD.BARIS_BERSATUAN:
+        assert f"FROM {t} WHERE {k} = $1" in SD.SQL_BARANG_TERPAKAI, t
+    s = inspect.getsource(RI.update_item)
+    assert "_SDK.tolak_ubah_dasar(" in s and s.index("_SDK.tolak_ubah_dasar(") < s.index("UPDATE products SET")
