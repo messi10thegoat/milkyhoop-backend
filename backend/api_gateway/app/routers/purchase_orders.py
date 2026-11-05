@@ -49,6 +49,7 @@ from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi 
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
 from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
+from ..services.termin_bayar import tentukan_jatuh_tempo_tagihan  # jatuh tempo tagihan = termin vendor (penentu SAMA tulis + pratinjau)
 from fastapi import Response
 
 from ..schemas.purchase_orders import (
@@ -1200,6 +1201,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     # Fallback if function doesn't exist
                     bill_number = f"BILL-{po['po_number']}"
 
+                jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], body.bill_date, body.due_date, po["vendor_id"])
+
                 # Create Bill
                 bill_id = await conn.fetchval(
                     """
@@ -1216,7 +1219,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     po["vendor_id"],
                     po["vendor_name"],
                     body.bill_date,
-                    body.due_date or body.bill_date,
+                    jt["due_date"],
                     bill_total,
                     bill_total,
                     bill_subtotal,
@@ -1277,6 +1280,8 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                         "bill_number": bill_number,
                         "bill_total": bill_total,
                         "po_status": new_status,
+                        "due_date": jt["due_date"].isoformat(),
+                        "due_date_source": jt["due_date_source"],
                     },
                 }
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_TOBILL", resp, po_id)
@@ -1544,8 +1549,10 @@ async def preview_convert_to_bill(request: Request, po_id: UUID, body: Optional[
         items = [i.model_dump() for i in body.items] if body and body.items else None
         r = await PR.rencana_tagih(conn, po, items, kunci=False)
         tgl = (body.bill_date if body and body.bill_date else await tanggal_dokumen(conn, ctx["tenant_id"]))
-        jatuh = body.due_date if body and body.due_date else tgl
+        jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], tgl, body.due_date if body else None, po["vendor_id"])
+        jatuh = jt["due_date"]
         return {"blocks": r["blocks"], "bill_date": tgl.isoformat(), "due_date": jatuh.isoformat(),
+                "due_date_source": jt["due_date_source"], "payment_terms_days": jt["payment_terms_days"], "due_date_text": jt["due_date_text"],
                 "items": [{"po_item_id": str(ln["po_item"]["id"]), "description": ln["po_item"]["description"], "unit": ln["po_item"]["unit"],
                            "quantity": _f2(ln["qty"]), "unit_price": _f2(ln["unit_price"]), "discount_percent": float(ln["disc_pct"]),
                            "discount_amount": _f2(ln["ic"]["discount_amount"]), "subtotal": _f2(ln["ic"]["subtotal"]),

@@ -13,6 +13,10 @@ maupun langsung), kecuali pengguna mengisinya sendiri:
   selain itu     -> invoice_date, 'default' (perilaku lama)
 Teks termin non-NET (mis. "DP 60% di muka, pelunasan sebelum pengiriman") tak memuat jumlah hari -> jatuh ke
 termin pelanggan. Tenant eksplisit di kueri pelanggan (Law 24).
+
+Sisi PEMBELIAN (tempo-termin-vendor, 5 Nov 2026, putusan pemilik via MASTER; pola Accurate/QBO/NetSuite): jatuh tempo
+tagihan dari PO = body.due_date ('body') -> vendors.payment_terms_days > 0 ('vendor_terms', bawaan DB 30 dipakai apa
+adanya; vendor tunai = 0) -> bill_date ('default'). Termin PO = tahap 2 (perlu migrasi, DITUNDA). Faktur lama tak diubah.
 """
 import re
 from datetime import date, timedelta
@@ -57,3 +61,22 @@ async def tentukan_jatuh_tempo(conn, tenant_id: str, invoice_date: date, due_dat
         return due_date_body, "body"
     n, sumber = await termin_hari(conn, tenant_id, termin_so, customer_id)
     return invoice_date + timedelta(days=n), sumber
+
+
+async def tentukan_jatuh_tempo_tagihan(conn, tenant_id: str, bill_date: date, due_date_body: Optional[date] = None,
+                                       vendor_id=None) -> dict:
+    """SATU penentu jatuh tempo tagihan untuk /to-bill DAN /to-bill/preview -> {due_date, due_date_source,
+    payment_terms_days, due_date_text}. payment_terms_days = None bila isian pengguna (termin tak dibaca)."""
+    if due_date_body:
+        return {"due_date": due_date_body, "due_date_source": "body", "payment_terms_days": None,
+                "due_date_text": "Diisi pengguna"}
+    n = None
+    if vendor_id:
+        n = await conn.fetchval(
+            "SELECT payment_terms_days FROM vendors WHERE id = $1::uuid AND tenant_id = $2",
+            str(vendor_id), tenant_id,
+        )
+    if n and 0 < int(n) <= HARI_MAKS:
+        return {"due_date": bill_date + timedelta(days=int(n)), "due_date_source": "vendor_terms",
+                "payment_terms_days": int(n), "due_date_text": f"Termin vendor {int(n)} hari"}
+    return {"due_date": bill_date, "due_date_source": "default", "payment_terms_days": 0, "due_date_text": "Tanggal faktur"}
