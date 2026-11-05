@@ -479,6 +479,7 @@ class ItemsStatsResponse(BaseModel):
     totalServices: int = 0
     totalNonInventory: int = 0
     stock: ItemsStatsStockResponse = Field(default_factory=ItemsStatsStockResponse)
+    inventoryValue: Decimal = Decimal("0.00")  # BUG-034: Σ nilai persediaan ledger (barang ber-stok)
 
 
 # =============================================================================

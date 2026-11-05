@@ -25,7 +25,7 @@ def test_aksi_detail_urutan_dan_alasan():
 
 
 def test_teks_server():
-    assert (KDT.termin_text(30), KDT.termin_text(0), KDT.termin_text(None)) == ("Net 30 hari", "Tunai", "Tunai")
+    assert (KDT.termin_text(30), KDT.termin_text(0), KDT.termin_text(None)) == ("30 hari", "Tunai", "Tunai")
     assert (KDT.tipe_text("BADAN"), KDT.tipe_text("orang_pribadi"), KDT.tipe_text(None)) == ("Badan usaha", "Orang pribadi", None)
 
 

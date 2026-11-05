@@ -89,6 +89,27 @@ async def get_db_connection():
     return await asyncpg.connect(**db_config)
 
 
+SEN = Decimal("0.01")
+
+
+def _rp(v) -> Decimal:
+    """Rupiah 2 desimal (Law 9/25); None -> 0."""
+    return Decimal(str(v or 0)).quantize(SEN)
+
+
+def hpp_dan_margin(nilai, stok, harga_jual) -> dict:
+    """BUG-038 (6 Nov 2026): WAC per satuan dasar = nilai persediaan ledger / stok (sumber SAMA dengan stock_value di detail dan
+    inventoryValue di stats); stok <= 0 -> None. margin_amount = harga jual - WAC; margin_pct = margin / harga jual x 100 (1 desimal,
+    rumus FE lama). Tanpa harga jual / tanpa WAC -> None."""
+    stok = Decimal(str(stok or 0))
+    wac = (Decimal(str(nilai or 0)) / stok).quantize(SEN) if stok > 0 and nilai is not None else None
+    jual = Decimal(str(harga_jual)) if harga_jual is not None else None
+    if wac is None or not jual or jual <= 0:
+        return {"average_cost": wac, "margin_amount": None, "margin_pct": None}
+    m = (jual - wac).quantize(SEN)
+    return {"average_cost": wac, "margin_amount": m, "margin_pct": (m / jual * 100).quantize(Decimal("0.1"))}
+
+
 def get_tenant_id(request: Request) -> str:
     """Extract tenant_id from authenticated request"""
     if not hasattr(request.state, "user") or not request.state.user:
@@ -1863,7 +1884,8 @@ async def get_items_summary(request: Request):
                 COUNT(*) FILTER (
                     WHERE p.track_inventory = true
                       AND COALESCE(per.jumlah, 0) <= 0
-                ) as out_of_stock_count
+                ) as out_of_stock_count,
+                COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
             FROM products p
             LEFT JOIN LATERAL (
                             SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
@@ -1885,6 +1907,7 @@ async def get_items_summary(request: Request):
                 "in_stock_count": row["in_stock_count"] or 0,
                 "low_stock_count": row["low_stock_count"] or 0,
                 "out_of_stock_count": row["out_of_stock_count"] or 0,
+                "inventory_value": _rp(row["inventory_value"]),  # BUG-034 (sama dengan stats.inventoryValue)
             },
         )
 
@@ -1939,7 +1962,8 @@ async def get_items_stats(request: Request):
                     WHERE p.item_type = 'goods'
                       AND p.track_inventory = true
                       AND COALESCE(per.jumlah, 0) <= 0
-                ) as out_of_stock
+                ) as out_of_stock,
+                COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
             FROM products p
             LEFT JOIN LATERAL (
                             SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
@@ -1961,6 +1985,7 @@ async def get_items_stats(request: Request):
                 lowStock=row["low_stock"] or 0,
                 outOfStock=row["out_of_stock"] or 0,
             ),
+            inventoryValue=_rp(row["inventory_value"]),  # BUG-034: Σ server semua barang, bukan Σ halaman termuat
         )
 
     except Exception as e:
@@ -2737,11 +2762,9 @@ async def get_item_history(
                     "quantity_in": row["quantity_in"] or 0,
                     "quantity_out": row["quantity_out"] or 0,
                     "quantity_balance": row["quantity_balance"] or 0,
-                    "unit_cost": int(row["unit_cost"] or 0),
-                    "total_cost": int(row["total_cost"] or 0),
-                    "average_cost": int(row["average_cost"] or 0)
-                    if row["average_cost"]
-                    else None,
+                    "unit_cost": float(_rp(row["unit_cost"])),  # BUG-038: dulu int() membuang sen
+                    "total_cost": float(_rp(row["total_cost"])),
+                    "average_cost": float(_rp(row["average_cost"])) if row["average_cost"] else None,
                     "warehouse_id": str(row["warehouse_id"])
                     if row["warehouse_id"]
                     else None,
@@ -2933,6 +2956,7 @@ async def get_item(request: Request, item_id: UUID):
                 "purchase_price": row.get("purchase_price"),
                 "current_stock": row.get("current_stock"),
                 "stock_value": row.get("stock_value"),
+                **hpp_dan_margin(row.get("stock_value"), row.get("current_stock"), row.get("sales_price") or row.get("harga_jual")),
                 "transaction_count": int(row.get("transaction_count", 0)),
                 "conversions": conversions,
                 "created_at": row["created_at"].isoformat()

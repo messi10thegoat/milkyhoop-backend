@@ -13,7 +13,7 @@ def tipe_text(kode: Optional[str]) -> Optional[str]:
 
 def termin_text(hari) -> str:
     n = int(hari or 0)
-    return "Tunai" if n <= 0 else f"Net {n} hari"
+    return "Tunai" if n <= 0 else f"{n} hari"  # BUG-026: tanpa "Net" (Inggris)
 
 
 AGREGAT = {
