@@ -12,10 +12,10 @@ PRESET = {
     # LANGSUNG 5 Nov, pola Accurate; teruji nyata scripts/ops/uji-nyata-grosir lajur 5). Nama flag = konstanta pembacanya (tes menjaga).
     # Daftar Harga (harga Dus/Botol per pelanggan) = menu + rute FE di balik listpage_daftar_harga_v1; PO -> terima = menu Pesanan
     # Pembelian + Penerimaan Barang (penerimaan_barang_v1 juga gerbang BE GRN: mati = stok masuk saat tagihan). Semua tenant grosir sama
-    # (putusan pemilik; MASTER ROW 88, 5 Nov).
+    # (putusan pemilik; MASTER ROW 88, 5 Nov). Tim & Akses disembunyikan (grosir = 1 user; FE utils/modulMati, rute BE tetap utuh; 5 Nov).
     "grosir_distribusi": ("modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati",
                           "pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1",
-                          "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1"),
+                          "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1", "modul_tim_mati"),
 }
 
 

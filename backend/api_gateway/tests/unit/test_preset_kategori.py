@@ -13,7 +13,7 @@ def test_isi_preset_grosir_distribusi():
     assert PK.kunci_preset("grosir_distribusi") == (
         "kategori_grosir_distribusi", "modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati",
         "pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1",
-        "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1")
+        "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1", "modul_tim_mati")
     # khas permintaan satu tenant, BUKAN bawaan grosir
     for k in ("modul_pajak_mati", "modul_batch_mati", "modul_gaji_mati", "modul_conversational_mati"):
         assert k not in PK.PRESET["grosir_distribusi"]
@@ -49,12 +49,12 @@ def test_rencana_hanya_kunci_preset_dan_terapkan_idempoten():
     r = asyncio.run(PK.rencana_preset(c, "t", "grosir_distribusi"))
     assert r == {"tambah": ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "pengiriman_sebelum_faktur",
                              "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1",
-                             "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1"],
+                             "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1", "modul_tim_mati"],
                  "nyalakan": ["modul_varian_mati"], "sudah": ["modul_manufaktur_mati"]}
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
     assert c.exec[0][1] == ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "pengiriman_sebelum_faktur",
                             "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1",
-                            "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1", "modul_varian_mati"]
+                            "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1", "modul_tim_mati", "modul_varian_mati"]
     assert "DELETE" not in c.exec[0][0] and "enabled = false" not in c.exec[0][0]
     assert c.ada["lain_x"] is False and c.ada["modul_pajak_mati"] is True  # flag lain tak tersentuh
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
