@@ -21,6 +21,7 @@ from . import po_hitung as PH
 NOL = Decimal("0")
 STATUS_BISA_UBAH = ("draft", "sent")
 STATUS_BISA_TERIMA = ("sent", "partial_received")
+JASA_LANGSUNG_TAGIH = "jasa tidak perlu diterima. Langsung buat faktur pembelian."  # JASA-TANPA-TERIMA (5 Nov 2026)
 # GRN aturan D (pemilik 23 Okt): tagihan boleh LEBIH DULU dari penerimaan -> PO yang sudah (sebagian) ditagih tetap bisa diterima selama ada
 # sisa terima. HANYA saat flag penerimaan_barang_v1 nyala: jalur lama (flag mati) memasukkan stok saat tagihan, penerimaan sesudahnya = dobel.
 STATUS_BISA_TERIMA_D = STATUS_BISA_TERIMA + ("partial_billed", "billed")
@@ -205,7 +206,9 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     """items: [{po_item_id, quantity_received, quantity_rejected?, reject_reason?}] atau None/[] = SEMUA sisa (bawaan pratinjau). -> {blocks,
     notes, baris[], nilai_diterima (penerimaan ini, yang diterima saja), amount_received_sesudah, status_sesudah, toleransi_persen, payload}.
     Aturan & urutan = /receive. TERIMA-TABEL (4 Nov 2026): DITOLAK hanya dicatat di baris GRN (bukan stok/HPP/jurnal/tagih) dan TIDAK
-    mengurangi sisa (pola NetSuite/Odoo: barang pengganti masih ditunggu). Lebih-terima boleh sampai sisa x (1 + toleransi%)."""
+    mengurangi sisa (pola NetSuite/Odoo: barang pengganti masih ditunggu). Lebih-terima boleh sampai sisa x (1 + toleransi%).
+    JASA-TANPA-TERIMA (5 Nov 2026): baris jasa (grn_rencana.sql_jasa) tak pernah diterima -- dilewati bawaan, diblok bila dikirim, tak ikut
+    baris[]/lengkap; PO tanpa baris barang = PO_TANPA_BARANG (jasa ditagih menurut qty pesanan)."""
     bloks, catatan = [], []
     from . import grn_rencana as G
     aturan_d = po["status"] in STATUS_DITAGIH and await G.aktif(conn, po.get("tenant_id"))
@@ -218,12 +221,17 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     if po.get("po_date") and receive_date < po["po_date"]:
         bloks.append(blok("TANGGAL_TERIMA_SEBELUM_PO", "Tanggal terima tidak boleh sebelum tanggal pesanan."))
     semua = await conn.fetch(
-        """SELECT id, description, quantity, quantity_received, quantity_billed, unit, total FROM purchase_order_items
-           WHERE po_id = $1 ORDER BY line_number""" + (" FOR UPDATE" if kunci else ""), po["id"])
+        f"""SELECT i.id, i.description, i.quantity, i.quantity_received, i.quantity_billed, i.unit, i.total, {G.sql_jasa("i", "$2")} AS jasa
+            FROM purchase_order_items i WHERE i.po_id = $1 ORDER BY i.line_number""" + (" FOR UPDATE" if kunci else ""),
+        po["id"], po.get("tenant_id"))
     peta = {str(r["id"]): r for r in semua}
-    if not items:
+    barang = [r for r in semua if not r["jasa"]]
+    if semua and not barang:
+        bloks.append(blok("PO_TANPA_BARANG", f"Pesanan ini hanya berisi jasa; {JASA_LANGSUNG_TAGIH}"))
+        items = []
+    elif not items:
         items = [{"po_item_id": str(r["id"]), "quantity_received": _d(r["quantity"]) - _d(r["quantity_received"])}
-                 for r in semua if _d(r["quantity"]) - _d(r["quantity_received"]) > NOL]
+                 for r in barang if _d(r["quantity"]) - _d(r["quantity_received"]) > NOL]
         if not items:
             bloks.append(blok("TAK_ADA_SISA_TERIMA", "Semua barang pesanan ini sudah diterima."))
     from .teks_galat import qty as _q
@@ -234,6 +242,9 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
         r = peta.get(pid)
         if r is None:
             bloks.append(blok("BARIS_TIDAK_DITEMUKAN", f"Baris pesanan {pid} tidak ditemukan."))
+            continue
+        if r["jasa"]:
+            bloks.append(blok("BARIS_JASA_TANPA_TERIMA", f"{r.get('description') or pid} adalah jasa; {JASA_LANGSUNG_TAGIH}"))
             continue
         # putusan MASTER (A) 4 Nov: diterima ABSEN = sisa - ditolak ("vendor bawa 90, 5 rusak" -> 85 + 5, sisa 5 masih ditunggu);
         # diterima eksplisit dihormati apa adanya (aturan blok lama tetap)
@@ -267,9 +278,9 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     sebelum = PD.jumlah_turunan([dict(r) for r in semua])["amount_received"]
     sesudah_baris = [{**dict(r), "quantity_received": _d(r["quantity_received"]) + akan.get(str(r["id"]), NOL)} for r in semua]
     sesudah = PD.jumlah_turunan(sesudah_baris)["amount_received"]
-    lengkap = all(_d(r["quantity_received"]) >= _d(r["quantity"]) for r in sesudah_baris)
+    lengkap = all(_d(r["quantity_received"]) >= _d(r["quantity"]) for r in sesudah_baris if not r["jasa"])
     baris = []
-    for r in semua:
+    for r in barang:
         k, sisa = str(r["id"]), _d(r["quantity"]) - _d(r["quantity_received"])
         baris.append({"po_item_id": k, "description": r.get("description"), "unit": r.get("unit"), "qty": _d(r["quantity"]),
                       "sudah_diterima": _d(r["quantity_received"]), "sisa": sisa, "akan_diterima": akan.get(k, NOL),

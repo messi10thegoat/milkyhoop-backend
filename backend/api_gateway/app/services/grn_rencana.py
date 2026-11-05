@@ -58,6 +58,21 @@ def ber_stok(item_type, track_inventory) -> bool:
     return item_type == "goods" and bool(track_inventory)
 
 
+JENIS_JASA = "service"
+
+
+def perlu_terima(item_type) -> bool:
+    """JASA-TANPA-TERIMA (putusan pemilik LANGSUNG 5 Nov 2026, pola Accurate/QBO/Odoo): baris JASA (products.item_type 'service') tak pernah
+    diterima -- ditagih menurut qty PESANAN. Selain itu (goods, non_inventory, baris tanpa barang) = barang, lewat Terima."""
+    return item_type != JENIS_JASA
+
+
+def sql_jasa(i: str = "i", tenant: str = "$1") -> str:
+    """Predikat SQL padanan `not perlu_terima` untuk baris PO alias `i` (satu sumber JENIS_JASA; tes kesetaraan)."""
+    return (f"EXISTS (SELECT 1 FROM products p_j WHERE p_j.id = {i}.item_id AND p_j.tenant_id = {tenant} "
+            f"AND p_j.item_type = '{JENIS_JASA}')")
+
+
 def harga_satuan_terima(po_item) -> Decimal:
     """Harga satuan PO NETO diskon baris, tanpa PPN: (subtotal - diskon baris) / qty (presisi penuh; nilai baris dibulatkan 2dp)."""
     q = _d(po_item["quantity"])
@@ -143,9 +158,10 @@ async def batas_tagih(conn, tenant_id: str, po_item_ids) -> dict:
     """TERIMA-TABEL (4 Nov 2026, putusan MASTER, pola NetSuite/SAP) -- SATU sumber batas tagih per baris PO, dipakai to-bill (po_rencana) DAN
     posting tagihan (tagihan_aksi._blok_qty_po). -> {str(po_item_id): {dipesan, diterima (GRN tak-void, dikurangi retur), ada_grn (PO punya
     GRN tak-void), batas = MAX(dipesan, diterima) bila ada_grn selain itu dipesan, dasar, qty_dasar = (diterima|dipesan) - quantity_billed}}.
-    Tanpa lebih-terima (toleransi 0): batas = dipesan = perilaku lama persis."""
+    Tanpa lebih-terima (toleransi 0): batas = dipesan = perilaku lama persis. JASA-TANPA-TERIMA (5 Nov): baris jasa SELALU dasar "dipesan"
+    (ada GRN atau tidak; diterima lama diabaikan)."""
     rows = await conn.fetch(
-        """SELECT poi.id, poi.quantity, COALESCE(poi.quantity_billed, 0) AS ditagih,
+        f"""SELECT poi.id, poi.quantity, COALESCE(poi.quantity_billed, 0) AS ditagih, {sql_jasa("poi")} AS jasa,
                   COALESCE((SELECT SUM(gi.quantity - COALESCE(gi.quantity_returned, 0)) FROM goods_receipt_items gi
                             JOIN goods_receipts g ON g.id = gi.goods_receipt_id AND g.tenant_id = $1 AND g.status <> 'void'
                             WHERE gi.purchase_order_item_id = poi.id), 0) AS diterima,
@@ -156,10 +172,10 @@ async def batas_tagih(conn, tenant_id: str, po_item_ids) -> dict:
     out = {}
     for r in rows:
         dipesan, diterima, ada = _d(r["quantity"]), _d(r["diterima"]), bool(r["ada_grn"])
-        dasar = "diterima" if ada else "dipesan"
-        out[str(r["id"])] = {"dipesan": dipesan, "diterima": diterima, "ada_grn": ada, "batas": max(dipesan, diterima) if ada else dipesan,
-                             "dasar": dasar, "qty_dasar": max((diterima if ada else dipesan) - _d(r["ditagih"]), NOL),
-                             "sudah_ditagih": _d(r["ditagih"])}
+        terima = ada and not r["jasa"]
+        out[str(r["id"])] = {"dipesan": dipesan, "diterima": diterima, "ada_grn": ada, "jasa": bool(r["jasa"]),
+                             "batas": max(dipesan, diterima) if terima else dipesan, "dasar": "diterima" if terima else "dipesan",
+                             "qty_dasar": max((diterima if terima else dipesan) - _d(r["ditagih"]), NOL), "sudah_ditagih": _d(r["ditagih"])}
     return out
 
 

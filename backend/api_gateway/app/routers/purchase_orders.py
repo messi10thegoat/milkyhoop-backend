@@ -318,6 +318,7 @@ async def list_purchase_orders(
                     "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
                     "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
                     "position_text": f["position_text"], "aksi": f["aksi"],
+                    "terima_tersedia": f["terima_tersedia"], "tagih_tersedia": f["tagih_tersedia"],
                     "documents": dok, "doc_count": len(dok),
                 })
 
@@ -591,6 +592,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "terima_terbuka": f["terima_terbuka"], "terima_hari": f["terima_hari"],
                     "terima_keadaan": f["terima_keadaan"], "terima_teks": f["terima_teks"],
                     "position_text": f["position_text"], "aksi": f["aksi"],
+                    "terima_tersedia": f["terima_tersedia"], "tagih_tersedia": f["tagih_tersedia"],
                     "documents": dok, "doc_count": len(dok),
                     "status": po["status"],
                     "po_date": po["po_date"].isoformat(),
