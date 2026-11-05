@@ -96,7 +96,7 @@ async def test_tak_bisa_dicocokkan_diblok_bukan_diam_tanpa_penerimaan(lama, item
 async def test_tautan_eksplisit_wajib_milik_po_dan_tak_ganda():
     _, b = await TR.tautan_po(_K(), "t", BILL, [_i(P1, purchase_order_item_id=L3)])
     assert b[0]["code"] == "TAUTAN_PO_TIDAK_SAH"
-    _, b = await TR.tautan_po(_K(), "t", BILL, [_i(P1, purchase_order_item_id=L1), _i(P2, purchase_order_item_id=L1)])
+    _, b = await TR.tautan_po(_K(), "t", BILL, [_i(P1, purchase_order_item_id=L1), _i(P1, purchase_order_item_id=L1)])
     assert b[0]["code"] == "TAUTAN_PO_GANDA"
     _, b = await TR.tautan_po(_K(), "t", BILL, [_i(P2, purchase_order_item_id=L1)])  # baris PO milik barang lain
     assert b[0]["code"] == "TAUTAN_PO_TIDAK_SAH"
