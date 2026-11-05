@@ -401,6 +401,9 @@ POST /api/item-serials
 POST /api/item-serials/bulk
 POST /api/item-serials/{serial_id}/adjust
 POST /api/item-serials/{serial_id}/transfer
+POST /api/items/impor
+POST /api/items/impor/baca
+POST /api/items/impor/pratinjau
 POST /api/items/preview
 POST /api/items
 POST /api/items/bulk-import

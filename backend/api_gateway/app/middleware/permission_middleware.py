@@ -245,6 +245,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/summary$", ["GET"], "item", "R"),
     (r"^/api/items$", ["GET"], "item", "R"),
     (r"^/api/items/preview$", ["POST"], "item", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
+    (r"^/api/items/impor/templat$", ["GET"], "item", "R"),  # BUG-021 impor barang
+    (r"^/api/items/impor(/baca|/pratinjau)?$", ["POST"], "item", "C"),  # pratinjau/baca = huruf SAMA dgn tulis
     (r"^/api/items$", ["POST"], "item", "C"),
     (r"^/api/items/[^/]+$", ["GET"], "item", "R"),
     (r"^/api/items/[^/]+$", ["PATCH", "PUT"], "item", "U"),

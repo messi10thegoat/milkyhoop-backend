@@ -16,7 +16,7 @@ Endpoints:
 - GET  /items/taxes        - Get tax options
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query, Response
+from fastapi import APIRouter, HTTPException, Request, Query, Response, UploadFile, File
 from typing import Optional
 import logging
 import asyncpg
@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
+from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
 from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -750,6 +751,82 @@ async def preview_create_item(request: Request, body: dict):
     rencana = {"name": b.name, "item_type": b.item_type, "track_inventory": b.track_inventory, "bisa_dikirim": b.bisa_dikirim,
                "base_unit": b.base_unit, "sales_price": b.sales_price, "item_code": kode[0], "sku": kode[1], "efek": efek}
     return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
+
+
+# =============================================================================
+# IMPOR BARANG (BUG-021): Excel + chatbox -> pratinjau per baris -> tulis ATOMIK (services/impor_barang)
+# =============================================================================
+
+
+@router.get("/items/impor/templat")
+async def templat_impor_barang(request: Request):
+    """Templat .xlsx (lembar Barang + Petunjuk + satuan tenant). Kolom = services/impor_barang.KOLOM."""
+    ctx = get_user_context(request)
+    conn = await get_db_connection()
+    try:
+        satuan = await SM.daftar(conn, ctx["tenant_id"])
+    finally:
+        await conn.close()
+    return Response(content=IB.templat_xlsx(satuan),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="templat-impor-barang.xlsx"'})
+
+
+@router.post("/items/impor/baca")
+async def baca_impor_barang(request: Request, berkas: UploadFile = File(...)):
+    """Urai .xlsx -> {baris:[...]} (nol DB). FE menampilkan lalu mengirim baris ke /items/impor/pratinjau."""
+    get_user_context(request)
+    isi = await berkas.read(2 * 1024 * 1024 + 1)
+    if len(isi) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail={"code": "BERKAS_TERLALU_BESAR", "message": "Berkas maksimal 2 MB."})
+    return {"success": True, "data": {"baris": IB.baca_xlsx(isi)}}
+
+
+def _baris_impor(body: dict) -> list:
+    """Badan {baris:[...]} (Excel/tabel) ATAU {teks:"..."} (chatbox, 1..N baris) -> baris ternormalisasi."""
+    body = body or {}
+    return body["baris"] if isinstance(body.get("baris"), list) else IB.tafsir_teks(body.get("teks") or "")
+
+
+@router.post("/items/impor/pratinjau")
+async def pratinjau_impor_barang(request: Request, body: dict):
+    """Pratinjau impor: penentu per baris SAMA dengan POST /items + aturan batch; transaksi READ ONLY, nol tulis.
+    200 {success, data:{ok, blocks, ringkas, baris[{no, ok, blocks, rencana, payload}], payload:{baris}}}."""
+    ctx = get_user_context(request)
+    baris = _baris_impor(body)
+    conn = await get_db_connection()
+    try:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            r = await IB.rencana(conn, ctx, baris)
+        finally:
+            await tr.rollback()
+    finally:
+        await conn.close()
+    return {"success": True, "data": {**r, "payload": {"baris": baris}}}
+
+
+@router.post("/items/impor")
+async def impor_barang(request: Request, body: dict, response: Response = None):
+    """Tulis impor ATOMIK: semua baris atau tidak sama sekali (pola Odoo/Xero). Badan = payload pratinjau. X-Idempotency-Key
+    opsional (replay = respons asli, bukan batch kedua). Blok -> 422 IMPOR_DITOLAK + blok per baris, nol tulis."""
+    from ..services import idem_buat
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    baris = _baris_impor(body)
+    conn = await get_db_connection()
+    try:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "ITEM_IMPORT", "batch", lambda: body, response)
+            if lama is not None:
+                return lama
+            data = await IB.tulis(conn, ctx, baris, request.state.user.get("user_id"),
+                                  request.state.user.get("username") or request.state.user.get("email"))
+            resp = {"success": True, "message": f"{data['jumlah']} barang diimpor.", "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "ITEM_IMPORT", resp, None)
+    finally:
+        await conn.close()
 
 
 async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, user_name):
