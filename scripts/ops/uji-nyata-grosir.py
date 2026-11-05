@@ -5,7 +5,7 @@ Barang "Minyak uji" dibuat DI DALAM rollback: dasar Botol, 1 Dus = 12, 1 Karton 
      kartu +240 Botol @22.200 (5.328.000/240, PPN dikapitalisasi), hutang rupiah penuh, jurnal seimbang, nol PPN Masukan.
   L2 Daftar Harga (Botol 25.000, Dus 280.000) -> resolve -> SO 1 Dus + 5 Botol -> konfirmasi -> SJ -> SI terbit:
      keluar 17 Botol x WAC = 377.400, HPP faktur = 377.400, total SI rupiah penuh = 405.000.
-  L3 Terima pembayaran: nominal bersen -> ditolak "Nominal harus rupiah penuh." nol tulis; rupiah penuh -> sisa 0.
+  L3 Terima pembayaran: nominal bersen -> ditolak "Nominal harus rupiah penuh." berkode NOMINAL_HARUS_RUPIAH (ROW 87) nol tulis; rupiah penuh -> sisa 0.
   L4 Pindah gudang 1 Dus -> asal -12, tujuan +12 Botol, WAC tetap.
   L5 ND retur 1 Dus atas FPB -> kartu -12 Botol, Dr Hutang = total BULAT, Cr Retur = total (kapitalisasi balik), seimbang.
   L7 Pembulatan selisih != 0: FPB 3 Botol @16.650 + PPN 11% = 55.444,50 -> hutang 55.445 (pembulatan 0,50); ND 1 Botol 18.481,50 -> 18.482.
@@ -153,7 +153,7 @@ async def main(keluar):
             async with c.transaction():
                 st, b = 200, dt(await f())
         except HTTPException as e:
-            st, b = e.status_code, {"detail": e.detail}
+            st, b = e.status_code, {"detail": e.detail, "code": getattr(e, "code", None)}  # GalatBerkode = HTTPException + code
         except Exception as e:
             st = getattr(e, "status_code", None) or getattr(e, "status", None) or 500
             b = {"detail": getattr(e, "message", None) or f"{type(e).__name__}: {str(e)[:400]}", "code": getattr(e, "code", None)}
@@ -368,7 +368,8 @@ async def main(keluar):
                 customer_id=str(cust["id"]), payment_date=hari, bank_account_id=str(kas), total_amount=nominal, notes=PENANDA,
                 allocations=[{"invoice_id": str(inv), "amount_applied": nominal}]))
         st, b = await jalan("L3 bayar bersen", lambda: bayar(D("200000.50"), "gr-rp0")) if inv else (0, None)
-        harus("L3a: nominal bersen 200.000,50 -> ditolak 'Nominal harus rupiah penuh.' nol tulis", st in (400, 422) and "Nominal harus rupiah penuh." in str(pesan(b))
+        harus("L3a: nominal bersen 200.000,50 -> ditolak 'Nominal harus rupiah penuh.' berkode NOMINAL_HARUS_RUPIAH nol tulis", st in (400, 422)
+              and "Nominal harus rupiah penuh." in str(pesan(b)) and (b or {}).get("code") == "NOMINAL_HARUS_RUPIAH"
               and await n_rp() == r0, {"st": st, "b": b})
         st, b = await jalan("L3 bayar penuh", lambda: bayar(D("405000"), "gr-rp1")) if inv else (0, None)
         harus("L3b: bayar rupiah penuh 405.000 -> sisa faktur 0", st == 200 and inv and D(str(await sisa() or 0)) == 0, {"st": st, "b": str(b)[:400]})
