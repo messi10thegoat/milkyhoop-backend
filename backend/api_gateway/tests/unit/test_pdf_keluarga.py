@@ -171,9 +171,9 @@ def test_fpb_pola_accurate_isi(tangkap, hari):
                  "<b>Syarat bayar</b><span>30 hari</span>", "NPWP 01.234.567.8-901.000", "0811 2", "NPWP 02.345.678.9-012.000",
                  "100 Dus", "50 Dus", '<th class="r">Diskon</th>', ">2%</td>", '<td class="r">-</td>', "Batch B77 · Exp 2027-05-01",
                  "Riwayat pembayaran", "BP-2611-0007", "Pembayaran &middot; Transfer BCA", "Bagian Pembelian,", '<div class="garis">Tgl.</div>',
-                 terbilang_rupiah("36132720.00"), "<span>Sebagian dibayar</span>"):
+                 terbilang_rupiah("36132720.00"), "<span>Sebagian dibayar</span>", "<b>Vendor</b>"):
         assert teks in h, teks
-    for tak in ('class="hero', "<b>Kepada</b>", "Diterima oleh", "No. faktur vendor", "Referensi", "Satuan</th>", "Batch</th>", "Exp</th>", "Bonus</th>", "0%</td>"):
+    for tak in ('class="hero', "<b>Kepada</b>", "<b>Dari</b>", "Diterima oleh", "No. faktur vendor", "Referensi", "Satuan</th>", "Batch</th>", "Exp</th>", "Bonus</th>", "0%</td>"):
         assert tak not in h, tak
     assert "penawaran.css" in PS.CSS_PENAWARAN
 
@@ -226,12 +226,12 @@ def test_po_keluarga(tangkap):
     ps.tulis_pdf(ps.render_purchase_order(m["po_data"], m["tenant_info"]))
     h = tangkap["isi"]
     # PO = TURUNAN FPB pola Accurate (4 Nov 2026): kop usaha, Kepada vendor + Kirim ke gudang, meta No. PO, tabel konfigurasi FPB, TTD Pemesan
-    for teks in ('<div class="kop">', "<b>Kepada</b>", '<b class="kirim">Kirim ke</b>', "<b>No. PO</b>", "<b>Jadwal terima</b>", "Jl. Pelabuhan 3",
+    for teks in ('<div class="kop">', "<b>Vendor</b>", '<b class="kirim">Kirim ke</b>', "<b>No. PO</b>", "<b>Jadwal terima</b>", "Jl. Pelabuhan 3",
                  "NPWP 02.345.678.9-012.000", "Seratus Rupiah", "Pemesan,", '<div class="garis">Bagian Pembelian</div>',
                  "<th>Nama Barang</th>", '<th class="r">Kts.</th>', '<th class="r">Diskon</th>'):
         assert teks in h, teks
     assert h.index("@Harga</th>") < h.index("Diskon</th>") and "<th>Kode</th>" not in h
-    for tak in ("Purchase Order", "Tanggal kirim", "Syarat bayar", "<b>Nomor</b>"):
+    for tak in ("Purchase Order", "Tanggal kirim", "Syarat bayar", "<b>Nomor</b>", "<b>Kepada</b>"):
         assert tak not in h, tak
 
 

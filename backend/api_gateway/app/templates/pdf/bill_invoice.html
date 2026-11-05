@@ -50,7 +50,7 @@
 {# Kita sendiri penerima tagihan -> tanpa blok "Kepada" (catatan internal atas tagihan vendor, pola Accurate). #}
 <div class="atas">
   <div>
-    <b>Dari</b>
+    <b>Vendor</b>
     <div>{{ v.nama or (bill.vendor.name if bill.vendor else bill.vendor_name) or '-' }}</div>
     {% if v.alamat %}<div class="pre">{{ v.alamat }}</div>{% endif %}
     {% if v.telepon %}<div>{{ v.telepon }}</div>{% endif %}

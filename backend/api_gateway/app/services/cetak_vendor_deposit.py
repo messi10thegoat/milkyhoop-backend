@@ -14,7 +14,7 @@ from .rekap_pesanan import muat_kop
 TEKS = {
     "title": "Bukti Kas Keluar",
     "subtitle": "Uang muka pembelian ke pemasok",
-    "party_label": "Dibayarkan Kepada",
+    "party_label": "Vendor",
     "amount_label": "Jumlah Dibayar",
     "number_label": "No. Uang Muka",
     "purpose_label": "Pesanan Pembelian",

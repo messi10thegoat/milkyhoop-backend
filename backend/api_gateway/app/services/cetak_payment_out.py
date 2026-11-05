@@ -16,7 +16,7 @@ PESAN_TAK_ADA = "Pembayaran tidak ditemukan."
 LABEL = {
     "title": "Bukti Kas Keluar",
     "subtitle": "Pemberitahuan pembayaran ke pemasok",
-    "party_label": "Dibayarkan Kepada",
+    "party_label": "Vendor",
     "amount_label": "Jumlah Dibayar",
     "number_label": "No. Pembayaran",
     "remaining_label": "Sisa faktur",

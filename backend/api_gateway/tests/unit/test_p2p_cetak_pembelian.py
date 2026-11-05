@@ -128,7 +128,7 @@ def _muat_bayar(pay, alokasi, tid="t1"):
 def test_pemuat_bayar_label_keluar_faktur_dan_sisa_satu_faktur():
     d = _muat_bayar(_pay(), [{"invoice_number": "PI-2610-0001", "remaining_after": 0}])["receipt_data"]
     assert d["title"] == "Bukti Kas Keluar" and d["subtitle"] == "Pemberitahuan pembayaran ke pemasok"
-    assert d["hide_stamp"] is True and "stamp_label" not in d and d["party_label"] == "Dibayarkan Kepada"
+    assert d["hide_stamp"] is True and "stamp_label" not in d and d["party_label"] == "Vendor"
     assert d["purpose_ref"] == "PI-2610-0001" and d["remaining"] == Decimal("0") and isinstance(d["amount"], Decimal)
     d2 = _muat_bayar(_pay(), [{"invoice_number": "PI-1", "remaining_after": 5}, {"invoice_number": "PI-2", "remaining_after": 0}])
     assert d2["receipt_data"]["purpose_ref"] == "PI-1, PI-2" and d2["receipt_data"]["remaining"] is None
@@ -138,11 +138,11 @@ def test_render_bayar_keluar_dan_kwitansi_penerimaan_tetap():
     ps = get_pdf_service()
     d = _muat_bayar(_pay(), [{"invoice_number": "PI-2610-0001", "remaining_after": 0}])
     r = ps.render_payment_out(d["receipt_data"], TENANT)
-    for teks in ("Bukti Kas Keluar", "Pemberitahuan pembayaran ke pemasok", "Dibayarkan Kepada", "CV Benang Jaya", "Jumlah Dibayar",
+    for teks in ("Bukti Kas Keluar", "Pemberitahuan pembayaran ke pemasok", '<div class="kw-label">Vendor</div>', "CV Benang Jaya", "Jumlah Dibayar",
                  "Rp 1.110.000", "PI-2610-0001", "No. Pembayaran", "PAY-2610-0004", "Dibayar oleh,"):
         assert teks in r.html, teks
     # BKK (30 Okt 2026): TANPA stempel -- bukan DIBAYAR, dan stempel kosong TAK jatuh ke DITERIMA
-    for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Telah Terima Dari", "Bukti Pembayaran"):
+    for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Telah Terima Dari", "Bukti Pembayaran", "Dibayarkan Kepada"):
         assert teks not in r.html, teks
     h_draf = ps.render_payment_out(_muat_bayar(_pay(status="draft"), [])["receipt_data"], TENANT).html
     assert "kw-stempel-diterima" not in h_draf and "DIBAYAR" not in h_draf and "DITERIMA" not in h_draf
@@ -217,9 +217,10 @@ def test_render_nd_angka_label_dan_stempel():
     html = ps.render_debit_note(d, TENANT).html
     for teks in ("Nota Debit", "VC-2610-0002", "PI-2610-0001", "Retur barang", "CV Benang Jaya", "Rp 270.000", "Rp 30.000",
                  "-Rp 27.000", "PPN 11%", "Rp 26.730", "<span>Total</span>", "Rp 269.730", "Rp 170.000", "Benang putus",
-                 "Kaos Biru Konveksi", '<div class="kop">', "<b>Kepada</b>", "<b>No. Nota Debit</b>", "Bagian Pembelian,"):
+                 "Kaos Biru Konveksi", '<div class="kop">', "<b>Vendor</b>", "<b>No. Nota Debit</b>", "Bagian Pembelian,"):
         assert teks in html, teks
     # turunan FPB/PO (4 Nov 2026): tanpa angka besar & kalimat hero, gaya keluarga Pembelian
+    assert "<b>Kepada</b>" not in html   # label pihak vendor = "Vendor" (pola QBO/NetSuite, 5 Nov 2026)
     assert "Nota Kredit" not in html and "pelanggan" not in html and "DRAF" not in html and "Pengurang hutang" not in html
     assert "Diskon item" not in html and "Rp 300.000" not in html   # Subtotal = SIGMA kolom Total (ringkasan_cetak)
     assert ps.render_debit_note(d, TENANT).css[-2:] == ("penawaran.css", "dokumen.css")

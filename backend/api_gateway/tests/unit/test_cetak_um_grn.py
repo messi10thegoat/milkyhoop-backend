@@ -105,7 +105,7 @@ def test_vd_konteks_arah_keluar_dan_saldo_dari_jurnal(sisa_jurnal):
     c = _ConnVD(vd)
     m = _jalan(CV.muat_pdf_vendor_deposit(c, {"tenant_id": TID}, vd["id"]))
     r = m["receipt_data"]
-    assert r["title"] == "Bukti Kas Keluar" and r["subtitle"] == "Uang muka pembelian ke pemasok" and r["party_label"] == "Dibayarkan Kepada"
+    assert r["title"] == "Bukti Kas Keluar" and r["subtitle"] == "Uang muka pembelian ke pemasok" and r["party_label"] == "Vendor"
     assert r["hide_stamp"] is True and "stamp_label" not in r
     assert r["payer_name"] == "PT Kain Jaya" and r["receipt_number"] == "VD-2610-0001" and r["receipt_date"] == "2026-10-25"
     assert r["purpose_ref"] == "PO-2610-0003" and r["source_ref"] == "TRF-77"
@@ -211,11 +211,11 @@ def _rd(**k):
 
 def test_render_vd_arah_keluar():
     h = _ps().render_receipt(_rd(), TENANT).html
-    for teks in ("Bukti Kas Keluar", "Uang muka pembelian ke pemasok", "Dibayarkan Kepada", "Jumlah Dibayar", "Untuk Pesanan Pembelian",
+    for teks in ("Bukti Kas Keluar", "Uang muka pembelian ke pemasok", '<div class="kw-label">Vendor</div>', "Jumlah Dibayar", "Untuk Pesanan Pembelian",
                  "PO-2610-0003", "Referensi", "TRF-77", "Saldo uang muka", "Satu Juta Lima Ratus Ribu Rupiah", "No. Uang Muka", "Pembayar,"):
         assert teks in h, teks
     for teks in ("DITERIMA", "DIBAYAR", "kw-stempel-diterima", "Bukti Pembayaran Uang Muka", "Telah Terima Dari", "Jumlah Diterima",
-                 "Penerima,"):
+                 "Penerima,", "Dibayarkan Kepada"):
         assert teks not in h, teks
 
 
@@ -243,9 +243,9 @@ def test_render_gr_isi_tanpa_harga_tanpa_abu():
     r = _ps().render_goods_receipt(_gd(), TENANT)
     h = r.html
     for teks in ("Penerimaan Barang", "GRN-2610-0002", "PO-2610-0003", "Gudang Utama", "PT Kain Jaya", "Kain katun", "KT-1",
-                 "Kardus penyok 1", "Diserahkan oleh,", "Diterima oleh,", "Diperiksa oleh,", "Usaha Uji", "<th>Kode</th>", ">Diterima</th>"):
+                 "Kardus penyok 1", "Diserahkan oleh,", "Diterima oleh,", "Diperiksa oleh,", "Usaha Uji", "<th>Kode</th>", ">Diterima</th>", "<b>Vendor</b>"):
         assert teks in h, teks
-    assert "Diretur" not in h and "Ditolak" not in h and "Rp" not in h and "DIBATALKAN" not in h
+    assert "Diretur" not in h and "Ditolak" not in h and "Rp" not in h and "DIBATALKAN" not in h and "<b>Dari</b>" not in h
     assert "_partials/kop_usaha" not in h and 'class="kop"' in h and r.css == PS_CSS_GUDANG and r.font
 
 

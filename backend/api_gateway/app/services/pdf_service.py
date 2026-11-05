@@ -971,7 +971,7 @@ class PDFService:
                                                 ("No. Referensi", "po_ref_no"), ("Gudang", "warehouse_name")) if d.get(k)]
         kolom = [{"judul": "Diretur", "kunci": "quantity_returned", "qty": True}] if any(i.get("quantity_returned") for i in items) else []
         kolom += [{"judul": "Ditolak", "kunci": "ditolak"}] if any(i["ditolak"] for i in items) else []
-        g = {"judul": "Penerimaan Barang", "pihak_label": "Dari", "kirim_ke": None, "meta": meta, "items": items, "catatan": d.get("notes"),
+        g = {"judul": "Penerimaan Barang", "pihak_label": "Vendor", "kirim_ke": None, "meta": meta, "items": items, "catatan": d.get("notes"),
              "pihak": {"nama": d.get("vendor_name"), "alamat": d.get("vendor_alamat"), "telepon": d.get("vendor_telepon")},
              "kolom": {"desk": ["description"], "qty": "quantity", "kode": "item_code", "judul": {"desk": "Nama Barang", "qty": "Diterima"},
                        "kolom": kolom},
