@@ -10,9 +10,12 @@ PRESET = {
     # distributor: tak memproduksi; izin per pengguna & varian/matriks disembunyikan (permintaan pemilik 4 Nov);
     # rekonsiliasi bank = putaran berikutnya (pemilik 5 Nov); alur SO -> Surat Jalan (stok keluar) -> Faktur + pindah gudang (pemilik
     # LANGSUNG 5 Nov, pola Accurate; teruji nyata scripts/ops/uji-nyata-grosir lajur 5). Nama flag = konstanta pembacanya (tes menjaga).
-    # Daftar Harga (harga Dus/Botol per pelanggan) = menu + rute FE di balik listpage_daftar_harga_v1 (MASTER ROW 88, 5 Nov).
+    # Daftar Harga (harga Dus/Botol per pelanggan) = menu + rute FE di balik listpage_daftar_harga_v1; PO -> terima = menu Pesanan
+    # Pembelian + Penerimaan Barang (penerimaan_barang_v1 juga gerbang BE GRN: mati = stok masuk saat tagihan). Semua tenant grosir sama
+    # (putusan pemilik; MASTER ROW 88, 5 Nov).
     "grosir_distribusi": ("modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati",
-                          "pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1"),
+                          "pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "listpage_daftar_harga_v1",
+                          "listpage_pesanan_pembelian_v1", "penerimaan_barang_v1"),
 }
 
 
