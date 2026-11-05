@@ -56,7 +56,7 @@ class Kon:
 
     async def fetchrow(self, sql, *a):
         q = " ".join(sql.split()); self.q.append(q)
-        if "FROM vendors" in q: return {"id": VID, "name": "Vendor X"} if self.vendor else None
+        if "FROM vendors" in q: return {"id": VID, "name": "Vendor X", "is_pkp": True} if self.vendor else None
         if "FROM purchase_orders" in q: return self.po
         if "SUM(quantity_received)" in q and "AS diterima" in q:
             return {"diterima": sum((i["quantity_received"] for i in self.items), D(0)),
@@ -126,6 +126,7 @@ def test_calculate_sama_dengan_kalkulator_create(kon):
         float(t[k]) for k in ("subtotal", "discount_amount", "tax_amount", "total_amount"))
     assert r["items"][0]["total"] == float(baris[0]["total"]) and r["items"][0]["line_number"] == 1
     assert r["payload"]["vendor_id"] == str(VID) and r["payload"]["items"][0]["unit_price"] == "33.34"
+    assert r["peringatan"] == []  # vendor PKP -> tanpa VENDOR_BUKAN_PKP
 
 
 def test_calculate_vendor_bukan_tenant_blok_bukan_galat(kon):
