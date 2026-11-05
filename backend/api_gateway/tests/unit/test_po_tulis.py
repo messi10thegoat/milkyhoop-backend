@@ -324,7 +324,7 @@ class KonPulih(KonSink):
         self.po_ids, self.log = po_ids, []
     async def fetch(self, sql, *a):
         q = " ".join(sql.split())
-        if "SELECT DISTINCT i.po_id" in q: return [{"po_id": p} for p in self.po_ids]
+        if "SELECT i.po_id FROM bill_items" in q: return [{"po_id": p} for p in self.po_ids]  # BUG-057: UNION kepala tagihan (dedup)
         return self.baris
     async def fetchrow(self, sql, *a):
         self.log.append(("fetchrow", " ".join(sql.split())[:80]))
