@@ -144,14 +144,21 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
     from . import revaluasi_ppv as RV
     if not bloks and await RV.aktif(conn, tid):  # ppv-revaluasi-wac: selisih atas stok yang MASIH ada -> Persediaan (penentu SAMA pratinjau/posting)
         from .inventory_helpers import resolve_inventory_accounts
-        produk = {r["id"]: r["product_id"] for r in rows}
+        from fastapi import HTTPException
+        from . import satuan_dasar as SD
+        produk = {r["id"]: r for r in rows}
         for b in rencana:
-            pid = produk.get(b["bill_item_id"])
+            r = produk.get(b["bill_item_id"])
+            pid = r["product_id"] if r else None
             if b.get("selisih", NOL) == NOL or pid is None:
                 continue
             if kunci:  # Law 13 v3.8: WAC produk diserialkan dengan gerakan stok lain
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOK:{tid}:{pid}")
-            rv = await RV.rencana(conn, tid, pid, b["selisih"], b["qty_grn"], [t["gr_item_id"] for t in b.get("tautan", [])])
+            try:  # qty_grn = satuan PO/GRN (mis. karton); stok on-hand = satuan DASAR (pcs) -> basis porsi WAJIB satuan dasar (ROW 99)
+                basis = (await SD.qty_dasar(conn, tid, pid, r["po_unit"] or r["unit"], b["qty_grn"], "konversi"))["qty_dasar"]
+            except HTTPException:
+                continue  # satuan tak terkonversi -> tanpa revaluasi (seluruh selisih ke PPV, aturan lama), bukan porsi salah
+            rv = await RV.rencana(conn, tid, pid, b["selisih"], basis, [t["gr_item_id"] for t in b.get("tautan", [])])
             if rv:
                 rv["akun"] = (await resolve_inventory_accounts(conn, tid, pid))["inventory_account_id"]
                 b["revaluasi"] = rv
