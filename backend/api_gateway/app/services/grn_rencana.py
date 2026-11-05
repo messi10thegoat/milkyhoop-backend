@@ -228,8 +228,14 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
     if stok_baris:
         from .grn_pasang import pasangkan
         tt = await tertunda(conn, tenant_id, [b["po_item_id"] for b in stok_baris])
+        from . import revaluasi_ppv as RV
+        revaluasi = await RV.aktif(conn, tenant_id)
         for b in stok_baris:  # (D) pasang ke tagihan yang lebih dulu; tanpa tertunda = seluruhnya bebas (R)
             b["pasang"] = p = pasangkan(b["qty"], b["harga_satuan"], tt.get(str(b["po_item_id"]), []))
+            j, dasar = p["jurnal"], p["qty_stok"] * (b.get("faktor") or SD.SATU)
+            if revaluasi and j["selisih"] != NOL and dasar > NOL:  # ppv-revaluasi-wac: barang yang baru diterima seluruhnya masih ada
+                p["biaya_dasar"], persediaan, sisa = RV.lipat(p["nilai_stok"], j["selisih"], dasar)
+                p["jurnal"] = {**j, "persediaan": persediaan, "selisih": sisa}
             terpakai = {x["bill_item_id"] for x in p["legacy"] + p["pasangan"]}
             for t in tt.get(str(b["po_item_id"]), []):
                 if t.get("blok") and t["bill_item_id"] in terpakai:
@@ -343,7 +349,8 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
         if p["qty_stok"] > NOL:  # (D) stok masuk qty bukan-legacy @ harga terima; tautan tagih_dulu ke baris ini
             f = b.get("faktor") or SD.SATU  # QTY-DASAR: kartu stok + WAC dalam satuan dasar; dokumen GRN tetap satuan PO
             ledger = (await record_inventory_inbound(
-                conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"] * f, b["harga_satuan"] / f, SUMBER, gid, nomor, uid,
+                conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"] * f, p.get("biaya_dasar") or b["harga_satuan"] / f,
+                SUMBER, gid, nomor, uid,
                 f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid,
                 **({"transaction_unit": b["satuan"], "transaction_quantity": p["qty_stok"], "conversion_factor": f} if f != SD.SATU else {})))["ledger_id"]
             gi = await baris_grn(b, p["qty_stok"], p["nilai_stok"], True, ledger)

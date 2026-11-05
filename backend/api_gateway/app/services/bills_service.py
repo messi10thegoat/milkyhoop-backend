@@ -2109,6 +2109,8 @@ class BillsService:
                 if await conn.fetchval("SELECT to_regclass('goods_receipt_bill_links') IS NOT NULL"):
                     from . import grn_tagih as _gt
                     await _gt.balik_tautan(conn, [r["id"] for r in await conn.fetch("SELECT id FROM bill_items WHERE bill_id = $1", bill_id)])
+                from . import revaluasi_ppv as _rv  # ppv-revaluasi-wac: pasangan revaluasi dibalik urutan terbalik (tanpa baris = no-op)
+                await _rv.balik(conn, {"tenant_id": tenant_id, "user_id": user_id}, bill_id, reversal_journal_id or bill_id, today)
 
                 # G5 (22 Okt 2026): bill void -> qty tertagih PO tertaut dipulihkan (sinkron_tagih menghitung bill TIDAK void), transaksi SAMA
                 from . import po_daftar as _pd
@@ -3680,7 +3682,12 @@ class BillsService:
                 # GRN: tautan baris tagihan <-> baris penerimaan (aktif) di transaksi yang SAMA (grn_tagih.tulis_tautan; saldo GRNI turun)
                 if _grn:
                     from . import grn_tagih as _gt
+                    from . import revaluasi_ppv as _rv
                     await _gt.tulis_tautan(conn, list(_grn["rencana"].values()))
+                    for _b in _grn["rencana"].values():  # ppv-revaluasi-wac: kartu stok == baris Persediaan jurnal ini (hitung_debit)
+                        if _b.get("revaluasi"):
+                            await _rv.tulis(conn, {"tenant_id": tenant_id, "user_id": user_id}, _b["revaluasi"], bill_id,
+                                            bill["invoice_number"], journal_id, bill["issue_date"])
 
                 # UMP-PO U-B (putusan pemilik 2 Nov): uang muka ber-PO DITERAPKAN OTOMATIS ke FPB dari PO itu, transaksi YANG SAMA
                 # (Law 23; cermin sales_invoices._auto_apply_so_deposits). Satu galat = seluruh posting batal (cermin SI).

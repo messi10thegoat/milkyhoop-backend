@@ -106,7 +106,7 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
     GRN_KONTRAK_INBOUND (penentu melanggar aturan D) · BONUS_GRN_BELUM (qty bonus atas baris PO ber-stok) · PO_QTY_TERLAMPAUI."""
     rows = await conn.fetch(
         """SELECT bi.id, bi.quantity, bi.unit, bi.subtotal, bi.discount_amount, COALESCE(bi.total, 0) AS net, COALESCE(bi.tax_amount, 0) AS pajak,
-                  bi.purchase_order_item_id,
+                  bi.purchase_order_item_id, bi.product_id,
                   COALESCE(bi.bonus_qty, 0) AS bonus, poi.unit AS po_unit, poi.po_id
            FROM bill_items bi LEFT JOIN purchase_order_items poi ON poi.id = bi.purchase_order_item_id
            WHERE bi.bill_id = $1 ORDER BY bi.line_number""", bill_id)
@@ -141,6 +141,20 @@ async def rencana_grn(conn, tid: str, bill_id, subtotal_dec: Decimal, kunci: boo
     from .role_resolver import AccountRole, resolve_account_id_by_role
     akun = {"grni": await resolve_account_id_by_role(conn, tid, AccountRole.GOODS_RECEIVED_NOT_INVOICED),
             "ppv": await resolve_account_id_by_role(conn, tid, AccountRole.PURCHASE_PRICE_VARIANCE)}
+    from . import revaluasi_ppv as RV
+    if not bloks and await RV.aktif(conn, tid):  # ppv-revaluasi-wac: selisih atas stok yang MASIH ada -> Persediaan (penentu SAMA pratinjau/posting)
+        from .inventory_helpers import resolve_inventory_accounts
+        produk = {r["id"]: r["product_id"] for r in rows}
+        for b in rencana:
+            pid = produk.get(b["bill_item_id"])
+            if b.get("selisih", NOL) == NOL or pid is None:
+                continue
+            if kunci:  # Law 13 v3.8: WAC produk diserialkan dengan gerakan stok lain
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOK:{tid}:{pid}")
+            rv = await RV.rencana(conn, tid, pid, b["selisih"], b["qty_grn"], [t["gr_item_id"] for t in b.get("tautan", [])])
+            if rv:
+                rv["akun"] = (await resolve_inventory_accounts(conn, tid, pid))["inventory_account_id"]
+                b["revaluasi"] = rv
     return {"rencana": {b["bill_item_id"]: b for b in rencana}, "blocks": bloks, "akun": akun}
 
 
@@ -254,7 +268,10 @@ async def hitung_debit(conn, tid: str, bill_id, subtotal_dec: Decimal, default_i
         if dr["id"] in rencana_grn_:
             b = rencana_grn_[dr["id"]]
             _acc(akun_grn["grni"], b["nilai_grni"] + b.get("nilai_tertunda", NOL), True)  # D: bagian belum diterima juga ke GRNI
-            _acc(akun_grn["ppv"], b["selisih"], False)  # rencana_grn sudah memakai neto_baris (Σ GRNI + PPV == nilai baris)
+            rv = b.get("revaluasi")  # ppv-revaluasi-wac: Δ kartu stok persis ke Persediaan, sisa (porsi sudah keluar + sen) ke PPV
+            if rv:
+                _acc(rv["akun"], rv["persediaan"], True)
+            _acc(akun_grn["ppv"], b["selisih"] - (rv["persediaan"] if rv else NOL), False)  # Σ GRNI + Persediaan + PPV == nilai baris
             continue
         if dr["item_type"] == "goods" and dr["track_inventory"]:
             _acc((await resolve_inventory_accounts(conn, tid, pid))["inventory_account_id"], net, True)
