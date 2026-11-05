@@ -59,6 +59,7 @@ PENANDA = "TES E2E GROSIR"
 D = Decimal
 SABOT = os.environ.get("SABOT", "")
 PROFIL = os.environ.get("PROFIL", "")
+GRAPGRAP = os.environ.get("GRAPGRAP", "1") != "0"  # 0 = tanpa izin baca grapgrap: LAIN tak disentuh, L6b dilewati (bawaan 1)
 POLIS = os.environ.get("POLIS", "")  # revenue_recognition_policy kaos diganti DALAM rollback (invoice = kirim otomatis saat faktur; delivery = tunggu kirim)
 # PROFIL=nyawit: flag kaos dibuat SEPERTI pt-kita-nyawit-bersama (dibaca MASTER 5 Nov, izin pemilik) DI DALAM rollback -> jalur stok
 # nyawit sebenarnya: stok keluar saat FAKTUR (kirim otomatis), bukan saat SJ; pemindahan barang mati.
@@ -86,7 +87,7 @@ def dt(x):
 
 async def main(keluar):
     c = await asyncpg.connect(os.environ["URL"])
-    for t in (T, LAIN):
+    for t in ((T, LAIN) if GRAPGRAP else (T,)):
         assert await c.fetchval('SELECT 1 FROM "Tenant" WHERE id = $1', t), f"tenant {t} tak ada"
     from app.services import db_pool, satuan_dasar as SD
     from app.routers import (items as RI, price_lists as RPL, purchase_orders as RPO, bills as RB, sales_orders as RSO, sj_so as RSJ,
@@ -178,7 +179,7 @@ async def main(keluar):
         "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'tenant_id'", t)}
 
     async def hitung():  # tabel tanpa tenant_id (mis. baris anak) dihitung seluruhnya
-        return {t: await (c.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = ANY($1)", [T, LAIN]) if t in bertenant  # nosec B608 (daftar tetap)
+        return {t: await (c.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = ANY($1)", [T, LAIN] if GRAPGRAP else [T]) if t in bertenant  # nosec B608 (daftar tetap)
                           else c.fetchval(f"SELECT count(*) FROM {t}")) for t in tabel}  # nosec B608
 
     async def sidik():
@@ -192,7 +193,7 @@ async def main(keluar):
         return await c.fetchval("""SELECT md5((SELECT string_agg(id::text||COALESCE(price_list_id::text, '-'), ',' ORDER BY id) FROM customers WHERE tenant_id = $1)
             || COALESCE((SELECT revenue_recognition_policy FROM tenant_config WHERE tenant_id = $1), '-')
             || COALESCE((SELECT string_agg(feature||enabled::text, ',' ORDER BY feature) FROM tenant_features WHERE tenant_id = $1), ''))""", T)
-    awal, s0, sp0 = await hitung(), await sidik(), await sidik_pelanggan_kaos()
+    awal, s0, sp0 = await hitung(), (await sidik() if GRAPGRAP else None), await sidik_pelanggan_kaos()
     harus("persiapan: kaos non-PKP, vendor uji, 2 gudang", pkp is False and vendor is not None and g_utama and g_lain, {"pkp": pkp, "g": [g_utama, g_lain]})
 
     luar = c.transaction()
@@ -472,7 +473,10 @@ async def main(keluar):
         await luar.rollback()
     harus("L6a: ROLLBACK net 0 + sidik kaos (pelanggan.price_list_id, kebijakan pendapatan, flag) sama (barang, konversi, daftar harga, PO, GRN, FPB, SO, SJ, SI, bayar, pindah, ND, jurnal, kartu, stok, audit)",
           awal == await hitung() and sp0 == await sidik_pelanggan_kaos(), {"awal": awal, "akhir": await hitung()})
-    harus("L6b: grapgrap-manado read-only: sidik md5 kartu + jurnal + stok + pelanggan SAMA", s0 == await sidik())
+    if GRAPGRAP:
+        harus("L6b: grapgrap-manado read-only: sidik md5 kartu + jurnal + stok + pelanggan SAMA", s0 == await sidik())
+    else:
+        print("DILEWATI: GRAPGRAP=0 (tanpa izin baca grapgrap) L6b", flush=True)
     harus("L6c: kanal keluar 0", KELUAR == [], KELUAR)
     lulus = sum(x["ok"] for x in cek)
     print(f"SELESAI {lulus}/{len(cek)} lulus{' (SABOTASE ' + SABOT + ')' if SABOT else ''}{' (PROFIL ' + PROFIL + ')' if PROFIL else ''}", flush=True)
