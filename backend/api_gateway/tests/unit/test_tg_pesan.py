@@ -73,16 +73,13 @@ def test_rute_bayar_dan_bayar_penuh_memakai_galat_bayar():
     assert src.count("raise _galat_bayar(result)") == 2
 
 
-# ── T-G1 terima (buat_penerimaan = rute HTTP + SO/SI terima bayar): galat berkode + handler main.py merender kode ─────
+# ── T-G1 terima (buat_penerimaan = rute HTTP + SO/SI terima bayar): galat berkode ─────
 
-def test_terima_bersen_galat_berkode_dan_handler_merender_kode():
+def test_terima_bersen_galat_berkode():
+    # badan JSON {detail, code, message} dirender handler main.py -- dijaga test_vendor_duplikat (TestClient asli)
     s = inspect.getsource(RP._periksa_penerimaan)
     assert "raise GalatBerkode(422, UP.KODE_NOMINAL_RUPIAH, _tolak)" in s
     assert "await _periksa_penerimaan(conn, ctx, body)" in inspect.getsource(RP.buat_penerimaan)
-    from app.main import _galat_berkode_handler
-    resp = asyncio.run(_galat_berkode_handler(None, GalatBerkode(422, UP.KODE_NOMINAL_RUPIAH, UP.PESAN_NOMINAL_RUPIAH)))
-    import json
-    assert resp.status_code == 422 and json.loads(resp.body) == BADAN
 
 
 # ── T-G3 pesan respons Terima pembayaran ──────────────────────────────────────────────────────────────────────────
