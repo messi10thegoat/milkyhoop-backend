@@ -166,9 +166,12 @@ async def main(keluar):
     async def tabel_ada(t):
         return await c.fetchval("SELECT to_regclass($1) IS NOT NULL", f"public.{t}")
     tabel = [t for t in TABEL if await tabel_ada(t)]
+    bertenant = {t for t in tabel if await c.fetchval(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'tenant_id'", t)}
 
-    async def hitung():
-        return {t: await c.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = ANY($1)", [T, LAIN]) for t in tabel}  # nosec B608 (daftar tetap)
+    async def hitung():  # tabel tanpa tenant_id (mis. baris anak) dihitung seluruhnya
+        return {t: await (c.fetchval(f"SELECT count(*) FROM {t} WHERE tenant_id = ANY($1)", [T, LAIN]) if t in bertenant  # nosec B608 (daftar tetap)
+                          else c.fetchval(f"SELECT count(*) FROM {t}")) for t in tabel}  # nosec B608
 
     async def sidik():
         return await c.fetchval("""SELECT md5(
