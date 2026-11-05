@@ -8,7 +8,9 @@ Barang "Minyak uji" dibuat DI DALAM rollback: dasar Botol, 1 Dus = 12, 1 Karton 
   L3 Terima pembayaran: nominal bersen -> ditolak "Nominal harus rupiah penuh." nol tulis; rupiah penuh -> sisa 0.
   L4 Pindah gudang 1 Dus -> asal -12, tujuan +12 Botol, WAC tetap.
   L5 ND retur 1 Dus atas FPB -> kartu -12 Botol, Dr Hutang = total BULAT, Cr Retur = total (kapitalisasi balik), seimbang.
-  L6 ROLLBACK net 0, grapgrap md5 sama, kanal keluar 0.
+  L7 Pembulatan selisih != 0: FPB 3 Botol @16.650 + PPN 11% = 55.444,50 -> hutang 55.445 (pembulatan 0,50); ND 1 Botol 18.481,50 -> 18.482.
+  L8 Faktor desimal (ROW 85): 1 Sak = 2,5 kg, FPB 3 Sak @100.000 -> kartu 7,5 kg @40.000.
+  L6 (akhir) ROLLBACK net 0, grapgrap md5 sama, kanal keluar 0.
 SABOT=sd -> satuan_dasar.hitung mengabaikan konversi (faktor 1) -> WAJIB merah. Argumen: <keluaran.json>."""
 import asyncio
 import json
@@ -211,6 +213,10 @@ async def main(keluar):
             return [(r["source_type"], r["warehouse_id"], D(str(r["quantity_in"])), D(str(r["quantity_out"])), D(str(r["unit_cost"])))
                     for r in await c.fetch(q + " ORDER BY created_at, id", *a)]
 
+        async def kartu_barang(pid, src):
+            return [(D(str(r["quantity_in"])), D(str(r["unit_cost"]))) for r in await c.fetch(
+                "SELECT quantity_in, unit_cost FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND source_id = $3", T, pid, src)]
+
         async def jurnal(src):
             return [dict(r) for r in await c.fetch("""SELECT je.source_type, coa.account_code, jl.debit, jl.credit, jl.memo FROM journal_entries je
                 JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts coa ON coa.id = jl.account_id
@@ -350,6 +356,57 @@ async def main(keluar):
         harus("L5d: total saldo barang = 240 - 17 - 12 = 211 Botol (utama 199 + tujuan 12), WAC 22.200",
               await stok(g_utama) == D("199") and await stok(g_lain) == D("12") and sum(x[2] - x[3] for x in await kartu()) == D("211") and await wac() == D("22200"),
               {"utama": await stok(g_utama), "lain": await stok(g_lain), "wac": await wac()})
+
+        # ================= L7 pembulatan selisih != 0 (permintaan MASTER): FPB 3 Botol @16.650 + PPN 11% -> ND sebagian 1 Botol
+        print("== L7 Pembulatan: FPB 3 x 16.650 + PPN 11% -> ND 1 x 16.650 + 11%", flush=True)
+        from app.schemas.bills import CreateBillRequestV2 as CB2
+
+        async def fpb_langsung(kunci, barang, nm, qty, satuan, harga, tarif):
+            st, b = await jalan(f"FPB {kunci}", lambda: RB.create_bill_v2(req(uid, kunci), CB2(
+                vendor_id=VENDOR, vendor_name=vendor["name"], issue_date=hari, due_date=hari, notes=f"{PENANDA} {kunci}", status="posted",
+                tax_rate=tarif, items=[{"product_id": str(barang), "product_name": nm, "qty": qty, "unit": satuan, "price": harga}])))
+            return st, b, await c.fetchval("SELECT id FROM bills WHERE tenant_id = $1 AND notes = $2 ORDER BY created_at DESC LIMIT 1", T, f"{PENANDA} {kunci}")
+        st, b, b7 = await fpb_langsung("gr-fpb7", P, nama, 3, "Botol", 16650, 11)
+        j7 = await jurnal(b7) if b7 else []
+        k7 = await kartu(b7) if b7 else []
+        r7 = await c.fetchval("SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = 'PURCHASE_ROUNDING'", T)
+        r7k = await c.fetchval("SELECT account_code FROM chart_of_accounts WHERE id = $1", r7) if r7 else None
+        harus("L7a: FPB 3 x 16.650 + PPN 11% non-PKP -> Cr Hutang 55.445, Dr Persediaan 55.444,50, Dr Pembulatan 0,50, kartu 3 Botol = 55.444,50, seimbang",
+              st == 200 and b7 and sum(D(str(r["credit"])) for r in j7 if r["account_code"].startswith("2-")) == D("55445")
+              and sum(D(str(r["debit"])) for r in j7 if r["account_code"] == "1-10600") == D("55444.50")
+              and sum(D(str(r["debit"])) for r in j7 if r["account_code"] == r7k) == D("0.50") and seimbang(j7)
+              and sum(x[2] for x in k7) == D("3") and sum(x[2] * x[4] for x in k7).quantize(D("0.01")) == D("55444.50"),
+              {"st": st, "b": str(b)[:400], "j": j7, "k": k7, "akun_pembulatan": r7k})
+        bi7 = await c.fetchval("SELECT id FROM bill_items WHERE bill_id = $1 ORDER BY line_number LIMIT 1", b7) if b7 else None
+        st, b = await jalan("L7 ND buat", lambda: RVC.create_vendor_credit(req(uid, "gr-nd7"), CVR(
+            vendor_id=VENDOR, vendor_name=vendor["name"], vendor_credit_date=hari, original_bill_id=str(b7), reason="return", tax_rate=11, notes=PENANDA,
+            items=[{"item_id": str(P), "description": nama, "quantity": 1, "unit": "Botol", "unit_price": 16650, "original_bill_item_id": str(bi7)}]))) if bi7 else (0, None)
+        vc7 = uu(data(b).get("id")) if st in (200, 201) else None
+        st2, b2 = await jalan("L7 ND posting", lambda: RVC.post_vendor_credit(req(uid, "gr-nd7-p"), vc7)) if vc7 else (0, None)
+        jv7 = await jurnal(vc7) if vc7 else []
+        v7 = await c.fetchrow("SELECT total_amount, pembulatan FROM vendor_credits WHERE id = $1", vc7) if vc7 else None
+        harus("L7b: ND sebagian 1 x 16.650 + 11% = 18.481,50 -> Dr Hutang 18.482, Cr Pembulatan 0,50, total tersimpan 18.482, seimbang",
+              st in (200, 201) and st2 == 200 and sum(D(str(r["debit"])) for r in jv7 if r["account_code"].startswith("2-")) == D("18482")
+              and sum(D(str(r["credit"])) for r in jv7 if r["account_code"] == r7k) == D("0.50") and seimbang(jv7)
+              and v7 and D(str(v7["total_amount"])) == D("18482"), {"st": [st, st2], "b": str(b)[:300], "b2": str(b2)[:300], "v": dict(v7) if v7 else None, "j": jv7})
+        s7 = await c.fetchval("SELECT outstanding FROM compute_ap_outstanding($1) WHERE bill_id = $2", T, b7) if b7 else None
+        harus("L7c: sisa hutang FPB = 55.445 - 18.482 = 36.963 (rupiah penuh)", s7 is not None and D(str(s7)) == D("36963"), {"sisa": s7})
+
+        # ================= L8 faktor DESIMAL (ROW 85): 1 Sak = 2,5 kg, beli 3 Sak @100.000 -> kartu 7,5 kg @40.000
+        print("== L8 Faktor desimal: 1 Sak = 2,5 kg, FPB 3 Sak", flush=True)
+        nama8 = f"Tepung uji {PENANDA} {uuid.uuid4().hex[:6]}"
+        st, b = await jalan("L8 buat barang", lambda: RI.create_item(req(uid), CIR(
+            name=nama8, item_type="goods", track_inventory=True, base_unit="kg", conversions=[{"conversion_unit": "Sak", "conversion_factor": D("2.5")}]), Response()))
+        P8 = await c.fetchval("SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2", T, nama8)
+        f8 = await c.fetchval("SELECT conversion_factor FROM unit_conversions WHERE tenant_id = $1 AND product_id = $2 AND is_active", T, P8) if P8 else None
+        harus("L8a: barang dasar kg, konversi Sak = 2,5 tersimpan desimal", st == 200 and P8 and f8 is not None and D(str(f8)) == D("2.5"), {"st": st, "b": str(b)[:400], "f": f8})
+        if P8:
+            st, b, b8 = await fpb_langsung("gr-fpb8", P8, nama8, 3, "Sak", 100000, 0)
+            k8 = await kartu_barang(P8, b8) if b8 else []
+            harus("L8b: FPB 3 Sak @100.000 -> kartu +7,5 kg @40.000 (nilai 300.000), Dr Persediaan 300.000",
+                  st == 200 and b8 and [(x[0], x[1]) for x in k8] == [(D("7.5"), D("40000"))]
+                  and sum(D(str(r["debit"])) for r in await jurnal(b8) if r["account_code"] == "1-10600") == D("300000"),
+                  {"st": st, "b": str(b)[:400], "k": k8})
     except StopAsyncIteration:
         pass
     finally:
