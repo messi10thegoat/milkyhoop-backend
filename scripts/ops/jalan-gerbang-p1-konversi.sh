@@ -19,6 +19,14 @@ async def m():
     acak = await SD.konversi_terpakai(c, "kaos-biru-konveksi", p, "satuan-uji-tak-ada-zz")
     nyata = await SD.konversi_terpakai(c, "kaos-biru-konveksi", p, r["transaction_unit"]) if r else None
     print("SQL jalan: acak =", acak, "(harap False) | satuan kartu stok", r["transaction_unit"] if r else None, "=", nyata, "(harap True bila ada)")
+    # KONTROL POSITIF data nyata: baris tagihan kaos bersatuan -> satuan itu WAJIB terpakai; barangnya WAJIB punya riwayat
+    b = await c.fetchrow("SELECT bi.product_id, bi.unit FROM bill_items bi JOIN bills x ON x.id = bi.bill_id WHERE x.tenant_id = 'kaos-biru-konveksi' AND bi.product_id IS NOT NULL AND btrim(COALESCE(bi.unit, '')) <> '' LIMIT 1")
+    pos = await SD.konversi_terpakai(c, "kaos-biru-konveksi", b["product_id"], b["unit"]) if b else None
+    brg = bool(await c.fetchval(SD.SQL_BARANG_TERPAKAI, b["product_id"], "kaos-biru-konveksi")) if b else None
+    kosong = bool(await c.fetchval(SD.SQL_BARANG_TERPAKAI, "00000000-0000-0000-0000-000000000000", "kaos-biru-konveksi"))
+    print("KONTROL POSITIF: satuan baris tagihan", b["unit"] if b else None, "terpakai =", pos, "(harap True) | barang terpakai =", brg,
+          "(harap True) | barang uuid-nol terpakai =", kosong, "(harap False)")
+    print("SQL-HASIL", "LULUS" if (acak is False and pos is True and brg is True and kosong is False) else "GAGAL")
     await tx.rollback(); await c.close()
 asyncio.run(m())
 PY
