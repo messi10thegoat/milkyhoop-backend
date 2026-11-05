@@ -22,7 +22,7 @@ def _r(status, total="350028.00", billed="0", recv="10"):
     return {"id": uuid.uuid4(), "status": status, "expected_date": None, "total_amount": Decimal(total), "sisa_terima": Decimal("0"),
             "belum_ditagih": Decimal(recv) - Decimal("0"), "amount_received": Decimal(total), "amount_billed": Decimal(billed),
             "draft_bill_amount": Decimal("0"),  # 1 Nov 2026: kolom SQL_AGREGAT porsi bill draf
-            "belum_ditagih_sesudah_draf": Decimal(recv) - Decimal("0")}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
+            "belum_ditagih_sesudah_draf": Decimal(recv) - Decimal("0"), "aturan_d": False}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
 
 
 def test_status_tanpa_sisa_tagih():
@@ -42,7 +42,7 @@ def test_fakta_po_closed_dan_cancelled_nol_lainnya_total_minus_ditagih():
 def test_sql_sisa_ditagih_padanan():
     q = PD.sql_sisa_ditagih()
     assert q == "(CASE WHEN po.status IN ('draft', 'cancelled', 'closed') THEN 0 ELSE GREATEST(po.total_amount - ag.amount_billed, 0) END)"  # D3
-    assert "status IN ('partial_received', 'received', 'partial_billed')" in PD.sql_aksi("perlu_ditagih", "$2")
+    assert "status IN ('sent', 'partial_received', 'received', 'partial_billed')" in PD.sql_aksi("perlu_ditagih", "$2")  # JASA-TANPA-TERIMA: + sent
 
 
 def test_with_totals_pakai_sql_sisa_ditagih():

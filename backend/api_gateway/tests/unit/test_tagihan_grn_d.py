@@ -17,7 +17,7 @@ class _KonnD:
     async def fetch(self, sql, *a):
         self.sql.append((sql, a))
         if "goods_receipt_items" in sql and "AS ada_grn" in sql:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
-            return [{"id": r["id"], "quantity": r["quantity"], "ditagih": D("0"), "diterima": D("0"), "ada_grn": False} for r in self.po]
+            return [{"id": r["id"], "quantity": r["quantity"], "ditagih": D("0"), "diterima": D("0"), "ada_grn": False, "jasa": False} for r in self.po]
         if "FROM purchase_order_items poi JOIN purchase_orders po" in sql:
             return self.po
         if "goods_receipt_bill_links" in sql:

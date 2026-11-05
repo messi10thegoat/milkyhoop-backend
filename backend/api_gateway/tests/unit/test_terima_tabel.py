@@ -30,9 +30,9 @@ class Kon:
     def __init__(self, toleransi=None, grn=True, baris=None):
         self.toleransi, self.grn = toleransi, grn
         self.baris = baris or [
-            {"id": A, "description": "Minyak", "quantity": D("100"), "quantity_received": D("0"), "quantity_billed": D("0"), "unit": "Dus",
+            {"id": A, "description": "Minyak", "quantity": D("100"), "jasa": False, "quantity_received": D("0"), "quantity_billed": D("0"), "unit": "Dus",
              "total": D("1000000")},
-            {"id": B, "description": "Gula", "quantity": D("10"), "quantity_received": D("4"), "quantity_billed": D("0"), "unit": "Kg",
+            {"id": B, "description": "Gula", "quantity": D("10"), "jasa": False, "quantity_received": D("4"), "quantity_billed": D("0"), "unit": "Kg",
              "total": D("100000")}]
 
     async def fetchval(self, sql, *a):
@@ -249,7 +249,7 @@ def test_penentu_satu_satunya_penjaga_ditolak_sebelum_tulis():
 
 class KonBatas:
     def __init__(self, diterima, ada, ditagih="0"):
-        self.r = {"id": A, "quantity": D("100"), "ditagih": D(ditagih), "diterima": D(diterima), "ada_grn": ada}
+        self.r = {"id": A, "quantity": D("100"), "ditagih": D(ditagih), "diterima": D(diterima), "ada_grn": ada, "jasa": False}
 
     async def fetch(self, sql, *a):
         q = " ".join(sql.split())
@@ -312,7 +312,7 @@ def test_sidik_idempotensi_terima_bentuk_lama_tak_berubah():
 @pytest.mark.asyncio
 async def test_diterima_absen_default_sisa_dikurangi_ditolak():
     # putusan MASTER (A): "vendor bawa 90, 5 rusak" (sisa 90) -> diterima 85 + ditolak 5; sisa 5 masih ditunggu; payload = terselesaikan
-    baris = [{"id": A, "description": "Minyak", "quantity": D("90"), "quantity_received": D("0"), "quantity_billed": D("0"), "unit": "Dus",
+    baris = [{"id": A, "description": "Minyak", "quantity": D("90"), "jasa": False, "quantity_received": D("0"), "quantity_billed": D("0"), "unit": "Dus",
               "total": D("900000")}]
     r = await _terima(Kon(baris=baris), [{"po_item_id": str(A), "quantity_rejected": D("5")}])
     a = r["baris"][0]
@@ -327,7 +327,7 @@ async def test_diterima_absen_default_sisa_dikurangi_ditolak():
 @pytest.mark.asyncio
 async def test_kalimat_terima_tanpa_decimal_mentah():
     # putusan MASTER 4 Nov (temuan kontrak nyata WORKSPACE): "1.0000"/"10.00%" -> teks_galat.qty
-    baris = [{"id": A, "description": "Minyak", "quantity": D("10.0000"), "quantity_received": D("0.0000"), "quantity_billed": D("0"),
+    baris = [{"id": A, "description": "Minyak", "quantity": D("10.0000"), "jasa": False, "quantity_received": D("0.0000"), "quantity_billed": D("0"),
               "unit": "Dus", "total": D("100000")}]
     r = await _terima(Kon(toleransi=D("10.00"), baris=baris), [{"po_item_id": str(A), "quantity_received": D("11.0000")}])
     assert [n["message"] for n in r["notes"]] == ["Diterima 1 lebih dari pesanan (dalam toleransi 10%)."]

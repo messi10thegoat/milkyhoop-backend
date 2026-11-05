@@ -67,7 +67,7 @@ class _ConnFakta:
 def test_fakta_sisa_per_status_dan_draf_terpisah(status, sisa):
     pid = uuid.uuid4()
     r = {"id": pid, "status": status, "expected_date": None, "total_amount": D("1000"), "sisa_terima": D(0), "belum_ditagih": D(0),
-         "amount_received": D(0), "amount_billed": D("400"), "draft_bill_amount": D("250.004"), "belum_ditagih_sesudah_draf": D(0)}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
+         "amount_received": D(0), "amount_billed": D("400"), "draft_bill_amount": D("250.004"), "belum_ditagih_sesudah_draf": D(0), "aturan_d": False}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
     f = _jalan(PD.fakta_po(_ConnFakta([r]), T, [pid], None))[pid]
     assert f["sisa_ditagih"] == sisa and f["draft_bill_amount"] == D("250.00") and f["amount_billed"] == D("400.00")
 
@@ -87,7 +87,7 @@ class _ConnSinkron:
 
 @pytest.mark.parametrize("posted,harap", [(D(0), "received"), (D(4), "partial_billed"), (D(10), "billed")])
 def test_sinkron_status_dari_posted_cache_qty_pagar(posted, harap):
-    c = _ConnSinkron("received", [{"quantity": D(10), "quantity_received": D(10), "quantity_billed": posted, "total": D("1000")}])
+    c = _ConnSinkron("received", [{"quantity": D(10), "jasa": False, "quantity_received": D(10), "quantity_billed": posted, "total": D("1000")}])
     h = _jalan(PD.sinkron_tagih(c, T, uuid.uuid4()))
     assert h["status"] == harap and h["amount_billed"] == PD.r2(posted * D(100))
     upd_qty = c.exec[0]
@@ -129,7 +129,7 @@ class _ConnPagar:
 
     async def fetch(self, sql, *a):
         if "goods_receipt_items" in sql and "AS ada_grn" in sql:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
-            return [{"id": "L1", "quantity": D(10), "ditagih": D(0), "diterima": D(0), "ada_grn": False}]
+            return [{"id": "L1", "quantity": D(10), "ditagih": D(0), "diterima": D(0), "ada_grn": False, "jasa": False}]
         self.sql = sql
         return [{"id": "L1", "quantity": D(10), "unit": "pcs", "po_number": "PO-1", "tertagih": self.tertagih}]
 
@@ -176,7 +176,7 @@ class _ConnAgg:
         if "ag.draft_bill_amount" in sql:
             return [{"id": p["id"], "status": "partial_billed", "expected_date": None, "total_amount": p["total"], "sisa_terima": D(0),
                      "belum_ditagih": D(0), "amount_received": p["total"], "amount_billed": p["posted"], "draft_bill_amount": p["draf"],
-                     "belum_ditagih_sesudah_draf": D(0)}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
+                     "belum_ditagih_sesudah_draf": D(0), "aturan_d": False}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
                     for p in self.po if p["id"] in set(a[1])]
         return [{"id": p["id"], "po_number": p["no"], "vendor_id": None, "vendor_name": "V", "po_date": __import__("datetime").date(2026, 10, 1),
                  "status": "partial_billed", "total_amount": p["total"]} for p in self.po]

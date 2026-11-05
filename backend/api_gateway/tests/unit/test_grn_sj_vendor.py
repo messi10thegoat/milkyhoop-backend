@@ -66,7 +66,7 @@ def _po():
 
 
 def _baris():
-    return [{"id": uuid.uuid4(), "description": "Kaos", "quantity": 5, "quantity_received": 0, "quantity_billed": 0, "unit": "pcs",
+    return [{"id": uuid.uuid4(), "description": "Kaos", "quantity": 5, "jasa": False, "quantity_received": 0, "quantity_billed": 0, "unit": "pcs",
              "total": 50000}]
 
 

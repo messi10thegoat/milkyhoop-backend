@@ -278,7 +278,7 @@ class KonSink:
         return "OK"
 
 
-def _brs(*b): return [{"quantity": D(q), "quantity_received": D(r), "quantity_billed": D(t), "total": D("1000")} for q, r, t in b]
+def _brs(*b): return [{"quantity": D(q), "jasa": False, "quantity_received": D(r), "quantity_billed": D(t), "total": D("1000")} for q, r, t in b]
 
 
 @pytest.mark.parametrize("awal,baris,harap", [
@@ -298,7 +298,7 @@ def test_sinkron_tagih_status_turunan(awal, baris, harap):
 
 
 def test_sinkron_tagih_jumlah_half_up():
-    kon = KonSink("sent", [{"quantity": D("3"), "quantity_received": D("0"), "quantity_billed": D("1"), "total": D("100.00")}])
+    kon = KonSink("sent", [{"quantity": D("3"), "jasa": False, "quantity_received": D("0"), "quantity_billed": D("1"), "total": D("100.00")}])
     h = asyncio.run(PD.sinkron_tagih(kon, T, PID))
     assert h["amount_billed"] == D("33.33")
 

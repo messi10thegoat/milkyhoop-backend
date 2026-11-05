@@ -80,7 +80,7 @@ def test_sql_aksi_partisi_bentuk():
     a, b, c, d = (PD.sql_aksi(k, "$2") for k in PD.AKSI)  # PO-DRAF retarget (b): + draf_tagihan
     assert "po.status = 'draft'" in a
     assert "po.expected_date < $2::date" in b and "ag.sisa_terima > 0" in b
-    dasar = "(po.status IN ('partial_received', 'received', 'partial_billed') AND ag.belum_ditagih > 0 AND NOT "
+    dasar = "(po.status IN ('sent', 'partial_received', 'received', 'partial_billed') AND ag.belum_ditagih > 0 AND NOT "  # JASA-TANPA-TERIMA: + sent
     assert dasar in c and dasar in d                                                 # predikat tagih SAMA, dibelah sesudah-draf
     assert c.endswith("AND ag.belum_ditagih_sesudah_draf > 0)") and d.endswith("AND ag.belum_ditagih_sesudah_draf <= 0)")
     assert b[1:-1] in c and b[1:-1] in d                                             # ... AND NOT telat (partisi)

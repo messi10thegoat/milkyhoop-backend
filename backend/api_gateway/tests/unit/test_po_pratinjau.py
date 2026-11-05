@@ -41,7 +41,7 @@ class Kon:
                    "discount_percent": D("0"), "discount_amount": D("0"), "tax_rate": D("0"), "total_amount": D("1000"),
                    "notes": None, "vendor_id": VID}
         self.items = items if items is not None else [
-            {"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("3"), "quantity_billed": D("0"), "unit": "m",
+            {"id": I1, "description": "Kain", "quantity": D("10"), "jasa": False, "quantity_received": D("3"), "quantity_billed": D("0"), "unit": "m",
              "total": D("1000"), "subtotal": D("1000"), "discount_amount": D("0"), "tax_amount": D("0")}]
         self.vendor, self.deposit = vendor, list(deposit)
         self.writes, self.mulai, self.rollback, self.readonly, self.q = [], 0, 0, [], []
@@ -71,7 +71,7 @@ class Kon:
     async def fetch(self, sql, *a):
         q = " ".join(sql.split()); self.q.append(q)
         if "goods_receipt_items" in q and "AS ada_grn" in q:  # TERIMA-TABEL retarget (a): pola query grn_rencana.batas_tagih -> tanpa GRN (perilaku lama)
-            return [{"id": i["id"], "quantity": i["quantity"], "ditagih": i["quantity_billed"], "diterima": D(0), "ada_grn": False}
+            return [{"id": i["id"], "quantity": i["quantity"], "ditagih": i["quantity_billed"], "diterima": D(0), "ada_grn": False, "jasa": False}
                     for i in self.items]
         if "JOIN products p" in q and "track_inventory" in q:  # HPP-NETO retarget (a): baris ber-stok rencana_kirim -> barang uji tanpa item_id = tak ber-stok
             return []
@@ -199,7 +199,7 @@ def test_terima_semua_blok_dilaporkan_dan_tulis_menolak_dengan_blok_pertama(kon)
 
 
 def test_terima_status_salah_dan_tak_ada_sisa(kon):
-    kon(Kon(status="received", items=[{"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("10"),
+    kon(Kon(status="received", items=[{"id": I1, "description": "Kain", "quantity": D("10"), "jasa": False, "quantity_received": D("10"),
                                        "quantity_billed": D("0"), "unit": None, "total": D("1000")}]))
     d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
     assert [b["code"] for b in d["blocks"]] == ["PO_TAK_BISA_DITERIMA", "TAK_ADA_SISA_TERIMA"] and d["payload"]["items"] == []
@@ -209,7 +209,7 @@ def test_terima_status_salah_dan_tak_ada_sisa(kon):
 def test_terima_po_sudah_ditagih_hanya_aturan_d(kon, status):
     """GRN aturan D (pemilik 23 Okt): tagihan boleh lebih dulu -> PO ber-status tagih tetap bisa diterima HANYA saat flag GRN nyala; status
     penagihan TIDAK diturunkan. Flag mati = perilaku lama (blok PO_TAK_BISA_DITERIMA; jalur lama memasukkan stok saat tagihan)."""
-    baris = [{"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("0"), "quantity_billed": D("10"), "unit": None,
+    baris = [{"id": I1, "description": "Kain", "quantity": D("10"), "jasa": False, "quantity_received": D("0"), "quantity_billed": D("10"), "unit": None,
               "total": D("1000")}]
     kon(Kon(status=status, items=baris))
     d = run(PO.preview_receive_goods(_Req(), PID, None))["data"]
@@ -251,7 +251,7 @@ def test_batal_semua_blok_dan_uang_muka_dicatat(kon):
 
 
 def test_ubah_angka_sesudah_dan_perubahan(kon):
-    kon(Kon(status="draft", items=[{"id": I1, "description": "Kain", "quantity": D("10"), "quantity_received": D("0"), "quantity_billed": D("0"),
+    kon(Kon(status="draft", items=[{"id": I1, "description": "Kain", "quantity": D("10"), "jasa": False, "quantity_received": D("0"), "quantity_billed": D("0"),
                                     "unit": "m", "total": D("1000"), "subtotal": D("1000"), "discount_amount": D("0"), "tax_amount": D("0")}]))
     body = PS.UpdatePurchaseOrderRequest(items=[PS.PurchaseOrderItemUpdate(description="Kain", quantity=D("2"), unit_price=D("600.50"))],
                                          notes="baru")
@@ -299,7 +299,7 @@ def test_semua_pratinjau_read_only_tanpa_kunci(kon, i):
 
 
 def _baris_tagih(**kw):
-    d = {"id": I1, "item_id": None, "item_code": None, "description": "Kain", "quantity": D("10"), "quantity_received": D("10"),
+    d = {"id": I1, "item_id": None, "item_code": None, "description": "Kain", "quantity": D("10"), "jasa": False, "quantity_received": D("10"),
          "quantity_billed": D("4"), "unit": "m", "unit_price": D("100.50"), "discount_percent": D("0"), "discount_amount": D("0"),
          "tax_rate": D("11"), "total": D("1115.55"), "subtotal": D("1005"), "tax_amount": D("110.55")}
     d.update(kw)

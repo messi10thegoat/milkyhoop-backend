@@ -118,7 +118,7 @@ def _po(status="sent"):
 
 
 def _poi(qty="10", recv="0"):
-    return {"id": uuid.uuid4(), "quantity": Decimal(qty), "quantity_received": Decimal(recv), "total": 1000}
+    return {"id": uuid.uuid4(), "quantity": Decimal(qty), "jasa": False, "quantity_received": Decimal(recv), "total": 1000}
 
 
 def _terima(monkeypatch, kon, qty, tgl=date(2026, 10, 22)):

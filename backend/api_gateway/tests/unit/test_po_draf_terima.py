@@ -59,7 +59,7 @@ class KonFakta:
         if "FROM purchase_orders po" in q and "belum_ditagih_sesudah_draf" in q:
             return [{"id": self.po_id, "status": "partial_received", "expected_date": None, "total_amount": D("1000"), "sisa_terima": D("5"),
                      "belum_ditagih": D("5"), "belum_ditagih_sesudah_draf": D("0"), "amount_received": D("500"), "amount_billed": D("0"),
-                     "draft_bill_amount": D("500")}]
+                     "draft_bill_amount": D("500"), "aturan_d": False}]
         if "FROM bill_items bi JOIN bills b" in q and "= 'draft'" in q and "poi.po_id = ANY" in q:
             return [{"po_id": self.po_id, "id": uuid.UUID(int=7), "invoice_number": "BILL-2611-0004"}]
         raise AssertionError(q[:100])
