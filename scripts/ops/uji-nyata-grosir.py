@@ -11,7 +11,8 @@ Barang "Minyak uji" dibuat DI DALAM rollback: dasar Botol, 1 Dus = 12, 1 Karton 
   L7 Pembulatan selisih != 0: FPB 3 Botol @16.650 + PPN 11% = 55.444,50 -> hutang 55.445 (pembulatan 0,50); ND 1 Botol 18.481,50 -> 18.482.
   L8 Faktor desimal (ROW 85): 1 Sak = 2,5 kg, FPB 3 Sak @100.000 -> kartu 7,5 kg @40.000.
   L6 (akhir) ROLLBACK net 0, grapgrap md5 sama, kanal keluar 0.
-SABOT=sd -> satuan_dasar.hitung mengabaikan konversi (faktor 1) -> WAJIB merah. Argumen: <keluaran.json>."""
+SABOT=sd -> satuan_dasar.hitung mengabaikan konversi (faktor 1) -> WAJIB merah. PROFIL=nyawit -> flag kaos seperti nyawit (dalam rollback):
+  stok keluar saat faktur, L4 pindah harus ditolak flag. Argumen: <keluaran.json>."""
 import asyncio
 import json
 import os
@@ -57,6 +58,11 @@ VENDOR = "73a2b4bd-72d3-46cb-8adb-79f14f9e28e7"
 PENANDA = "TES E2E GROSIR"
 D = Decimal
 SABOT = os.environ.get("SABOT", "")
+PROFIL = os.environ.get("PROFIL", "")
+# PROFIL=nyawit: flag kaos dibuat SEPERTI pt-kita-nyawit-bersama (dibaca MASTER 5 Nov, izin pemilik) DI DALAM rollback -> jalur stok
+# nyawit sebenarnya: stok keluar saat FAKTUR (kirim otomatis), bukan saat SJ; pemindahan barang mati.
+NYAWIT_HAPUS = ("pengiriman_stok_sebelum_faktur", "pemindahan_barang", "milkybook_v2")
+NYAWIT_TAMBAH = ("modul_batch_mati", "modul_conversational_mati", "modul_gaji_mati", "modul_manufaktur_mati", "modul_pajak_mati")
 TABEL = ("products", "unit_conversions", "price_lists", "price_list_items", "purchase_orders", "goods_receipts", "bills", "sales_orders",
          "invoice_fulfillments", "sales_invoices", "receive_payments", "stock_transfers", "vendor_credits", "journal_entries",
          "inventory_ledger", "warehouse_stock", "audit_logs", "idempotency_keys")
@@ -188,6 +194,14 @@ async def main(keluar):
     luar = c.transaction()
     await luar.start()
     try:
+        if PROFIL == "nyawit":
+            await c.execute("DELETE FROM tenant_features WHERE tenant_id = $1 AND feature = ANY($2::text[])", T, list(NYAWIT_HAPUS))
+            await c.execute("""INSERT INTO tenant_features (tenant_id, feature, enabled) SELECT $1, f, true FROM unnest($2::text[]) f
+                               ON CONFLICT (tenant_id, feature) DO UPDATE SET enabled = true""", T, list(NYAWIT_TAMBAH))
+            aktif = {r["feature"] for r in await c.fetch("SELECT feature FROM tenant_features WHERE tenant_id = $1 AND enabled", T)}
+            harus("profil nyawit: 3 flag mati + 5 flag hidup (dalam rollback); pengiriman_sebelum_faktur, pengiriman_serah, dashboard_v2 tetap",
+                  not aktif & set(NYAWIT_HAPUS) and set(NYAWIT_TAMBAH) <= aktif
+                  and {"pengiriman_sebelum_faktur", "pengiriman_serah", "dashboard_v2"} <= aktif, sorted(aktif))
         # ================= L0 barang uji (dalam rollback)
         nama = f"Minyak uji {PENANDA} {uuid.uuid4().hex[:6]}"
         st, b = await jalan("L0 buat barang", lambda: RI.create_item(req(uid), CIR(
@@ -298,18 +312,30 @@ async def main(keluar):
         sj = uu(data(b).get("id")) if st == 200 else None
         k_sj = await kartu(sj) if sj else []
         j_sj = await jurnal(sj) if sj else []
-        harus("L2c: SJ keluar 17 Botol (12 + 5) x WAC 22.200 = 377.400, jurnal seimbang, stok utama 223",
-              sj and sum(x[3] for x in k_sj) == D("17") and sum(x[3] * x[4] for x in k_sj) == D("377400") and seimbang(j_sj)
-              and sum(D(str(r["debit"])) for r in j_sj) == D("377400") and await stok(g_utama) == D("223"), {"st": st, "b": str(b)[:400], "k": k_sj, "j": j_sj})
+        if PROFIL == "nyawit":
+            print(f"INFO L2c profil nyawit (tanpa flag stok): SJ dari SO st={st} kartu={k_sj} pesan={str(pesan(b))[:300]}", flush=True)
+            harus("L2c(nyawit): SJ dari SO untuk barang ber-stok TIDAK mengeluarkan stok (flag stok mati), stok utama tetap 240",
+                  not k_sj and await stok(g_utama) == D("240"), {"st": st, "b": str(b)[:400], "k": k_sj})
+        else:
+          harus("L2c: SJ keluar 17 Botol (12 + 5) x WAC 22.200 = 377.400, jurnal seimbang, stok utama 223",
+                sj and sum(x[3] for x in k_sj) == D("17") and sum(x[3] * x[4] for x in k_sj) == D("377400") and seimbang(j_sj)
+                and sum(D(str(r["debit"])) for r in j_sj) == D("377400") and await stok(g_utama) == D("223"), {"st": st, "b": str(b)[:400], "k": k_sj, "j": j_sj})
+        cogs = await c.fetchval("SELECT account_id FROM account_roles WHERE tenant_id = $1 AND role_key = 'COGS_SALES'", T)
+        dr_cogs = lambda: c.fetchval("""SELECT COALESCE(SUM(jl.debit - jl.credit), 0) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+            WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND jl.account_id = $2""", T, cogs)
+        keluar_p = lambda: c.fetchval("SELECT COALESCE(SUM(quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2", T, P)
+        hpp0, out0 = D(str(await dr_cogs())), D(str(await keluar_p()))
         st, b = await jalan("L2 SI terbit", lambda: RSO.convert_to_invoice(req(uid, "gr-si"), Response(), str(so), CTI(
             invoice_date=hari, post=True, apply_deposits=False)))
         inv = uu(data(b).get("invoice_id")) if st == 200 else None
         si = await c.fetchrow("SELECT total_amount, status, subtotal, tax_amount FROM sales_invoices WHERE id = $1", inv) if inv else None
         j_si = await jurnal(inv) if inv else []
-        hpp = sum(D(str(r["debit"])) for r in j_si if r["account_code"].startswith("5-"))
-        harus("L2d: SI terbit total 405.000 rupiah penuh, jurnal seimbang, HPP faktur = 377.400 (reklas SJ), tanpa keluar stok kedua",
+        hpp, out_si = D(str(await dr_cogs())) - hpp0, D(str(await keluar_p())) - out0
+        harus("L2d: SI terbit total 405.000 rupiah penuh, jurnal seimbang, HPP (Δ akun COGS_SALES) = 377.400, stok utama 223; "
+              + ("stok keluar 17 Botol SAAT FAKTUR (kirim otomatis)" if PROFIL == "nyawit" else "tanpa keluar stok kedua (sudah di SJ)"),
               inv and si and D(str(si["total_amount"])) == D("405000") and bulat(si["total_amount"]) and seimbang(j_si) and hpp == D("377400")
-              and await stok(g_utama) == D("223"), {"st": st, "b": str(b)[:400], "si": dict(si) if si else None, "j": j_si})
+              and out_si == (D("17") if PROFIL == "nyawit" else D("0")) and await stok(g_utama) == D("223"),
+              {"st": st, "b": str(b)[:400], "si": dict(si) if si else None, "hpp": hpp, "out": out_si, "j": j_si})
 
         # ================= L3 pembayaran
         print("== L3 Terima pembayaran", flush=True)
@@ -331,10 +357,20 @@ async def main(keluar):
         # ================= L4 pindah gudang
         print("== L4 Pindah gudang 1 Dus", flush=True)
         a0, t0, w0 = await stok(g_utama), await stok(g_lain), await wac()
-        st, b = await jalan("L4 pindah", lambda: RST.create_and_complete_stock_transfer(req(uid, "gr-pg"), Response(), CST(
-            from_warehouse_id=g_utama, to_warehouse_id=g_lain, notes=PENANDA, items=[{"item_id": P, "quantity_requested": 1, "unit": "Dus"}])))
-        harus("L4: pindah 1 Dus -> asal -12, tujuan +12 Botol, WAC tetap 22.200", st == 200 and await stok(g_utama) == a0 - 12 and await stok(g_lain) == t0 + 12
-              and await wac() == w0 == D("22200"), {"st": st, "b": str(b)[:400], "stok": [a0, await stok(g_utama), t0, await stok(g_lain)], "wac": [w0, await wac()]})
+
+        async def pindah():  # dependensi rute (_butuh_flag) dulu, persis urutan FastAPI
+            await RST._butuh_flag(req(uid))
+            return await RST.create_and_complete_stock_transfer(req(uid, "gr-pg"), Response(), CST(
+                from_warehouse_id=g_utama, to_warehouse_id=g_lain, notes=PENANDA, items=[{"item_id": P, "quantity_requested": 1, "unit": "Dus"}]))
+        st, b = await jalan("L4 pindah", pindah)
+        pindah_ok = PROFIL != "nyawit"
+        if not pindah_ok:
+            print(f"INFO L4 profil nyawit (pemindahan_barang mati): st={st} pesan={str(pesan(b))[:300]}", flush=True)
+            harus("L4(nyawit): pindah gudang ditolak sebelum tulis (flag mati), stok tak bergeser",
+                  st != 200 and await stok(g_utama) == a0 and await stok(g_lain) == t0, {"st": st, "b": str(b)[:400]})
+        else:
+          harus("L4: pindah 1 Dus -> asal -12, tujuan +12 Botol, WAC tetap 22.200", st == 200 and await stok(g_utama) == a0 - 12 and await stok(g_lain) == t0 + 12
+                and await wac() == w0 == D("22200"), {"st": st, "b": str(b)[:400], "stok": [a0, await stok(g_utama), t0, await stok(g_lain)], "wac": [w0, await wac()]})
 
         # ================= L5 ND retur 1 Dus
         print("== L5 Retur ND 1 Dus atas FPB", flush=True)
@@ -356,8 +392,8 @@ async def main(keluar):
               and await stok(g_utama) == a1 - 12, {"k": k_vc, "stok": [a1, await stok(g_utama)]})
         sisa_b = await c.fetchval("SELECT outstanding FROM compute_ap_outstanding($1) WHERE bill_id = $2", T, bill) if bill else None
         harus("L5c: sisa hutang FPB = 5.328.000 - 266.400 = 5.061.600", sisa_b is not None and D(str(sisa_b)) == D("5061600"), {"sisa": sisa_b})
-        harus("L5d: total saldo barang = 240 - 17 - 12 = 211 Botol (utama 199 + tujuan 12), WAC 22.200",
-              await stok(g_utama) == D("199") and await stok(g_lain) == D("12") and sum(x[2] - x[3] for x in await kartu()) == D("211") and await wac() == D("22200"),
+        harus("L5d: total saldo barang = 240 - 17 - 12 = 211 Botol " + ("(utama 199 + tujuan 12)" if pindah_ok else "(utama 211, tanpa pindah)") + ", WAC 22.200",
+              await stok(g_utama) == (D("199") if pindah_ok else D("211")) and await stok(g_lain) == (D("12") if pindah_ok else D("0")) and sum(x[2] - x[3] for x in await kartu()) == D("211") and await wac() == D("22200"),
               {"utama": await stok(g_utama), "lain": await stok(g_lain), "wac": await wac()})
 
         # ================= L7 pembulatan selisih != 0 (permintaan MASTER): FPB 3 Botol @16.650 + PPN 11% -> ND sebagian 1 Botol
@@ -419,7 +455,7 @@ async def main(keluar):
     harus("L6b: grapgrap-manado read-only: sidik md5 kartu + jurnal + stok + pelanggan SAMA", s0 == await sidik())
     harus("L6c: kanal keluar 0", KELUAR == [], KELUAR)
     lulus = sum(x["ok"] for x in cek)
-    print(f"SELESAI {lulus}/{len(cek)} lulus{' (SABOTASE ' + SABOT + ')' if SABOT else ''}", flush=True)
+    print(f"SELESAI {lulus}/{len(cek)} lulus{' (SABOTASE ' + SABOT + ')' if SABOT else ''}{' (PROFIL ' + PROFIL + ')' if PROFIL else ''}", flush=True)
     json.dump(hasil, open(keluar, "w"), default=str)
     return 0 if lulus == len(cek) else 1
 
