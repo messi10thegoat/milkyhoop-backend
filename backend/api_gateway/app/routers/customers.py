@@ -384,6 +384,26 @@ async def customers_summary(request: Request, search: Optional[str] = Query(None
     return {"success": True, "data": data}
 
 
+# BUG-028 (5 Nov 2026): dulu kode TERBARU + 1 -> kode terbaru tak berpola ("TOKO-A") jatuh ke "C0001" walau C0001 dipakai (409).
+# Kini: awalan = awalan kode berpola TERBARU (bawaan "C"); angka = MAX seri awalan itu + 1, termasuk pelanggan terhapus (tak dipakai ulang).
+SQL_KODE_BERPOLA = """
+    SELECT m[1] AS awalan, m[2] AS angka, created_at
+    FROM (SELECT regexp_match(nomor_member, '^([A-Z]*)([0-9]+)$') AS m, created_at
+          FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL) t
+    WHERE m IS NOT NULL
+"""
+
+
+def kode_berikut(baris) -> str:
+    """baris = [{awalan, angka, created_at}] kode berpola tenant -> kode berikut (C%04d bila belum ada)."""
+    if not baris:
+        return "C0001"
+    mentah = max(baris, key=lambda r: r["created_at"])["awalan"]
+    awalan = mentah or "C"
+    n = max(int(r["angka"]) for r in baris if r["awalan"] in (mentah, awalan))
+    return f"{awalan}{n + 1:04d}"
+
+
 @router.get("/next-code")
 async def get_next_customer_code(request: Request):
     """Get the next available customer code for auto-generation."""
@@ -391,23 +411,8 @@ async def get_next_customer_code(request: Request):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT nomor_member FROM customers WHERE tenant_id = $1 AND nomor_member IS NOT NULL ORDER BY created_at DESC LIMIT 1",
-                ctx["tenant_id"],
-            )
-            import re
-
-            if row and row["nomor_member"]:
-                match = re.match(r"^([A-Z]*)([0-9]+)$", row["nomor_member"])
-                if match:
-                    prefix = match.group(1) or "C"
-                    num = int(match.group(2)) + 1
-                    next_code = f"{prefix}{num:04d}"
-                else:
-                    next_code = "C0001"
-            else:
-                next_code = "C0001"
-            return {"success": True, "next_code": next_code}
+            baris = await conn.fetch(SQL_KODE_BERPOLA, ctx["tenant_id"])
+            return {"success": True, "next_code": kode_berikut(baris)}
     except HTTPException:
         raise
     except Exception as e:
