@@ -173,3 +173,24 @@ async def tolak_ubah_dasar(conn, tid: str, product_id, dasar_lama: Optional[str]
         return
     if await conn.fetchval(SQL_BARANG_TERPAKAI, product_id, tid):
         raise GalatBerkode(409, KODE_SATUAN_DASAR_TERPAKAI, tg.satuan_dasar_terpakai(dasar_lama))
+
+
+# ------------------------------------------------------------------ faktor konversi DESIMAL (putusan pemilik LANGSUNG 5 Nov, pola Accurate)
+FAKTOR_MAKS = Decimal("10000")
+PESAN_FAKTOR = "Faktor konversi harus lebih dari 0, paling besar 10.000, dan paling banyak 6 angka desimal."
+
+
+def faktor_sah(v) -> Decimal:
+    """SATU validator faktor konversi (form barang + layar satuan): Decimal > 0, <= 10.000, <= 6 desimal. Salah -> ValueError(PESAN_FAKTOR)."""
+    try:
+        f = v if isinstance(v, Decimal) else Decimal(str(v))
+    except Exception:
+        raise ValueError(PESAN_FAKTOR)
+    if isinstance(v, bool) or not f.is_finite() or f <= 0 or f > FAKTOR_MAKS or f.as_tuple().exponent < -6:
+        raise ValueError(PESAN_FAKTOR)
+    return f.normalize() if f == f.to_integral_value() else f
+
+
+def faktor_json(v) -> float:
+    """Bentuk BACA tunggal faktor (get/list/detail): angka JSON (float), bukan campuran int/float."""
+    return float(v)
