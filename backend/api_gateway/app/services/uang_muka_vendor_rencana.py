@@ -94,9 +94,16 @@ def sesudah(sebelum: dict, **ubah) -> dict:
     return out
 
 
-async def akun_kas(conn, tid: str, bank_account_id, account_id, bloks: list, wajib: bool):
+SQL_AKUN_KAS_AKTIF = """SELECT id, coa_id FROM bank_accounts WHERE tenant_id = $1 AND account_type IN ('cash', 'petty_cash')
+                         AND COALESCE(is_active, true) AND coa_id IS NOT NULL ORDER BY account_name LIMIT 2"""
+
+
+async def akun_kas(conn, tid: str, bank_account_id, account_id, bloks: list, wajib: bool, posting: bool = True):
     """(coa_id kas/bank, bank_account_id cermin|None). bank_account_id -> CoA rekening (tenant eksplisit, Law 24); account_id -> CoA
-    kas/bank ASSET is_cash milik tenant (kembar uang muka pelanggan); keduanya kosong -> wajib ? blok REKENING_WAJIB : peran Kas."""
+    kas/bank ASSET is_cash milik tenant (kembar uang muka pelanggan); keduanya kosong -> wajib ? blok REKENING_WAJIB : akun kas tenant.
+    BUG-043 (putusan pemilik LANGSUNG 6 Nov 2026): tanpa pilihan, dulu SELALU peran Kas (CASH_GENERAL) walau tenant punya beberapa akun
+    kas -> jurnal ke kas yang salah. Kini: >1 akun kas aktif -> blok AKUN_KAS_WAJIB (hanya saat posting; draf boleh tanpa akun);
+    tepat 1 -> akun itu; 0 -> peran Kas seperti dulu."""
     if bank_account_id:
         r = await conn.fetchrow("SELECT id, coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2", _uuid(bank_account_id), tid)
         if not r or not r["coa_id"]:
@@ -115,6 +122,13 @@ async def akun_kas(conn, tid: str, bank_account_id, account_id, bloks: list, waj
     if wajib:
         bloks.append(blok("REKENING_WAJIB", "Pilih rekening bank atau akun kas.", 422))
         return None, None
+    kas = await conn.fetch(SQL_AKUN_KAS_AKTIF, tid)
+    if len(kas) > 1:
+        if posting:
+            bloks.append({**blok("AKUN_KAS_WAJIB", "Pilih akun kas yang dipakai untuk membayar.", 422), "field": "bank_account_id"})
+        return None, None
+    if len(kas) == 1:
+        return kas[0]["coa_id"], kas[0]["id"]
     coa = await _akun(conn, tid, AccountRole.CASH_GENERAL, bloks)
     ba = await conn.fetchval("SELECT id FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2", coa, tid) if coa else None
     return coa, ba
@@ -160,7 +174,8 @@ async def rencana_buat(conn, ctx, body, pratinjau: bool = False) -> dict:
             b = await UPO.periksa_plafon(conn, tid, body.purchase_order_id, body.amount, None, kunci=not pratinjau)
             if b:
                 bloks.append(blok(b["code"], b["message"], b["status"]))
-    coa_kas, ba = await akun_kas(conn, tid, body.bank_account_id, None, bloks, wajib=False)
+    coa_kas, ba = await akun_kas(conn, tid, body.bank_account_id, None, bloks, wajib=False,
+                                 posting=bool(getattr(body, "simpan_dan_posting", False)))
     jumlah = _d(body.amount)
     jurnal, bank = [], []
     status = "draft"
@@ -195,7 +210,8 @@ async def rencana_posting(conn, ctx, vd, pratinjau: bool = False) -> dict:
                       [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])] if um and coa_kas else []
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
     return {"blocks": bloks, "before": sebelum, "after": sesudah(sebelum, status="posted", remaining=_f(jumlah)),
-            "journals": jurnal, "bank_transactions": await _bank(conn, tid, ba, -jumlah, "withdrawal") if jurnal else [], "bills": []}
+            "journals": jurnal, "bank_transactions": await _bank(conn, tid, ba, -jumlah, "withdrawal") if jurnal else [], "bills": [],
+            "akun_kas": coa_kas}
 
 
 # ---------------------------------------------------------------- terapkan

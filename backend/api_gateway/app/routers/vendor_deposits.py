@@ -520,19 +520,12 @@ async def _posting_inti(conn, ctx: dict, deposit_id) -> "PostDepositResponse":
     )
     if not vd:
         raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
-    _tolak((await R.rencana_posting(conn, ctx, vd))["blocks"])  # = /post/preview (status, peran akun, rekening, periode)
+    rencana = await R.rencana_posting(conn, ctx, vd)  # = /post/preview (status, peran akun, rekening/akun kas, periode)
+    _tolak(rencana["blocks"])
     # Law 27: akun dari PERAN (dulu kode hardcode 1-10800 = PPN Masukan di semua tenant)
     vendor_deposit_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.AP_PREPAID)
-    bank_account = None
-    if vd["bank_account_id"]:
-        bank_account = await conn.fetchrow(
-            "SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",  # Law 24: tenant eksplisit
-            vd["bank_account_id"], ctx["tenant_id"],
-        )
-    if not bank_account:
-        cash_account = await UMV.akun_peran(conn, ctx["tenant_id"], AccountRole.CASH_GENERAL)
-    else:
-        cash_account = bank_account["coa_id"]
+    # BUG-043: akun kas = penentu SAMA dengan pratinjau (R.akun_kas); dulu tanpa rekening SELALU peran Kas walau ada beberapa akun kas
+    cash_account = rencana["akun_kas"]
 
     # Law 5: Period check
     period_row = await conn.fetchrow(
