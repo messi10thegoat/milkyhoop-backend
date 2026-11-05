@@ -11,7 +11,8 @@ APP = Path(PK.__file__).resolve().parents[1]
 
 def test_isi_preset_grosir_distribusi():
     assert PK.kunci_preset("grosir_distribusi") == (
-        "kategori_grosir_distribusi", "modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati")
+        "kategori_grosir_distribusi", "modul_izinperan_mati", "modul_varian_mati", "modul_manufaktur_mati", "modul_rekonsiliasi_mati",
+        "pengiriman_sebelum_faktur", "pengiriman_stok_sebelum_faktur", "pemindahan_barang")
     # khas permintaan satu tenant, BUKAN bawaan grosir
     for k in ("modul_pajak_mati", "modul_batch_mati", "modul_gaji_mati", "modul_conversational_mati"):
         assert k not in PK.PRESET["grosir_distribusi"]
@@ -45,10 +46,11 @@ class Conn:
 def test_rencana_hanya_kunci_preset_dan_terapkan_idempoten():
     c = Conn({"modul_varian_mati": False, "modul_manufaktur_mati": True, "modul_pajak_mati": True, "lain_x": False})
     r = asyncio.run(PK.rencana_preset(c, "t", "grosir_distribusi"))
-    assert r == {"tambah": ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati"], "nyalakan": ["modul_varian_mati"],
-                 "sudah": ["modul_manufaktur_mati"]}
+    assert r == {"tambah": ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "pengiriman_sebelum_faktur",
+                             "pengiriman_stok_sebelum_faktur", "pemindahan_barang"], "nyalakan": ["modul_varian_mati"], "sudah": ["modul_manufaktur_mati"]}
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
-    assert c.exec[0][1] == ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "modul_varian_mati"]
+    assert c.exec[0][1] == ["kategori_grosir_distribusi", "modul_izinperan_mati", "modul_rekonsiliasi_mati", "pengiriman_sebelum_faktur",
+                            "pengiriman_stok_sebelum_faktur", "pemindahan_barang", "modul_varian_mati"]
     assert "DELETE" not in c.exec[0][0] and "enabled = false" not in c.exec[0][0]
     assert c.ada["lain_x"] is False and c.ada["modul_pajak_mati"] is True  # flag lain tak tersentuh
     asyncio.run(PK.terapkan_preset(c, "t", "grosir_distribusi"))
@@ -58,3 +60,10 @@ def test_rencana_hanya_kunci_preset_dan_terapkan_idempoten():
 def test_satu_sumber_kunci_preset():
     pemakai = [p for p in APP.rglob("*.py") if "modul_izinperan_mati" in p.read_text(encoding="utf-8", errors="ignore")]
     assert pemakai == [Path(PK.__file__).resolve()]
+
+
+def test_kunci_alur_kirim_sama_dengan_konstanta_pembaca():
+    # alur grosir SO -> Surat Jalan (stok keluar) -> Faktur + pindah gudang (pemilik 5 Nov): nama kunci preset HARUS sama dengan flag
+    # yang dibaca penentunya -- ganti nama di pembaca tanpa preset (atau sebaliknya) = preset diam tak berefek.
+    from app.services import pemindahan_barang as PB, sj_so as SJ
+    assert {SJ.FLAG, SJ.FLAG_STOK, PB.FLAG} <= set(PK.PRESET["grosir_distribusi"])
