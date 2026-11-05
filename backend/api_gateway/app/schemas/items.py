@@ -5,8 +5,11 @@ This module defines request and response models for the /api/items endpoints.
 Items are the master data for goods and services used in transactions.
 """
 
-from pydantic import AliasChoices, BaseModel, Field, PrivateAttr, field_validator, model_validator
-from typing import Optional, List, Literal, Dict, Any
+from decimal import Decimal
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator
+from typing import Annotated, Optional, List, Literal, Dict, Any
+
+from ..services.satuan_dasar import faktor_sah as _faktor_sah
 from uuid import UUID
 from datetime import datetime
 
@@ -39,10 +42,13 @@ TAX_CODES = ['', 'PPN_11', 'PPN_12', 'PPH_23_2', 'PPH_23_15']
 # REQUEST MODELS - Unit Conversion
 # =============================================================================
 
+FaktorKonversi = Annotated[Decimal, BeforeValidator(_faktor_sah)]  # SATU validator dgn units.set_conversion (putusan pemilik 5 Nov)
+
+
 class UnitConversionInput(BaseModel):
     """Input for a unit conversion entry."""
     conversion_unit: str = Field(..., min_length=1, max_length=50, description="Larger unit: dus, karton, pack")
-    conversion_factor: int = Field(..., gt=0, le=10000, description="How many base units per conversion unit")
+    conversion_factor: FaktorKonversi = Field(..., description="How many base units per conversion unit (desimal, maks 6)")
     purchase_price: Optional[float] = Field(None, ge=0, description="Purchase price for this unit")
     sales_price: Optional[float] = Field(None, ge=0, description="Sales price for this unit")
 
@@ -51,7 +57,7 @@ class UnitConversionUpdate(BaseModel):
     """Input for updating a unit conversion entry."""
     id: Optional[UUID] = None  # If provided, update existing; otherwise create new
     conversion_unit: str = Field(..., min_length=1, max_length=50)
-    conversion_factor: int = Field(..., gt=0, le=10000)
+    conversion_factor: FaktorKonversi
     purchase_price: Optional[float] = Field(None, ge=0)
     sales_price: Optional[float] = Field(None, ge=0)
     is_active: bool = True
@@ -290,7 +296,7 @@ class UnitConversionResponse(BaseModel):
     id: UUID
     base_unit: str
     conversion_unit: str
-    conversion_factor: int
+    conversion_factor: float  # faktor desimal (5 Nov): bentuk baca tunggal satuan_dasar.faktor_json
     purchase_price: Optional[float] = None
     sales_price: Optional[float] = None
     is_active: bool = True
@@ -303,7 +309,7 @@ class UnitConversionResponse(BaseModel):
 class ItemListConversion(BaseModel):
     """Unit conversion in list item response (simplified)."""
     conversion_unit: str
-    conversion_factor: int
+    conversion_factor: float
     purchase_price: Optional[float] = None
     sales_price: Optional[float] = None
 

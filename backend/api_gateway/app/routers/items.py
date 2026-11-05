@@ -26,6 +26,7 @@ from datetime import date as dateclass
 from decimal import Decimal
 
 from ..services import teks_galat as tg
+from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
@@ -1580,7 +1581,7 @@ async def list_all_conversions(request: Request):
                     "product_code": r["product_code"],
                     "base_unit": r["base_unit"],
                     "conversion_unit": r["conversion_unit"],
-                    "conversion_factor": float(r["conversion_factor"]),
+                    "conversion_factor": SD_faktor_json(r["conversion_factor"]),
                     "sales_price": float(r["sales_price"])
                     if r["sales_price"]
                     else None,
@@ -2867,7 +2868,7 @@ async def get_item(request: Request, item_id: UUID):
                 "id": str(c["id"]),
                 "base_unit": c["base_unit"],
                 "conversion_unit": c["conversion_unit"],
-                "conversion_factor": c["conversion_factor"],
+                "conversion_factor": SD_faktor_json(c["conversion_factor"]),
                 "purchase_price": c.get("purchase_price"),
                 "sales_price": c.get("sales_price"),
                 "is_active": c.get("is_active", True),

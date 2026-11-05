@@ -363,7 +363,7 @@ async def list_all_conversions(request: Request):
                     "product_code": r["product_code"],
                     "base_unit": r["base_unit"],
                     "conversion_unit": r["conversion_unit"],
-                    "conversion_factor": float(r["conversion_factor"]),
+                    "conversion_factor": SD.faktor_json(r["conversion_factor"]),
                     "sales_price": float(r["sales_price"])
                     if r["sales_price"]
                     else None,
@@ -417,9 +417,7 @@ async def get_conversions(request: Request, product_id: UUID):
                     "id": str(r["id"]),
                     "from_unit": r["base_unit"],
                     "to_unit": r["conversion_unit"],
-                    "factor": int(r["conversion_factor"])
-                    if r["conversion_factor"] == int(r["conversion_factor"])
-                    else float(r["conversion_factor"]),
+                    "factor": SD.faktor_json(r["conversion_factor"]),
                     "purchase_price": int(r["purchase_price"])
                     if r["purchase_price"]
                     else None,
@@ -490,10 +488,10 @@ async def set_conversion(request: Request, product_id: UUID):
             raise HTTPException(
                 status_code=400, detail="Satuan asal dan tujuan tidak boleh sama"
             )
-        if factor <= 0:
-            raise HTTPException(
-                status_code=400, detail="Faktor konversi harus lebih dari 0"
-            )
+        try:
+            factor = SD.faktor_sah(factor)  # SATU validator dgn form barang (desimal, putusan pemilik 5 Nov)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         pool = await get_pool()
         async with pool.acquire() as conn:
