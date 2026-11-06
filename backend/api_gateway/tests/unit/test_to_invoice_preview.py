@@ -210,3 +210,39 @@ def test_skema_bawaan_kompatibel():
 def test_notes_masuk_insert_faktur():
     src = " ".join(inspect.getsource(SO._buat_faktur_dari_so).split())
     assert "shipping_dpp, notes ) VALUES" in src and '_rek_eksplisit(body, "notes")' in src
+
+
+# ---- B2 BUG-049/075 (6 Nov): konversi SO -> faktur dibaca di DALAM transaksi pratinjau (sesudah posting bila post) ->
+# gerak stok faktur ini (source_id = faktur) dan pesanannya sendiri wajib dibuang dari hitungan.
+@pytest.mark.asyncio
+async def test_b2_konversi_isyarat_membuang_gerak_faktur_ini_dan_pesanannya(monkeypatch):
+    from datetime import date
+    from decimal import Decimal
+    from app.routers import customer_deposits as CD
+    so_uuid = uuid.UUID(SOID)
+
+    class _C2:
+        async def fetchrow(self, q, *a):
+            return {"subtotal": Decimal("100"), "discount_amount": 0, "shipping_amount": 0, "tax_amount": 0, "total_amount": Decimal("100"),
+                    "due_date": date(2026, 11, 6), "invoice_date": date(2026, 10, 31), "warehouse_id": None, "sales_order_id": so_uuid}
+
+        async def fetch(self, q, *a):
+            if "SELECT item_id, quantity, unit FROM sales_invoice_items" in q:
+                return [{"item_id": "p", "quantity": Decimal("1"), "unit": "pcs"}]
+            return []
+    dipanggil = []
+
+    async def isy(conn, tid, tanggal, hari_ini, lines, wh=None, kecuali_so=None, kecuali_sumber=()):
+        dipanggil.append((tanggal, lines, kecuali_so, list(kecuali_sumber)))
+        return [{"item_id": "p", "kalimat": "k"}]
+
+    async def tgl(conn, tid): return date(2026, 11, 6)
+
+    async def rencana(*a, **k): return []
+    monkeypatch.setattr(SO.SB, "isyarat", isy)
+    monkeypatch.setattr(SO, "tanggal_dokumen", tgl)
+    monkeypatch.setattr(CD, "plan_so_deposit_application", rencana)
+    d = await SO._baca_pratinjau(_C2(), {"tenant_id": "t", "user_id": "u"},
+                                 {"invoice_id": INV, "posted": False, "due_date_source": "x"}, None)
+    assert d["isyarat_stok"] == [{"item_id": "p", "kalimat": "k"}]
+    assert dipanggil == [(date(2026, 10, 31), [{"item_id": "p", "quantity": Decimal("1"), "unit": "pcs"}], so_uuid, [INV])]

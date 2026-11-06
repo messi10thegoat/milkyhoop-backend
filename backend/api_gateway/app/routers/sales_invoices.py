@@ -60,6 +60,7 @@ from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..utils.metode_pembayaran import label_metode, tentukan_metode
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import stok_baris as SB
 from ..services.sales_doc_calc import (
     compute_document, DocumentDiscountError, LineAmountError,
     harga_json as _harga_json, warisi_jumlah_baris as _warisi_jb,
@@ -590,11 +591,14 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             raise HTTPException(status_code=422, detail=str(_e))
         async with _pool.acquire() as _conn:
             await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], res["tax_amount"])
+            _isyarat = await SB.isyarat(_conn, ctx["tenant_id"], body.invoice_date, await tanggal_dokumen(_conn, ctx["tenant_id"]),
+                                        _items, getattr(body, "warehouse_id", None), kecuali_so=getattr(body, "sales_order_id", None))
         if body.auto_post:  # SI-FPB-RP0: == penulis (create auto_post -> _internal_post_invoice)
             tolak_faktur_nol("si", res["total_amount"])
         return {
             "success": True,
             "data": {
+                "isyarat_stok": _isyarat,  # B2 BUG-049/075: isyarat, bukan blok
                 "status": "draft",
                 "subtotal": float(res["gross_subtotal"]),
                 "item_discount_total": float(res["line_discount_total"]),
@@ -636,10 +640,15 @@ async def _pratinjau_dari_posting(pool, ctx: dict, invoice_ref) -> Optional[dict
     tid = ctx["tenant_id"]
     async with pool.acquire() as conn:
         inv = await conn.fetchrow(
-            "SELECT id, invoice_number, total_amount, invoice_date, status, tax_amount, shipping_amount "
+            "SELECT id, invoice_number, total_amount, invoice_date, status, tax_amount, shipping_amount, warehouse_id, sales_order_id "
             "FROM sales_invoices WHERE id = $1 AND tenant_id = $2", invoice_id, tid)
         if not inv or inv["status"] != "draft":
             return None
+        # B2 BUG-049/075: isyarat stok SEBELUM posting simulasi (stok belum digerakkan faktur ini); pesanan asalnya tak dihitung dipesan
+        isyarat = await SB.isyarat(
+            conn, tid, inv["invoice_date"], await tanggal_dokumen(conn, tid),
+            [dict(r) for r in await conn.fetch("SELECT item_id, quantity, unit FROM sales_invoice_items WHERE invoice_id = $1", invoice_id)],
+            inv["warehouse_id"], kecuali_so=inv["sales_order_id"])
         tr = conn.transaction()
         await tr.start()
         try:
@@ -674,7 +683,7 @@ async def _pratinjau_dari_posting(pool, ctx: dict, invoice_ref) -> Optional[dict
             f"Pesanan ini punya Surat Jalan tanpa faktur: {Decimal(str(alok['qty'])):f} unit ikut ditagih; HPP-nya memakai nilai kirim "
             f"(Barang Terkirim) dan pendapatannya diakui sekarang.")
     return {
-        "journal_lines": lines, "warnings": peringatan, "total_cogs": float(total_cogs), "revenue_policy": kebijakan,
+        "journal_lines": lines, "warnings": peringatan, "isyarat_stok": isyarat, "total_cogs": float(total_cogs), "revenue_policy": kebijakan,
         "cogs_recognized_at_invoice": total_cogs > 0, "simulasi_posting": True,
         "alokasi_surat_jalan": {"qty": float(Decimal(str(alok["qty"]))), "nilai": float(Decimal(str(alok["nilai"])))},
         "subtotal": float(Decimal(str(inv["total_amount"])) - Decimal(str(inv["tax_amount"] or 0)) - Decimal(str(inv["shipping_amount"] or 0))),

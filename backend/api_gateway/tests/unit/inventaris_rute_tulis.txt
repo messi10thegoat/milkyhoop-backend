@@ -392,6 +392,7 @@ POST /api/intercompany/transactions/{transaction_id}/confirm
 POST /api/intercompany/transactions/{transaction_id}/reject
 POST /api/inventory/products
 POST /api/inventory/products/{product_id}/adjust
+POST /api/inventory/stok-baris
 POST /api/invite/{token}/accept
 POST /api/invite/{token}/decline
 POST /api/item-batches

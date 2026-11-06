@@ -321,3 +321,18 @@ async def test_helper_murni_tarif_nol_tanpa_kode_tanpa_kueri():
     it = [{"tax_id": None, "tax_rate": 0}]
     await TF.turunkan_tarif_baris(Mati(), TENANT, it, "tax_id")
     assert it[0]["tax_rate"] == Decimal("0")
+
+
+# ---- B2 BUG-049/075 (6 Nov): Tinjau SO baru membawa isyarat stok dari penentu bersama (tanggal = tanggal SO)
+@pytest.mark.asyncio
+async def test_b2_calculate_so_membawa_isyarat_stok(pasang, monkeypatch):
+    pasang(DB(is_pkp=True))
+    dipanggil = []
+
+    async def isy(conn, tid, tanggal, hari_ini, lines, *a, **k):
+        dipanggil.append((tanggal, [l.get("item_id") for l in lines]))
+        return [{"item_id": "x", "kalimat": "Stok X per 25 Sep 2026: 0 pcs (hari ini 3)."}]
+    monkeypatch.setattr(SO.SB, "isyarat", isy)
+    c = await SO.calculate_sales_order(_req(), _buat(_baris(item_id="11111111-1111-1111-1111-111111111111")))
+    assert c["data"]["isyarat_stok"] == [{"item_id": "x", "kalimat": "Stok X per 25 Sep 2026: 0 pcs (hari ini 3)."}]
+    assert dipanggil == [(date(2026, 9, 25), ["11111111-1111-1111-1111-111111111111"])]

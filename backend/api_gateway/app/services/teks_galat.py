@@ -185,6 +185,34 @@ def satuan_belum_didukung(aksi, satuan, dasar) -> str:
     return f"{aksi} dengan satuan {satuan} belum didukung; pakai {dasar}."
 
 
+def _qty2(x) -> str:
+    """Isyarat stok: kuantitas dalam satuan baris boleh pecahan (187 botol = 15,58 dus) -> 2 desimal, tanpa nol buntut."""
+    return qty(_desimal(x).quantize(Decimal("0.01")))
+
+
+def stok_per_tanggal(nama, tanggal, stok_tanggal, stok_kini, satuan) -> str:
+    """BUG-075 (pola Accurate "Stok : 0" oranye): transaksi bertanggal mundur melebihi stok pada tanggal dokumen. ISYARAT, bukan tolak."""
+    from .tanggal_uang_muka import tgl
+    return f"Stok {nama} per {tgl(tanggal)}: {_qty2(stok_tanggal)} {satuan} (hari ini {_qty2(stok_kini)})."
+
+
+def stok_bisa_dijual(nama, bisa, dipesan, diminta, satuan) -> str:
+    """BUG-049: bisa dijual = stok kini - dipesan pesanan terbuka. ISYARAT, bukan tolak."""
+    return f"Bisa dijual {nama}: {_qty2(bisa)} {satuan} (dipesan {_qty2(dipesan)}), diminta {_qty2(diminta)} {satuan}."
+
+
+def stok_so_tanpa_gudang(n) -> str:
+    return f"{n} pesanan tanpa gudang tidak dihitung di gudang ini; lihat semua gudang."
+
+
+def stok_kirim_tanpa_tautan() -> str:
+    return "Sebagian pengiriman pesanan tidak bertaut ke baris pesanan; jumlah dipesan bisa lebih besar dari sebenarnya."
+
+
+def barang_tidak_ditemukan() -> str:
+    return "Barang tidak ditemukan di usaha ini."
+
+
 def stok_kurang_satuan(nama, gudang, tersedia, dasar, jumlah, satuan, jumlah_dasar) -> str:
     """QTY-DASAR R2 (kalimat OK MASTER): stok kurang untuk baris bersatuan BUKAN dasar -- angka dalam dasar + padanannya."""
     return (f"Stok {nama} di {gudang or 'gudang'} hanya {qty(tersedia)} {dasar}, diminta {qty(jumlah)} {satuan} "

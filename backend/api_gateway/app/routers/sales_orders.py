@@ -14,6 +14,7 @@ import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import stok_baris as SB
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..services.proforma_terbayar import memo_ringkasan  # PERF-DAFTAR-SO (16 Okt 2026)
 from ..services.so_posisi import fakta_daftar, jumlah_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
@@ -983,11 +984,13 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
         doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship,
                       presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]))
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
+        _isyarat = await SB.isyarat(conn, ctx["tenant_id"], body.order_date, await tanggal_dokumen(conn, ctx["tenant_id"]), _items)
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
     return {
         "success": True,
         "data": {
+            "isyarat_stok": _isyarat,  # B2 BUG-049/075: isyarat, bukan blok
             "dp_percent": f(_dp["dp_percent"]),
             "dp_amount": f(_dp["dp_amount"]),
             "dp_amount_source": _dp["dp_amount_source"],
@@ -2871,7 +2874,7 @@ async def preview_to_invoice(request: Request, order_id: str, body: ConvertToInv
 
 async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
     inv = await conn.fetchrow(
-        """SELECT subtotal, discount_amount, shipping_amount, tax_amount, total_amount, due_date
+        """SELECT subtotal, discount_amount, shipping_amount, tax_amount, total_amount, due_date, invoice_date, warehouse_id, sales_order_id
            FROM sales_invoices WHERE id = $1 AND tenant_id = $2""",
         h["invoice_id"], ctx["tenant_id"],
     )
@@ -2892,7 +2895,13 @@ async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
     else:
         rencana = []
     dp = sum((Decimal(str(r["amount"])) for r in rencana), Decimal("0"))
+    # B2 BUG-049/075: dibaca di dalam transaksi pratinjau (sesudah posting bila post) -> gerak stok faktur ini dan pesanannya sendiri dibuang
+    _isyarat = await SB.isyarat(
+        conn, ctx["tenant_id"], inv["invoice_date"], await tanggal_dokumen(conn, ctx["tenant_id"]),
+        [dict(r) for r in await conn.fetch("SELECT item_id, quantity, unit FROM sales_invoice_items WHERE invoice_id = $1", h["invoice_id"])],
+        inv["warehouse_id"], kecuali_so=inv["sales_order_id"], kecuali_sumber=[h["invoice_id"]])
     return {
+        "isyarat_stok": _isyarat,  # B2 BUG-049/075
         "lines": [{"so_item_id": str(i["sales_order_item_id"]) if i["sales_order_item_id"] else None,
                    "name": i["description"], "qty": _f(i["quantity"]), "unit_price": _f(i["unit_price"]),
                    "line_total": _f(i["subtotal"])} for i in items],

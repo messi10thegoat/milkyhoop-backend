@@ -13,6 +13,7 @@ import asyncpg
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..services.periode_laporan import rentang_periode
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import stok_baris as SB
 from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
 from ..config import settings
 
@@ -1346,3 +1347,46 @@ async def get_product_margins(
     except Exception as e:
         logger.error(f"Get product margins error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch product margins")
+
+
+# ---------------- B1 stok baris (BUG-049/075, 6 Nov 2026): satu penentu services/stok_baris (dipakai juga isyarat Tinjau B2)
+from datetime import date as _date  # noqa: E402
+from uuid import UUID as _UUID  # noqa: E402
+
+from pydantic import Field as _Field  # noqa: E402
+
+from ..services.db_pool import get_db_pool as get_pool  # noqa: E402  (Law 32: pool tunggal)
+
+
+def _tenant(request: Request) -> str:
+    """Pola router ini: tenant dari request.state.user (401 bila sesi tak sah)."""
+    user = getattr(request.state, "user", None) or {}
+    if not user.get("tenant_id"):
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
+    return user["tenant_id"]
+
+
+class StokBarisItem(BaseModel):
+    item_id: _UUID
+    unit: Optional[str] = _Field(None, max_length=50)
+
+
+class StokBarisRequest(BaseModel):
+    tanggal: Optional[_date] = None          # null = tanggal bisnis tenant hari ini
+    warehouse_id: Optional[_UUID] = None     # null = semua gudang
+    items: List[StokBarisItem] = _Field(..., min_length=1, max_length=200)
+
+
+@router.post("/stok-baris")
+async def stok_baris(request: Request, body: StokBarisRequest):
+    """Stok per baris untuk pemilih barang (pola Accurate "Bisa dijual" per satuan). READ ONLY: transaksi baca-saja, nol tulis.
+    Angka Decimal string dalam satuan yang diminta (dibagi faktor konversi); barang tanpa lacak stok -> angka null."""
+    tid = _tenant(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            tanggal = body.tanggal or await tanggal_dokumen(conn, tid)
+            h = await SB.hitung(conn, tid, [x.item_id for x in body.items], tanggal, body.warehouse_id)
+    return {"success": True, "data": {
+        "tanggal": tanggal.isoformat(), "warehouse_id": str(body.warehouse_id) if body.warehouse_id else None,
+        "lines": [SB.baris(h, x.item_id, x.unit) for x in body.items], "catatan": h["catatan"]}}

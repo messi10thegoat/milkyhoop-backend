@@ -45,7 +45,8 @@ class _Conn:
     async def fetchrow(self, sql, *a):
         if "FROM sales_invoices" in sql:
             return {"id": INV, "invoice_number": "INV-1", "total_amount": Decimal("1110000"), "invoice_date": None,
-                    "status": self.status, "tax_amount": Decimal("110000"), "shipping_amount": Decimal("0")}
+                    "status": self.status, "tax_amount": Decimal("110000"), "shipping_amount": Decimal("0"),
+                    "warehouse_id": None, "sales_order_id": None}  # B2: kolom yang kini ikut dibaca (isyarat stok)
         if "sj_faktur_alokasi" in sql:
             return {"qty": Decimal(self.alok[0]), "nilai": Decimal(self.alok[1])}
         raise AssertionError(sql)
@@ -159,3 +160,19 @@ async def test_preview_journal_dengan_invoice_id_mengembalikan_simulasi(monkeypa
     monkeypatch.setattr(SI, "get_user_context", lambda req: CTX)
     r = await SI.preview_journal(SimpleNamespace(), {"invoice_id": str(INV)})
     assert r is sentinel
+
+
+# ---- B2 BUG-049/075 (6 Nov): terbit draf -> isyarat stok dihitung SEBELUM posting simulasi (stok belum digerakkan faktur ini)
+@pytest.mark.asyncio
+async def test_b2_isyarat_stok_sebelum_posting_simulasi(terbit, monkeypatch):
+    c = _Conn(rows=[])
+    dipanggil = []
+
+    async def isy(conn, tid, tanggal, hari_ini, lines, wh=None, kecuali_so=None, kecuali_sumber=()):
+        conn.tx.append("isyarat")
+        dipanggil.append((wh, kecuali_so, list(kecuali_sumber)))
+        return [{"item_id": "x", "kalimat": "k"}]
+    monkeypatch.setattr(SI.SB, "isyarat", isy)
+    r = await SI._pratinjau_dari_posting(_Pool(c), CTX, str(INV))
+    assert c.tx[:2] == ["isyarat", "start"] and r["isyarat_stok"] == [{"item_id": "x", "kalimat": "k"}]
+    assert dipanggil == [(None, None, [])]

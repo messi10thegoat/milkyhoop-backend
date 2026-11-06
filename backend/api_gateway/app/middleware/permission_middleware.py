@@ -384,6 +384,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/transactions/purchase$", ["POST"], "bill", "C"),
     (r"^/api/transactions/sales$", ["POST"], "sales_invoice", "C"),
     (r"^/api/inventory/products$", ["POST"], "product", "C"),
+    (r"^/api/inventory/stok\-baris$", ["POST"], "item", "R"),  # B1 BUG-049/075: POST baca-saja (badan daftar barang)
     (r"^/api/inventory/products/[^/]+/adjust$", ["POST"], "stock_adjust", "C"),
     (r"^/api/members/add-points$", ["POST"], "customer", "U"),
     (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),

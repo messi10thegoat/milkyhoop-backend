@@ -571,6 +571,7 @@ class InvoiceCalculation(BaseModel):
     shipping_dpp: float = 0
     shipping_tax_amount: float = 0
     items: List[Dict[str, Any]]
+    isyarat_stok: List[Dict[str, Any]] = []  # B2 BUG-049/075: [{item_id, kalimat}] isyarat stok, bukan blok
 
 
 class InvoiceCalculationResponse(BaseModel):
