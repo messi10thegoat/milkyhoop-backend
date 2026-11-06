@@ -54,6 +54,7 @@ def _r2(x) -> Decimal:
 class BarisIn(BaseModel):
     sales_order_item_id: UUID
     quantity: Decimal = Field(..., gt=0)
+    unit: Optional[str] = Field(None, max_length=50)  # BUG-085: satuan ketikan; dikonversi ke satuan baris SO (absen = satuan baris)
 
 
 class SJSOIn(BaseModel):
@@ -228,11 +229,19 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
                 continue
             diminta[b["id"]] = sisa
     else:
+        from . import satuan_dasar as SD
+        ktx_ketik = await SD.muat(conn, tid, [peta[x.sales_order_item_id]["item_id"] for x in body.items
+                                              if SD.normal(x.unit) and x.sales_order_item_id in peta])
         for it in body.items:
             b = peta.get(it.sales_order_item_id)
             if b is None:
                 blocks.append(_blok("SJ_SO_BARIS_TAK_ADA", "Baris tidak ada di pesanan ini.", 404, it.sales_order_item_id))
                 continue
+            h = SD.ke_satuan_baris(ktx_ketik, b["item_id"], it.unit, it.quantity, b["unit"], b["nama_produk"] or b["description"] or "-")
+            if h["blok"]:
+                blocks.append(_blok(h["blok"]["code"], h["blok"]["message"], h["blok"]["status"], b["id"]))
+                continue
+            it = it.model_copy(update={"quantity": h["qty"]})  # sesudah ini qty = satuan baris SO (perilaku lama)
             if it.sales_order_item_id in diminta:
                 blocks.append(_blok("SJ_SO_BARIS_GANDA", "Baris yang sama muncul dua kali; gabungkan.", 422, b["id"]))
                 continue

@@ -174,6 +174,12 @@ def satuan_tak_terkonversi(satuan, nama, dasar) -> str:
     return f"Satuan {satuan} untuk {nama} belum punya konversi ke {dasar}. Atur konversinya di Barang › Satuan."
 
 
+def satuan_tidak_habis(qty, satuan, nama, satuan_baris, faktor_baris, dasar) -> str:
+    """BUG-085: qty ketikan tak bisa dinyatakan persis (4 desimal) dalam satuan baris dokumen asal."""
+    return (f"{qty.normalize():f} {satuan} {nama} tidak pas dalam {satuan_baris} (1 {satuan_baris} = {faktor_baris.normalize():f} {dasar}). "
+            f"Isi jumlah yang pas dalam {satuan_baris}.")
+
+
 def satuan_belum_didukung(aksi, satuan, dasar) -> str:
     """QTY-DASAR R1 (kalimat MASTER): jalur KELUAR menolak satuan selain dasar sampai konversinya terpasang (R2)."""
     return f"{aksi} dengan satuan {satuan} belum didukung; pakai {dasar}."
