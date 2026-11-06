@@ -15,6 +15,7 @@ import logging
 import asyncpg
 
 from ..services import teks_galat as tg
+from ..services import kasbank_tulis as KT
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.expenses import (
     CreateExpenseRequest,
@@ -532,7 +533,7 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
     Use this endpoint to show calculated totals in the UI before submitting.
     """
     try:
-        get_user_context(request)  # Validate auth
+        ctx = get_user_context(request)  # Validate auth
 
         # Calculate subtotal
         if body.is_itemized and body.line_items:
@@ -549,8 +550,20 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
         ).quantize(Decimal("1"))
         total_amount = subtotal + tax_amount - pph_amount
 
+        # B8: Tinjau biaya POSTED dari KAS yang membuat saldo minus -> blok KAS_MINUS (penentu SAMA dengan create_expense_journal)
+        blocks = []
+        if body.status == "posted" and body.paid_through_id:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction(readonly=True):
+                    coa = await conn.fetchval("SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2",
+                                              body.paid_through_id, ctx["tenant_id"])
+                    blocks = [{k: v for k, v in b.items() if k != "status"}
+                              for b in await KT.tolak_kas_minus_coa(conn, ctx["tenant_id"], coa, total_amount, KT.Blok(True))]
+
         return {
             "success": True,
+            "blocks": blocks,
             "calculation": {
                 "subtotal": subtotal,
                 "tax_amount": tax_amount,
@@ -1584,6 +1597,9 @@ async def create_expense_journal(
 
     # CREDIT: Kas/Bank (Law 4: total_amount = subtotal + tax - pph)
     cash_credit = subtotal + tax_amount - pph_amount
+    # B8 (putusan pemilik LANGSUNG 6 Nov): biaya dari KAS yang membuat saldo minus -> KAS_MINUS. Satu aturan: services/kasbank_tulis.
+    # Di sini (penulis jurnal) supaya buat-langsung-posting DAN /{id}/post sama-sama terjaga.
+    await KT.tolak_kas_minus_coa(conn, tenant_id, paid_through_coa_id, cash_credit)
     await conn.execute(
         """
         INSERT INTO journal_lines (

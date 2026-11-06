@@ -15,7 +15,7 @@ Endpoints:
 - POST   /bank-accounts/{id}/adjust        - Manual balance adjustment
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -25,6 +25,8 @@ import uuid as uuid_module
 
 from ..services import teks_galat as tg
 from ..services import kasbank_ringkas as KR
+from ..services import kasbank_tulis as KT
+from ..services import idem_buat
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_accounts import (
     CreateManualTransactionRequest,
@@ -1463,9 +1465,18 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
 # =============================================================================
 
 
+@router.post("/{bank_account_id}/adjust/preview")
+async def preview_adjust_bank_balance(request: Request, bank_account_id: UUID, body: AdjustBalanceRequest):
+    """B8 pratinjau hitung fisik/penyesuaian: penentu SAMA dengan /adjust, READ ONLY (nol tulisan)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KT.pratinjau(await get_pool(), tid, lambda c: KT.rencana_hitung_fisik(c, tid, bank_account_id, body, True),
+                              body.model_dump(mode="json"))
+
+
 @router.post("/{bank_account_id}/adjust", response_model=BankAccountResponse)
 async def adjust_bank_balance(
-    request: Request, bank_account_id: UUID, body: AdjustBalanceRequest
+    request: Request, bank_account_id: UUID, body: AdjustBalanceRequest, response: Response = None
 ):
     """
     Make a manual balance adjustment.
@@ -1485,81 +1496,24 @@ async def adjust_bank_balance(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # B8 Law 14: X-Idempotency-Key opsional (lock != dedup)
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_ADJUST",
+                                                             bank_account_id, lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+
                 # Law 13: Advisory lock for balance adjustment
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_ADJUST:{bank_account_id}",
                 )
 
-                # Get bank account
-                ba = await conn.fetchrow(
-                    """
-                    SELECT ba.*, coa.id as coa_account_id,
-                           COALESCE(lb.ledger_balance, 0) as ledger_balance
-                    FROM bank_accounts ba
-                    LEFT JOIN chart_of_accounts coa ON ba.coa_id = coa.id
-                    LEFT JOIN LATERAL (
-                        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS ledger_balance
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        WHERE jl.account_id = ba.coa_id
-                          AND je.status = 'POSTED'
-                          AND je.tenant_id = $2
-                    ) lb ON true
-                    WHERE ba.id = $1 AND ba.tenant_id = $2
-                """,
-                    bank_account_id,
-                    ctx["tenant_id"],
-                )
-
-                if not ba:
-                    raise HTTPException(
-                        status_code=404, detail="Bank account not found"
-                    )
-
-                if not ba["is_active"]:
-                    raise HTTPException(
-                        status_code=400, detail="Cannot adjust inactive bank account"
-                    )
-
-                adjustment = body.adjustment_amount
-                if adjustment == 0:
-                    raise HTTPException(
-                        status_code=400, detail="Adjustment amount cannot be zero"
-                    )
-
-                current_balance = float(
-                    ba["ledger_balance"] or 0
-                )  # Law 21: journal-derived balance
-                new_balance = current_balance + adjustment
-
-                if new_balance < 0:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Adjustment would result in negative balance ({new_balance})",
-                    )
-
-                # Contra = per-tenant bank-adjustment gain/loss role (surplus ->
-                # Pendapatan Lain-lain, shortfall -> Beban Lain-lain). Replaces the
-                # retired EQUITY_OPENING_BALANCE path; trigger V273 also blocks a
-                # same-account (net-zero) adjustment.
-                _adj_role = (
-                    AccountRole.BANK_ADJUSTMENT_GAIN
-                    if adjustment > 0
-                    else AccountRole.BANK_ADJUSTMENT_LOSS
-                )
-                try:
-                    adj_acct_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], _adj_role
-                    )
-                except AccountRoleUnmappedError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Akun penyesuaian saldo (selisih lebih/kurang) belum diatur "
-                            "untuk usaha ini. Atur akun Pendapatan/Beban Lain-lain dulu."
-                        ),
-                    )
+                # B8: penentu BERSAMA dengan /adjust/preview; jumlah_fisik (hitung fisik) -> selisih dihitung server
+                _r = await KT.rencana_hitung_fisik(conn, ctx["tenant_id"], bank_account_id, body, pratinjau=False)
+                ba = _r["akun"]
+                adjustment = _r["selisih"]
+                new_balance = float(_r["saldo"][0]["sesudah"])
+                adj_acct_id = _r["akun_penyesuaian"]
 
                 # Create journal entry
                 journal_id = uuid_module.uuid4()
@@ -1581,67 +1535,15 @@ async def adjust_bank_balance(
                     f"Bank Adjustment - {ba['account_name']}: {body.reason}",
                     bank_account_id,
                     str(trace_id),
-                    int(abs(adjustment)),
+                    abs(adjustment),
                     ctx["user_id"],
                 )
 
-                # Rekening bank di satu sisi, akun peran penyesuaian (adj_acct_id:
-                # BANK_ADJUSTMENT_GAIN / _LOSS) di sisi lain -- TIDAK pernah akun yang
-                # sama di kedua sisi (cacat nol-bersih yang membuat /adjust dimatikan
-                # 15 Sep; dikunci tes test_ii_adjust_never_net_zero_same_account).
-                if adjustment > 0:
-                    # Dr. Bank Account
+                # Rekening di satu sisi, akun peran penyesuaian di sisi lain (penentu == pratinjau; never net-zero same account)
+                for _n, (_akun, _debit, _kredit, _memo) in enumerate(_r["baris"], 1):
                     await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        ba["coa_id"],
-                        int(adjustment),
-                        f"Penyesuaian Saldo - {body.reason}",
-                    )
-                    # Cr. Bank Adjustment Gain (surplus -> Pendapatan Lain-lain)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        adj_acct_id,
-                        int(adjustment),
-                        f"Koreksi Saldo (selisih lebih) - {body.reason}",
-                    )
-                else:
-                    # Dr. Bank Adjustment Loss (shortfall -> Beban Lain-lain)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        adj_acct_id,
-                        int(abs(adjustment)),
-                        f"Koreksi Saldo (selisih kurang) - {body.reason}",
-                    )
-                    # Cr. Bank Account
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                    """,
-                        uuid_module.uuid4(),
-                        journal_id,
-                        ba["coa_id"],
-                        int(abs(adjustment)),
-                        f"Penyesuaian Saldo - {body.reason}",
+                        "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                        uuid_module.uuid4(), journal_id, _n, _akun, _debit, _kredit, _memo,
                     )
 
                 # Law 20: DRAFT→POSTED for hash chain
@@ -1675,16 +1577,16 @@ async def adjust_bank_balance(
                     f"Bank account adjusted: {bank_account_id}, amount={adjustment}"
                 )
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_ADJUST", {
                     "success": True,
                     "message": "Bank account balance adjusted",
                     "data": {
                         "id": str(bank_account_id),
-                        "adjustment_amount": adjustment,
+                        "adjustment_amount": float(adjustment),
                         "new_balance": new_balance,
                         "journal_id": str(journal_id),
                     },
-                }
+                }, journal_id)
 
     except HTTPException:
         raise
@@ -1820,11 +1722,21 @@ async def get_bank_account_statement(
 # =============================================================================
 
 
+@router.post("/{bank_account_id}/transactions/preview")
+async def preview_manual_transaction(request: Request, bank_account_id: UUID, body: CreateManualTransactionRequest):
+    """B8 pratinjau Uang Masuk/Keluar: penentu SAMA dengan POST /transactions (KAS_MINUS = tawarkan hitung fisik), READ ONLY."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KT.pratinjau(await get_pool(), tid, lambda c: KT.rencana_tx_manual(c, tid, bank_account_id, body, True),
+                              body.model_dump(mode="json"))
+
+
 @router.post("/{bank_account_id}/transactions")
 async def create_manual_transaction(
     request: Request,
     bank_account_id: UUID,
     body: CreateManualTransactionRequest,
+    response: Response = None,
 ):
     """
     Create manual bank transaction (Uang Masuk / Uang Keluar).
@@ -1842,103 +1754,22 @@ async def create_manual_transaction(
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # B8 Law 14: X-Idempotency-Key opsional -> tap kedua = jawaban tersimpan, bukan jurnal kedua (lock != dedup)
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TX_MANUAL",
+                                                             bank_account_id, lambda: body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+
                 # Law 13: Advisory lock — FIRST before any reads/writes
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_TX_MANUAL:{bank_account_id}",
                 )
 
-                # Verify bank account belongs to tenant
-                ba = await conn.fetchrow(
-                    """
-                    SELECT id, coa_id, account_name, is_active
-                    FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                    """,
-                    bank_account_id,
-                    ctx["tenant_id"],
-                )
-                if not ba:
-                    raise HTTPException(
-                        status_code=404, detail="Bank account not found"
-                    )
-                if not ba["is_active"]:
-                    raise HTTPException(
-                        status_code=400, detail="Bank account is inactive"
-                    )
-
-                # Law 27: CoA from bank_accounts.coa_id (not hardcoded)
-                bank_coa_id = ba["coa_id"]
-
-                # Law 29: Reject RECEIVABLE/PAYABLE contra — route to correct module
-                contra_coa = await conn.fetchrow(
-                    """
-                    SELECT id, account_type FROM chart_of_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                    """,
-                    uuid_module.UUID(body.contra_account_id),
-                    ctx["tenant_id"],
-                )
-                if not contra_coa:
-                    raise HTTPException(
-                        status_code=400, detail="Contra account not found"
-                    )
-                if contra_coa["account_type"] in ("RECEIVABLE", "PAYABLE"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Gunakan modul Terima Pembayaran untuk piutang, "
-                            "atau Bayar Tagihan untuk hutang. (Law 29)"
-                        ),
-                    )
-
-                # 5 Okt 2026: akun lawan Uang Muka Pelanggan -> modul Uang Muka (pola Law 29 di atas)
-                from ..services.pagar_uang_muka import tolak_akun_lawan_bank
-                await tolak_akun_lawan_bank(conn, ctx["tenant_id"], contra_coa["id"])
-
-                # Guard akun-lawan == akun bank ini sendiri. Jurnal Dr X / Cr X pada
-                # akun yang sama seimbang (Law 4 header) TAPI ekonomis NOL: bank_transaction
-                # tercatat sementara jurnal tak menggerakkan saldo mana pun -> drift bank
-                # sync (kasus MT-C4057F2C grapgrap). Tolak sebelum posting.
-                if str(body.contra_account_id) == str(bank_coa_id):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Akun lawan tidak boleh sama dengan rekening ini. "
-                            "Pilih akun lawan, misalnya Modal Pemilik."
-                        ),
-                    )
-
-                # Law 5: Period check
-                period = await conn.fetchrow(
-                    """
-                    SELECT id, period_name, status FROM fiscal_periods
-                    WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
-                    ORDER BY start_date DESC LIMIT 1
-                    """,
-                    ctx["tenant_id"],
-                    body.transaction_date,
-                )
-                if period and period["status"] in ("CLOSED", "LOCKED"):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=tg.periode_tertutup(period['period_name'], period['status']),
-                    )
-
-                # Compute current ledger balance (for running_balance cache)
-                current_balance = (
-                    await conn.fetchval(
-                        """
-                    SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
-                    FROM journal_lines jl
-                    JOIN journal_entries je ON je.id = jl.journal_id
-                    WHERE jl.account_id = $1 AND je.status = 'POSTED' AND je.tenant_id = $2
-                    """,
-                        bank_coa_id,
-                        ctx["tenant_id"],
-                    )
-                    or 0
-                )
+                # B8: penentu BERSAMA dengan /transactions/preview (services/kasbank_tulis); tulis = blok pertama dilempar
+                _r = await KT.rencana_tx_manual(conn, ctx["tenant_id"], bank_account_id, body, pratinjau=False)
+                bank_coa_id = _r["akun"]["coa_id"]
+                current_balance = _r["akun"]["saldo"]
 
                 amount = body.amount
                 txn_amount = amount if body.direction == "in" else -amount
@@ -1969,63 +1800,12 @@ async def create_manual_transaction(
                     ctx.get("user_id"),
                 )
 
-                # Law 4: Insert journal lines (debit = credit)
-                contra_uuid = uuid_module.UUID(body.contra_account_id)
-                if body.direction == "in":
-                    # Uang Masuk: Dr. Bank CoA, Cr. Contra
-                    line1 = (
-                        uuid_module.uuid4(),
-                        journal_id,
-                        1,
-                        bank_coa_id,
-                        amount,
-                        0,
-                        body.description,
+                # Law 4: baris jurnal dari penentu (== pratinjau)
+                for _n, (_akun, _debit, _kredit, _memo) in enumerate(_r["baris"], 1):
+                    await conn.execute(
+                        "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                        uuid_module.uuid4(), journal_id, _n, _akun, _debit, _kredit, _memo,
                     )
-                    line2 = (
-                        uuid_module.uuid4(),
-                        journal_id,
-                        2,
-                        contra_uuid,
-                        0,
-                        amount,
-                        body.description,
-                    )
-                else:
-                    # Uang Keluar: Dr. Contra, Cr. Bank CoA
-                    line1 = (
-                        uuid_module.uuid4(),
-                        journal_id,
-                        1,
-                        contra_uuid,
-                        amount,
-                        0,
-                        body.description,
-                    )
-                    line2 = (
-                        uuid_module.uuid4(),
-                        journal_id,
-                        2,
-                        bank_coa_id,
-                        0,
-                        amount,
-                        body.description,
-                    )
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7)
-                    """,
-                    *line1,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7)
-                    """,
-                    *line2,
-                )
 
                 # Law 20: UPDATE to POSTED — triggers hash chain
                 await conn.execute(
@@ -2072,7 +1852,7 @@ async def create_manual_transaction(
                     f"account={bank_account_id}"
                 )
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TX_MANUAL", {
                     "success": True,
                     "data": {
                         "id": str(bank_txn_id),
@@ -2083,7 +1863,7 @@ async def create_manual_transaction(
                         "transaction_date": body.transaction_date.isoformat(),
                         "description": body.description,
                     },
-                }
+                }, bank_txn_id)
 
     except HTTPException:
         raise

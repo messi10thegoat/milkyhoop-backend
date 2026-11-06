@@ -84,9 +84,11 @@ def test_buat_posting_balik_semuanya_lewat_pagar():
 
 
 def test_bank_manual_memanggil_pagar_sebelum_jurnal():
+    # B8 (6 Nov 2026): pagar pindah ke perencana bersama (tulis + pratinjau), dipanggil sebelum jurnal
+    from app.services import kasbank_tulis as KT
+    assert "tolak_akun_lawan_bank" in inspect.getsource(KT.rencana_tx_manual)
     src = inspect.getsource(BA.create_manual_transaction)
-    assert "tolak_akun_lawan_bank(" in src
-    assert src.index("tolak_akun_lawan_bank(") < src.index("INSERT INTO journal_entries")
+    assert src.index("KT.rencana_tx_manual(") < src.index("INSERT INTO journal_entries")
 
 
 def test_kontrol_jurnal_sistem_tak_melewati_pagar():
@@ -95,7 +97,8 @@ def test_kontrol_jurnal_sistem_tak_melewati_pagar():
     app = pathlib.Path(J.__file__).resolve().parents[1]
     boleh = {"routers/journals.py", "routers/bank_accounts.py", "services/pagar_uang_muka.py",
              "routers/opening_balance.py",  # 7 Okt: saldo awal = akun dipilih pengguna
-             "services/pagar_akun_modul.py", "services/kernel_document_executor.py"}  # intake legacy: akun dari draf AI
+             "services/pagar_akun_modul.py", "services/kernel_document_executor.py",
+             "services/kasbank_tulis.py"}  # B8: perencana Uang Masuk/Keluar = akun lawan dipilih pengguna  # intake legacy: akun dari draf AI
     pemakai = sorted(str(p.relative_to(app)) for p in app.rglob("*.py")
                      if ("pagar_uang_muka" in p.read_text(errors="ignore")
                          or "validate_no_derived_layer_accounts" in p.read_text(errors="ignore")))

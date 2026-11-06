@@ -19,7 +19,7 @@ Endpoints:
 - POST   /bank-transfers/{id}/void    - Void with reversal
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -30,6 +30,8 @@ import uuid as uuid_module
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import kasbank_tulis as KT
+from ..services import idem_buat
 from ..schemas.bank_transfers import (
     CreateBankTransferRequest,
     UpdateBankTransferRequest,
@@ -380,8 +382,16 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
 # =============================================================================
 
 
+@router.post("/preview")
+async def preview_create_bank_transfer(request: Request, body: CreateBankTransferRequest):
+    """B8 pratinjau transfer: penentu SAMA dengan POST /bank-transfers (+posting bila auto_post), READ ONLY (nol tulisan)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KT.pratinjau(await get_pool(), tid, lambda c: KT.rencana_buat_transfer(c, tid, body, True), body.model_dump(mode="json"))
+
+
 @router.post("", response_model=BankTransferResponse, status_code=201)
-async def create_bank_transfer(request: Request, body: CreateBankTransferRequest):
+async def create_bank_transfer(request: Request, body: CreateBankTransferRequest, response: Response = None):
     """
     Create a new bank transfer (draft).
 
@@ -396,51 +406,14 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Validate from bank
-                from_bank = await conn.fetchrow(
-                    """
-                    SELECT ba.id, ba.account_name,
-                        (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
-                        ba.coa_id, ba.is_active
-                    FROM bank_accounts ba
-                    WHERE ba.id = $1 AND ba.tenant_id = $2
-                """,
-                    UUID(body.from_bank_id),
-                    ctx["tenant_id"],
-                )
+                # B8 Law 14: X-Idempotency-Key opsional (tap kedua = transfer yang SAMA, bukan transfer kedua)
+                _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, idem_buat.kunci_dari(request), "BANK_TRANSFER_CREATE", body,
+                                                        "bank_transfers", "transfer", response)
+                if _lama is not None:
+                    return _lama
 
-                if not from_bank:
-                    raise HTTPException(
-                        status_code=400, detail="Source bank account not found"
-                    )
-
-                if not from_bank["is_active"]:
-                    raise HTTPException(
-                        status_code=400, detail="Source bank account is inactive"
-                    )
-
-                # Validate to bank
-                to_bank = await conn.fetchrow(
-                    """
-                    SELECT ba.id, ba.account_name,
-                        (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=ba.coa_id AND je.status='POSTED') as current_balance,
-                        ba.coa_id, ba.is_active
-                    FROM bank_accounts ba
-                    WHERE ba.id = $1 AND ba.tenant_id = $2
-                """,
-                    UUID(body.to_bank_id),
-                    ctx["tenant_id"],
-                )
-
-                if not to_bank:
-                    raise HTTPException(
-                        status_code=400, detail="Destination bank account not found"
-                    )
-
-                if not to_bank["is_active"]:
-                    raise HTTPException(
-                        status_code=400, detail="Destination bank account is inactive"
-                    )
+                # B8: penentu BERSAMA dengan /bank-transfers/preview (asal/tujuan; + posting bila auto_post)
+                await KT.rencana_buat_transfer(conn, ctx["tenant_id"], body, pratinjau=False)
 
                 # Calculate total
                 total_amount = body.amount + body.fee_amount
@@ -496,7 +469,7 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
                     result["data"]["status"] = "posted"
                     result["message"] = "Bank transfer created and posted"
 
-                return result
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TRANSFER_CREATE", result, transfer_id)
 
     except HTTPException:
         raise
@@ -729,45 +702,12 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
             "SELECT id FROM bank_accounts WHERE id = $1 FOR UPDATE", from_bank_id
         )
 
-    # Get transfer with bank info
-    bt = await conn.fetchrow(
-        """
-        SELECT bt.*,
-               fb.account_name as from_name, fb.coa_id as from_coa_id,
-               (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
-               tb.account_name as to_name, tb.coa_id as to_coa_id
-        FROM bank_transfers bt
-        LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
-        LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id
-        WHERE bt.id = $1 AND bt.tenant_id = $2
-    """,
-        transfer_id,
-        ctx["tenant_id"],
-    )
-
+    # B8: baris + penentu posting BERSAMA dengan /{id}/post/preview (services/kasbank_tulis)
+    bt = await conn.fetchrow(KT.SQL_TRANSFER_POSTING, transfer_id, ctx["tenant_id"])
     if not bt:
         raise HTTPException(status_code=404, detail="Bank transfer not found")
-
-    if bt["status"] != "draft":
-        raise HTTPException(
-            status_code=400, detail=f"Cannot post transfer with status '{bt['status']}'"
-        )
-
-    # Check sufficient balance
-    if bt["from_balance"] < bt["total_amount"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Insufficient balance. Available: {bt['from_balance']}, Required: {bt['total_amount']}",
-        )
-
-    # Get fee account ID if fee > 0
-    fee_account_id = None
-    if bt["fee_amount"] and bt["fee_amount"] > 0:
-        fee_account_id = str(
-            await resolve_account_id_by_role(
-                conn, ctx["tenant_id"], AccountRole.BANK_FEE
-            )
-        )
+    _r = await KT.rencana_posting_transfer(conn, ctx["tenant_id"], bt, KT.Blok(False))
+    fee_account_id = str(_r["akun_biaya"]) if _r["akun_biaya"] else None
 
     # Create journal entry
     journal_id = uuid_module.uuid4()
@@ -793,55 +733,12 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         ctx["user_id"],
     )
 
-    line_number = 1
-
-    # Dr. Destination Bank
-    await conn.execute(
-        """
-        INSERT INTO journal_lines (
-            id, journal_id, line_number, account_id, debit, credit, memo
-        ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-    """,
-        uuid_module.uuid4(),
-        journal_id,
-        line_number,
-        bt["to_coa_id"],
-        bt["amount"],
-        f"Transfer masuk dari {bt['from_name']}",
-    )
-    line_number += 1
-
-    # Dr. Transfer Fee (if any)
-    if bt["fee_amount"] and bt["fee_amount"] > 0 and fee_account_id:
+    # Baris jurnal dari penentu (== pratinjau): Dr tujuan, Dr biaya transfer bila ada, Cr asal
+    for _n, (_akun, _debit, _kredit, _memo) in enumerate(_r["baris"], 1):
         await conn.execute(
-            """
-            INSERT INTO journal_lines (
-                id, journal_id, line_number, account_id, debit, credit, memo
-            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-        """,
-            uuid_module.uuid4(),
-            journal_id,
-            line_number,
-            fee_account_id,
-            bt["fee_amount"],
-            f"Biaya transfer - {bt['transfer_number']}",
+            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            uuid_module.uuid4(), journal_id, _n, _akun, _debit, _kredit, _memo,
         )
-        line_number += 1
-
-    # Cr. Source Bank
-    await conn.execute(
-        """
-        INSERT INTO journal_lines (
-            id, journal_id, line_number, account_id, debit, credit, memo
-        ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-    """,
-        uuid_module.uuid4(),
-        journal_id,
-        line_number,
-        bt["from_coa_id"],
-        bt["total_amount"],
-        f"Transfer keluar ke {bt['to_name']}",
-    )
 
     # Law 20: DRAFT->POSTED for hash chain
     await conn.execute(
@@ -937,8 +834,16 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     }
 
 
+@router.post("/{transfer_id}/post/preview")
+async def preview_post_bank_transfer(request: Request, transfer_id: UUID):
+    """B8 pratinjau posting transfer: baris + penentu SAMA dengan /{id}/post, READ ONLY."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KT.pratinjau(await get_pool(), tid, lambda c: KT.rencana_posting_transfer_id(c, tid, transfer_id), {"transfer_id": str(transfer_id)})
+
+
 @router.post("/{transfer_id}/post", response_model=BankTransferResponse)
-async def post_bank_transfer(request: Request, transfer_id: UUID):
+async def post_bank_transfer(request: Request, transfer_id: UUID, response: Response = None):
     """
     Post bank transfer to accounting.
 
@@ -959,13 +864,18 @@ async def post_bank_transfer(request: Request, transfer_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # B8 Law 14: X-Idempotency-Key opsional
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TRANSFER_POST",
+                                                             transfer_id, {}, response)
+                if _lama is not None:
+                    return _lama
                 result = await _post_transfer(conn, ctx, transfer_id)
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TRANSFER_POST", {
                     "success": True,
                     "message": "Bank transfer posted to accounting",
                     "data": {"id": str(transfer_id), "status": "posted", **result},
-                }
+                }, transfer_id)
 
     except HTTPException:
         raise

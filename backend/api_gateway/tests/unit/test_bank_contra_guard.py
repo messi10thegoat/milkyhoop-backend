@@ -148,15 +148,22 @@ class _AdjConn:
         return _Txn()
 
     async def fetchrow(self, sql, *args):
+        if "fiscal_periods" in sql:  # B8: /adjust kini menolak periode tertutup; tak ada periode = terbuka
+            return None
         return {"id": args[0], "coa_id": BANK_COA, "coa_account_id": BANK_COA,
                 "account_name": "BCA Gate", "is_active": True,
-                "ledger_balance": self.ledger_balance}
+                "ledger_balance": self.ledger_balance, "saldo": self.ledger_balance,
+                "account_type": "bank"}
 
     async def execute(self, sql, *args):
         s = " ".join(str(sql).split())
         if "INSERT INTO journal_entries" in s:
             self.headers.append((args[7], args[7]))
         elif "INSERT INTO journal_lines" in s:
+            if len(args) == 7:  # B8: baris dari perencana -- (id, jurnal, no, akun, debit, kredit, memo)
+                side = "Dr" if args[4] else "Cr"
+                self.lines.append((side, args[3], args[4] or args[5]))
+                return None
             side = "Dr" if ", $4, 0, $5)" in s else "Cr" if ", 0, $4, $5)" in s else "?"
             self.lines.append((side, args[2], args[3]))
         return None
@@ -184,6 +191,8 @@ def _adj_wire(monkeypatch, conn, roles_asked, unmapped=False):
 
     monkeypatch.setattr(ba_mod, "get_pool", _pool)
     monkeypatch.setattr(ba_mod, "resolve_account_id_by_role", _resolve)
+    from app.services import kasbank_tulis as KT  # B8: resolusi akun penyesuaian pindah ke perencana bersama
+    monkeypatch.setattr(KT, "resolve_account_id_by_role", _resolve)
 
 
 def _adj_body(amount):

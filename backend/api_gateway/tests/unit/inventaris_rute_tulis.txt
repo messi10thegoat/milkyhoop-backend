@@ -234,7 +234,9 @@ POST /api/auth/switch-tenant
 POST /api/auth/validate
 POST /api/bank-accounts
 POST /api/bank-accounts/{bank_account_id}/adjust
+POST /api/bank-accounts/{bank_account_id}/adjust/preview
 POST /api/bank-accounts/{bank_account_id}/transactions
+POST /api/bank-accounts/{bank_account_id}/transactions/preview
 POST /api/bank-reconciliation/sessions
 POST /api/bank-reconciliation/sessions/{session_id}/agentic-reconcile
 POST /api/bank-reconciliation/sessions/{session_id}/auto-match
@@ -246,7 +248,9 @@ POST /api/bank-reconciliation/sessions/{session_id}/match
 POST /api/bank-reconciliation/sessions/{session_id}/transactions
 POST /api/bank-transactions/{transaction_id}/void
 POST /api/bank-transfers
+POST /api/bank-transfers/preview
 POST /api/bank-transfers/{transfer_id}/post
+POST /api/bank-transfers/{transfer_id}/post/preview
 POST /api/bank-transfers/{transfer_id}/void
 POST /api/bill-payments
 POST /api/bill-payments/preview

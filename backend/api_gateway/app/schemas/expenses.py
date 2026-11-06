@@ -316,6 +316,7 @@ class CalculateExpenseResponse(BaseModel):
     """Response for expense calculation preview."""
 
     success: bool = True
+    blocks: List[Dict[str, Any]] = []  # B8: KAS_MINUS bila biaya posted dari kas membuat saldo minus
     calculation: ExpenseCalculationResult
 
 

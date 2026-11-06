@@ -10,7 +10,7 @@ Flow:
 - Track running balance
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
 
@@ -88,12 +88,21 @@ class AdjustBalanceRequest(BaseModel):
     """Request body for manual balance adjustment."""
 
     adjustment_date: date = Field(..., description="Date of adjustment")
-    adjustment_amount: int = Field(
-        ..., description="Adjustment amount (positive=increase, negative=decrease)"
+    adjustment_amount: Optional[int] = Field(
+        None, description="Selisih (+ tambah, - kurang); bentuk lama. Kirim ini ATAU jumlah_fisik."
+    )
+    jumlah_fisik: Optional[int] = Field(
+        None, ge=0, description="Hitung fisik (B8, putusan pemilik 6 Nov): uang yang ada; server menghitung selisih thd saldo jurnal per tanggal."
     )
     reason: str = Field(
         ..., min_length=1, max_length=500, description="Reason for adjustment"
     )
+
+    @model_validator(mode="after")
+    def _satu_dari_dua(self):
+        if (self.adjustment_amount is None) == (self.jumlah_fisik is None):
+            raise ValueError("Kirim salah satu: jumlah_fisik (hitung fisik) atau adjustment_amount (selisih).")
+        return self
 
 
 class CreateManualTransactionRequest(BaseModel):

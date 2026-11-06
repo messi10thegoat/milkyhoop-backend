@@ -286,6 +286,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # penulis jurnal terkonfirmasi
     (r"^/api/journals/[^/]+$", ["DELETE"], "journal", "D"),
     (r"^/api/bank-transfers/[^/]+/post$", ["POST"], "kas_bank", "P"),
+    (r"^/api/bank-transfers/[^/]+/post/preview$", ["POST"], "kas_bank", "P"),  # B8 pratinjau posting, izin = posting
+    (r"^/api/bank-transfers/preview$", ["POST"], "kas_bank", "C"),  # B8 pratinjau buat transfer, izin = buat
     (r"^/api/bank-transfers/[^/]+/void$", ["POST"], "kas_bank", "V"),
     (r"^/api/bank-transactions/[^/]+/void$", ["POST"], "kas_bank", "V"),
     (r"^/api/sales-receipts/[^/]+/void$", ["POST"], "receive_payment", "V"),
