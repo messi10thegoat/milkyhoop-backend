@@ -56,12 +56,11 @@ def test_sql_aksi_memakai_sisa_jurnal_u3a():
     assert sql_sisa_nd() in s and "original_bill_id IS NULL" in s and "NOT IN ('draft', 'void')" in s
 
 
-def test_sisa_lama_tak_berubah():
-    assert NDD.sisa_lama("void", 1000, 0, 0) == 0
-    assert NDD.sisa_lama("posted", 1000, 300, 200) == 500
-    assert NDD.sisa_lama("draft", 1000, None, None) == 1000
-    r = (APP / "routers/vendor_credits.py").read_text()
-    assert r.count("NDD.sisa_lama(") == 2  # daftar + detail, satu rumus
+def test_sisa_nd_baris_draf_total_selain_itu_jurnal():
+    # BUG-070: sisa_lama (total - applied - received) DIHAPUS; uji paritas penuh di test_bug070_nd_sisa_jurnal
+    assert NDD.sisa_nd_baris("draft", 1000, 0) == 1000
+    assert NDD.sisa_nd_baris("posted", 1000, 0) == 0 and NDD.sisa_nd_baris("partial", 1000, "400.00") == 400
+    assert not hasattr(NDD, "sisa_lama")
 
 
 def test_syarat_cari_per_kata_dan_nomor_parameter():
@@ -80,11 +79,12 @@ def test_dokumen_dan_kelompok_kamus_fe_pembelian():
 
 
 def test_medan_baris_lengkap():
-    v = {"id": uuid4(), "status": "posted", "amount_applied": 0, "amount_received": 0, "original_bill_id": None, "original_bill_number": None}
+    v = {"id": uuid4(), "status": "posted", "total_amount": 1000, "amount_applied": 0, "amount_received": 0, "original_bill_id": None,
+         "original_bill_number": None}
     m = NDD.medan_baris(v, 1000, {"terpakai": 0, "dikembalikan": 0}, [], None)
     assert m["aksi"] == "belum_terpakai" and m["aksi_semua"] == ["belum_terpakai"] and m["sisa_keadaan"] == "utuh"
     assert set(m) >= {"aksi", "aksi_semua", "sisa_keadaan", "status_text", "terpakai", "dikembalikan", "original_bill_id",
-                      "original_bill_number", "purchase_order_id", "purchase_order_number", "documents", "doc_count"}
+                      "original_bill_number", "remaining_amount", "purchase_order_id", "purchase_order_number", "documents", "doc_count"}
 
 
 def test_rute_dan_skema():

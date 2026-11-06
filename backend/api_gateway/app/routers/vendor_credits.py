@@ -286,7 +286,6 @@ async def list_vendor_credits(
                     "total_amount": row["total_amount"],
                     "amount_applied": row["amount_applied"] or 0,
                     "amount_refunded": row["amount_received"] or 0,
-                    "remaining_amount": NDD.sisa_lama(row["status"], row["total_amount"], row["amount_applied"], row["amount_received"]),
                     "status": row["status"],
                     "reason": row["reason"],
                     "ref_no": row["ref_no"],
@@ -343,14 +342,14 @@ async def get_vendor_credits_summary(request: Request, search: Optional[str] = Q
                     COALESCE(SUM(vcj.journal_value), 0) as total_value,
                     COALESCE(SUM(vc.amount_applied), 0) as total_applied,
                     COALESCE(SUM(vc.amount_received), 0) as total_refunded,
-                    COALESCE(SUM(vcj.journal_value - COALESCE(vc.amount_applied, 0) - COALESCE(vc.amount_received, 0))
-                        FILTER (WHERE vc.status IN ('posted', 'partial')), 0) as available_balance
+                    COALESCE(SUM(__SISA__), 0) as available_balance
                 FROM vendor_credits vc
                 LEFT JOIN vc_journal vcj ON vcj.id = vc.id
                 WHERE vc.tenant_id = $1 AND vc.status != 'void' AND __CARI__
             """
             # U3c ?search= (predikat SAMA dgn daftar): batasi ke id hasil cari
             _cari_sql, _cari_p = NDD.syarat_cari(search if isinstance(search, str) else "", 2)
+            query = query.replace("__SISA__", ND.sql_sisa_nd("vc"))  # BUG-070: Σ sisa jurnal (draf/void/bertaut 0)
             query = query.replace("__CARI__", NDD.syarat_cari(search if isinstance(search, str) else "", 2, a="vc")[0])
             row = await conn.fetchrow(query, ctx["tenant_id"], *_cari_p)
             # U3c pill AKSI belum_terpakai (predikat SAMA dgn ?aksi=) + total_applied = Σ terpakai turunan JURNAL (kembar NK, SATU definisi
@@ -445,7 +444,6 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
             )
 
             # Build response
-            remaining = NDD.sisa_lama(vc["status"], vc["total_amount"], vc["amount_applied"], vc["amount_received"])
             _medan = (await NDD.medan_banyak(conn, ctx["tenant_id"], [vc])).get(vc["id"], {})  # U3c: == baris daftar
 
             return {
@@ -467,7 +465,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
                     "total_amount": vc["total_amount"],
                     "amount_applied": vc["amount_applied"] or 0,
                     "amount_refunded": vc["amount_received"] or 0,
-                    "remaining_amount": remaining,
+                    "remaining_amount": _medan["remaining_amount"],  # BUG-070: sisa jurnal (== baris daftar)
                     "status": vc["status"],
                     "vendor_credit_date": vc["credit_date"].isoformat(),
                     "reason": vc["reason"],
