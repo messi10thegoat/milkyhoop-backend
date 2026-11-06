@@ -265,7 +265,7 @@ def test_dari_fpb_penuh_mode_kepala_angka_dari_tagihan_dan_total_sama_persis(mon
         ("Kain katun", D("3"), 2000, 0), ("Benang", D("2"), 2000, 0)]
     assert p["tax_rate"] == 11 and p["discount_amount"] == 1000 and p["discount_percent"] == 0
     assert {"lines", "notes"} <= set(d) and [x["original_bill_item_id"] for x in d["lines"]] == [str(L1), str(L2)]
-    assert "ND_SISA_BARIS_BELUM_DILACAK" in [n["code"] for n in d["notes"]]
+    assert "ND_SISA_BARIS_BELUM_DILACAK" not in [n["code"] for n in d["notes"]]  # BUG-081: catatan per produk hanya bila sudah diretur
     assert kon.tulis() == [] and ("tx", "BEGIN RO", ()) in kon.log
 
 

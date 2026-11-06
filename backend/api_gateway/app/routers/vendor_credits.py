@@ -820,7 +820,7 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
     kepala: harga & qty dari bill_items; diskon dokumen tagihan (invoice + tunai, aturan _dpp_header_discount) dibagi pro-rata neto baris terpilih
     -> diskon dokumen ND (SEBELUM PPN kepala, sama dengan tagihan); PPN = tarif kepala tagihan. Yang belum bisa dicerminkan PERSIS DIBLOK
     (bukan angka salah): PPN per baris + diskon dokumen, harga termasuk PPN, DPP manual; faktor DPP != 1 + diskon baris ditolak _pagar_nd.
-    Tautan per baris (original_bill_item_id) belum ada kolomnya (tiket ND-PAJAK) -> sisa per baris belum dilacak (catatan).
+    Tautan per baris (original_bill_item_id) belum ada kolomnya (tiket ND-PAJAK) -> catatan per PRODUK "sudah diretur X dari Y" (BUG-081).
     -> {blocks, notes, lines, create (badan POST /vendor-credits | None), tagihan {id, nomor, amount}, penuh (semua baris qty penuh)}."""
     from ..services.bills_service import BillCalculator, _dpp_header_discount
     blocks, notes = [], []
@@ -856,11 +856,8 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
     if per_baris and diskon_dok_tagihan > 0:
         blocks.append(_b("ND_DISKON_DOKUMEN_BER_PPN_BELUM",
                          f"Faktur pembelian {nomor} berdiskon dokumen dengan PPN per baris belum didukung di nota debit."))
-    lama = [r["credit_number"] for r in await conn.fetch(
-        """SELECT credit_number FROM vendor_credits WHERE tenant_id = $1 AND original_bill_id = $2 AND status <> 'void' ORDER BY 1""",
-        tid, bid)]
-    notes.append(_b("ND_SISA_BARIS_BELUM_DILACAK", "Jumlah yang sudah dinotadebitkan per baris belum dilacak; periksa nota debit lain atas "
-                    "faktur ini." + (" Sudah ada: " + ", ".join(lama) + "." if lama else "")))
+    from ..services import nota_debit_gudang as NG  # BUG-081: angka nyata per produk (termasuk draf), bukan catatan umum
+    notes.extend(await NG.catatan_sudah_diretur(conn, tid, bid, rows))
     pilih = None
     if body.lines is not None:
         from ..services import satuan_dasar as SD

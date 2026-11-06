@@ -103,3 +103,56 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
         k.pop("_asal", None)
         k["gudang"] = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", k["gudang_id"], tid)
     return keluar
+
+
+async def catatan_sudah_diretur(conn, tid: str, bill_id, baris_tagihan) -> list:
+    """BUG-081 (6 Nov 2026, putusan MASTER; tanpa migrasi): catatan Tinjau ND per PRODUK atas tagihan asal -- "sudah diretur X dari Y"
+    (ND terbit non-void) + ND DRAF sebagai peringatan, semua dalam SATUAN DASAR (satuan_dasar.hitung "konversi"; baris tak terkonversi
+    dilewati). Bukan blok: batas qty yang MENOLAK tetap asal_retur saat posting (barang dilacak). Per-baris (original_bill_item_id) = tiket
+    sesudah migrasi. -> [{code, message, product_id}] hanya untuk produk yang sudah/sedang diretur."""
+    from . import satuan_dasar as SD
+    pids = [r["product_id"] for r in baris_tagihan if r["product_id"]]
+    if not pids:
+        return []
+    nd = await conn.fetch(
+        """SELECT v.credit_number, v.status, i.item_id, i.quantity, i.unit FROM vendor_credits v
+           JOIN vendor_credit_items i ON i.vendor_credit_id = v.id
+           WHERE v.tenant_id = $1 AND v.original_bill_id = $2 AND v.status <> 'void' AND i.item_id IS NOT NULL
+           ORDER BY v.credit_number""", tid, bill_id)
+    if not nd:
+        return []
+    ktx = await SD.muat(conn, tid, pids)
+    masuk, terbit, draf, nomor_draf, nama = {}, {}, {}, {}, {}
+    for r in baris_tagihan:
+        if not r["product_id"]:
+            continue
+        h = SD.hitung(ktx, r["product_id"], r["unit"], r["quantity"], "konversi")
+        k = str(r["product_id"])
+        nama[k] = r["product_name"] or r["description"] or "-"
+        if not h["blok"]:
+            masuk[k] = masuk.get(k, NOL) + h["qty_dasar"]
+    for r in nd:
+        k = str(r["item_id"])
+        if k not in masuk:
+            continue
+        h = SD.hitung(ktx, r["item_id"], r["unit"], r["quantity"], "konversi")
+        if h["blok"]:
+            continue
+        if r["status"] == "draft":
+            draf[k] = draf.get(k, NOL) + h["qty_dasar"]
+            nomor_draf.setdefault(k, []).append(r["credit_number"])
+        else:
+            terbit[k] = terbit.get(k, NOL) + h["qty_dasar"]
+    out = []
+    for k in masuk:
+        x, z = terbit.get(k, NOL), draf.get(k, NOL)
+        if x == 0 and z == 0:
+            continue
+        dasar = (ktx["barang"].get(k) or {}).get("dasar") or ""
+        pesan = f"{nama[k]}: sudah diretur {tg.qty(x)} dari {tg.qty(masuk[k])} {dasar}".rstrip()
+        if z:
+            pesan += f"; {tg.qty(z)} lagi di draf {', '.join(sorted(set(nomor_draf[k])))}"
+        lebih = x + z > masuk[k]
+        out.append({"code": "ND_RETUR_MELEBIHI_TAGIHAN" if lebih else "ND_SUDAH_DIRETUR",
+                    "message": pesan + (" -- melebihi jumlah di faktur." if lebih else "."), "product_id": k})
+    return out
