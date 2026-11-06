@@ -129,11 +129,11 @@ def test_jumlah_beberapa_baris_produk_sama_dibatasi_bersama():
 
 def test_penulis_dan_pratinjau_memakai_penentu_yang_sama():
     src_w = inspect.getsource(RVC.post_vendor_credit)
-    assert "ORDER BY created_at LIMIT 1" not in src_w and '_r["keluar"]' in src_w
+    assert "ORDER BY created_at LIMIT 1" not in src_w and '_r["retur"]' in src_w  # BUG-053: rencana_retur(keluar)
     src_r = inspect.getsource(NDR.rencana_posting)
     assert "NG.rencana_keluar(" in src_r and "kunci=not pratinjau" in src_r
-    src_h = inspect.getsource(NDR.rencana_hpp)
-    assert "FROM warehouses" not in src_h and 'k["gudang_id"]' in src_h
+    src_h = inspect.getsource(NDR.rencana_retur) + inspect.getsource(NDR.stok_retur)
+    assert "FROM warehouses" not in src_h and '"gudang_id"' in src_h and '_r["retur"]' in src_w and 'warehouse_id=_b["gudang_id"]' in src_w
 
 
 def test_tanpa_asal_memakai_gudang_default_seperti_fpb():

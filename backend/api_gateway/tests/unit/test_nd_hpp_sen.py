@@ -48,15 +48,16 @@ def test_record_inventory_outbound_jurnal_hpp_bersen_sama_dengan_kartu(monkeypat
     assert D("99.99") in jl                                     # Dr HPP / Cr Persediaan = nilai kartu stok (3 x 33,33)
 
 
-def test_pratinjau_nd_hpp_bersen_sama_dengan_penulis(monkeypatch):
+def test_pratinjau_nd_retur_bersen_sama_dengan_penulis(monkeypatch):
+    # BUG-053: biaya retur = rencana_retur (Cr Persediaan di jurnal posting), r2 == record_inventory_outbound
     import app.services.inventory_helpers as IH2
     monkeypatch.setattr(IH2, "get_cost_for_sale", _biaya)
     monkeypatch.setattr(IH2, "resolve_inventory_accounts", _akun)
 
-    async def jurnal(conn, tid, st, judul, tgl, baris):
-        return {"source_type": st, "lines": baris}
-
-    monkeypatch.setattr(NR, "_rencana_jurnal_nd", jurnal)
-    vc = {"credit_number": "VC-1", "credit_date": None}
-    j, stok = asyncio.run(NR.rencana_hpp(_K(), "t", vc, [{"product_id": uuid4(), "qty": D(3), "gudang_id": uuid4(), "gudang": "G"}]))
-    assert stok[0]["total_cost"] == 99.99 and j[0]["lines"][0][1] == D("99.99") and j[0]["lines"][1][2] == D("99.99")
+    async def peran(conn, tid, role):
+        return "PPV"
+    monkeypatch.setattr(NR, "resolve_account_id_by_role", peran)
+    rid = uuid4()
+    r = asyncio.run(NR.rencana_retur(_K(), "t", [{"item_row_id": rid, "product_id": uuid4(), "qty": D(3), "gudang_id": uuid4(), "gudang": "G"}],
+                                     [{"id": rid, "total": D("120")}]))
+    assert NR.stok_retur(r)[0]["total_cost"] == 99.99 and r["baris"][0]["total"] == D("99.99") and r["akun_selisih"] == "PPV"

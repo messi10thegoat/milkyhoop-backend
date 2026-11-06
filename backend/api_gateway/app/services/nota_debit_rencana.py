@@ -3,9 +3,11 @@ rollback seperti pratinjau NK). SATU definisi blok + RENCANA jurnal per aksi (po
   * endpoint TULIS (routers/vendor_credits + services/nota_debit): dipanggil di transaksi tulis (sesudah kunci yang sama seperti dulu);
     blok PERTAMA = HTTPException yang SAMA PERSIS (status + detail, termasuk detail dict 409) dengan kode lama -> perilaku tulis tak berubah;
   * endpoint PRATINJAU: transaksi READ ONLY tanpa kunci/sequence; SEMUA blok dikumpulkan (200); jurnal = rencana tanpa nomor.
-Baris jurnal posting = baris_posting_nd (fungsi YANG SAMA dipakai penulis). HPP retur barang dilacak = rencana baca-saja dengan fungsi baca
-YANG SAMA dengan record_inventory_outbound (get_cost_for_sale + resolve_inventory_accounts, total = r2(qty × unit_cost) HALF_UP); harness
-membuktikan pratinjau == tertulis. Akuntansi retur (Cr 5-10300 + Dr HPP/Cr Persediaan) TIDAK diubah -- tiket ironlaws (tiket-terbuka)."""
+Baris jurnal posting = baris_posting_nd (fungsi YANG SAMA dipakai penulis). Retur barang dilacak (BUG-053, 6 Nov 2026, putusan pemilik
+LANGSUNG: pola PERPETUAL tanpa flag, semua tenant): SATU jurnal VENDOR_CREDIT Dr Hutang / Cr Persediaan = qty × WAC (r2, fungsi baca YANG SAMA
+dengan record_inventory_outbound: get_cost_for_sale + resolve_inventory_accounts) / Dr atau Cr 5-10400 Selisih Harga = porsi nilai retur
+barang itu − biaya WAC; baris non-stok tetap Cr 5-10300. Kartu stok keluar bertaut jurnal ITU (tanpa jurnal VENDOR_CREDIT_COGS baru; ND lama
+tetap dibalik lewat jurnal HPP-nya). Dulu: Cr 5-10300 seluruhnya + jurnal terpisah Dr HPP / Cr Persediaan (pola periodik)."""
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID
@@ -93,8 +95,39 @@ async def perkiraan_nomor_nd(conn, tid: str) -> str:
 
 
 # ------------------------------------------------------------------ posting
-async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, potongan: bool) -> list:
+def _r2(v) -> Decimal:
+    return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def nilai_stok_retur(dasar, retur) -> Decimal:
+    """Porsi dasar (nilai retur di jurnal) milik baris barang dilacak ber-akun persediaan: seluruh dasar bila semua baris begitu, selain itu
+    proporsional nilai baris dokumen (r2)."""
+    if not retur or retur["semua"] <= NOL:
+        return NOL
+    return Decimal(str(dasar)) if retur["bagian"] == retur["semua"] else _r2(Decimal(str(dasar)) * retur["bagian"] / retur["semua"])
+
+
+def baris_kredit_retur(dasar, retur, akun_kredit, nomor: str) -> list:
+    """BUG-053 sisi kredit retur barang: Cr Persediaan per akun (Σ qty × WAC) · Cr/Dr 5-10400 selisih · Cr 5-10300 sisa non-stok."""
+    persediaan = {}
+    for b in retur["baris"]:
+        if b["akun"] and b["total"]:
+            persediaan[b["akun"]] = persediaan.get(b["akun"], NOL) + b["total"]
+    stok = nilai_stok_retur(dasar, retur)
+    out = [(a, 0, t, f"Persediaan Retur - {nomor}", "persediaan") for a, t in persediaan.items()]
+    selisih = stok - sum(persediaan.values(), NOL)
+    if selisih > 0:
+        out.append((retur["akun_selisih"], 0, selisih, f"Selisih Harga Retur - {nomor}", "selisih"))
+    elif selisih < 0:
+        out.append((retur["akun_selisih"], -selisih, 0, f"Selisih Harga Retur - {nomor}", "selisih"))
+    if Decimal(str(dasar)) - stok != 0:
+        out.append((akun_kredit, 0, Decimal(str(dasar)) - stok, f"Retur Pembelian - {nomor}", "kredit"))
+    return out
+
+
+async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, potongan: bool, retur: Optional[dict] = None) -> list:
     """[(account_id, debit, credit, memo, peran)] jurnal VENDOR_CREDIT: Dr Hutang total · Cr Retur/Diskon dasar · Cr PPN Masukan (PKP, pajak > 0).
+    retur (rencana_retur, barang dilacak) -> sisi kredit dasar = baris_kredit_retur (Persediaan + selisih 5-10400 + sisa 5-10300).
     Non-PKP berpajak (aturan pemilik 4 Nov "kapitalisasi balik", cermin tagihan): PPN tak pernah jadi PPN Masukan -> Cr Retur/Diskon = total
     (termasuk PPN), tanpa baris PPN -- penentu SAMA tagihan_aksi.dasar_tagihan. `peran` 'pajak' menandai baris PPN (penulis butuh id barisnya)."""
     from . import tagihan_aksi as TA
@@ -103,8 +136,11 @@ async def baris_posting_nd(conn, tid: str, vc, ap_account_id, akun_kredit, poton
     pajak = vc["tax_amount"] or 0
     akun_pajak = await resolve_account_id_by_role_if_pkp(conn, tid, AccountRole.VAT_INPUT) if pajak > 0 else None
     dasar, _kapital = TA.dasar_tagihan(total, pajak, akun_pajak, bulat["selisih"])
-    baris = [(ap_account_id, total, 0, f"Pengurangan Hutang - {vc['credit_number']}", "hutang"),
-             (akun_kredit, 0, dasar, f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}", "kredit")]
+    baris = [(ap_account_id, total, 0, f"Pengurangan Hutang - {vc['credit_number']}", "hutang")]
+    if retur and not potongan and nilai_stok_retur(dasar, retur) > 0:
+        baris += baris_kredit_retur(dasar, retur, akun_kredit, vc["credit_number"])
+    else:
+        baris.append((akun_kredit, 0, dasar, f"{'Diskon Pembelian' if potongan else 'Retur Pembelian'} - {vc['credit_number']}", "kredit"))
     if pajak > 0 and akun_pajak is not None:
         baris.append((akun_pajak, 0, pajak, f"PPN Retur - {vc['credit_number']}", "pajak"))
     bb = TA.baris_pembulatan(bulat, -1) if bulat["akun"] else None
@@ -143,23 +179,24 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
         bl.galat(bulat["blok"]["code"], 422, bulat["blok"]["message"])
     await periode_terbuka(conn, tid, vc["credit_date"], bl)
     # ND-GUDANG: gudang asal + sisa retur + stok (penulis: kunci tagihan asal + FOR UPDATE stok) -- penentu SATU dgn pratinjau
-    keluar = [] if potongan else await NG.rencana_keluar(
-        conn, tid, vc, items if items is not None else await conn.fetch(
-            "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1 ORDER BY line_number", vc["id"]), kunci=not pratinjau, bl=bl)
-    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan, "keluar": keluar, "bulat": bulat}
+    baris_dok = items if items is not None else await conn.fetch(
+        "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1 ORDER BY line_number", vc["id"])
+    keluar = [] if potongan else await NG.rencana_keluar(conn, tid, vc, baris_dok, kunci=not pratinjau, bl=bl)
+    retur = await rencana_retur(conn, tid, keluar, baris_dok)  # BUG-053: biaya WAC dibaca SEBELUM kartu stok ditulis (keluar tak mengubah WAC)
+    if retur and not retur["akun_selisih"] and any(b["akun"] for b in retur["baris"]):
+        bl.galat("PERAN_AKUN_BELUM_DIPETAKAN", 500, "Akun selisih harga pembelian belum dipetakan.")
+    hasil = {"blocks": bl, "ap": ap, "akun_kredit": akun_kredit, "potongan": potongan, "keluar": keluar, "bulat": bulat, "retur": retur}
     if not pratinjau:
         return hasil
     jurnal, stok = [], []
     if ap and akun_kredit:
         try:
-            baris = await baris_posting_nd(conn, tid, vc, ap, akun_kredit, potongan)
+            baris = await baris_posting_nd(conn, tid, vc, ap, akun_kredit, potongan, retur)
             jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT", TJ.nd(vc['credit_number'], vc['vendor_name']), vc["credit_date"],
                                         [b[:4] for b in baris]))
         except HTTPException as e:
             bl.galat("NON_PKP", e.status_code, e.detail)
-    if not potongan:
-        hpp, stok = await rencana_hpp(conn, tid, vc, keluar)
-        jurnal += hpp
+    stok = stok_retur(retur)
     tag = []
     if vc["original_bill_id"] and sisa_t is not None:
         tag = [{"bill_id": str(vc["original_bill_id"]), "bill_number": vc["original_bill_number"], "remaining_before": _f(sisa_t),
@@ -168,25 +205,31 @@ async def rencana_posting(conn, ctx, vc, pratinjau: bool = False, items: Optiona
     return hasil
 
 
-async def rencana_hpp(conn, tid: str, vc, keluar: list) -> tuple:
-    """Rencana jurnal HPP + gerak stok retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound.
-    keluar = NG.rencana_keluar (gudang asal; ND-GUDANG) -- gudang SAMA dengan penulis. Biaya = WAC saat ini (putusan B, Rule 3)."""
+async def rencana_retur(conn, tid: str, keluar: list, baris_dok) -> Optional[dict]:
+    """BUG-053: biaya retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound. keluar = NG.rencana_keluar
+    (gudang asal; ND-GUDANG) -- gudang SAMA dengan penulis. Biaya = WAC saat ini (Rule 3), total = r2(qty × unit_cost) == penulis.
+    -> {baris: [{**keluar, produk, unit_cost, total, cost_source, akun}], bagian, semua, akun_selisih} | None (tanpa barang dilacak)."""
     from .inventory_helpers import get_cost_for_sale, resolve_inventory_accounts
-    jurnal, stok = [], []
+    if not keluar:
+        return None
+    baris = []
     for k in keluar:
         p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
         biaya = await get_cost_for_sale(conn, tid, p["id"])
-        total = (Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)  # == penulis
-        stok.append({"product_id": str(p["id"]), "product": p["nama_produk"], "quantity": float(k["qty"]),
-                     "unit_cost": _f(biaya["unit_cost"]), "total_cost": _f(total), "cost_source": biaya["cost_source"],
-                     "warehouse_id": str(k["gudang_id"]), "warehouse": k["gudang"]})
-        if total > 0:
-            akun = await resolve_inventory_accounts(conn, tid, p["id"])
-            if akun["cogs_account_id"] and akun["inventory_account_id"]:
-                jurnal.append(await _rencana_jurnal_nd(conn, tid, "VENDOR_CREDIT_COGS", TJ.nd_hpp(vc['credit_number']), vc["credit_date"],
-                                            [(akun["cogs_account_id"], total, 0, "HPP Barang Dagang"),
-                                             (akun["inventory_account_id"], 0, total, "Persediaan Barang Dagang")]))
-    return jurnal, stok
+        akun = await resolve_inventory_accounts(conn, tid, p["id"])
+        baris.append({**k, "produk": p, "unit_cost": Decimal(str(biaya["unit_cost"])), "total": _r2(Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"]))),
+                      "cost_source": biaya["cost_source"], "akun": akun["inventory_account_id"]})
+    nilai = {str(it["id"]): Decimal(str(it["total"] or 0)) for it in baris_dok}
+    stok_id = {str(b["item_row_id"]) for b in baris if b["akun"]}
+    return {"baris": baris, "bagian": sum((v for i, v in nilai.items() if i in stok_id), NOL), "semua": sum(nilai.values(), NOL),
+            "akun_selisih": await resolve_account_id_by_role(conn, tid, AccountRole.PURCHASE_PRICE_VARIANCE)}
+
+
+def stok_retur(retur) -> list:
+    """Bentuk stock[] pratinjau (== penulis: satu gerak keluar per baris barang dilacak)."""
+    return [{"product_id": str(b["produk"]["id"]), "product": b["produk"]["nama_produk"], "quantity": float(b["qty"]),
+             "unit_cost": _f(b["unit_cost"]), "total_cost": _f(b["total"]), "cost_source": b["cost_source"],
+             "warehouse_id": str(b["gudang_id"]), "warehouse": b["gudang"]} for b in (retur["baris"] if retur else [])]
 
 
 # ------------------------------------------------------------------ terapkan / lepas (tanpa jurnal)

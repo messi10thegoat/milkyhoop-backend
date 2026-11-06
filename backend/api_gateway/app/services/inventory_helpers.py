@@ -112,9 +112,12 @@ async def record_inventory_outbound(
     user_id: Optional[UUID],
     notes: str,
     receipt_date=None,
+    jurnal_pemanggil: Optional[UUID] = None,
 ) -> dict:
     """
     Standard outbound flow: get WAC, insert inventory_ledger, create COGS journal.
+    jurnal_pemanggil (BUG-053 nota debit perpetual): nilai persediaan sudah dibukukan di jurnal PEMANGGIL -> tanpa jurnal HPP, kartu stok
+    bertaut jurnal itu.
     DB trigger auto-updates warehouse_stock.
 
     MUST be called within an existing transaction (conn.transaction()).
@@ -225,8 +228,8 @@ async def record_inventory_outbound(
     )
 
     # 4. Create COGS journal (if cost > 0)
-    journal_id = None
-    if total_cost > 0:
+    journal_id = jurnal_pemanggil
+    if total_cost > 0 and jurnal_pemanggil is None:
         accounts = await resolve_inventory_accounts(conn, tenant_id, product_id)
         hpp_acct = accounts["cogs_account_id"]
         inv_acct = accounts["inventory_account_id"]

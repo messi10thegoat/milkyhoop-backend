@@ -25,7 +25,8 @@ def test_posting_potongan_tanpa_stok_dan_akun_per_peran():
     assert 'potongan = vc["reason"] in ND.ALASAN_POTONGAN' in cek
     assert "ND.peran_kredit_nd(vc[\"reason\"])" in cek
     src = inspect.getsource(VC.post_vendor_credit)
-    assert '_r["potongan"]' in src and "for item in ([] if potongan else vc_items):" in src
+    assert '_r["potongan"]' in src and "keluar = [] if potongan else await NG.rencana_keluar(" in cek  # BUG-053: stok dari _r["retur"]
+    assert 'for _b in (_r["retur"] or {}).get("baris", [])' in src
 
 
 def test_pagar_ppn_dipanggil_di_posting_dan_terapkan():
