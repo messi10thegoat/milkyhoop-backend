@@ -1353,6 +1353,7 @@ async def pratinjau_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) 
 class CreditNoteFromInvoiceLine(BaseModel):
     original_invoice_item_id: str
     quantity: Decimal = Field(..., ge=0)
+    unit: Optional[str] = Field(None, max_length=50)  # BUG-085: satuan ketikan; dikonversi ke satuan baris faktur (absen = satuan baris)
 
 
 class CreditNotePreviewRequest(BaseModel):
@@ -1422,8 +1423,11 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
                                  "baris faktur; jumlahnya tidak dihitung per baris."})
     pilih = None
     if body.lines is not None:
+        from ..services import satuan_dasar as SD
         pilih = {}
-        milik = {str(r["id"]) for r in rows}
+        milik = {str(r["id"]): r for r in rows}
+        ktx = await SD.muat(conn, tid, [milik[str(x.original_invoice_item_id).lower()]["item_id"] for x in body.lines
+                                        if SD.normal(x.unit) and str(x.original_invoice_item_id).lower() in milik])
         for ln in body.lines:
             k = str(ln.original_invoice_item_id).lower()
             if k not in milik:
@@ -1431,7 +1435,12 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
                                "message": f"Baris {ln.original_invoice_item_id} bukan baris faktur {inv['invoice_number']}.",
                                "original_invoice_item_id": ln.original_invoice_item_id})
                 continue
-            pilih[k] = pilih.get(k, Decimal("0")) + ln.quantity
+            r = milik[k]
+            h = SD.ke_satuan_baris(ktx, r["item_id"], ln.unit, ln.quantity, r["unit"], r["description"] or "-")
+            if h["blok"]:
+                blocks.append({"code": h["blok"]["code"], "message": h["blok"]["message"], "original_invoice_item_id": ln.original_invoice_item_id})
+                continue
+            pilih[k] = pilih.get(k, Decimal("0")) + h["qty"]
     lines, items, lebih = [], [], []
     net_semua, net_pilih = Decimal("0"), Decimal("0")
     for r in rows:

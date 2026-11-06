@@ -123,6 +123,31 @@ def biaya_dasar(nilai, qty_dasar_) -> Decimal:
     return Decimal(str(nilai or 0)) / q if q else Decimal("0")
 
 
+# BUG-085 (6 Nov 2026): qty ketikan dalam satuan bebas ("retur 1 dus") -> qty dalam satuan BARIS dokumen asal (ND/NK dari faktur,
+# SJ dari SO). Baris asal tetap memegang satuannya; satu penentu dipakai pratinjau DAN tulis. Satuan absen = perilaku lama.
+KODE_TIDAK_HABIS = "SATUAN_TIDAK_HABIS_DIBAGI"
+SKALA_QTY = Decimal("0.0001")  # numeric(15,4) di semua tabel baris dokumen (information_schema prod 6 Nov)
+
+
+def ke_satuan_baris(ktx: dict, product_id, unit: Optional[str], qty, unit_baris: Optional[str], nama: str) -> dict:
+    """-> {qty dalam satuan baris, blok}. Lewat satuan dasar: qty x faktor(unit) / faktor(unit_baris); harus pas di 4 desimal."""
+    q = Decimal(str(qty or 0))
+    alias = ktx["alias"]
+    if not normal(unit) or kanon(unit, alias) == kanon(unit_baris, alias):
+        return {"qty": q, "blok": None}
+    if ktx["barang"].get(str(product_id)) is None:  # baris tanpa barang (jasa / teks bebas): tak ada konversi untuk dipakai
+        return {"qty": q, "blok": {"code": KODE_TAK_TERKONVERSI, "status": 400,
+                                   "message": tg.satuan_tak_terkonversi(unit, nama, unit_baris or "satuan baris")}}
+    hk, hb = hitung(ktx, product_id, unit, q, "konversi"), hitung(ktx, product_id, unit_baris, SATU, "konversi")
+    if hk["blok"] or hb["blok"]:
+        return {"qty": q, "blok": hk["blok"] or hb["blok"]}
+    hasil = hk["qty_dasar"] / hb["faktor"]
+    if hasil != hasil.quantize(SKALA_QTY):
+        return {"qty": q, "blok": {"code": KODE_TIDAK_HABIS, "status": 400, "message": tg.satuan_tidak_habis(
+            q, unit, nama, unit_baris or hb["satuan_dasar"], hb["faktor"], hb["satuan_dasar"])}}
+    return {"qty": hasil.quantize(SKALA_QTY), "blok": None}
+
+
 # ------------------------------------------------------------------ P1: konversi TERKUNCI sesudah dipakai (putusan pemilik LANGSUNG 5 Nov,
 # pola NetSuite Units of Measure): faktor tak dibekukan di baris dokumen -> konversi yang SUDAH muncul di transaksi (baris dokumen atau
 # kartu stok) tak boleh diubah faktornya, diganti satuannya, atau dinonaktifkan; harga beli/jual konversi tetap boleh. Buat satuan baru.

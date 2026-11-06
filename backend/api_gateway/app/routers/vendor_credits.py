@@ -791,6 +791,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
 class VendorCreditFromBillLine(BaseModel):
     original_bill_item_id: str
     quantity: Decimal = Field(..., ge=0)
+    unit: Optional[str] = Field(None, max_length=50)  # BUG-085: satuan ketikan; dikonversi ke satuan baris tagihan (absen = satuan baris)
 
 
 class VendorCreditPreviewRequest(BaseModel):
@@ -864,15 +865,23 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
                     "faktur ini." + (" Sudah ada: " + ", ".join(lama) + "." if lama else "")))
     pilih = None
     if body.lines is not None:
+        from ..services import satuan_dasar as SD
         pilih = {}
-        milik = {str(r["id"]) for r in rows}
+        milik = {str(r["id"]): r for r in rows}
+        ktx = await SD.muat(conn, tid, [milik[str(x.original_bill_item_id).lower()]["product_id"] for x in body.lines
+                                        if SD.normal(x.unit) and str(x.original_bill_item_id).lower() in milik])
         for ln in body.lines:
             k = str(ln.original_bill_item_id).lower()
             if k not in milik:
                 blocks.append(_b("ND_BARIS_BUKAN_TAGIHAN", f"Baris {ln.original_bill_item_id} bukan baris faktur pembelian {nomor}.",
                                  original_bill_item_id=ln.original_bill_item_id))
                 continue
-            pilih[k] = pilih.get(k, Decimal("0")) + ln.quantity
+            r = milik[k]
+            h = SD.ke_satuan_baris(ktx, r["product_id"], ln.unit, ln.quantity, r["unit"], r["product_name"] or r["description"] or "-")
+            if h["blok"]:
+                blocks.append(_b(h["blok"]["code"], h["blok"]["message"], original_bill_item_id=ln.original_bill_item_id))
+                continue
+            pilih[k] = pilih.get(k, Decimal("0")) + h["qty"]
     lines, items = [], []
     net_semua, net_pilih, penuh = Decimal("0"), Decimal("0"), True
     for r in rows:
