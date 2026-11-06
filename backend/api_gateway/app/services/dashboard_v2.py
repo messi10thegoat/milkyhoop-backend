@@ -31,6 +31,7 @@ from typing import Iterable, List, Optional
 from .report_engine.ledger import compute_balance, compute_balance_detail  # noqa: F401 (dipakai pemanggil/tes lama)
 from . import dashboard_angka as DA  # T1-BE 22 Okt: penentu angka SATU dgn /api/dashboard/all (jurnal EFEKTIF)
 from . import faktur_cetak, so_kirim
+from . import uang_presisi as UP
 
 NOL = Decimal("0")
 SEN = Decimal("0.01")
@@ -60,6 +61,12 @@ def d(v) -> Decimal:
 
 def uang(v) -> str:
     return str(d(v).quantize(SEN, rounding=ROUND_HALF_UP))
+
+
+def uang_p(v, presisi: int) -> str:
+    """BUG-084: angka laba rugi tampil pada presisi tenant (bawaan 0 = rupiah penuh, putusan pemilik 4 Nov; flag uang_bersen = 2).
+    Sen HPP/WAC tetap di jurnal (di luar pembulatan titik lahir); yang dibulatkan hanya angka tampil, dari jumlahnya sendiri."""
+    return uang(UP.bulat(v, presisi))
 
 
 def rp(v) -> str:
@@ -211,10 +218,10 @@ def delta_pct(kini: Decimal, banding: Decimal) -> Optional[float]:
     return float(((kini - banding) * 100 / abs(banding)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
-def _objek_banding(kini: Decimal, banding: Optional[Decimal]) -> Optional[dict]:
+def _objek_banding(kini: Decimal, banding: Optional[Decimal], presisi: int = 2) -> Optional[dict]:
     if banding is None:
         return None
-    return {"value": uang(banding), "delta": uang(kini - banding), "delta_pct": delta_pct(kini, banding)}
+    return {"value": uang_p(banding, presisi), "delta": uang_p(kini - banding, presisi), "delta_pct": delta_pct(kini, banding)}
 
 
 async def _metrik_rentang_banyak(conn, tenant_id: str, rentang: list) -> list:
@@ -234,11 +241,11 @@ async def pembanding(conn, tenant_id: str, periode: str, mulai: date, akhir: dat
     kini = hasil[r]
     m_pp = hasil[pp] if ada(pp) else None
     m_py = hasil[py] if ada(py) else None
-    metrik = {}
+    metrik, p = {}, await UP.presisi_tenant(conn, tenant_id)
     for k in ("revenue", "expense", "profit", "net_cash"):
-        metrik[k] = {"current": uang(kini[k]),
-                     "prev_period": _objek_banding(kini[k], m_pp[k] if m_pp else None),
-                     "prev_year": _objek_banding(kini[k], m_py[k] if m_py else None)}
+        metrik[k] = {"current": uang_p(kini[k], p),
+                     "prev_period": _objek_banding(kini[k], m_pp[k] if m_pp else None, p),
+                     "prev_year": _objek_banding(kini[k], m_py[k] if m_py else None, p)}
     metrik["net_cash"]["needs_action"] = kini["net_cash"] < NOL
     rng = lambda rr: {"label": label_rentang(*rr), "start": rr[0].isoformat(), "end": rr[1].isoformat()}
     return {"available": r[0] <= r[1] and (m_pp is not None or m_py is not None),
@@ -251,12 +258,12 @@ async def tren_12_bulan(conn, tenant_id: str, hari_ini: date, pertama: Optional[
     awal_ini = date(hari_ini.year, hari_ini.month, 1)
     awal = geser_bulan(awal_ini, -11)
     data = await DA.laba_rugi_bulanan(conn, tenant_id, awal, _akhir_bulan(hari_ini))
-    titik = []
+    titik, p = [], await UP.presisi_tenant(conn, tenant_id)
     for i in range(12):
         b = geser_bulan(awal, i)
         x = data.get(b)
         kosong = pertama is None or _akhir_bulan(b) < pertama
-        nilai = (lambda k: None if kosong else uang(x[k] if x else NOL))
+        nilai = (lambda k: None if kosong else uang_p(x[k] if x else NOL, p))
         titik.append({"month": f"{b.year}-{b.month:02d}", "label": BULAN[b.month - 1],
                       "revenue": nilai("pendapatan"), "expense": nilai("beban"), "profit": nilai("laba"),
                       "partial": b == awal_ini})
@@ -433,7 +440,8 @@ async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) ->
     # T1-BE: DA.laba_rugi (jurnal EFEKTIF; SATU fungsi dgn /all)
     _lr = await DA.laba_rugi(conn, tenant_id, mulai, akhir)
     pendapatan, rinci, beban, laba = _lr["pendapatan"], _lr["rinci_beban"], _lr["beban"], _lr["laba"]
-    pnl = {"revenue": uang(pendapatan), "expense": uang(beban), "profit": uang(laba),
+    p = await UP.presisi_tenant(conn, tenant_id)
+    pnl = {"revenue": uang_p(pendapatan, p), "expense": uang_p(beban, p), "profit": uang_p(laba, p),
            "margin_pct": persen(laba, pendapatan) if pendapatan > NOL else 0.0}
 
     kode = [r["account_code"] for r in rinci]
@@ -453,10 +461,10 @@ async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) ->
         kategori.append({"account_id": None, "name": "Lainnya", "amount": lainnya})
     beban_100 = per_100rb(beban, pendapatan)
     expenses = {
-        "total": uang(beban),
+        "total": uang_p(beban, p),
         "per_100k_expense": beban_100,
         "per_100k_profit": (100000 - beban_100) if pendapatan > NOL else 0,
-        "categories": [{"account_id": k["account_id"], "name": k["name"], "amount": uang(k["amount"]),
+        "categories": [{"account_id": k["account_id"], "name": k["name"], "amount": uang_p(k["amount"], p),
                         "per_100k": per_100rb(k["amount"], pendapatan),
                         "pct_of_expense": persen(k["amount"], beban)} for k in kategori],
     }
