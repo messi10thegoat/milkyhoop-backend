@@ -25,6 +25,12 @@ from ..schemas.warehouses import (
 
 router = APIRouter()
 
+# BUG-077: nilai stok per gudang = qty gudang x WAC BARANG (WAC MH per barang, bukan per gudang; fungsi yang sama dengan
+# jalur COGS). Rupiah dibulatkan 0 dp di titik lahir per baris, dihitung dari WAC 2 dp (bukan dari unit_cost yang
+# sudah dibulatkan). Satu ekspresi untuk /stock dan /stock-value ($2 = tenant_id di kedua query).
+WAC_GUDANG = "CROSS JOIN LATERAL (SELECT get_weighted_average_cost($2, ws.item_id) AS wac) w"
+NILAI_GUDANG = "ROUND(ws.quantity * w.wac, 0)"
+
 # Connection pool
 
 
@@ -401,10 +407,12 @@ async def get_warehouse_stock(
             SELECT
                 ws.item_id, i.item_code, i.nama_produk as item_name,
                 ws.quantity, ws.reserved_quantity, ws.available_quantity,
-                i.base_unit as unit, 0 as unit_cost, 0 as total_value,
+                i.base_unit as unit, ROUND(w.wac, 0)::BIGINT as unit_cost,
+                {NILAI_GUDANG}::BIGINT as total_value,
                 ws.reorder_level, ws.reorder_quantity, ws.last_stock_date
             FROM warehouse_stock ws
             JOIN products i ON ws.item_id = i.id
+            {WAC_GUDANG}
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 {where_extra}
             ORDER BY i.nama_produk ASC
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
@@ -442,13 +450,14 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT
                 COUNT(DISTINCT ws.item_id)::INT as total_items,
                 COALESCE(SUM(ws.quantity), 0) as total_quantity,
-                COALESCE(SUM(ws.quantity * COALESCE(p.purchase_price, 0)), 0)::BIGINT as total_value
+                COALESCE(SUM({NILAI_GUDANG}), 0)::BIGINT as total_value
             FROM warehouse_stock ws
             JOIN products p ON ws.item_id = p.id
+            {WAC_GUDANG}
             WHERE ws.warehouse_id = $1 AND ws.tenant_id = $2 AND ws.quantity > 0
             """,
             warehouse_id,
