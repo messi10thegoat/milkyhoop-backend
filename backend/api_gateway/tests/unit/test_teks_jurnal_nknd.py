@@ -22,18 +22,14 @@ def test_teks_persis():
     assert TJ.nk_batal("CN-1", "Toko A") == "Batal Nota Kredit CN-1 - Toko A"
     assert TJ.nk_batal_hpp("CN-1") == "Batal Pembalik HPP CN-1"
     assert TJ.nd("VC-1", "PT B") == "Nota Debit VC-1 - PT B"
-    assert TJ.nd_hpp("VC-1") == "HPP VC-1"
     assert TJ.nd_refund("VC-1", "PT B") == "Penerimaan Dana Nota Debit VC-1 - PT B"
     assert TJ.nd_batal("VC-1", "PT B") == "Batal Nota Debit VC-1 - PT B"
     assert TJ.nd_batal_hpp("VC-1") == "Batal HPP VC-1"
 
 
-def test_nd_hpp_sama_dengan_penulis_bersama():
-    """Penulis HPP ND = inventory_helpers.record_inventory_outbound f"HPP {source_number}" (helper bersama, tak diubah) == TJ.nd_hpp."""
-    pohon = ast.parse(inspect.getsource(IH.record_inventory_outbound))
-    f = [n for n in ast.walk(pohon) if isinstance(n, ast.JoinedStr) and n.values and isinstance(n.values[0], ast.Constant) and n.values[0].value == "HPP "
-         and len(n.values) == 2 and isinstance(n.values[1], ast.FormattedValue) and getattr(n.values[1].value, "id", None) == "source_number"]
-    assert f, "f\"HPP {source_number}\" tak ditemukan di penulis bersama"
+def test_nd_tanpa_jurnal_hpp_baru():
+    # BUG-053: retur barang dibukukan di jurnal posting ND (perpetual) -> tak ada lagi teks HPP ND baru; batal HPP tetap untuk ND lama
+    assert not hasattr(TJ, "nd_hpp") and hasattr(TJ, "nd_batal_hpp")
 
 
 def _panggilan_tj(obj):
@@ -48,7 +44,7 @@ def _panggilan_tj(obj):
     (NKR, ["nk", "nk_batal", "nk_batal_hpp", "nk_hpp", "nk_refund"]),     # pratinjau NK
     (RVC, ["nd", "nd_batal", "nd_refund"]),                               # penulis ND
     (ND, ["nd_batal_hpp"]),                                               # penulis batal HPP ND
-    (NDR, ["nd", "nd_batal", "nd_batal_hpp", "nd_hpp", "nd_refund"]),     # pratinjau ND
+    (NDR, ["nd", "nd_batal", "nd_batal_hpp", "nd_refund"]),               # pratinjau ND (BUG-053: tanpa nd_hpp)
 ])
 def test_penulis_dan_pratinjau_memanggil_satu_sumber(obj, wajib):
     assert all(w in _panggilan_tj(obj) for w in wajib), (obj.__name__, _panggilan_tj(obj))

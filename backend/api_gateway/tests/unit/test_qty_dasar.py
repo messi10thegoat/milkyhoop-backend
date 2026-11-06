@@ -353,7 +353,7 @@ def test_sj_kasir_nd_direct_action_rencana_kirim_memakai_qty_dasar():
     ks = _src("routers/sales_receipts.py", "create_sales_receipt")
     assert "current_balance - item['qty_dasar']" in ks and "_qd['qty_dasar'] * unit_cost" in ks
     vc = _src("routers/vendor_credits.py", "post_vendor_credit")
-    assert "_qty_nd.get(str(item['id'])" in vc
+    assert "quantity=float(_b['qty'])" in vc  # BUG-053: qty dasar dari NG.rencana_keluar lewat rencana_retur
     da = _src("services/kernel_document_executor.py", "_create_inventory_movements")
     assert "quantity, unit_cost = (_qd['qty_dasar'], unit_cost / _qd['faktor'])" in da
     rk = _src("services/so_pengiriman.py", "rencana_kirim_so")

@@ -107,11 +107,11 @@ def test_hitungan_penyusun_sama_dengan_rumus_lama():
                                                                                           sub - disk + sum(i["tax_amount"] for i in it))
 
 
-def test_rencana_hpp_memakai_baris_maya_bila_ada():
-    # ND-GUDANG (OK MASTER): baris maya kini diteruskan rencana_posting -> NG.rencana_keluar -> rencana_hpp(keluar); maksud SAMA
+def test_rencana_retur_memakai_baris_maya_bila_ada():
+    # ND-GUDANG (OK MASTER): baris maya diteruskan rencana_posting -> NG.rencana_keluar -> rencana_retur (BUG-053; dulu rencana_hpp)
     s = _src(NDR.rencana_posting)
     assert "items if items is not None else await conn.fetch(" in s and "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1" in s
-    assert "hpp, stok = await rencana_hpp(conn, tid, vc, keluar)" in s
+    assert "retur = await rencana_retur(conn, tid, keluar, baris_dok)" in s and "stok = stok_retur(retur)" in s
 
 
 class _ConnTagihanLain(_Conn):

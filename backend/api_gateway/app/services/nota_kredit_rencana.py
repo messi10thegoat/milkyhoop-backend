@@ -182,7 +182,7 @@ def teks_keadaan_nk(k: dict) -> dict:
 
 # ---- U-P6 (2 Nov 2026): kunci bentuk Nota Debit (ADITIF; kunci lama tetap). Alias dihitung dari nilai YANG SAMA, bukan penentu kedua.
 def stok_bentuk_nd(restock: list) -> list:
-    """Baris rencana restock -> bentuk ND stock[] (nota_debit_rencana.rencana_hpp): product_id, product, quantity, unit_cost, total_cost."""
+    """Baris rencana restock -> bentuk ND stock[] (nota_debit_rencana.stok_retur): product_id, product, quantity, unit_cost, total_cost."""
     return [{"product_id": str(x["product_id"]), "product": x["nama"], "quantity": float(x["qty"]),
              "unit_cost": float(x["unit_cost"]), "total_cost": float(x["line_cost"])} for x in restock]
 

@@ -1281,7 +1281,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
 
     Creates journal entry:
     - Dr. Accounts Payable
-    - Cr. Purchase Returns (Persediaan)
+    - Cr. Persediaan (qty x WAC) + Cr/Dr Selisih Harga 5-10400 (BUG-053 perpetual); sisa non-stok Cr. Retur Pembelian
     - Cr. VAT Receivable (if tax)
 
     Changes status from 'draft' to 'posted'.
@@ -1327,8 +1327,6 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                 # (dibukukan? <= sisa) · status draf · akun peran · pagar potongan PPN (409) · akun dipetakan · periode
                 _r = await NDR.rencana_posting(conn, ctx, vc)
                 ap_account_id, purchase_return_account_id, potongan = _r["ap"], _r["akun_kredit"], _r["potongan"]
-                _gudang_nd = {str(k["item_row_id"]): k["gudang_id"] for k in _r["keluar"]}  # ND-GUDANG: gudang asal (penentu SATU)
-                _qty_nd = {str(k["item_row_id"]): k["qty"] for k in _r["keluar"]}  # QTY-DASAR R2: qty SATUAN DASAR dari penentu yang sama
 
                 # Generate journal number
                 import uuid as uuid_module
@@ -1343,7 +1341,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                 tax_amount = vc["tax_amount"] or 0
                 subtotal = total_amount - tax_amount
                 # c-2 (V479): baris dari penentu SATU (Dr Hutang total BULAT + pembulatan); header = Σ debit (Law 4)
-                _baris_nd = await NDR.baris_posting_nd(conn, ctx["tenant_id"], vc, ap_account_id, purchase_return_account_id, potongan)
+                _baris_nd = await NDR.baris_posting_nd(conn, ctx["tenant_id"], vc, ap_account_id, purchase_return_account_id, potongan, _r["retur"])
                 total_amount = sum((Decimal(str(b[1])) for b in _baris_nd), Decimal("0"))
                 if _r["bulat"]["selisih"] != 0:
                     await conn.execute("UPDATE vendor_credits SET total_amount = $1, pembulatan = $2 WHERE id = $3 AND tenant_id = $4",
@@ -1395,43 +1393,29 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                     journal_id,
                 )
 
-                # ── Inventory decrease for goods returned to vendor ──
-                vc_items = await conn.fetch(
-                    "SELECT * FROM vendor_credit_items WHERE vendor_credit_id = $1",
-                    vendor_credit_id,
-                )
-                # U3b: potongan/koreksi harga TIDAK menggerakkan stok (barang tak kembali ke vendor; dulu semua alasan mengeluarkan stok)
-                for item in ([] if potongan else vc_items):
-                    if not item["item_id"]:
-                        continue
-                    product = await conn.fetchrow(
-                        "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
-                        item["item_id"],
-                    )
-                    if not product or not product["track_inventory"]:
-                        continue
+                # ── Kartu stok keluar barang diretur (BUG-053 perpetual): satu gerak per baris barang dilacak dari penentu SATU (NDR.rencana_retur;
+                # potongan/koreksi harga = tanpa stok, U3b); nilai sudah di jurnal posting (Cr Persediaan) -> tanpa jurnal HPP, bertaut jurnal ini
+                from ..services.inventory_helpers import record_inventory_outbound
 
-                    wh_id = _gudang_nd.get(str(item["id"]))
-                    if not wh_id:
-                        continue
-
-                    from ..services.inventory_helpers import record_inventory_outbound
-
-                    await record_inventory_outbound(
+                for _b in (_r["retur"] or {}).get("baris", []):
+                    _g = await record_inventory_outbound(
                         conn=conn,
                         tenant_id=ctx["tenant_id"],
-                        product_id=product["id"],
-                        product_code=product["item_code"],
-                        product_name=product["nama_produk"],
-                        warehouse_id=wh_id,
-                        quantity=float(_qty_nd.get(str(item["id"]), item["quantity"])),
+                        product_id=_b["produk"]["id"],
+                        product_code=_b["produk"]["item_code"],
+                        product_name=_b["produk"]["nama_produk"],
+                        warehouse_id=_b["gudang_id"],
+                        quantity=float(_b["qty"]),
                         source_type="VENDOR_CREDIT",
                         source_id=vendor_credit_id,
                         source_number=vc["credit_number"],
                         user_id=ctx["user_id"],
                         notes=f"Return to vendor - Vendor Credit {vc['credit_number']}",
                         receipt_date=vc["credit_date"],
+                        jurnal_pemanggil=journal_id,
                     )
+                    if _b["akun"] and _g["total_cost"] != _b["total"]:  # GL == kartu stok (HC15): biaya dibaca ulang harus SAMA dengan baris jurnal
+                        raise HTTPException(status_code=409, detail="Biaya persediaan berubah saat posting nota debit. Coba lagi.")
 
                 # Wave 3: Write document_tax_lines (PPN reversal on VC)
                 if tax_amount > 0 and tax_jl_id:
@@ -1885,7 +1869,7 @@ async def void_vendor_credit(
                     )
 
                     # U3a (Law 31 gerbang 5): balik SEMUA lapisan posting -- jurnal HPP, kartu stok, baris pajak
-                    await ND.balik_hpp_stok_pajak(conn, ctx, vc, await tanggal_dokumen(conn, ctx["tenant_id"]))
+                    await ND.balik_hpp_stok_pajak(conn, ctx, vc, await tanggal_dokumen(conn, ctx["tenant_id"]), reversal_journal_id)
 
                 # Update vendor credit status
                 await conn.execute(
@@ -1978,7 +1962,7 @@ async def _pratinjau_nd(request: Request, vendor_credit_id: UUID, aksi: str, isi
 
 @router.post("/{vendor_credit_id}/post/preview")
 async def preview_post_vendor_credit(request: Request, vendor_credit_id: UUID):
-    """Pratinjau POSTING: jurnal VENDOR_CREDIT (baris_posting_nd == tulis) + HPP & stok retur barang dilacak (fungsi baca record_inventory_outbound)."""
+    """Pratinjau POSTING: jurnal VENDOR_CREDIT (baris_posting_nd == tulis) + stok retur barang dilacak (BUG-053: Cr Persediaan di jurnal itu; NDR.rencana_retur)."""
     async def isi(conn, ctx, sebelum):
         vc = await conn.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vendor_credit_id, ctx["tenant_id"])
         r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True)

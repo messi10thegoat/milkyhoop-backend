@@ -28,11 +28,6 @@ def nd(nomor, vendor) -> str:
     return f"Nota Debit {nomor} - {vendor}"
 
 
-def nd_hpp(nomor) -> str:
-    """== inventory_helpers.record_inventory_outbound (penulis bersama, teks TETAP)."""
-    return f"HPP {nomor}"
-
-
 def nd_refund(nomor, vendor) -> str:
     return f"Penerimaan Dana Nota Debit {nomor} - {vendor}"
 

@@ -8,7 +8,8 @@
               (predikat SAMA dgn cabang 5 vc_unapplied V441); draf/void/bertaut = 0. Pagar refund membaca ini, bukan cache.
   sisa tagihan = compute_ap_rincian (V440/V441) -- satu sumber; None = tagihan tidak aktif (draf/void/jurnal dibalik).
   void      = cermin jurnal VENDOR_CREDIT (router) + cermin SETIAP jurnal VENDOR_CREDIT_COGS + pembalikan kartu stok per jurnal HPP
-              (record_inventory_reversal, journal_id) + hapus document_tax_lines (pola void tagihan/faktur) -- Law 31 gerbang 5.
+              (record_inventory_reversal, journal_id) + kartu stok bertaut jurnal posting (BUG-053 perpetual) + hapus document_tax_lines
+              (pola void tagihan/faktur) -- Law 31 gerbang 5.
 """
 import uuid as uuid_module
 from decimal import Decimal
@@ -130,8 +131,9 @@ async def lepas_nota_debit(conn, ctx: dict, vc_id, alasan: Optional[str]) -> dic
     return {"application_id": str(app["id"]), "bill_id": str(app["bill_id"])}
 
 
-async def balik_hpp_stok_pajak(conn, ctx: dict, vc, tanggal) -> int:
-    """Void: cermin SETIAP jurnal VENDOR_CREDIT_COGS efektif + balik kartu stok per jurnal HPP + hapus DTL. Kembali: jumlah jurnal HPP dibalik."""
+async def balik_hpp_stok_pajak(conn, ctx: dict, vc, tanggal, jurnal_balik=None) -> int:
+    """Void: cermin SETIAP jurnal VENDOR_CREDIT_COGS efektif + balik kartu stok per jurnal HPP + hapus DTL. Kembali: jumlah jurnal HPP dibalik.
+    jurnal_balik = pembalik jurnal posting (router): kartu stok yang bertaut jurnal POSTING (BUG-053 perpetual) dibalik bertaut pembalik itu."""
     from .inventory_helpers import record_inventory_reversal
     tid = ctx["tenant_id"]
     n = 0
@@ -157,5 +159,9 @@ async def balik_hpp_stok_pajak(conn, ctx: dict, vc, tanggal) -> int:
                                         reversal_journal_id=rev, created_by=ctx["user_id"], reversal_date=tanggal,
                                         notes_prefix="VOID_ND", journal_id=j["id"])
         n += 1
+    if jurnal_balik and vc["journal_id"]:
+        await record_inventory_reversal(conn=conn, tenant_id=tid, source_type="VENDOR_CREDIT", source_id=vc["id"],
+                                        reversal_journal_id=jurnal_balik, created_by=ctx["user_id"], reversal_date=tanggal,
+                                        notes_prefix="VOID_ND", journal_id=vc["journal_id"])
     await conn.execute("DELETE FROM document_tax_lines WHERE tenant_id = $1 AND document_id = $2", tid, vc["id"])
     return n
