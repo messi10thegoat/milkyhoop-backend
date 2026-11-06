@@ -6,6 +6,9 @@ pratinjau == 6 baris jurnal terbit, nol jejak): scripts/ops/uji-nyata-sj-stok.sh
 """
 import os
 from decimal import Decimal
+import uuid as _uuid
+
+SO_ASAL = _uuid.UUID(int=77)  # B2: pesanan asal faktur draf
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -46,7 +49,7 @@ class _Conn:
         if "FROM sales_invoices" in sql:
             return {"id": INV, "invoice_number": "INV-1", "total_amount": Decimal("1110000"), "invoice_date": None,
                     "status": self.status, "tax_amount": Decimal("110000"), "shipping_amount": Decimal("0"),
-                    "warehouse_id": None, "sales_order_id": None}  # B2: kolom yang kini ikut dibaca (isyarat stok)
+                    "warehouse_id": None, "sales_order_id": SO_ASAL}  # B2: kolom yang kini ikut dibaca (isyarat stok)
         if "sj_faktur_alokasi" in sql:
             return {"qty": Decimal(self.alok[0]), "nilai": Decimal(self.alok[1])}
         raise AssertionError(sql)
@@ -175,4 +178,4 @@ async def test_b2_isyarat_stok_sebelum_posting_simulasi(terbit, monkeypatch):
     monkeypatch.setattr(SI.SB, "isyarat", isy)
     r = await SI._pratinjau_dari_posting(_Pool(c), CTX, str(INV))
     assert c.tx[:2] == ["isyarat", "start"] and r["isyarat_stok"] == [{"item_id": "x", "kalimat": "k"}]
-    assert dipanggil == [(None, None, [])]
+    assert dipanggil == [(None, SO_ASAL, [])]  # pesanan asal draf tak dihitung di dipesan
