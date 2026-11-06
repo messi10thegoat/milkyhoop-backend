@@ -76,11 +76,11 @@ def status_mutasi(b) -> str:
     return "tercatat"
 
 
-def label_sumber(st: str | None) -> str:
-    st = st or ""
-    if st.endswith("_REVERSAL"):
-        return "Pembatalan " + LABEL_SUMBER.get(st[: -len("_REVERSAL")], LABEL_LAIN).lower()
-    return LABEL_SUMBER.get(st, LABEL_LAIN)
+def label_sumber(st: str | None, pembatalan: bool) -> str:
+    """Label server untuk source_type; baris pembatalan (EXPENSE_REVERSAL maupun BILL_PAYMENT ber-reversal_of_id) -> "Pembatalan …"."""
+    st = (st or "").removesuffix("_REVERSAL")
+    teks = LABEL_SUMBER.get(st, LABEL_LAIN)
+    return "Pembatalan " + teks.lower() if pembatalan else teks
 
 
 def mutasi(baris: list) -> list:
@@ -89,5 +89,5 @@ def mutasi(baris: list) -> list:
              "bank_account_id": str(b["bank_account_id"]), "account_name": b["account_name"],
              "transaction_date": _iso(b["journal_date"]), "created_at": _iso(b["created_at"]),
              "arah": "keluar" if Decimal(str(b["net"])) < 0 else "masuk", "amount": _rp(abs(Decimal(str(b["net"])))),
-             "description": b["keterangan"], "sumber": (b["source_type"] or "").lower(), "sumber_teks": label_sumber(b["source_type"]),
+             "description": b["keterangan"], "sumber": (b["source_type"] or "").lower(), "sumber_teks": label_sumber(b["source_type"], status_mutasi(b) == "pembatalan"),
              "source_id": b["source_id"], "status": status_mutasi(b)} for b in baris]

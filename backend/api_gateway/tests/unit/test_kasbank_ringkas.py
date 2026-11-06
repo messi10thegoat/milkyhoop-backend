@@ -46,11 +46,13 @@ def test_sql_ringkasan_dari_jurnal_posted_per_coa_tenant():
 # ---------------------------------------------------------------- B2
 def test_mutasi_arah_jumlah_status_label():
     m = KR.mutasi([_baris(150000), _baris(-20000.25, "EXPENSE", memo=None), _baris(20000.25, "EXPENSE_REVERSAL", rev_of=uuid4()),
-                   _baris(-5000, "BILL_PAYMENT", rev_by=uuid4()), _baris(1, "TAK_DIKENAL"), _baris(0, "REVERSAL")])
+                   _baris(-5000, "BILL_PAYMENT", rev_by=uuid4()), _baris(1, "TAK_DIKENAL"), _baris(0, "REVERSAL"),
+                   _baris(5000, "BILL_PAYMENT", rev_of=uuid4())])
     assert [(x["arah"], x["amount"]) for x in m] == [("masuk", "150000.00"), ("keluar", "20000.25"), ("masuk", "20000.25"),
-                                                     ("keluar", "5000.00"), ("masuk", "1.00"), ("masuk", "0.00")]
-    assert [x["status"] for x in m] == ["tercatat", "tercatat", "pembatalan", "dibatalkan", "tercatat", "pembatalan"]
-    assert [x["sumber_teks"] for x in m] == ["Terima pembayaran", "Biaya", "Pembatalan biaya", "Bayar tagihan", "Jurnal", "Jurnal"]
+                                                     ("keluar", "5000.00"), ("masuk", "1.00"), ("masuk", "0.00"), ("masuk", "5000.00")]
+    assert [x["status"] for x in m] == ["tercatat", "tercatat", "pembatalan", "dibatalkan", "tercatat", "pembatalan", "pembatalan"]
+    assert [x["sumber_teks"] for x in m] == ["Terima pembayaran", "Biaya", "Pembatalan biaya", "Bayar tagihan", "Jurnal", "Pembatalan jurnal",
+                                          "Pembatalan bayar tagihan"]
     assert m[0]["sumber"] == "receive_payment" and m[0]["description"] == "Terima INV-1" and m[0]["transaction_date"] == "2026-11-05"
 
 
