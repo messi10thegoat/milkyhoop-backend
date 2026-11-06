@@ -227,7 +227,7 @@ async def keluaran(conn, tid: str, r: dict, payload) -> dict:
     """Bentuk pratinjau: {ok, blocks, jurnal[{account_id, account_name, debit, credit, memo}], saldo[{…, sebelum, sesudah}], payload}."""
     ids = [b[0] for b in r["baris"] if b[0]]
     nama = {x["id"]: x["account_name"] for x in await conn.fetch(
-        "SELECT id, account_name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids)} if ids else {}
+        "SELECT id, name AS account_name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids)} if ids else {}
     blocks = [{k: v for k, v in b.items() if k != "status"} for b in r["blocks"]]
     tambahan = {"selisih": _rp(r["selisih"])} if "selisih" in r else {}
     return {"ok": not blocks, "blocks": blocks, **tambahan,

@@ -68,7 +68,7 @@ class _C:
     async def fetch(self, sql, *a):
         if "account_roles" in sql:
             return []
-        if "SELECT id, account_name FROM chart_of_accounts" in sql:
+        if "SELECT id, name AS account_name FROM chart_of_accounts" in sql:  # kolom CoA = name (nyata kaos 6 Nov)
             return [{"id": i, "account_name": f"akun-{str(i)[:4]}"} for i in a[1]]
         raise AssertionError(sql)
 
