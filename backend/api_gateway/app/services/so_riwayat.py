@@ -84,6 +84,11 @@ LABEL_MEDAN = [
     ("notes", "catatan"), ("internal_notes", "catatan internal"), ("footer", "catatan kaki"),
     ("deposit_date", "tanggal"), ("payment_method", "cara bayar"), ("account_id", "rekening"),
     ("bank_account_id", "rekening"), ("jenis", "jenis pembayaran"),
+    # BUG-058: ubah draf faktur pembelian (PATCH /bills/v2)
+    ("vendor_id", "vendor"), ("vendor_name", "vendor"), ("ref_no", "no. faktur vendor"),
+    ("tax_rate", "pajak"), ("tax_code_id", "pajak"), ("tax_inclusive", "pajak"),
+    ("invoice_discount_percent", "diskon"), ("invoice_discount_amount", "diskon"),
+    ("cash_discount_percent", "diskon tunai"), ("cash_discount_amount", "diskon tunai"), ("dpp_manual", "DPP"),
 ]
 _PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
 _LABEL = dict(LABEL_MEDAN)

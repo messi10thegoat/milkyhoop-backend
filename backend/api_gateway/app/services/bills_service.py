@@ -3727,7 +3727,7 @@ class BillsService:
                     return _lama
                 bill = await conn.fetchrow(
                     """
-                    SELECT id, status_v2, vendor_id, tax_rate FROM bills
+                    SELECT id, status_v2, vendor_id, tax_rate, invoice_number, amount FROM bills
                     WHERE id = $1 AND tenant_id = $2
                     FOR UPDATE
                 """,
@@ -3922,6 +3922,17 @@ class BillsService:
                 await conn.execute(query, *params)
 
                 logger.info(f"Bill V2 updated: {bill_id}")
+
+                # BUG-058 (Law 12): jejak ubah draf di transaksi YANG SAMA (gagal catat = ubah batal); total sebelum -> sesudah
+                from .so_riwayat import catat_riwayat, label_medan, _rp
+                _medan = sorted(request)
+                _sblm = bill["amount"]
+                _ssdh = calc["grand_total"] if calc else _sblm
+                _total = f" · total {_rp(_sblm)} → {_rp(_ssdh)}" if calc and Decimal(str(_ssdh)) != Decimal(str(_sblm or 0)) else ""
+                await catat_riwayat(conn, tenant_id, "bills", bill_id, bill["invoice_number"], _ad.nama("bill", "updated"), user_id,
+                                    f"Faktur pembelian {bill['invoice_number']} diubah: {label_medan(_medan)}{_total}",
+                                    meta={"medan": _medan, "total_sebelum": str(_sblm), "total_sesudah": str(_ssdh)},
+                                    source="api:bills.update_v2")
 
                 return await _idem_simpan(conn, idem, _kp, _sidik, "BILL_UPDATE", {
                     "success": True,

@@ -30,6 +30,9 @@ class Ev(NamedTuple):
 
 EVENT = {
     ("bill", "posted"): Ev("BILL_POSTED", "bills", "Faktur pembelian diposting", False),
+    # BUG-058 (6 Nov 2026, Law 12): ubah draf tagihan TAK punya kolom beraktor -> riwayat=True (satu-satunya jejak); metadata += medan,
+    # total_sebelum, total_sesudah (bukan "fields": ringkasnya memuat total, tak ditimpa _selesaikan).
+    ("bill", "updated"): Ev("BILL_UPDATED", "bills", "Faktur pembelian diubah", True),
     ("bill", "voided"): Ev("BILL_VOIDED", "bills", "Faktur pembelian dibatalkan (void)", False),
     ("payment_out", "posted"): Ev("PAYMENT_OUT_POSTED", "bill_payments_v2", "Pembayaran keluar diposting", False),
     ("payment_out", "voided"): Ev("PAYMENT_OUT_VOIDED", "bill_payments_v2", "Pembayaran keluar dibatalkan (void)", False),

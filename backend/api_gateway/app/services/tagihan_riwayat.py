@@ -34,7 +34,12 @@ async def riwayat_tagihan(conn, tenant_id: str, bill_id, boleh: Callable[[str], 
     k = _Kumpul()
     n = b["invoice_number"]
     asal = f" dari pesanan {b['po_number']}" if b["po_number"] else ""
-    k.tambah(b["created_at"], "TAGIHAN_DIBUAT", f"Faktur pembelian {n} {_rp(b['amount'])} dibuat{asal}", b["created_by"], "bill", b["id"], n)
+    # BUG-058 (Law 12): nominal SAAT DIBUAT, bukan nilai sekarang -- total_sebelum ubah PERTAMA (BILL_UPDATED); belum pernah diubah = sama
+    awal = await conn.fetchval(
+        """SELECT metadata->>'total_sebelum' FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'bills' AND entity_id = $2::uuid
+           AND "eventType" = 'BILL_UPDATED' AND metadata ? 'total_sebelum' ORDER BY "createdAt", id LIMIT 1""", tenant_id, str(b["id"]))
+    k.tambah(b["created_at"], "TAGIHAN_DIBUAT", f"Faktur pembelian {n} {_rp(awal if awal is not None else b['amount'])} dibuat{asal}",
+             b["created_by"], "bill", b["id"], n)
     k.tambah(b["posted_at"], "TAGIHAN_DIPOSTING", f"Faktur pembelian {n} diposting", b["posted_by"], "bill", b["id"], n)
     alasan = f": {b['voided_reason']}" if b["voided_reason"] else ""
     k.tambah(b["voided_at"], "TAGIHAN_DIBATALKAN", f"Faktur pembelian {n} dibatalkan (void){alasan}", None, "bill", b["id"], n)
