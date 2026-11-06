@@ -367,3 +367,46 @@ def test_rute_pratinjau_transfer_dan_hitung_fisik_terdaftar(monkeypatch):
     assert r.status_code == 200 and [b["code"] for b in r.json()["data"]["blocks"]] == ["KAS_MINUS"] and c.tulis == []
     r = k.post(f"/api/bank-accounts/{kas['id']}/adjust/preview", json={"adjustment_date": "2026-11-06", "jumlah_fisik": 45000, "reason": "laci"})
     assert r.status_code == 200 and r.json()["data"]["selisih"] == "-5000.00" and c.tulis == []
+
+
+# ---------------------------------------------------------------- BUG-083: keterangan transfer + nomor jurnal (nyawit TRF-2611-0002)
+def test_keterangan_transfer_catatan_pengguna_atau_bawaan():
+    t = {"from_name": "Kas Toko", "to_name": "BCA Giro Utama"}
+    assert KT.keterangan_transfer({**t, "notes": " setor kas toko ke BCA "}, "keluar") == "setor kas toko ke BCA"
+    assert KT.keterangan_transfer({**t, "notes": "  "}, "keluar") == "Transfer keluar ke BCA Giro Utama"
+    assert KT.keterangan_transfer(t, "masuk") == "Transfer masuk dari Kas Toko"
+
+
+def test_posting_transfer_keterangan_ke_jurnal_dan_mutasi_nomor_jurnal_dokumen():
+    kas, bca = _akun("cash", 10 ** 7, nama="Kas Toko"), _akun("bank", 0, nama="BCA Giro Utama")
+    c = _C(transfer={**_trf(kas, bca, 5000000), "notes": "setor kas toko ke BCA", "transfer_number": "TRF-2611-0002"})
+    run(RT._post_transfer(c, {"tenant_id": T, "user_id": uuid4()}, uuid4()))
+    je = [a for s, a in c.tulis if "INSERT INTO journal_entries" in s]
+    assert je[0][2] == "TRF-2611-0002"  # dulu TRF-TRF-2611-0002
+    assert [x[3] for x in c.baris_jurnal()] == ["setor kas toko ke BCA", "setor kas toko ke BCA"]
+    assert [a[8] for s, a in c.tulis if "INSERT INTO bank_transactions" in s] == ["setor kas toko ke BCA", "setor kas toko ke BCA"]
+    c = _C(transfer=_trf(kas, bca, 5000))  # tanpa catatan = teks bawaan per arah
+    run(RT._post_transfer(c, {"tenant_id": T, "user_id": uuid4()}, uuid4()))
+    assert [a[8] for s, a in c.tulis if "INSERT INTO bank_transactions" in s] == ["Transfer keluar ke BCA Giro Utama", "Transfer masuk dari Kas Toko"]
+
+
+def test_pratinjau_buat_transfer_memakai_catatan():
+    kas, bca = _akun("cash", 10 ** 7, nama="Kas Toko"), _akun("bank", 0, nama="BCA Giro Utama")
+    b = CreateBankTransferRequest(from_bank_id=str(kas["id"]), to_bank_id=str(bca["id"]), amount=5000000, transfer_date=HARI,
+                                  notes="setor kas toko ke BCA")
+    r = run(KT.rencana_buat_transfer(_C(akun=[kas, bca]), T, b, True))
+    assert [x[3] for x in r["baris"]] == ["setor kas toko ke BCA", "setor kas toko ke BCA"]
+
+
+def test_pembaca_mutasi_membaca_catatan_transfer_lama_dan_skema_nomor_jurnal():
+    from app.schemas.bank_accounts import BankTransactionListItem
+    from app.services import kasbank_ringkas as KR
+    # data lama (memo/description teks bawaan) dibaca lewat catatan tersimpan, tanpa mengubah jurnal (Law 2)
+    assert "COALESCE(NULLIF(btrim(trf.notes), ''), NULLIF(jl.memo, ''), je.description)" in KR.SQL_MUTASI
+    assert "trf.id = je.source_id AND trf.tenant_id = je.tenant_id" in KR.SQL_MUTASI
+    import inspect
+    src = inspect.getsource(RB.get_bank_transactions) if hasattr(RB, "get_bank_transactions") else inspect.getsource(RB)
+    assert "COALESCE(NULLIF(btrim(trf.notes), ''), bt.description) AS description" in src
+    x = BankTransactionListItem(id="1", transaction_date="2026-11-06", transaction_type="transfer_out", amount=1, running_balance=1,
+                                is_reconciled=False, created_at="2026-11-06", journal_number="TRF-2611-0002", origin_type="BANK_TRANSFER")
+    assert x.model_dump()["journal_number"] == "TRF-2611-0002" and x.model_dump()["origin_type"] == "BANK_TRANSFER"

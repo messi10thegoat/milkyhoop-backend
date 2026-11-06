@@ -31,6 +31,7 @@ from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import kasbank_tulis as KT
+from ..services import nomor_jurnal as NJ
 from ..services import idem_buat
 from ..schemas.bank_transfers import (
     CreateBankTransferRequest,
@@ -712,7 +713,8 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
     # Create journal entry
     journal_id = uuid_module.uuid4()
     trace_id = uuid_module.uuid4()
-    journal_number = f"TRF-{bt['transfer_number']}"
+    # BUG-083: dulu f"TRF-{transfer_number}" -> TRF-TRF-2611-0002. Pola ND/NK/PK: jurnal bernomor dokumennya (cadangan seri TRFJ).
+    journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], bt["transfer_number"], "TRFJ")
 
     await conn.execute(
         """
@@ -767,7 +769,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         from_new_balance,
         transfer_id,
         bt["transfer_number"],
-        f"Transfer ke {bt['to_name']}",
+        KT.keterangan_transfer(bt, "keluar"),
         bt["to_name"],
         journal_id,
         ctx["user_id"],
@@ -801,7 +803,7 @@ async def _post_transfer(conn, ctx: dict, transfer_id: UUID) -> dict:
         to_new_balance,
         transfer_id,
         bt["transfer_number"],
-        f"Transfer dari {bt['from_name']}",
+        KT.keterangan_transfer(bt, "masuk"),
         bt["from_name"],
         journal_id,
         ctx["user_id"],

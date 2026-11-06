@@ -61,7 +61,7 @@ DAFTAR_IZIN = {
     ("services/kernel_document_executor.py", "_next_journal_number", "prefix"):
         ("pembungkus kernel dokumen; pemanggil = 'DI'", "_next_journal_number", 2),
     ("services/nomor_jurnal.py", "nomor_jurnal_dokumen", "cadangan"):
-        ("pembungkus satu ruang nama ND/NK/PK; pemanggil = 'NDJ' / 'NKJ' / 'PKJ'", "nomor_jurnal_dokumen", 3),
+        ("pembungkus satu ruang nama ND/NK/PK; pemanggil = 'NDJ' / 'NKJ' / 'PKJ' / 'TRFJ'", "nomor_jurnal_dokumen", 3),
     ("services/sj_so.py", "_jurnal", "prefix"):
         ("pembungkus jurnal Surat Jalan dari pesanan (R1 irisan 2); pemanggil = 'DLV' / 'DLV-REV' / 'COGS' / 'RECOG' / 'REV'", "_jurnal", 3),
 }
@@ -207,6 +207,7 @@ SATU_RUANG = {
     ("routers/vendor_credits.py", "post_vendor_credit"): ("vc['credit_number']", "NDJ"),
     ("routers/credit_notes.py", "posting_nota_kredit"): ("cn['credit_note_number']", "NKJ"),
     ("routers/bill_payments.py", "create_bill_payment_journal"): ("payment_number", "PKJ"),
+    ("routers/bank_transfers.py", "_post_transfer"): ("bt['transfer_number']", "TRFJ"),  # BUG-083 (6 Nov): dulu TRF-TRF-YYMM-NNNN
 }
 
 

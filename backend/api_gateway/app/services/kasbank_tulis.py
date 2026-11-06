@@ -141,6 +141,15 @@ async def rencana_hitung_fisik(conn, tid: str, ba_id, body, pratinjau: bool) -> 
     return hasil
 
 
+def keterangan_transfer(t, arah: str) -> str:
+    """BUG-083: keterangan ketikan pengguna (bank_transfers.notes) bila ada, selain itu teks bawaan per arah. Satu penentu untuk memo baris
+    jurnal (mutasi B2) dan deskripsi bank_transactions (mutasi lama); data lama dibaca lewat COALESCE notes di pembacanya."""
+    ket = (t.get("notes") or "").strip()
+    if ket:
+        return ket
+    return f"Transfer masuk dari {t['from_name']}" if arah == "masuk" else f"Transfer keluar ke {t['to_name']}"
+
+
 async def rencana_posting_transfer(conn, tid: str, t, bl: Blok) -> dict:
     """Posting transfer dari baris t (bank_transfers + nama/coa/saldo/tipe rekening asal). Dipakai _post_transfer dan pratinjau."""
     hasil = {"baris": [], "saldo": [], "akun_biaya": None}
@@ -158,10 +167,10 @@ async def rencana_posting_transfer(conn, tid: str, t, bl: Blok) -> dict:
             hasil["akun_biaya"] = await resolve_account_id_by_role(conn, tid, AccountRole.BANK_FEE)
         except AccountRoleUnmappedError:
             bl.galat("AKUN_BIAYA_TRANSFER_BELUM_DIATUR", 400, "Akun biaya transfer bank belum diatur untuk usaha ini.")
-    hasil["baris"] = [(t["to_coa_id"], jumlah, Decimal(0), f"Transfer masuk dari {t['from_name']}")]
+    hasil["baris"] = [(t["to_coa_id"], jumlah, Decimal(0), keterangan_transfer(t, "masuk"))]
     if biaya > 0 and hasil["akun_biaya"]:
         hasil["baris"].append((hasil["akun_biaya"], biaya, Decimal(0), f"Biaya transfer - {t['transfer_number']}"))
-    hasil["baris"].append((t["from_coa_id"], Decimal(0), total, f"Transfer keluar ke {t['to_name']}"))
+    hasil["baris"].append((t["from_coa_id"], Decimal(0), total, keterangan_transfer(t, "keluar")))
     tujuan_saldo = t.get("to_balance")
     hasil["saldo"] = [_saldo(asal, -total)] + ([_saldo({"id": t["to_bank_id"], "account_name": t["to_name"], "saldo": tujuan_saldo}, jumlah)]
                                                if tujuan_saldo is not None else [])
@@ -212,7 +221,7 @@ async def rencana_buat_transfer(conn, tid: str, body, pratinjau: bool) -> dict:
     baris = {"status": "draft", "amount": body.amount, "fee_amount": body.fee_amount, "total_amount": _d(body.amount) + _d(body.fee_amount),
              "transfer_date": body.transfer_date, "transfer_number": "(nomor terbit saat disimpan)", "from_bank_id": f["id"],
              "from_name": f["account_name"], "from_type": f["account_type"], "from_balance": f["saldo"], "from_coa_id": f["coa_id"],
-             "to_bank_id": t["id"], "to_name": t["account_name"], "to_coa_id": t["coa_id"], "to_balance": t["saldo"]}
+             "to_bank_id": t["id"], "to_name": t["account_name"], "to_coa_id": t["coa_id"], "to_balance": t["saldo"], "notes": body.notes}
     # Draf tanpa auto_post tak menggerakkan saldo -> pemeriksaan posting hanya bila auto_post; jurnal tetap ditampilkan.
     p = await rencana_posting_transfer(conn, tid, baris, bl if body.auto_post else Blok(True))
     hasil["baris"], hasil["saldo"] = p["baris"], p["saldo"]

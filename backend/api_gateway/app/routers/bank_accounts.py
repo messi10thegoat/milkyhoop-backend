@@ -1295,7 +1295,8 @@ async def get_bank_transactions(
                                THEN COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0)
                                ELSE bt.amount
                            END as amount,
-                           bt.description, bt.payee_payer, bt.reference_type, bt.reference_number,
+                           COALESCE(NULLIF(btrim(trf.notes), ''), bt.description) AS description,  -- BUG-083: keterangan transfer
+                           bt.payee_payer, bt.reference_type, bt.reference_number,
                            bt.is_reconciled, bt.created_at, bt.source_module, bt.status,
                            je.journal_number AS journal_number,
                            je.source_type AS origin_type,
@@ -1313,6 +1314,7 @@ async def get_bank_transactions(
                     LEFT JOIN customers c ON si.customer_id = c.id
                     LEFT JOIN bills b ON bt.reference_type = 'bill' AND b.id = bt.reference_id
                     LEFT JOIN vendors v ON b.vendor_id = v.id
+                    LEFT JOIN bank_transfers trf ON bt.reference_type = 'transfer' AND trf.id = bt.reference_id AND trf.tenant_id = {tenant_param}
                     WHERE {where_clause}
                 )
                 SELECT *,

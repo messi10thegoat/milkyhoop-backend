@@ -215,6 +215,8 @@ class BankTransactionListItem(BaseModel):
     vendor_name: Optional[str] = None
     related_invoice_number: Optional[str] = None
     related_bill_number: Optional[str] = None
+    journal_number: Optional[str] = None  # BUG-083: dihitung router tapi dulu dibuang response_model -> rincian "NO. JURNAL —"
+    origin_type: Optional[str] = None
 
 
 class BankAccountBalanceInfo(BaseModel):

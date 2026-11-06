@@ -26,10 +26,11 @@ ORDER BY ba.account_type, ba.account_name"""
 SQL_MUTASI = """
 SELECT jl.id, je.id AS journal_id, je.journal_number, je.journal_date, je.created_at, je.source_type, je.source_id,
        je.reversal_of_id, je.reversed_by_id, ba.id AS bank_account_id, ba.account_name,
-       jl.debit - jl.credit AS net, COALESCE(NULLIF(jl.memo, ''), je.description) AS keterangan
+       jl.debit - jl.credit AS net, COALESCE(NULLIF(btrim(trf.notes), ''), NULLIF(jl.memo, ''), je.description) AS keterangan
 FROM journal_lines jl
 JOIN journal_entries je ON je.id = jl.journal_id
 JOIN bank_accounts ba ON ba.coa_id = jl.account_id AND ba.tenant_id = je.tenant_id
+LEFT JOIN bank_transfers trf ON je.source_type = 'BANK_TRANSFER' AND trf.id = je.source_id AND trf.tenant_id = je.tenant_id
 WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND ba.is_active = true
 ORDER BY je.journal_date DESC, je.created_at DESC, jl.id DESC
 LIMIT $2"""
