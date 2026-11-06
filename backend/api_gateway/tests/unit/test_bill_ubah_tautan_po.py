@@ -37,7 +37,7 @@ class _K:
         return []
 
     async def fetchrow(self, sql, *a):
-        return {"id": BILL, "status_v2": "draft", "vendor_id": None, "tax_rate": 0}
+        return {"id": BILL, "status_v2": "draft", "vendor_id": None, "tax_rate": 0, "invoice_number": "BILL-T", "amount": 0}
 
     async def execute(self, sql, *a):
         self.exec.append((sql, a))
