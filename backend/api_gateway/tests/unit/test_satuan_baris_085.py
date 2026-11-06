@@ -182,8 +182,8 @@ def _rsj(items):
 def test_sj_dua_belas_botol_jadi_satu_dus_dan_sisa_dihitung_dalam_satuan_baris(sj):
     r = _rsj([{"sales_order_item_id": L1, "quantity": "12", "unit": "botol"}])
     assert r["blocks"] == [] and [(l["quantity"], l["unit"]) for l in r["lines"]] == [(D("1.0000"), "dus")]
-    r = _rsj([{"sales_order_item_id": L1, "quantity": "36", "unit": "botol"}])  # 3 dus > sisa 2 dus
-    assert [b["code"] for b in r["blocks"]] == ["SJ_SO_QTY_MELEBIHI_SISA"]
+    r = _rsj([{"sales_order_item_id": L1, "quantity": "36", "unit": "botol"}])  # 3 dus > sisa 2 dus; kalimat dalam satuan baris, tanpa nol buntut
+    assert [(b["code"], b["message"]) for b in r["blocks"]] == [("SJ_SO_QTY_MELEBIHI_SISA", "Sisa kirim Minyak 1L hanya 2, diminta 3.")]
 
 
 def test_sj_tanpa_unit_lama_dan_tidak_pas_diblok(sj):
