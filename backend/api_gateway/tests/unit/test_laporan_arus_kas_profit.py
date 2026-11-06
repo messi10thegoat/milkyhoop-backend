@@ -50,6 +50,10 @@ def test_kategori_eksplisit_tetap_dihormati():
 
 
 def test_profitabilitas_qty_satuan_dasar_di_kueri_barang_bukan_jasa():
+    # bentuk dikunci: qty baris DIKALI faktor konversi satuan baris (perilaku terbukti pada data nyata nyawit 23 -> 56; runner tanpa DB)
+    assert " ".join(PQ.QTY_DASAR.split()).startswith("sii.quantity * COALESCE(( SELECT uc.conversion_factor FROM unit_conversions uc")
+    assert " ".join(PQ.QTY_DASAR.split()).endswith("LIMIT 1), 1)")
     for q in (PQ.ITEMS_QUERY, PQ.SUMMARY_QUERY):
+        assert PQ.QTY_DASAR in q
         assert "__QTY_DASAR__" not in q and "SUM(sii.quantity)" not in q and "uc.conversion_factor" in q
     assert "SUM(sii.quantity) AS qty_sold" in PQ.SERVICES_QUERY  # jasa tanpa konversi
