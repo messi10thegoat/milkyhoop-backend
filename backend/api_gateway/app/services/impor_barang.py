@@ -44,7 +44,7 @@ def angka(teks) -> Optional[Decimal]:
     if isinstance(teks, (int, float, Decimal)):
         return Decimal(str(teks))
     s = str(teks).strip().lower().replace("rp", "").replace(" ", "")
-    m = re.fullmatch(r"(\d[\d.,]*)(rb|ribu|k|jt|juta)?", s)
+    m = re.fullmatch(r"(\d+(?:[.,]\d+)*)(rb|ribu|k|jt|juta)?", s)
     if not m:
         raise ValueError(teks)
     num, akhiran = m.group(1), m.group(2)
@@ -63,9 +63,9 @@ def angka(teks) -> Optional[Decimal]:
 _KK = r"(?:jual|beli|stok|kode|kategori|per|isi)"
 _KATA = r"[^\W\d_][\w.-]*"
 _POLA = [
-    ("konv", re.compile(rf"(?P<besar>{_KATA})\s*(?:isi|=|@)\s*(?P<isi>\d[\d.,]*)(?:\s+(?!{_KK}\b)(?P<dasar>{_KATA}))?", re.I)),
-    ("harga", re.compile(rf"\b(?P<arah>jual|beli)\s*(?:rp\.?\s*)?(?P<n>\d[\d.,]*\s*(?:rb|ribu|jt|juta|k)?)\b(?:\s*(?:/|per\s)\s*(?P<unit>{_KATA}))?", re.I)),
-    ("stok", re.compile(rf"\bstok\s*(?P<n>\d[\d.,]*)(?:\s+(?!{_KK}\b)(?P<unit>{_KATA}))?", re.I)),
+    ("konv", re.compile(rf"(?P<besar>{_KATA})\s*(?:isi|=|@)\s*(?P<isi>\d+(?:[.,]\d+)*)(?:\s+(?!{_KK}\b)(?P<dasar>{_KATA}))?", re.I)),
+    ("harga", re.compile(rf"\b(?P<arah>jual|beli)\s*(?:rp\.?\s*)?(?P<n>\d+(?:[.,]\d+)*\s*(?:rb|ribu|jt|juta|k)?)\b(?:\s*(?:/|per\s)\s*(?P<unit>{_KATA}))?", re.I)),
+    ("stok", re.compile(rf"\bstok\s*(?P<n>\d+(?:[.,]\d+)*)(?:\s+(?!{_KK}\b)(?P<unit>{_KATA}))?", re.I)),
     ("kode", re.compile(r"\bkode\s+(?P<kode>[\w./-]+)", re.I)),
     ("kategori", re.compile(r"\bkategori\s+(?P<kat>.+?)(?=\s*,|\s+(?:jual|beli|stok|kode)\b|$)", re.I)),
     ("satuan", re.compile(rf"\bsatuan\s+(?P<unit>{_KATA})", re.I)),
