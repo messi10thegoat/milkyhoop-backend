@@ -913,6 +913,15 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
     return {**kosong, "lines": lines, "create": create, "penuh": penuh and bool(items)}
 
 
+def _baris_maya(items: list) -> list:
+    """BUG-081 REOPEN (6 Nov): baris ND MAYA pratinjau-buat = baris vendor_credit_items yang AKAN ditulis create (medan SAMA: item_id, quantity,
+    unit, total, ... + id baris acak + line_number) -- rencana_keluar (item_row_id, satuan) dan rencana_retur (bagian/semua per id baris)
+    membaca baris ini persis seperti baris DB penulis. Dulu {item_id, quantity} saja -> KeyError 'id' (500) begitu ada barang dilacak."""
+    import uuid as _uuid
+    return [{**it, "id": _uuid.uuid4(), "item_id": UUID(it["item_id"]) if it.get("item_id") else None, "line_number": i}
+            for i, it in enumerate(items, 1)]
+
+
 @router.post("/preview")
 async def preview_create_vendor_credit(request: Request, body: VendorCreditPreviewRequest):
     """P2P-3b PRATINJAU buat nota debit (kembar /credit-notes/preview AS-G7b): penyusun _susun_nd (SAMA dgn create) + penentu posting
@@ -967,7 +976,7 @@ async def preview_create_vendor_credit(request: Request, body: VendorCreditPrevi
                           "original_bill_id": UUID(badan.original_bill_id) if badan.original_bill_id else None,
                           "original_bill_number": s["original_bill_number"], "subtotal": s["subtotal"], "tax_amount": s["tax_amount"],
                           "total_amount": s["total_amount"], "reason": badan.reason, "credit_date": badan.vendor_credit_date}
-                    baris = [{"item_id": UUID(it["item_id"]) if it.get("item_id") else None, "quantity": it["quantity"]} for it in s["items"]]
+                    baris = _baris_maya(s["items"])
                     r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True, items=baris)
                     bl.daftar += r["blocks"].daftar
             finally:
