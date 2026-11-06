@@ -15,7 +15,7 @@ References:
 - milkyhoop-ironlaws skill: Accounting Iron Laws
 """
 import logging
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -123,7 +123,7 @@ async def record_inventory_outbound(
         "ledger_id": uuid,
         "journal_id": uuid | None,
         "unit_cost": Decimal,
-        "total_cost": int,
+        "total_cost": Decimal (2dp HALF_UP; dulu int() memotong sen -> jurnal HPP != kartu stok, Law 25),
         "cost_source": str,
     }
     """
@@ -156,7 +156,8 @@ async def record_inventory_outbound(
     cost_info = await get_cost_for_sale(conn, tenant_id, product_id)
     unit_cost = cost_info["unit_cost"]
     cost_source = cost_info["cost_source"]
-    total_cost = int(float(quantity) * float(unit_cost))
+    # Law 25 (6 Nov 2026): dulu int(float x float) MEMOTONG sen -> jurnal HPP < nilai kartu stok (qty x unit_cost) -> HC15 bergeser
+    total_cost = (Decimal(str(quantity)) * Decimal(str(unit_cost))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if total_cost == 0:
         logger.warning(

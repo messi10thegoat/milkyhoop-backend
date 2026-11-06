@@ -4,9 +4,9 @@ rollback seperti pratinjau NK). SATU definisi blok + RENCANA jurnal per aksi (po
     blok PERTAMA = HTTPException yang SAMA PERSIS (status + detail, termasuk detail dict 409) dengan kode lama -> perilaku tulis tak berubah;
   * endpoint PRATINJAU: transaksi READ ONLY tanpa kunci/sequence; SEMUA blok dikumpulkan (200); jurnal = rencana tanpa nomor.
 Baris jurnal posting = baris_posting_nd (fungsi YANG SAMA dipakai penulis). HPP retur barang dilacak = rencana baca-saja dengan fungsi baca
-YANG SAMA dengan record_inventory_outbound (get_cost_for_sale + resolve_inventory_accounts, total = int(qty × unit_cost)); harness
+YANG SAMA dengan record_inventory_outbound (get_cost_for_sale + resolve_inventory_accounts, total = r2(qty × unit_cost) HALF_UP); harness
 membuktikan pratinjau == tertulis. Akuntansi retur (Cr 5-10300 + Dr HPP/Cr Persediaan) TIDAK diubah -- tiket ironlaws (tiket-terbuka)."""
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -176,9 +176,9 @@ async def rencana_hpp(conn, tid: str, vc, keluar: list) -> tuple:
     for k in keluar:
         p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
         biaya = await get_cost_for_sale(conn, tid, p["id"])
-        total = int(float(k["qty"]) * float(biaya["unit_cost"]))
+        total = (Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)  # == penulis
         stok.append({"product_id": str(p["id"]), "product": p["nama_produk"], "quantity": float(k["qty"]),
-                     "unit_cost": _f(biaya["unit_cost"]), "total_cost": total, "cost_source": biaya["cost_source"],
+                     "unit_cost": _f(biaya["unit_cost"]), "total_cost": _f(total), "cost_source": biaya["cost_source"],
                      "warehouse_id": str(k["gudang_id"]), "warehouse": k["gudang"]})
         if total > 0:
             akun = await resolve_inventory_accounts(conn, tid, p["id"])
