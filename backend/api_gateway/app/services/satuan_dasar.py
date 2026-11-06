@@ -145,7 +145,8 @@ def ke_satuan_baris(ktx: dict, product_id, unit: Optional[str], qty, unit_baris:
     if hasil != hasil.quantize(SKALA_QTY):
         return {"qty": q, "blok": {"code": KODE_TIDAK_HABIS, "status": 400, "message": tg.satuan_tidak_habis(
             q, unit, nama, unit_baris or hb["satuan_dasar"], hb["faktor"], hb["satuan_dasar"])}}
-    return {"qty": hasil.quantize(SKALA_QTY), "blok": None}
+    q = hasil.quantize(SKALA_QTY)  # tanpa nol buntut: kalimat blok lain menulis "1", bukan "1.0000"
+    return {"qty": q.quantize(SATU) if q == q.to_integral_value() else q.normalize(), "blok": None}
 
 
 # ------------------------------------------------------------------ P1: konversi TERKUNCI sesudah dipakai (putusan pemilik LANGSUNG 5 Nov,
