@@ -393,6 +393,8 @@ async def rencana_bayar(conn, ctx, payload, pratinjau: bool = False) -> dict:
                 pph_tax_code_id=pph["tax_code_id"], pph_amount=pph["amount"])
             jurnal = [await _rencana_jurnal(conn, tid, bl, f"Pembayaran ke {vendor_name} - {NOMOR_NANTI}", payload.payment_date,
                                             baris, total_debit)]
+            from . import kasbank_tulis as KT  # K1 kas-negatif: penentu SAMA dengan penulis (create_bill_payment_journal)
+            await KT.tolak_kas_minus_baris(conn, tid, baris, bl)
         except HTTPException as e:
             bl.galat("AKUN_JURNAL", e.status_code, e.detail)
         except (ValueError, TypeError) as e:
@@ -584,6 +586,8 @@ async def pratinjau_bayar_tagihan(conn, tid: str, bill_id: UUID, request: dict) 
         if r["bank_coa_id"]:
             baris = baris_tagihan_lama(r["ap_account_id"], r["bank_coa_id"], r["pph_coa_id"], amt, pph, bill["vendor_name"], NOMOR_NANTI)
             jurnal = [await _rencana_jurnal(conn, tid, bl, f"Pembayaran ke {bill['vendor_name']}", r["payment_date"], baris, amt)]
+            from . import kasbank_tulis as KT  # K1: == penulis bills_service (baris_tagihan_lama)
+            await KT.tolak_kas_minus_baris(conn, tid, baris, bl)
         ba = r["bank_account"]
         if ba and not ba["is_header"]:
             transfer = amt - pph
@@ -811,6 +815,8 @@ async def pratinjau_posting_draf_bayar(conn, tid: str, payment_id) -> dict:
             pph_tax_code_id=str(p["pph_tax_code_id"]) if p.get("pph_tax_code_id") else None, pph_amount=p.get("pph_amount") or 0)
         out["journals"] = [await _rencana_jurnal(conn, tid, bl, f"Pembayaran ke {p['vendor_name']} - {p['payment_number']}",
                                                  p["payment_date"], baris, total_debit)]
+        from . import kasbank_tulis as KT  # K1: == penulis create_bill_payment_journal
+        await KT.tolak_kas_minus_baris(conn, tid, baris, bl)
     except HTTPException as e:
         bl.galat("AKUN_JURNAL", e.status_code, e.detail)
     if p["bank_account_id"]:

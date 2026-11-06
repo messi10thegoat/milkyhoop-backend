@@ -173,6 +173,8 @@ async def rencana_kembalikan(conn, ctx: dict, deposit_id, body) -> dict:
         raise HTTPException(status_code=400, detail="Rekening pengembalian harus akun kas/bank.")
     akun_dp = await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
     await _periode(conn, tid, body.refund_date)
+    from . import kasbank_tulis as KT  # K1 kas-negatif: refund = kas keluar; melempar KAS_MINUS (pratinjau READ ONLY menangkapnya jadi blok)
+    await KT.tolak_kas_minus_coa(conn, tid, akun_kas, body.amount)
     label_k = await label_deposit(conn, tid, deposit_id, kapital=True)
     # FIX_R9_REFUND: cermin diturunkan dari CoA KREDIT jurnal (akun_kas), bukan body.bank_account_id
     ba = await conn.fetchrow(

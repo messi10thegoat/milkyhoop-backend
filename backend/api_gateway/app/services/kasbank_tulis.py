@@ -6,7 +6,12 @@ Putusan pemilik LANGSUNG di sesi BACKEND, 6 Nov 2026:
    Bank/e-wallet boleh minus pada Uang Keluar manual. Posting transfer dan penyesuaian tetap menolak saldo minus seperti dulu.
 2. Hitung fisik: pengguna mengetik JUMLAH FISIK; server menghitung selisih terhadap saldo jurnal per tanggal penyesuaian.
 3. X-Idempotency-Key opsional (services/idem_buat) -- dipasang di rute, bukan di sini.
-Saldo = SUM(debit) - SUM(credit) jurnal POSTED pada coa_id rekening (Law 1/16), tenant eksplisit (Law 24)."""
+Saldo = SUM(debit) - SUM(credit) jurnal POSTED pada coa_id rekening (Law 1/16), tenant eksplisit (Law 24).
+
+K1 kas-negatif (6 Nov 2026, putusan pemilik LANGSUNG di sesi BACKEND2 + lingkup MASTER, pola Accurate "kas tidak boleh minus" untuk
+dokumen KAS KELUAR; void/koreksi tidak dikunci, pola NetSuite/SAP): SATU aturan untuk Uang Keluar, transfer, biaya, bayar tagihan,
+uang muka vendor, refund nota kredit, refund uang muka pelanggan. Tulis = kunci advisory per CoA kas (kunci_kas, `KAS_KELUAR:{tenant}:
+{coa}`) SEBELUM saldo dibaca -> dua kas keluar serentak tak bisa sama-sama lolos. Pratinjau tanpa kunci."""
 from decimal import Decimal
 from uuid import UUID
 
@@ -45,13 +50,38 @@ async def akun(conn, tid: str, ba_id, per_tanggal=None):
 SQL_AKUN_COA = SQL_AKUN.replace("WHERE ba.id = $1 AND ba.tenant_id = $2", "WHERE ba.coa_id = $1 AND ba.tenant_id = $2 AND ba.is_active = true")
 
 
-async def tolak_kas_minus_coa(conn, tid: str, coa_id, keluar, bl: Blok = None) -> list:
-    """Aturan kas minus untuk jalur yang hanya tahu CoA kredit (biaya: create_expense_journal). Tanpa bl = tulis (melempar KAS_MINUS);
-    dengan Blok(True) = pratinjau (blok dikumpulkan). CoA bukan rekening kas -> tak ada blok."""
+async def kunci_kas(conn, tid: str, coa_id) -> None:
+    """K1: kunci transaksi per CoA kas/bank (Law 13) -- SEMUA jalur kas keluar memakai kunci ini SEBELUM membaca saldo."""
+    if coa_id:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"KAS_KELUAR:{tid}:{coa_id}")
+
+
+async def tolak_kas_minus_coa(conn, tid: str, coa_id, keluar, bl: Blok = None, kunci: bool = None) -> list:
+    """Aturan kas minus untuk jalur yang hanya tahu CoA kredit (biaya, bayar tagihan, uang muka vendor, refund NK/UM). Tanpa bl = tulis
+    (melempar KAS_MINUS); dengan Blok(True) = pratinjau (blok dikumpulkan). CoA bukan rekening kas -> tak ada blok.
+    kunci (bawaan: tulis) -> kunci_kas DULU, baru saldo dibaca."""
     bl = bl or Blok(False)
+    if (not bl.pratinjau) if kunci is None else kunci:
+        await kunci_kas(conn, tid, coa_id)
     a = await conn.fetchrow(SQL_AKUN_COA, coa_id, tid, None) if coa_id else None
     if a:
         _kas_minus(bl, a, _d(keluar))
+    return bl.daftar
+
+
+async def tolak_kas_minus_baris(conn, tid: str, baris, bl: Blok = None, kunci: bool = None) -> list:
+    """K1: kas keluar dari RENCANA baris jurnal [(akun, debit, kredit, ...)] -- bersih (kredit - debit) per CoA > 0 diperiksa; urutan CoA
+    tetap (kunci tanpa deadlock). Satu penentu untuk pratinjau dan penulis jalur yang sudah punya baris jurnal."""
+    bl = bl or Blok(False)
+    bersih, asli = {}, {}
+    for b in baris or []:
+        if b[0]:
+            k = str(b[0])
+            asli[k] = b[0]
+            bersih[k] = bersih.get(k, Decimal(0)) + _d(b[2]) - _d(b[1])
+    for k in sorted(bersih):
+        if bersih[k] > 0:
+            await tolak_kas_minus_coa(conn, tid, asli[k], bersih[k], bl, kunci)
     return bl.daftar
 
 
@@ -94,6 +124,9 @@ async def rencana_tx_manual(conn, tid: str, ba_id, body, pratinjau: bool) -> dic
     await periode_terbuka(conn, tid, body.transaction_date, bl)
     jumlah = _d(body.amount)
     if body.direction == "out":
+        if not pratinjau:  # K1: kunci per CoA lalu saldo dibaca ULANG (dibaca di atas tanpa kunci)
+            await kunci_kas(conn, tid, a["coa_id"])
+            a = await akun(conn, tid, ba_id)
         _kas_minus(bl, a, jumlah)
     masuk = body.direction == "in"
     bank, lwn = (a["coa_id"], jumlah, Decimal(0), body.description), (lawan, Decimal(0), jumlah, body.description)
@@ -157,10 +190,15 @@ async def rencana_posting_transfer(conn, tid: str, t, bl: Blok) -> dict:
         bl.galat("TRANSFER_BUKAN_DRAF", 400, f"Transfer berstatus '{t['status']}' tidak bisa diposting.")
     total, jumlah, biaya = _d(t["total_amount"]), _d(t["amount"]), _d(t["fee_amount"])
     asal = {"id": t["from_bank_id"], "account_name": t["from_name"], "account_type": t["from_type"], "saldo": t["from_balance"]}
+    if not bl.pratinjau:  # K1: kunci per CoA sumber lalu saldo dibaca ULANG (t dibaca pemanggil tanpa kunci)
+        await kunci_kas(conn, tid, t["from_coa_id"])
+        segar = await akun(conn, tid, t["from_bank_id"])
+        if segar:
+            asal["saldo"] = segar["saldo"]
     if t["from_type"] in TIPE_KAS:
         _kas_minus(bl, asal, total)
-    elif _d(t["from_balance"]) < total:
-        bl.galat("SALDO_TIDAK_CUKUP", 400, f"Saldo {t['from_name']} {tg.rp(t['from_balance'])} tidak cukup untuk {tg.rp(total)}.")
+    elif _d(asal["saldo"]) < total:
+        bl.galat("SALDO_TIDAK_CUKUP", 400, f"Saldo {t['from_name']} {tg.rp(asal['saldo'])} tidak cukup untuk {tg.rp(total)}.")
     await periode_terbuka(conn, tid, t["transfer_date"], bl)
     if biaya > 0:
         try:

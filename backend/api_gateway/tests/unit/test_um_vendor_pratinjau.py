@@ -59,6 +59,9 @@ class Kon:
         if "FROM vendor_deposits" in q: return self.vd
         if "FROM vendors" in q: return {"id": VID, "name": "CV X"} if self.vendor else None
         if "FROM purchase_orders" in q: return self.po
+        if "AS saldo" in q:  # K1 kas-negatif: kasbank_tulis.SQL_AKUN_COA (rekening BANK -> boleh minus, tanpa blok)
+            return {"id": BCA, "account_name": "BCA", "account_type": "bank", "coa_id": BCA_COA, "is_active": True,
+                    "saldo": D("0")} if self.bank and a[0] == BCA_COA else None
         if "FROM bank_accounts" in q and "coa_id" in q: return {"id": BCA, "coa_id": BCA_COA} if self.bank else None
         if "FROM bills" in q: return {"id": BILL, "invoice_number": "BILL-1", "status": "posted"} if self.bill else None
         if "FROM vendor_deposit_applications a" in q:

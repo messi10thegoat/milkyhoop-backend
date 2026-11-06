@@ -199,6 +199,10 @@ async def create_bill_payment_journal(
         pph_tax_code_id=pph_tax_code_id, pph_amount=pph_amount,
     )
 
+    # K1 kas-negatif: kas keluar dari baris yang SAMA (kunci per CoA kas lalu saldo; KAS_MINUS dilempar) -- buat-posted DAN posting draf
+    from ..services import kasbank_tulis as KT
+    await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], baris)
+
     # ND-JURNAL-NOMOR: jurnal = nomor pembayarannya (satu ruang nama); sudah dipakai jurnal lain -> seri 'PKJ'
     journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], payment_number, "PKJ")
 

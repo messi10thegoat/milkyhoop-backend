@@ -134,6 +134,13 @@ async def akun_kas(conn, tid: str, bank_account_id, account_id, bloks: list, waj
     return coa, ba
 
 
+async def kas_minus(conn, tid: str, coa_kas, jumlah, bloks: list, pratinjau: bool) -> None:
+    """K1 kas-negatif: aturan SATU (kasbank_tulis.tolak_kas_minus_coa; tulis = kunci per CoA kas dulu) -> blok gaya modul ini."""
+    from . import kasbank_tulis as KT
+    for b in await KT.tolak_kas_minus_coa(conn, tid, coa_kas, jumlah, KT.Blok(True), kunci=not pratinjau):
+        bloks.append(blok(b["code"], b["message"], b["status"]))
+
+
 def _uuid(v):
     try:
         return UUID(str(v))
@@ -187,6 +194,7 @@ async def rencana_buat(conn, ctx, body, pratinjau: bool = False) -> dict:
             jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", "Vendor Deposit - (nomor saat disimpan)", body.deposit_date,
                               [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])]
             bank = await _bank(conn, tid, ba, -jumlah, "withdrawal")
+        await kas_minus(conn, tid, coa_kas, jumlah, bloks, pratinjau)
     after = {"exists": True, "status": status, "amount": _f(jumlah), "amount_applied": 0.0, "amount_refunded": 0.0,
              "remaining": _f(jumlah) if status == "posted" else None}
     return {"blocks": bloks, "before": {"exists": False}, "after": after, "journals": jurnal, "bank_transactions": bank, "bills": []}
@@ -208,6 +216,8 @@ async def rencana_posting(conn, ctx, vd, pratinjau: bool = False) -> dict:
             bloks.append(blok(b["code"], b["message"], b["status"]))
     jurnal = [_rencana_jurnal("VENDOR_DEPOSIT", f"Vendor Deposit - {vd['deposit_number']}", vd["deposit_date"],
                       [await _baris(conn, tid, um, jumlah, 0), await _baris(conn, tid, coa_kas, 0, jumlah)])] if um and coa_kas else []
+    if vd["status"] == "draft":
+        await kas_minus(conn, tid, coa_kas, jumlah, bloks, pratinjau)
     sebelum = await keadaan(conn, tid, vd["id"]) if pratinjau else {}
     return {"blocks": bloks, "before": sebelum, "after": sesudah(sebelum, status="posted", remaining=_f(jumlah)),
             "journals": jurnal, "bank_transactions": await _bank(conn, tid, ba, -jumlah, "withdrawal") if jurnal else [], "bills": [],

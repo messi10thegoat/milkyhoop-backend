@@ -1539,9 +1539,11 @@ class BillsService:
                 )
 
                 # Baris jurnal = BKR.baris_tagihan_lama (SATU sumber dengan pratinjau): Dr Hutang · Cr Kas/Bank (bayar − PPh) · Cr Utang PPh
-                for line_number, (_akun, _d, _k, _memo) in enumerate(
-                    BKR.baris_tagihan_lama(ap_account_id, bank_coa_id, pph_coa_id, payment_amount, pph_amount, bill["vendor_name"], payment_number), 1
-                ):
+                _baris_bayar = BKR.baris_tagihan_lama(ap_account_id, bank_coa_id, pph_coa_id, payment_amount, pph_amount, bill["vendor_name"],
+                                                      payment_number)
+                from . import kasbank_tulis as KT  # K1 kas-negatif: == pratinjau_bayar_tagihan
+                await KT.tolak_kas_minus_baris(conn, tenant_id, _baris_bayar)
+                for line_number, (_akun, _d, _k, _memo) in enumerate(_baris_bayar, 1):
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)

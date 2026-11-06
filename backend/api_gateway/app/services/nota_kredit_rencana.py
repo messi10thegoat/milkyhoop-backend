@@ -150,6 +150,9 @@ async def rencana_refund_nk(conn, tid: str, cn_id, body, pratinjau: bool = False
         if hasil["cermin"] and Decimal(str(body.amount)) != Decimal(str(body.amount)).to_integral_value():
             bl.galat("CN_REFUND_BUKAN_BULAT", 422, {"code": "CN_REFUND_BUKAN_BULAT",
                                                     "message": "Jumlah pengembalian lewat rekening bank harus bilangan bulat rupiah."})
+        from . import kasbank_tulis as KT  # K1 kas-negatif: refund = kas keluar (tulis: kunci per CoA kas dulu)
+        for b in await KT.tolak_kas_minus_coa(conn, tid, hasil["akun"], body.amount, KT.Blok(bl.pratinjau)):  # tulis: GalatBerkode KAS_MINUS
+            bl.galat(b["code"], b["status"], b["message"])
     r = await conn.fetchrow(
         "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, body.refund_date)
     if r and r["status"] != "OPEN":
