@@ -35,7 +35,8 @@ def test_status_picu_docstring_kembar_trigger():
 @pytest.mark.parametrize("dipakai,kembali", [(0, 0), (0, 500), (500, 0), (500, 500), (0, 1000)])
 @pytest.mark.parametrize("bill", [None, "6b3c3b1e-0000-4000-8000-000000000001"])
 def test_teks_keadaan_sama_dengan_medan_baris(status, dipakai, kembali, bill):
-    v = {"id": 1, "status": status, "amount_applied": dipakai, "amount_received": kembali, "original_bill_id": bill, "original_bill_number": None}
+    v = {"id": 1, "status": status, "total_amount": 1000, "amount_applied": dipakai, "amount_received": kembali, "original_bill_id": bill,
+         "original_bill_number": None}
     m = NDD.medan_baris(v, 0, None, [], None)
     t = NDD.teks_keadaan({"status": status, "amount_applied": dipakai, "amount_refunded": kembali, "original_bill_id": bill})
     assert t == {"sisa_keadaan": m["sisa_keadaan"], "status_text": m["status_text"]}
@@ -112,5 +113,5 @@ def test_pemindai_after_lewat_penentu_bersama():
     d = R[R.index("def _sesudah("):R.index("async def _pratinjau_nd(")]
     assert "NDD.status_picu(" in d and "NDD.teks_keadaan(" in d and ".daftar" in d
     tk = Path(APP / "services/nota_debit_daftar.py").read_text()
-    t = tk[tk.index("def teks_keadaan("):tk.index("def sisa_lama(")]
+    t = tk[tk.index("def teks_keadaan("):tk.index("def sisa_nd_baris(")]
     assert "status_detail_nd(" in t and "keadaan_nd(" in t and "status_text_nd(" in t

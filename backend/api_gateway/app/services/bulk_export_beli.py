@@ -70,7 +70,7 @@ async def _nota_debit(conn, tid, rows):
     out = {}
     for r in rows:
         m = medan.get(r["id"], {})
-        sisa = m.get("remaining_amount", NDD.sisa_lama(r["status"], r["total_amount"], r["amount_applied"], r["amount_received"]))
+        sisa = m["remaining_amount"]
         out[r["id"]] = [r["vendor_name"], r["credit_number"], r["credit_date"], r["original_bill_number"], r["total_amount"],
                         None if m.get("sisa_keadaan") == "draf" else sisa, m.get("status_text") or r["status"], r["status"], r["ref_no"]]
     return out

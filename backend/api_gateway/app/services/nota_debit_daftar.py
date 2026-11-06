@@ -5,8 +5,8 @@
   aksi         = 'belum_terpakai' : terbit AND tak bertaut AND sisa jurnal > 0 (pill + ?aksi= + summary: predikat SAMA). SATU-SATUNYA pill (== NK).
   sisa_keadaan = draf | utuh | sebagian | terpakai | dikembalikan | sebagian_dikembalikan | batal (== NK)
   status_text  = teks_galat.status_id("vc", status_detail) -- kata SAMA dengan NK; ND bertaut 'posted' -> "Terpakai" (NetSuite "Fully Applied")
-  remaining_amount = rumus LAMA router (void 0, selain itu total − applied − received) -- TIDAK diubah (preseden NK sisa_kredit_nk);
-                 harness menggerbangnya == sisa jurnal di semua keadaan.
+  remaining_amount = sisa_nd_baris (BUG-070): draf = total (preseden NK sisa_kredit_nk), selain itu = sisa jurnal -- daftar, detail, ekspor
+                 dari medan_baris yang SAMA (dulu rumus lama total − applied − received: ND bertaut tampil "Terpakai" tapi sisa penuh).
 """
 from datetime import date
 from decimal import Decimal
@@ -82,11 +82,12 @@ def teks_keadaan(k: dict) -> dict:
             "status_text": status_text_nd(k.get("status"), sd, k.get("original_bill_id"))}
 
 
-def sisa_lama(status, total_amount, amount_applied, amount_received):
-    """remaining_amount rumus LAMA router (daftar :259 / detail :436) -- SATU tempat, perilaku tak diubah."""
-    if status == "void":
-        return 0
-    return total_amount - (amount_applied or 0) - (amount_received or 0)
+def sisa_nd_baris(status, total_amount, sisa_jurnal):
+    """remaining_amount satu nota debit (BUG-070): draf = total (belum terbit, belum berjurnal; == NK); selain itu = sisa JURNAL
+    (sql_sisa_nd: void/bertaut 0)."""
+    if status == "draft":
+        return total_amount
+    return Decimal(str(sisa_jurnal or 0))
 
 
 SQL_RINCIAN_ND = f"""
@@ -187,6 +188,7 @@ def medan_baris(v, sisa_jurnal, rincian, kelompok, po) -> dict:
             "status_text": status_text_nd(v["status"], sd, v["original_bill_id"]),
             "original_bill_id": str(v["original_bill_id"]) if v["original_bill_id"] else None,
             "original_bill_number": v["original_bill_number"],
+            "remaining_amount": sisa_nd_baris(v["status"], v["total_amount"], sisa_jurnal),
             "purchase_order_id": str(po_id) if po_id else None, "purchase_order_number": po_no,
             "documents": docs, "doc_count": len(docs), **medan_rincian(rincian)}
 
