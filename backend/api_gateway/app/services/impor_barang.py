@@ -85,6 +85,28 @@ def _satuan_ke(b: dict, unit: str) -> Optional[str]:
     return None
 
 
+_KATA_MEDAN = re.compile(r"\b(?:jual|beli|stok|kode|kategori|satuan|tipe)\b.*$", re.I | re.S)
+
+
+def _nama_tanpa_sisa(depan: str, galat: list) -> str:
+    """Bagian sebelum medan pertama = NAMA + satu pemisah. Sisanya tak pernah ditelan ke nama diam-diam (temuan FRONTEND 6 Nov:
+    "rusak ,,, jual abc" -> nama itu, nol galat): bagian lain sesudah koma/titik koma, kata medan yang nilainya tak terbaca
+    ("jual abc", "beli"), dan tanda baca beruntun -> galat per baris (blok TAK_TERBACA di ke_badan)."""
+    bagian = re.split(r"[,;]", depan)
+    ekor = [x.strip() for x in bagian[1:]]
+    if sum(1 for x in ekor if not x) > 1:
+        galat.append(f"tanda baca berlebih \"{''.join(re.findall(r'[,;]', depan))}\" — pisahkan bagian dengan satu koma")
+    nama = bagian[0].strip()
+    m = _KATA_MEDAN.search(nama)
+    if m:
+        ekor.insert(0, m.group(0).strip())
+        nama = nama[:m.start()].strip()
+    sisa = [x for x in ekor if x]
+    if sisa:
+        galat.append(f"tak terbaca: \"{', '.join(sisa)}\" — tulis mis. jual 35rb, beli 31rb, stok 10")
+    return nama
+
+
 def tafsir_baris(teks: str) -> dict:
     """SATU baris -> baris impor ternormalisasi + 'tak_terbaca' (sisa teks yang tak dikenali; tak pernah dibuang diam).
     Harga berlaku untuk satuan yang disebut TEPAT SEBELUMNYA ("karton isi 6 jual 243rb" = per karton); "/karton" selalu
@@ -99,7 +121,10 @@ def tafsir_baris(teks: str) -> dict:
         temuan.append((j, m))
         pos = m.end()
     awal = temuan[0][1].start() if temuan else len(s)
-    b = {"nama": s[:awal].strip(" ,;"), "teks": s}
+    galat_nama = []
+    b = {"nama": _nama_tanpa_sisa(s[:awal], galat_nama), "teks": s}
+    if galat_nama:
+        b["_galat"] = galat_nama
     sisa = [s[(temuan[i - 1][1].end() if i else awal):m.start()] for i, (_, m) in enumerate(temuan)]
     sisa.append(s[temuan[-1][1].end():] if temuan else "")
     terakhir = None  # satuan yang disebut terakhir: "besar" | "dasar"
