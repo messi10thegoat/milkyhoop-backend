@@ -34,15 +34,29 @@ LABEL_MAP_TYPE = {
     "PAYABLE": "Pembayaran utang usaha",
     "ASSET": "Penerimaan/pengeluaran aset",
     "RECEIVABLE": "Penerimaan piutang",
-    "EQUITY": "Transaksi ekuitas",
+    "EQUITY": "Setoran modal / prive",
 }
 
 
-def _get_label(account_type, psak_sub_category):
-    """Get display label from psak_sub_category (priority) or account_type."""
+# (a) Jurnal SALDO AWAL bukan aktivitas: kasnya = KAS AWAL periode (dulu masuk Operasi "Transaksi ekuitas", kas awal 0 -- nyawit 282 jt).
+SUMBER_SALDO_AWAL = ["OPENING", "OPENING_BALANCE", "BANK_OPENING_BALANCE", "VENDOR_OPENING_BALANCE"]
+
+
+def _get_label(account_type, psak_sub_category, account_name=None):
+    """Get display label from psak_sub_category (priority) or account_type. (c) ASSET tanpa sub-kategori = NAMA akun (mis. "Uang Muka
+    Pembelian"), bukan "Penerimaan/pengeluaran aset" yang menyesatkan."""
     if psak_sub_category and psak_sub_category in LABEL_MAP_SUB:
         return LABEL_MAP_SUB[psak_sub_category]
+    if account_type == "ASSET" and account_name:
+        return account_name
     return LABEL_MAP_TYPE.get(account_type, f"Lain-lain ({account_type})")
+
+
+def _kategori(flow_category, account_type) -> str:
+    """(b) Lawan EKUITAS tanpa kategori eksplisit (setoran modal, prive) = PENDANAAN (PSAK 2: transaksi dengan pemilik); lainnya tetap."""
+    if flow_category in (None, "NONE", "OPERATING") and account_type == "EQUITY":
+        return "FINANCING"
+    return flow_category or "OPERATING"
 
 
 async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict:
@@ -63,6 +77,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
               AND je.journal_date >= $2
               AND je.journal_date <= $3
               AND coa.is_cash = TRUE
+              AND je.source_type <> ALL($4::text[])
             GROUP BY jl.journal_id
         ),
         counterpart_weights AS (
@@ -72,6 +87,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
                    COALESCE(counter_coa.cash_flow_category, 'OPERATING') AS flow_category,
                    counter_coa.account_type,
                    counter_coa.psak_sub_category,
+                   counter_coa.name AS account_name,
                    ABS(counter_jl.debit - counter_jl.credit) AS line_amount,
                    SUM(ABS(counter_jl.debit - counter_jl.credit))
                        OVER (PARTITION BY cpj.journal_id) AS journal_total
@@ -84,13 +100,14 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         SELECT flow_category,
                account_type,
                psak_sub_category,
+               CASE WHEN account_type = 'ASSET' THEN account_name END AS account_name,
                SUM(net_cash * line_amount / NULLIF(journal_total, 0)) AS net_flow
         FROM counterpart_weights
-        GROUP BY flow_category, account_type, psak_sub_category
+        GROUP BY flow_category, account_type, psak_sub_category, CASE WHEN account_type = 'ASSET' THEN account_name END
         HAVING ABS(SUM(net_cash * line_amount / NULLIF(journal_total, 0))) > 0.01
         ORDER BY flow_category, account_type, psak_sub_category
     """
-    rows = await conn.fetch(sql, tenant_id, _to_date(start), _to_date(end))
+    rows = await conn.fetch(sql, tenant_id, _to_date(start), _to_date(end), SUMBER_SALDO_AWAL)
 
     # Build items per category
     operating_items = []
@@ -101,9 +118,9 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
     financing_total = Decimal("0")
 
     for r in rows:
-        category = r["flow_category"]
+        category = _kategori(r["flow_category"], r["account_type"])
         amount = Decimal(str(r["net_flow"]))
-        label = _get_label(r["account_type"], r["psak_sub_category"])
+        label = _get_label(r["account_type"], r["psak_sub_category"], r["account_name"])
 
         item = {"label": label, "amount": float(amount)}
 
@@ -141,6 +158,13 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
     # Opening cash = all cash account balances as of day before period start
     day_before = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     cash_start = await compute_balance(conn, tenant_id, {"is_cash": True}, end_date=day_before)
+    # (a) kas dari jurnal saldo awal yang bertanggal DI DALAM periode = bagian KAS AWAL (bukan aktivitas)
+    cash_start += Decimal(str(await conn.fetchval(
+        """SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) FROM journal_lines jl
+           JOIN journal_entries je ON je.id = jl.journal_id JOIN chart_of_accounts coa ON coa.id = jl.account_id
+           WHERE je.status = 'POSTED' AND je.tenant_id = $1 AND je.journal_date >= $2 AND je.journal_date <= $3
+             AND coa.is_cash = TRUE AND je.source_type = ANY($4::text[])""",
+        tenant_id, _to_date(start), _to_date(end), SUMBER_SALDO_AWAL) or 0))
     cash_end = await compute_balance(conn, tenant_id, {"is_cash": True}, end_date=end)
 
     return {

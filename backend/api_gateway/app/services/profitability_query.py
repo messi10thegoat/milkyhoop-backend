@@ -35,11 +35,21 @@ _BASE_INVOICE_FILTER = """
 # GOODS profitability — dual-source (revenue + COGS)
 # ---------------------------------------------------------------------------
 
+# Qty baris dalam SATUAN DASAR barang (6 Nov 2026, putusan pemilik langsung): dulu SUM(sii.quantity) mentah lintas satuan dengan label
+# satuan dasar (nyawit Minyakita 1L: 3 karton + 20 pcs tampil "23 pcs", benar 56). Faktor = unit_conversions aktif satuan baris (sumber
+# yang sama dengan kartu stok); satuan dasar / tanpa konversi = 1.
+QTY_DASAR = """sii.quantity * COALESCE((
+            SELECT uc.conversion_factor FROM unit_conversions uc
+            WHERE uc.tenant_id = si.tenant_id AND uc.product_id = sii.item_id AND COALESCE(uc.is_active, true)
+              AND lower(btrim(uc.conversion_unit)) = lower(btrim(sii.unit))
+              AND lower(btrim(sii.unit)) <> lower(btrim(COALESCE(p_src.satuan, '')))
+            ORDER BY uc.created_at LIMIT 1), 1)"""
+
 ITEMS_QUERY = """
 WITH revenue AS (
     SELECT
         sii.item_id                     AS product_id,
-        SUM(sii.quantity)               AS qty_sold,
+        SUM(__QTY_DASAR__)              AS qty_sold,
         SUM(sii.subtotal)              AS revenue_gross,
         SUM(sii.discount_amount)       AS total_discount,
         SUM(sii.total)                 AS revenue_with_tax,
@@ -112,7 +122,7 @@ LEFT JOIN cogs c ON c.product_id = r.product_id
 WHERE p.deleted_at IS NULL
 ORDER BY {sort_clause}
 LIMIT $4 OFFSET $5
-""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
+""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR)).replace("__QTY_DASAR__", QTY_DASAR)
 
 
 ITEMS_COUNT_QUERY = """
@@ -133,7 +143,7 @@ WITH revenue AS (
         SUM(sii.subtotal)  AS total_revenue_gross,
         SUM(sii.discount_amount) AS total_discount,
         SUM(sii.total)     AS total_revenue_with_tax,
-        SUM(sii.quantity)  AS total_qty_sold,
+        SUM(__QTY_DASAR__) AS total_qty_sold,
         COUNT(DISTINCT sii.item_id)    AS unique_items,
         COUNT(DISTINCT sii.invoice_id) AS unique_invoices
     FROM sales_invoice_items sii
@@ -184,7 +194,7 @@ SELECT
     r.unique_items,
     r.unique_invoices
 FROM revenue r, cogs c
-""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR))
+""".replace("{filter}", _BASE_INVOICE_FILTER).replace("__KELUAR_JUAL_FAKTUR__", sql_daftar(KELUAR_JUAL_FAKTUR)).replace("__QTY_DASAR__", QTY_DASAR)
 
 
 # ---------------------------------------------------------------------------
