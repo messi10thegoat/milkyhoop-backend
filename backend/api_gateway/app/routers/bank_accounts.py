@@ -24,6 +24,7 @@ from datetime import date
 import uuid as uuid_module
 
 from ..services import teks_galat as tg
+from ..services import kasbank_ringkas as KR
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_accounts import (
     CreateManualTransactionRequest,
@@ -382,6 +383,27 @@ async def get_bank_accounts_dropdown(request: Request):
 
 
 # =============================================================================
+
+
+# Kas & Bank ringkas (ui-pusat U6 fase 1, BACA saja). WAJIB di atas /{bank_account_id}: rute terdaftar duluan menang.
+@router.get("/summary")
+async def ringkasan_kas_bank(request: Request):
+    """B1: saldo per akun dari jurnal (Law 1/16) + total; services/kasbank_ringkas."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        baris = await conn.fetch(KR.SQL_RINGKASAN, ctx["tenant_id"])
+        return {"success": True, "data": KR.ringkasan(baris, await tanggal_dokumen(conn, ctx["tenant_id"]))}
+
+
+@router.get("/transactions/recent")
+async def mutasi_terakhir_kas_bank(request: Request, limit: int = Query(10, ge=1, le=100)):
+    """B2: mutasi terakhir semua akun kas/bank dari baris jurnal POSTED; services/kasbank_ringkas."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        baris = await conn.fetch(KR.SQL_MUTASI, ctx["tenant_id"], limit)
+    return {"success": True, "data": {"items": KR.mutasi(baris)}}
 
 
 @router.get("/{bank_account_id}", response_model=BankAccountDetailResponse)
