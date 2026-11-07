@@ -211,7 +211,7 @@ async def list_purchase_orders(
         "created_at"
     ),
     sort_order: Literal["asc", "desc"] = Query("desc"),
-    aksi: Optional[Literal["perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "bisa_diterima"]] = Query(None),
+    aksi: Optional[Literal["perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "perlu_diterima", "bisa_diterima"]] = Query(None),
     with_totals: bool = Query(False),
 ):
     """Daftar Pesanan Pembelian. Aditif (P-U2): terima_*, position_text, aksi (pill PARTISI), amount_*/sisa_ditagih TURUNAN dari baris,
@@ -698,11 +698,13 @@ async def get_purchase_order_documents(request: Request, po_id: UUID):
             if not po:
                 raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
             kel = (await PD.dokumen_po(conn, ctx["tenant_id"], [po_id])).get(po_id, [])
+            hari_ini = await PD.tanggal_hari_ini(conn, ctx["tenant_id"])
+            fakta = (await PD.fakta_po(conn, ctx["tenant_id"], [po_id], hari_ini))[po_id]  # BUG-112 (c1): teks SAMA dgn baris/detail
             kontak = await conn.fetchrow(
                 "SELECT phone, email FROM vendors WHERE id = $1 AND tenant_id = $2", po["vendor_id"], ctx["tenant_id"]) if po["vendor_id"] else None
             return {
                 "anchor": {"kind": "purchase_order", "id": str(po["id"]), "number": po["po_number"], "vendor": po["vendor_name"] or "",
-                           "position_text": PD.position_text(po["status"]), "total": f"{PD.r2(po['total_amount']):.2f}", "paid": None, "balance": None,
+                           "position_text": fakta["position_text"], "total": f"{PD.r2(po['total_amount']):.2f}", "paid": None, "balance": None,
                            "vendor_phone": (kontak["phone"] if kontak else None) or None,
                            "vendor_email": (kontak["email"] if kontak else None) or None},
                 "default": {"group": "po", "index": 0},

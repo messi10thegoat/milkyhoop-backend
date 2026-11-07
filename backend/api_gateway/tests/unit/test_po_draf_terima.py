@@ -57,7 +57,7 @@ class KonFakta:
     async def fetch(self, sql, *a):
         q = " ".join(sql.split())
         if "FROM purchase_orders po" in q and "belum_ditagih_sesudah_draf" in q:
-            return [{"id": self.po_id, "status": "partial_received", "expected_date": None, "total_amount": D("1000"), "sisa_terima": D("5"),
+            return [{"id": self.po_id, "status": "partial_received", "expected_date": None, "total_amount": D("1000"), "diterima_barang": 0, "sisa_terima": D("5"),
                      "belum_ditagih": D("5"), "belum_ditagih_sesudah_draf": D("0"), "amount_received": D("500"), "amount_billed": D("0"),
                      "draft_bill_amount": D("500"), "aturan_d": False}]
         if "FROM bill_items bi JOIN bills b" in q and "= 'draft'" in q and "poi.po_id = ANY" in q:
@@ -115,6 +115,6 @@ async def test_to_bill_items_satu_batas_tagih_dan_urutan_blok_tetap(monkeypatch)
 
 def test_rute_daftar_menerima_kunci_baru_dan_saringan_memakai_flag():
     s = (APP / "routers/purchase_orders.py").read_text()
-    assert '"draf_tagihan", "bisa_diterima"]] = Query(None)' in s
+    assert '"draf_tagihan", "perlu_diterima", "bisa_diterima"]] = Query(None)' in s
     assert "PR.status_bisa_terima(await G.aktif(conn, ctx[\"tenant_id\"]))" in s
     assert s.count("await PD.faktur_draf_po(conn, ctx[\"tenant_id\"]") == 2  # daftar + detail (fungsi SAMA)

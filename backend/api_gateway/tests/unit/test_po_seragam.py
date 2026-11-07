@@ -160,3 +160,17 @@ def test_router_menyambung_ke_po_daftar_dan_ada_rute_bundel():
 def test_detail_tidak_lagi_memakai_kolom_bills_bill_date():
     src = inspect.getsource(PO.get_purchase_order)
     assert "SELECT id, invoice_number, bill_date," not in src and "ORDER BY bill_date" not in src
+
+
+def test_bug112_anchor_bundel_memakai_teks_fakta_po():
+    """(c1) satu teks untuk baris, detail, anchor: anchor bundel lewat fakta_po, bukan position_text(status) telanjang."""
+    src = inspect.getsource(PO.get_purchase_order_documents)
+    assert "PD.fakta_po(" in src and 'fakta["position_text"]' in src and "PD.position_text(po[" not in src
+
+
+def test_bug112_filter_aksi_daftar_menerima_semua_kunci_partisi():
+    """Paritas summary == daftar per kunci: ?aksi= daftar WAJIB menerima setiap kunci PD.AKSI (+ saringan); dulu Literal tertulis tangan."""
+    import typing
+    p = inspect.signature(PO.list_purchase_orders).parameters["aksi"].annotation
+    boleh = set(typing.get_args(typing.get_args(p)[0]))
+    assert boleh == set(PD.AKSI) | set(PD.SARINGAN)
