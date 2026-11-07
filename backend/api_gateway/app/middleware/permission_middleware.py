@@ -269,6 +269,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # sementara PATCH/DELETE menolak 403 dengan benar.
     (r"^/api/expenses/[^/]+/post$", ["POST"], "expense", "P"),
     (r"^/api/expenses/[^/]+/void$", ["POST"], "expense", "V"),
+    (r"^/api/expenses/[^/]+/post/preview$", ["POST"], "expense", "P"),  # Biaya t2: pratinjau = izin tulisnya
+    (r"^/api/expenses/[^/]+/void/preview$", ["POST"], "expense", "V"),
     (r"^/api/expenses/[^/]+/attachments$", ["POST"], "expense", "U"),
     # ================================================================
     # Sub-jalur & rute tulis yang TAK PERNAH terjaga — DITAMBAHKAN 12 Sep 2026.
