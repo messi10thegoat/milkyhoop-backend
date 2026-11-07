@@ -2108,6 +2108,182 @@ async def delete_expense(request: Request, expense_id: UUID):
 # =============================================================================
 # VOID EXPENSE
 # =============================================================================
+async def _posting_biaya(conn, ctx: dict, expense_id) -> dict:
+    """Inti post_expense di transaksi PEMANGGIL (Biaya t2): tulis (commit) dan pratinjau (ROLLBACK) memakai fungsi SAMA."""
+    # Law 13
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"EXPENSE_POST:{str(expense_id)}",
+    )
+
+    exp = await conn.fetchrow(
+        """
+        SELECT * FROM expenses
+        WHERE id = $1 AND tenant_id = $2
+        FOR UPDATE
+        """,
+        str(expense_id),
+        ctx["tenant_id"],
+    )
+
+    if not exp:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if exp["status"] != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only draft expenses can be posted "
+                f"(status: {exp['status']})."
+            ),
+        )
+
+    # Sabuk kedua: tautan jurnal yang sudah ada = jangan pernah
+    # menjurnal dua kali, meski status-nya entah bagaimana 'draft'.
+    if exp["journal_id"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Expense already has a journal",
+        )
+
+    # Law 5
+    await check_period_is_open(
+        conn, ctx["tenant_id"], exp["expense_date"]
+    )
+
+    rows = await conn.fetch(
+        """
+        SELECT account_id, account_name, amount, notes
+        FROM expense_items
+        WHERE expense_id = $1
+        ORDER BY line_number
+        """,
+        str(expense_id),
+    )
+    line_items = [
+        SimpleNamespace(
+            account_id=r["account_id"],
+            account_name=r["account_name"],
+            amount=r["amount"],
+            notes=r["notes"],
+        )
+        for r in rows
+    ]
+
+    journal_id = await create_expense_journal(
+        conn,
+        ctx["tenant_id"],
+        expense_id,
+        exp["expense_number"],
+        exp["expense_date"],
+        exp["is_itemized"],
+        exp["account_id"],
+        line_items,
+        exp["subtotal"],
+        exp["tax_amount"],
+        exp["pph_amount"],
+        exp["paid_through_coa_id"],
+        exp["tax_id"],
+        pph_type=exp["pph_type"],
+        pph_rate=exp["pph_rate"],
+        vendor_id=exp["vendor_id"],
+    )
+
+    await conn.execute(
+        """
+        UPDATE expenses
+        SET journal_id = $1, status = 'posted',
+            accounting_status = 'POSTED', operational_status = 'PAID',
+            updated_at = NOW()
+        WHERE id = $2
+        """,
+        str(journal_id),
+        str(expense_id),
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO bank_transactions (
+            id, tenant_id, bank_account_id, transaction_date,
+            transaction_type, amount, running_balance,
+            reference_type, reference_id, description,
+            payee_payer, created_by, journal_id
+        ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE',
+                  $6, $7, $8, $9, $10)
+        """,
+        _uuid_post.uuid4(),
+        ctx["tenant_id"],
+        exp["paid_through_id"],
+        exp["expense_date"],
+        -exp["total_amount"],
+        str(expense_id),
+        f"Expense: {exp['expense_number']}",
+        exp["vendor_name"] or "Expense",
+        ctx["user_id"],
+        str(journal_id),
+    )
+
+    hasil = await conn.fetchrow(
+        "SELECT * FROM expenses WHERE id = $1", str(expense_id)
+    )
+
+    return {
+        "success": True,
+        "message": f"Expense {exp['expense_number']} posted",
+        "data": dict(hasil),
+    }
+
+
+async def _pratinjau_biaya(request: Request, expense_id: UUID, aksi_nama: str, jalankan) -> dict:
+    """Biaya t2: pratinjau = jalur tulis YANG SAMA di transaksi yang SELALU di-ROLLBACK -> blok/jurnal/transaksi bank identik."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    await _ensure_role_preconditions(pool, ctx["tenant_id"])
+    blok, jurnal, bank = [], [], []
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            try:
+                await jalankan(conn, ctx)
+            except HTTPException as e:
+                d = e.detail
+                blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or f"HTTP_{e.status_code}",
+                             "message": (d.get("message") or str(d)) if isinstance(d, dict) else str(d)})
+            if not blok:
+                e = await conn.fetchrow("SELECT journal_id FROM expenses WHERE id = $1 AND tenant_id = $2", str(expense_id), ctx["tenant_id"])
+                jid = e["journal_id"] if e else None
+                if aksi_nama == "batalkan" and jid:   # jurnal yang AKAN ditulis = pembalik jurnal asli
+                    jid = await conn.fetchval("SELECT id FROM journal_entries WHERE reversal_of_id = $1", jid)
+                if jid:
+                    j = await conn.fetchrow("SELECT id, journal_number, source_type, description FROM journal_entries WHERE id = $1", jid)
+                    baris = await conn.fetch(
+                        """SELECT c.account_code, c.name AS account_name, jl.debit, jl.credit FROM journal_lines jl
+                           JOIN chart_of_accounts c ON c.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""", jid)
+                    jurnal.append({"source_type": j["source_type"], "description": j["description"],
+                                   "lines": [{"account_code": b["account_code"], "account_name": b["account_name"],
+                                              "debit": float(b["debit"] or 0), "credit": float(b["credit"] or 0)} for b in baris]})
+                    bank = [{"amount": float(b["amount"]), "transaction_type": b["transaction_type"]} for b in await conn.fetch(
+                        "SELECT amount, transaction_type FROM bank_transactions WHERE journal_id = $1", jid)]
+        finally:
+            await tr.rollback()   # SELALU: pratinjau tak pernah menulis
+    return {"success": True, "data": {"action": aksi_nama, "can_proceed": not blok, "blocks": blok, "journals": jurnal,
+                                      "bank_transactions": bank, "preview": True}}
+
+
+@router.post("/{expense_id}/post/preview")
+async def preview_post_expense(request: Request, expense_id: UUID):
+    """Biaya t2: pratinjau terbitkan (nol tulis) -- jurnal EXPENSE + transaksi bank yang AKAN ditulis, atau blok berkalimat."""
+    return await _pratinjau_biaya(request, expense_id, "posting", lambda conn, ctx: _posting_biaya(conn, ctx, expense_id))
+
+
+@router.post("/{expense_id}/void/preview")
+async def preview_void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequest):
+    """Biaya t2: pratinjau batalkan (nol tulis) -- jurnal pembalik + cermin bank yang AKAN ditulis, atau blok berkalimat."""
+    return await _pratinjau_biaya(request, expense_id, "batalkan", lambda conn, ctx: _batal_biaya(conn, ctx, expense_id, body))
+
+
 @router.post("/{expense_id}/post")
 async def post_expense(request: Request, expense_id: UUID):
     """Terbitkan beban draf: jurnal + transaksi bank, sekali dan hanya sekali.
@@ -2128,134 +2304,201 @@ async def post_expense(request: Request, expense_id: UUID):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                # Law 13
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"EXPENSE_POST:{str(expense_id)}",
-                )
-
-                exp = await conn.fetchrow(
-                    """
-                    SELECT * FROM expenses
-                    WHERE id = $1 AND tenant_id = $2
-                    FOR UPDATE
-                    """,
-                    str(expense_id),
-                    ctx["tenant_id"],
-                )
-
-                if not exp:
-                    raise HTTPException(status_code=404, detail="Expense not found")
-
-                if exp["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Only draft expenses can be posted "
-                            f"(status: {exp['status']})."
-                        ),
-                    )
-
-                # Sabuk kedua: tautan jurnal yang sudah ada = jangan pernah
-                # menjurnal dua kali, meski status-nya entah bagaimana 'draft'.
-                if exp["journal_id"]:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Expense already has a journal",
-                    )
-
-                # Law 5
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], exp["expense_date"]
-                )
-
-                rows = await conn.fetch(
-                    """
-                    SELECT account_id, account_name, amount, notes
-                    FROM expense_items
-                    WHERE expense_id = $1
-                    ORDER BY line_number
-                    """,
-                    str(expense_id),
-                )
-                line_items = [
-                    SimpleNamespace(
-                        account_id=r["account_id"],
-                        account_name=r["account_name"],
-                        amount=r["amount"],
-                        notes=r["notes"],
-                    )
-                    for r in rows
-                ]
-
-                journal_id = await create_expense_journal(
-                    conn,
-                    ctx["tenant_id"],
-                    expense_id,
-                    exp["expense_number"],
-                    exp["expense_date"],
-                    exp["is_itemized"],
-                    exp["account_id"],
-                    line_items,
-                    exp["subtotal"],
-                    exp["tax_amount"],
-                    exp["pph_amount"],
-                    exp["paid_through_coa_id"],
-                    exp["tax_id"],
-                    pph_type=exp["pph_type"],
-                    pph_rate=exp["pph_rate"],
-                    vendor_id=exp["vendor_id"],
-                )
-
-                await conn.execute(
-                    """
-                    UPDATE expenses
-                    SET journal_id = $1, status = 'posted',
-                        accounting_status = 'POSTED', operational_status = 'PAID',
-                        updated_at = NOW()
-                    WHERE id = $2
-                    """,
-                    str(journal_id),
-                    str(expense_id),
-                )
-
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date,
-                        transaction_type, amount, running_balance,
-                        reference_type, reference_id, description,
-                        payee_payer, created_by, journal_id
-                    ) VALUES ($1, $2, $3, $4, 'withdrawal', $5, 0, 'EXPENSE',
-                              $6, $7, $8, $9, $10)
-                    """,
-                    _uuid_post.uuid4(),
-                    ctx["tenant_id"],
-                    exp["paid_through_id"],
-                    exp["expense_date"],
-                    -exp["total_amount"],
-                    str(expense_id),
-                    f"Expense: {exp['expense_number']}",
-                    exp["vendor_name"] or "Expense",
-                    ctx["user_id"],
-                    str(journal_id),
-                )
-
-                hasil = await conn.fetchrow(
-                    "SELECT * FROM expenses WHERE id = $1", str(expense_id)
-                )
-
-                return {
-                    "success": True,
-                    "message": f"Expense {exp['expense_number']} posted",
-                    "data": dict(hasil),
-                }
+                return await _posting_biaya(conn, ctx, expense_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error posting expense {expense_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to post expense")
+
+
+async def _batal_biaya(conn, ctx: dict, expense_id, body) -> dict:
+    """Inti void_expense di transaksi PEMANGGIL (Biaya t2): tulis (commit) dan pratinjau (ROLLBACK) memakai fungsi SAMA."""
+    # Law 13: Advisory lock to prevent concurrent void
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1))",
+        f"EXPENSE_VOID:{expense_id}",
+    )
+    await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], expense_id)  # rekon bank: 409 sebelum tulisan
+
+    # Get expense
+    expense = await conn.fetchrow(
+        """
+        SELECT * FROM expenses
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        str(expense_id),
+        ctx["tenant_id"],
+    )
+
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    if expense["status"] == "void":
+        raise HTTPException(
+            status_code=400, detail="Expense already voided"
+        )
+
+    # Draf tak punya jurnal untuk dibalik; draf DIHAPUS, bukan
+    # di-void. Tanpa penjaga ini, void draf akan mencoba
+    # membalik jurnal yang tak pernah ada.
+    if expense["status"] != "posted":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only posted expenses can be voided "
+                "(draft: gunakan DELETE)."
+            ),
+        )
+
+    # Law 5: Check accounting period is open
+    await check_period_is_open(
+        conn, ctx["tenant_id"], expense["expense_date"]
+    )
+
+    # Void original journal + create reversal (Law 2)
+    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    await check_period_is_open(conn, ctx["tenant_id"], hari_ini)  # periode jurnal pembalik
+    if expense["journal_id"]:
+        # Create reversal journal entry
+        original_lines = await conn.fetch(
+            """
+            SELECT account_id, debit, credit, memo
+            FROM journal_lines WHERE journal_id = $1
+            ORDER BY line_number
+            """,
+            expense["journal_id"],
+        )
+
+        if original_lines:
+            reversal_total = sum(r["debit"] or 0 for r in original_lines)
+            reversal_journal_id = await conn.fetchval(
+                """
+                INSERT INTO journal_entries (
+                    tenant_id, journal_number, journal_date, description,
+                    source_type, source_id, status,
+                    total_debit, total_credit, reversal_of_id
+                ) VALUES ($1, $2, $8, $3, 'EXPENSE_REVERSAL', $4, 'DRAFT', $5, $6, $7)
+                RETURNING id
+                """,
+                ctx["tenant_id"],
+                "REV-" + expense["expense_number"],
+                "Reversal: "
+                + expense["expense_number"]
+                + " - "
+                + body.reason,
+                str(expense_id),
+                reversal_total,
+                reversal_total,
+                expense["journal_id"],
+                hari_ini,  # t10-tanggal-bisnis
+            )
+
+            for line_idx, line in enumerate(original_lines, 1):
+                await conn.execute(
+                    """
+                    INSERT INTO journal_lines (
+                        journal_id, line_number, account_id, debit, credit, memo
+                    ) VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    str(reversal_journal_id),
+                    line_idx,
+                    line["account_id"],
+                    line["credit"] or 0,  # swap: original credit -> debit
+                    line["debit"] or 0,  # swap: original debit -> credit
+                    ("Reversal: " + (line["memo"] or "")),
+                )
+
+            # Law 20: DRAFT->POSTED after all reversal lines
+            await conn.execute(
+                "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+                reversal_journal_id,
+            )
+
+            # Law 26: Link original journal to reversal
+            await conn.execute(
+                """
+                UPDATE journal_entries
+                SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: status asli TETAP POSTED (lihat backend/docs/TEMUAN-rantai-nomor-ganda-20260912.md)
+                WHERE id = $1
+                """,
+                expense["journal_id"],
+                reversal_journal_id,
+            )
+
+            # BankSync Rule 3: Create mirror bank transaction for void
+            original_btxn = await conn.fetchrow(
+                """
+                SELECT * FROM bank_transactions
+                WHERE reference_type = 'EXPENSE'
+                  AND reference_id = $1
+                  AND tenant_id = $2
+                  AND status != 'void'
+                """,
+                expense_id,
+                ctx["tenant_id"],
+            )
+            if original_btxn:
+                mirror_type = (
+                    "deposit"
+                    if original_btxn["transaction_type"] == "withdrawal"
+                    else "withdrawal"
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO bank_transactions (
+                        id, tenant_id, bank_account_id, transaction_date,
+                        transaction_type, amount, description,
+                        reference_type, reference_id, journal_id,
+                        status, origin_type, source_module,
+                        created_by, created_at
+                    ) VALUES (
+                        gen_random_uuid(), $1, $2, $9,
+                        $3, $4, $5,
+                        'EXPENSE', $6, $7,
+                        'POSTED', 'SYSTEM', 'EXPENSE',
+                        $8, NOW()
+                    )
+                    """,
+                    ctx["tenant_id"],
+                    original_btxn["bank_account_id"],
+                    mirror_type,
+                    abs(original_btxn["amount"]),
+                    f"[VOID] {original_btxn['description'] or ''}",
+                    expense_id,
+                    reversal_journal_id,
+                    ctx.get("user_id"),
+                    hari_ini,  # t10-tanggal-bisnis
+                )
+                await conn.execute(
+                    "UPDATE bank_transactions SET status = 'VOIDED', "
+                    "voided_by = $2, voided_at = NOW(), void_reason = $3 "
+                    "WHERE id = $1",
+                    original_btxn["id"],
+                    ctx.get("user_id"),
+                    body.reason,
+                )
+
+    # Update expense status
+    await conn.execute(
+        """
+        UPDATE expenses
+        SET status = 'void', operational_status = 'VOID',
+            accounting_status = 'REVERSED', updated_at = NOW(),
+            notes = COALESCE(notes, '') || ' [VOID: ' || $3 || ']'
+        WHERE id = $1 AND tenant_id = $2
+    """,
+        str(expense_id),
+        ctx["tenant_id"],
+        body.reason,
+    )
+
+    return {
+        "success": True,
+        "message": f"Expense {expense['expense_number']} voided successfully",
+        "data": {"id": str(expense_id), "status": "void"},
+    }
 
 
 @router.post("/{expense_id}/void", response_model=VoidExpenseResponse)
@@ -2279,190 +2522,7 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                # Law 13: Advisory lock to prevent concurrent void
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"EXPENSE_VOID:{expense_id}",
-                )
-                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], expense_id)  # rekon bank: 409 sebelum tulisan
-
-                # Get expense
-                expense = await conn.fetchrow(
-                    """
-                    SELECT * FROM expenses
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    str(expense_id),
-                    ctx["tenant_id"],
-                )
-
-                if not expense:
-                    raise HTTPException(status_code=404, detail="Expense not found")
-
-                if expense["status"] == "void":
-                    raise HTTPException(
-                        status_code=400, detail="Expense already voided"
-                    )
-
-                # Draf tak punya jurnal untuk dibalik; draf DIHAPUS, bukan
-                # di-void. Tanpa penjaga ini, void draf akan mencoba
-                # membalik jurnal yang tak pernah ada.
-                if expense["status"] != "posted":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Only posted expenses can be voided "
-                            "(draft: gunakan DELETE)."
-                        ),
-                    )
-
-                # Law 5: Check accounting period is open
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], expense["expense_date"]
-                )
-
-                # Void original journal + create reversal (Law 2)
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)  # periode jurnal pembalik
-                if expense["journal_id"]:
-                    # Create reversal journal entry
-                    original_lines = await conn.fetch(
-                        """
-                        SELECT account_id, debit, credit, memo
-                        FROM journal_lines WHERE journal_id = $1
-                        ORDER BY line_number
-                        """,
-                        expense["journal_id"],
-                    )
-
-                    if original_lines:
-                        reversal_total = sum(r["debit"] or 0 for r in original_lines)
-                        reversal_journal_id = await conn.fetchval(
-                            """
-                            INSERT INTO journal_entries (
-                                tenant_id, journal_number, journal_date, description,
-                                source_type, source_id, status,
-                                total_debit, total_credit, reversal_of_id
-                            ) VALUES ($1, $2, $8, $3, 'EXPENSE_REVERSAL', $4, 'DRAFT', $5, $6, $7)
-                            RETURNING id
-                            """,
-                            ctx["tenant_id"],
-                            "REV-" + expense["expense_number"],
-                            "Reversal: "
-                            + expense["expense_number"]
-                            + " - "
-                            + body.reason,
-                            str(expense_id),
-                            reversal_total,
-                            reversal_total,
-                            expense["journal_id"],
-                            hari_ini,  # t10-tanggal-bisnis
-                        )
-
-                        for line_idx, line in enumerate(original_lines, 1):
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (
-                                    journal_id, line_number, account_id, debit, credit, memo
-                                ) VALUES ($1, $2, $3, $4, $5, $6)
-                                """,
-                                str(reversal_journal_id),
-                                line_idx,
-                                line["account_id"],
-                                line["credit"] or 0,  # swap: original credit -> debit
-                                line["debit"] or 0,  # swap: original debit -> credit
-                                ("Reversal: " + (line["memo"] or "")),
-                            )
-
-                        # Law 20: DRAFT->POSTED after all reversal lines
-                        await conn.execute(
-                            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                            reversal_journal_id,
-                        )
-
-                        # Law 26: Link original journal to reversal
-                        await conn.execute(
-                            """
-                            UPDATE journal_entries
-                            SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: status asli TETAP POSTED (lihat backend/docs/TEMUAN-rantai-nomor-ganda-20260912.md)
-                            WHERE id = $1
-                            """,
-                            expense["journal_id"],
-                            reversal_journal_id,
-                        )
-
-                        # BankSync Rule 3: Create mirror bank transaction for void
-                        original_btxn = await conn.fetchrow(
-                            """
-                            SELECT * FROM bank_transactions
-                            WHERE reference_type = 'EXPENSE'
-                              AND reference_id = $1
-                              AND tenant_id = $2
-                              AND status != 'void'
-                            """,
-                            expense_id,
-                            ctx["tenant_id"],
-                        )
-                        if original_btxn:
-                            mirror_type = (
-                                "deposit"
-                                if original_btxn["transaction_type"] == "withdrawal"
-                                else "withdrawal"
-                            )
-                            await conn.execute(
-                                """
-                                INSERT INTO bank_transactions (
-                                    id, tenant_id, bank_account_id, transaction_date,
-                                    transaction_type, amount, description,
-                                    reference_type, reference_id, journal_id,
-                                    status, origin_type, source_module,
-                                    created_by, created_at
-                                ) VALUES (
-                                    gen_random_uuid(), $1, $2, $9,
-                                    $3, $4, $5,
-                                    'EXPENSE', $6, $7,
-                                    'POSTED', 'SYSTEM', 'EXPENSE',
-                                    $8, NOW()
-                                )
-                                """,
-                                ctx["tenant_id"],
-                                original_btxn["bank_account_id"],
-                                mirror_type,
-                                abs(original_btxn["amount"]),
-                                f"[VOID] {original_btxn['description'] or ''}",
-                                expense_id,
-                                reversal_journal_id,
-                                ctx.get("user_id"),
-                                hari_ini,  # t10-tanggal-bisnis
-                            )
-                            await conn.execute(
-                                "UPDATE bank_transactions SET status = 'VOIDED', "
-                                "voided_by = $2, voided_at = NOW(), void_reason = $3 "
-                                "WHERE id = $1",
-                                original_btxn["id"],
-                                ctx.get("user_id"),
-                                body.reason,
-                            )
-
-                # Update expense status
-                await conn.execute(
-                    """
-                    UPDATE expenses
-                    SET status = 'void', operational_status = 'VOID',
-                        accounting_status = 'REVERSED', updated_at = NOW(),
-                        notes = COALESCE(notes, '') || ' [VOID: ' || $3 || ']'
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    str(expense_id),
-                    ctx["tenant_id"],
-                    body.reason,
-                )
-
-                return {
-                    "success": True,
-                    "message": f"Expense {expense['expense_number']} voided successfully",
-                    "data": {"id": str(expense_id), "status": "void"},
-                }
+                return await _batal_biaya(conn, ctx, expense_id, body)
 
     except HTTPException:
         raise
