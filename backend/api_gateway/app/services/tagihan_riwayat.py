@@ -7,6 +7,8 @@ Sumber kejadian (kolom beraktor; tak ditebak):
   bayar keluar: Pembayaran Keluar beralokasi ke tagihan ini -- dibayar (posted_by) · dibatalkan (voided_by + alasan)   [izin send_payment]
   uang muka   : penerapan UM vendor ke tagihan ini (vendor_deposit_applications.created_by)                         [izin vendor_deposit]
   nota debit  : diterapkan (vendor_credit_applications.created_by) · dilepas (reversed_by + alasan, V443)            [izin debit_note]
+  nota debit ATAS faktur ini (vendor_credits.original_bill_id; BUG-052, cermin so_riwayat nota kredit original_invoice_id):
+                dibuat · diposting · dibatalkan                                                                [izin debit_note]
   audit_logs  : entitas bills (ENTITAS_AUDIT)
 Dokumen terkait tanpa izin baca -> `omitted` (FE jujur, bukan diam). None = tagihan tak ada di tenant ini (-> 404)."""
 from typing import Awaitable, Callable, Optional
@@ -82,5 +84,19 @@ async def riwayat_tagihan(conn, tenant_id: str, bill_id, boleh: Callable[[str], 
             k.tambah(a["reversed_at"], "NOTA_DEBIT_DILEPAS", f"Nota debit {cn} dilepas dari faktur pembelian {n}{al}",
                      a["reversed_by"], "debit_note", a["id"], cn, kunci=a["kunci"])
 
-    keluar, total = await _selesaikan(conn, tenant_id, k, {"bill": [b["id"]]}, lihat, limit)
+    entitas_audit = {"bill": [b["id"]]}
+    # ---- nota debit ATAS faktur ini (BUG-052): retur dari faktur memotong hutang langsung saat posting, tanpa baris applications ----
+    if lihat["debit_note"]:
+        vcs = await conn.fetch(
+            """SELECT id, credit_number, total_amount, created_at, created_by, posted_at, posted_by, voided_at, voided_by, voided_reason
+               FROM vendor_credits WHERE tenant_id = $1 AND original_bill_id = $2""", tenant_id, bill_id)
+        entitas_audit["debit_note"] = [v["id"] for v in vcs]
+        for v in vcs:
+            cn = v["credit_number"]
+            k.tambah(v["created_at"], "NOTA_DEBIT_DIBUAT", f"Nota debit {cn} {_rp(v['total_amount'])} dibuat", v["created_by"], "debit_note", v["id"], cn)
+            k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {cn} diposting", v["posted_by"], "debit_note", v["id"], cn)
+            al = f": {v['voided_reason']}" if v["voided_reason"] else ""
+            k.tambah(v["voided_at"], "NOTA_DEBIT_DIBATALKAN", f"Nota debit {cn} dibatalkan{al}", v["voided_by"], "debit_note", v["id"], cn)
+
+    keluar, total = await _selesaikan(conn, tenant_id, k, entitas_audit, lihat, limit)
     return {"bill_id": str(b["id"]), "invoice_number": n, "events": keluar, "total": total, "omitted": omitted}
