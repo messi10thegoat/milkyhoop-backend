@@ -88,6 +88,22 @@ async def main():
     await EX.create_expense(req(tid, u, None, "POST"), CreateExpenseRequest(**badan), Response())
     cek("idem opsional: tanpa kunci -> biaya baru", await jumlah() == n1 + 1)
 
+    # T4 (Law 33: T1 kosong-isi untuk draf & posted ber-bukti di data nyata) -- benih DI SALINAN: 1 draf + 1 lampiran pada biaya posted
+    ring0 = S.ExpenseSummaryResponse.model_validate(await EX.get_expenses_summary(req(tid, u), period="month", search=None)).model_dump(mode="json")["data"]
+    await EX.create_expense(req(tid, u, None, "POST"), CreateExpenseRequest(**badan, status="draft"), Response())
+    async with pool.acquire() as c:
+        pid = await c.fetchval("SELECT id FROM expenses WHERE tenant_id=$1 AND status='posted' ORDER BY created_at LIMIT 1", tid)
+        await c.execute("""INSERT INTO expense_attachments (id, tenant_id, expense_id, file_name, file_path, file_size, mime_type, uploaded_at, uploaded_by)
+                            VALUES (gen_random_uuid(), $1, $2, 'uji.jpg', 'uji/uji.jpg', 10, 'image/jpeg', NOW(), $3)""", tid, pid, u)
+    ring1 = S.ExpenseSummaryResponse.model_validate(await EX.get_expenses_summary(req(tid, u), period="month", search=None)).model_dump(mode="json")["data"]
+    cek("benih: draf +1 di summary", ring1["draf_count"] == ring0["draf_count"] + 1, f"{ring0['draf_count']} -> {ring1['draf_count']}")
+    cek("benih: lampiran -> tanpa_bukti -1", ring1["tanpa_bukti_count"] == ring0["tanpa_bukti_count"] - 1, f"{ring0['tanpa_bukti_count']} -> {ring1['tanpa_bukti_count']}")
+    dd = await daftar(tid, u, aksi="draf")
+    cek("benih: daftar ?aksi=draf == summary, baris Draf", dd["total"] == ring1["draf_count"] and all(b["position_text"] == "Draf" and b["aksi"] == "draf" for b in dd["items"]), str(dd["total"]))
+    semua = await daftar(tid, u)
+    b = next(x for x in semua["items"] if x["id"] == str(pid))
+    cek("benih: posted ber-bukti -> tanpa aksi, posisi tanpa 'tanpa bukti', dokumen memuat attachment",
+        b["aksi_semua"] == [] and "tanpa bukti" not in b["position_text"] and {"type": "attachment"} in b["documents"], f"{b['position_text']} {b['documents']}")
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
 
