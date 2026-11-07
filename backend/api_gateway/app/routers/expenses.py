@@ -5,7 +5,8 @@ Endpoints for managing expenses with auto journal posting.
 Supports single and itemized expenses with PPh withholding.
 """
 
-from fastapi import APIRouter, Body, HTTPException, Request, Query
+from fastapi import APIRouter, Body, HTTPException, Request, Query, Response
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, Dict, Any
 from uuid import UUID
@@ -16,6 +17,8 @@ import asyncpg
 
 from ..services import teks_galat as tg
 from ..services import kasbank_tulis as KT
+from ..services import biaya_daftar as BD
+from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.expenses import (
     CreateExpenseRequest,
@@ -309,12 +312,27 @@ async def health_check():
 # =============================================================================
 # GET SUMMARY
 # =============================================================================
+def _syarat_cari(search: Optional[str], idx: int) -> tuple:
+    """Predikat ?search= SATU untuk daftar DAN /summary (kartu == daftar): tiap kata cocok nomor / vendor / catatan.
+    -> (" AND (...)" atau "", parameter, idx berikut)."""
+    kata = (search or "").strip().split() if isinstance(search, str) else []
+    if not kata:
+        return "", [], idx
+    syarat, par = [], []
+    for k in kata:
+        syarat.append(f"(expenses.expense_number ILIKE ${idx} OR expenses.vendor_name ILIKE ${idx} OR expenses.notes ILIKE ${idx})")
+        par.append(f"%{k}%")
+        idx += 1
+    return " AND (" + " AND ".join(syarat) + ")", par, idx
+
+
 @router.get("/summary", response_model=ExpenseSummaryResponse)
 async def get_expenses_summary(
     request: Request,
     period: Literal["week", "month", "quarter", "year"] = Query(
         "month", description="Period for summary"
     ),
+    search: Optional[str] = Query(None, description="Predikat cari SAMA dengan GET /api/expenses (kartu {k}_count/_value)"),
 ):
     """
     Get expense summary statistics for dashboard (Iron Law 1 compliant).
@@ -495,12 +513,22 @@ async def get_expenses_summary(
             )
             # BUG-055: rekening bayar bawaan form biaya = penentu SERVER (terakhir -> utama -> kas), bukan rekening pertama abjad FE
             bawaan = await paid_through_bawaan(conn, ctx["tenant_id"])
+            # Biaya standar SO: kartu/pill {k}_count/_value = predikat SAMA dgn ?aksi= daftar (services/biaya_daftar), nominal dokumen
+            cari, par_cari, _ = _syarat_cari(search, 3)
+            k_aksi = await conn.fetchrow(
+                "SELECT " + ", ".join(
+                    f"COUNT(*) FILTER (WHERE {BD.sql_aksi(k, '$2')}) AS {k}_count, "
+                    f"COALESCE(SUM(total_amount) FILTER (WHERE {BD.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in BD.SEMUA_KUNCI)
+                + f" FROM expenses WHERE expenses.tenant_id = $1{cari}",
+                ctx["tenant_id"], hari_ini, *par_cari)
 
             return {
                 "success": True,
                 "data": {
                     "period": period,
                     "paid_through_bawaan": bawaan,
+                    **{f"{k}_{m}": (int(k_aksi[f"{k}_{m}"]) if m == "count" else float(k_aksi[f"{k}_{m}"]))
+                       for k in BD.SEMUA_KUNCI for m in ("count", "value")},
                     "total_count": journal_summary["total_count"],
                     "total_amount": journal_summary["total_amount"],
                     "total_tax": total_tax,
@@ -609,9 +637,11 @@ async def list_expenses(
     billing_status: Optional[Literal["billable", "non_billable", "invoiced"]] = Query(
         None, description="Filter by billing status: billable, non_billable, invoiced"
     ),
+    aksi: Optional[Literal["draf", "tanpa_bukti", "bulan_ini"]] = Query(None, description="Biaya standar SO: saring kunci aksi/kartu"),
+    with_totals: bool = Query(False, description="sum_total = Σ total_amount baris terfilter (tanpa void)"),
 ):
     """
-    List expenses with filtering, sorting, and pagination.
+    List expenses with filtering, sorting, and pagination (+ ?aksi=, with_totals, aksi/position_text/documents per baris).
     """
     try:
         ctx = get_user_context(request)
@@ -665,23 +695,14 @@ async def list_expenses(
                 elif billing_status == "invoiced":
                     conditions.append("billed_invoice_id IS NOT NULL")
 
-            if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(
-                        f"(expense_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx} OR notes ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(
-                            f"(expense_number ILIKE ${param_idx} OR vendor_name ILIKE ${param_idx} OR notes ILIKE ${param_idx})"
-                        )
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
+            cari, par_cari, param_idx = _syarat_cari(search, param_idx)
+            if cari:
+                conditions.append(cari[len(" AND "):])
+                params.extend(par_cari)
+            if isinstance(aksi, str):  # Query() default = objek truthy saat dipanggil langsung
+                conditions.append(BD.sql_aksi(aksi, f"${param_idx}"))
+                params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
+                param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -697,6 +718,10 @@ async def list_expenses(
             # Count total
             count_query = f"SELECT COUNT(*) FROM expenses WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            sum_total = None
+            if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
+                sum_total = float(await conn.fetchval(
+                    f"SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE {where_clause} AND expenses.status <> 'void'", *params))
 
             # Fetch expenses
             query = f"""
@@ -710,7 +735,8 @@ async def list_expenses(
                     billed_invoice_id, billed_to_customer_id,
                     accounting_status,
                     reference, notes, has_receipt,
-                    created_at
+                    created_at, journal_id,
+                    (SELECT COUNT(*) FROM expense_attachments ea WHERE ea.expense_id = expenses.id AND ea.tenant_id = expenses.tenant_id) AS jumlah_bukti
                 FROM expenses
                 WHERE {where_clause}
                 ORDER BY {sort_column} {sort_order.upper()}, created_at DESC
@@ -749,10 +775,16 @@ async def list_expenses(
                         "reference": row["reference"],
                         "notes": row["notes"],
                         "created_at": row["created_at"],
+                        "attachment_count": int(row["jumlah_bukti"]),
+                        "aksi": (BD.aksi_semua(row["status"], row["jumlah_bukti"] > 0) or [None])[0],
+                        "aksi_semua": BD.aksi_semua(row["status"], row["jumlah_bukti"] > 0),
+                        "position_text": BD.position_text(row["status"], row["paid_through_name"], row["jumlah_bukti"] > 0),
+                        "documents": BD.documents_baris(row["journal_id"], row["jumlah_bukti"]),
+                        "doc_count": len(BD.documents_baris(row["journal_id"], row["jumlah_bukti"])),
                     }
                 )
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, "sum_total": sum_total}
 
     except HTTPException:
         raise
@@ -1466,7 +1498,7 @@ async def buat_biaya_inti(conn, ctx: dict, body: CreateExpenseRequest) -> dict:
 
 
 @router.post("", response_model=CreateExpenseResponse, status_code=201)
-async def create_expense(request: Request, body: CreateExpenseRequest):
+async def create_expense(request: Request, body: CreateExpenseRequest, response: Response = None):
     """
     Create a new expense with auto journal posting.
 
@@ -1480,6 +1512,10 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
 
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
+        try:
+            kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         pool = await get_pool()
         await _ensure_role_preconditions(pool, ctx["tenant_id"])
@@ -1488,7 +1524,29 @@ async def create_expense(request: Request, body: CreateExpenseRequest):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                return await buat_biaya_inti(conn, ctx, body)
+                # Law 14 (Biaya standar SO, 7 Nov): X-Idempotency-Key OPSIONAL sampai FE Biaya CW live (tiket: wajibkan, pola BUG-046);
+                # kunci sekali per buka form; sama + isi sama = replay, sama + isi beda = 409. Kunci SEBELUM nomor terbit.
+                kunci_penuh = sidik = None
+                if kunci_klien:
+                    kunci_penuh = f"EXPENSE_CREATE:{ctx['user_id']}:{kunci_klien}"
+                    sidik = hash_payload(body.model_dump(mode="json"))
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"IDEM:{ctx['tenant_id']}:{kunci_penuh}")
+                    try:
+                        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
+                    except LookupError as e:
+                        asli = (getattr(e, "respons", None) or {}).get("data") or {}
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED", "message": "Kunci idempotensi sudah dipakai untuk biaya dengan isi berbeda. Muat ulang formulir.",
+                            "expense_id": asli.get("id"), "expense_number": asli.get("expense_number")})
+                    if lama is not None:
+                        if response is not None:
+                            response.headers["X-Idempotent-Replay"] = "true"
+                        return lama
+                hasil = jsonable_encoder(await buat_biaya_inti(conn, ctx, body))
+                if kunci_penuh:
+                    await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "EXPENSE_CREATE", sidik, hasil,
+                                              result_id=UUID(str(hasil["data"]["id"])))
+                return hasil
 
     except HTTPException:
         raise

@@ -435,7 +435,7 @@ def test_exp_buat_beban_menyambung_ke_pembentuk_lampiran():
         n for n in ast.walk(pohon)
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "create_expense"
     )
-    assert "return await buat_biaya_inti(conn, ctx, body)" in ast.unparse(rute)
+    assert "await buat_biaya_inti(conn, ctx, body)" in ast.unparse(rute)  # Biaya standar SO: dibungkus idempotensi, tetap mendelegasikan
     fn = next(
         n for n in ast.walk(pohon)
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "buat_biaya_inti"

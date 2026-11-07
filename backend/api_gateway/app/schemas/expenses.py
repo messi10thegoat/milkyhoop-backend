@@ -216,6 +216,15 @@ class ExpenseListItem(BaseModel):
     reference: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime
+    # pola BUG-097: dua medan ini SUDAH dirakit list_expenses tapi tak dideklarasikan -> dulu dibuang diam-diam (ditangkap penjaga AST)
+    billed_invoice_id: Optional[str] = None
+    accounting_status: Optional[str] = None
+    # Biaya standar SO tahap 1 (services/biaya_daftar): teks/aksi/dokumen SERVER
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    position_text: Optional[str] = None
+    documents: List[Dict[str, str]] = []
+    doc_count: int = 0
 
 
 class ExpenseListResponse(BaseModel):
@@ -224,6 +233,7 @@ class ExpenseListResponse(BaseModel):
     items: List[ExpenseListItem]
     total: int
     has_more: bool
+    sum_total: Optional[float] = None  # ?with_totals=true: Σ total_amount baris terfilter tanpa void
 
 
 class ExpenseDetailResponse(BaseModel):
@@ -298,6 +308,13 @@ class ExpenseSummaryData(BaseModel):
     billable_amount: int
     top_accounts: List[TopAccount]
     paid_through_bawaan: Optional[PaidThroughBawaan] = None
+    # Biaya standar SO tahap 1: kartu/pill = predikat SAMA dgn GET /api/expenses ?aksi= (services/biaya_daftar)
+    draf_count: int = 0
+    draf_value: float = 0
+    tanpa_bukti_count: int = 0
+    tanpa_bukti_value: float = 0
+    bulan_ini_count: int = 0
+    bulan_ini_value: float = 0
 
 
 class ExpenseSummaryResponse(BaseModel):
