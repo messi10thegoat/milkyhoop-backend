@@ -26,6 +26,7 @@ def faktor(monkeypatch):
         assert arah == "input" and kode == f"kode-{int(D(str(rate)))}-in"
         return (11, 12) if D(str(rate)) == D("12") else (1, 1)
     monkeypatch.setattr("app.services.tax_factor.resolve_dpp_factor", resolve)
+    monkeypatch.setattr("app.services.bills_service.resolve_dpp_factor", resolve)  # _bill_line_tax (rumus tagihan manual)
 
 
 class Kon:

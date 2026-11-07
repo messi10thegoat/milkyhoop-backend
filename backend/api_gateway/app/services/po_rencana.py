@@ -53,11 +53,24 @@ def _f(v):
 
 
 # ---------------------------------------------------------------- hitung (create / patch / calculate)
-def hitung(items: list, discount_percent=0, discount_amount=0, tax_rate=0) -> dict:
-    """items: dict baris (bentuk PurchaseOrderItemCreate.model_dump()). -> {baris (Decimal), header (Decimal)}. SATU kalkulator create/patch.
-    Pratinjau (/calculate): tolak=False -- diskon berlebih jadi BLOK (PH.blok_diskon_baris) di pemanggil, bukan galat."""
-    baris = [PH.hitung_baris(i, tolak=False) for i in items]
-    return {"baris": baris, "header": PH.hitung_header(baris, discount_percent, discount_amount, tax_rate)}
+async def faktor_masukan(conn, tenant_id: str, tarif, cache=None) -> tuple:
+    """BUG-088: faktor DPP (num, den) pajak MASUKAN dari tarif -- SATU penentu PO + tagih-dari-PO (header & baris): kode masukan aktif bertarif
+    sama (kode_pajak_masukan) -> resolve_dpp_factor 'input'. PPN 12% nyawit/kaos = 11/12; tarif 0 = (1, 1)."""
+    from . import tax_factor as TF
+    if _d(tarif) <= NOL:
+        return (1, 1)
+    return await TF.resolve_dpp_factor(conn, tenant_id, await kode_pajak_masukan(conn, tenant_id, tarif), _d(tarif), "input", cache)
+
+
+async def hitung_po(conn, tenant_id: str, items: list, discount_percent=0, discount_amount=0, tax_rate=0, tolak: bool = False) -> dict:
+    """items: dict baris (bentuk PurchaseOrderItemCreate.model_dump() atau baris DB). -> {baris (Decimal), header (Decimal)}. SATU kalkulator
+    /calculate, create, PATCH, pratinjau ubah (BUG-088: + faktor DPP per tarif). tolak=False (pratinjau): diskon berlebih jadi BLOK
+    (PH.blok_diskon_baris) di pemanggil; tolak=True (penulis): GalatBerkode 400. Baris tanpa medan qty (baris DB) dipakai apa adanya."""
+    cache = {}
+    baris = [PH.hitung_baris(i, tolak=tolak, faktor=await faktor_masukan(conn, tenant_id, i.get("tax_rate"), cache)) if "quantity" in i else i
+             for i in items]
+    faktor = await faktor_masukan(conn, tenant_id, tax_rate, cache)
+    return {"baris": baris, "header": PH.hitung_header(baris, discount_percent, discount_amount, tax_rate, faktor=faktor)}
 
 
 def hitung_json(h: dict) -> dict:
@@ -110,13 +123,14 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
         if any(_d(r.get("quantity_received")) > NOL or _d(r.get("quantity_billed")) > NOL for r in lama):
             bloks.append(blok("PO_BARIS_SUDAH_DITERIMA", "Baris yang barangnya sudah diterima atau ditagih tidak bisa diganti."))
         bloks.extend(PH.blok_diskon_baris([i.model_dump() for i in body.items]))  # U-SI-LAW: kalimat == 400 penulis
-        baris_baru = [PH.hitung_baris(i.model_dump(), tolak=False) for i in body.items]
+        baris_baru = (await hitung_po(conn, tenant_id, [i.model_dump() for i in body.items]))["baris"]
     uang = baris_baru is not None or any(k in data for k in ("discount_percent", "discount_amount", "tax_rate"))
     header = None
     if uang:
-        dasar = baris_baru if baris_baru is not None else [dict(r) for r in lama]
-        header = PH.hitung_header(dasar, data.get("discount_percent", po.get("discount_percent")) or 0,
-                                  data.get("discount_amount", po.get("discount_amount")) or 0, data.get("tax_rate", po.get("tax_rate")) or 0)
+        dasar = baris_baru if baris_baru is not None else [{k: v for k, v in dict(r).items() if k != "quantity"} for r in lama]
+        header = (await hitung_po(conn, tenant_id, dasar, data.get("discount_percent", po.get("discount_percent")) or 0,
+                                  data.get("discount_amount", po.get("discount_amount")) or 0,
+                                  data.get("tax_rate", po.get("tax_rate")) or 0))["header"]
     perubahan = []
     for k, v in data.items():
         if k == "items":
@@ -336,9 +350,8 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
     tanpa GRN = dipesan - ditagih ("dipesan", perilaku lama). Pajak: kode masukan dari tarif baris (header 0) atau tarif header PO."""
     from decimal import ROUND_HALF_UP
     from . import grn_rencana as G
-    from .bills_service import BillCalculator
-    from .tax_factor import resolve_dpp_factor
-    bloks = []
+    from .bills_service import BillCalculator, _bill_line_tax
+    bloks, cache_faktor = [], {}
     if po["status"] not in STATUS_BISA_DITAGIH:
         bloks.append(blok("PO_TAK_BISA_DITAGIH", f"Pesanan pembelian berstatus '{po['status']}' tidak bisa dibuatkan tagihan."))
     kuncian = " FOR UPDATE" if kunci else ""
@@ -386,17 +399,18 @@ async def rencana_tagih(conn, po, items: Optional[list], kunci: bool = True) -> 
         disc_pct = _po_disc_pct(po_item, qty, unit_price)
         ic = BillCalculator.calculate_item_total(qty, unit_price, disc_pct)
         tax_rate = Decimal(str(po_item["tax_rate"] or 0))
-        item_tax = (float((Decimal(str(ic["subtotal"])) * tax_rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                    if tax_rate > 0 else 0)  # DPP = subtotal (cermin create_bill_v2)
         if tax_rate not in kode:
             kode[tax_rate] = await kode_pajak_masukan(conn, po["tenant_id"], tax_rate)
+        # BUG-088: faktor DPP kode lewat rumus tagihan manual (_bill_line_tax: DPP x faktor, 2dp, lalu pajak); dulu tarif x subtotal (12% penuh).
+        # Dasar TETAP subtotal bruto baris (perilaku lama); tagihan manual memakai neto sesudah diskon baris = TEMUAN TERPISAH (putusan MASTER).
+        _, item_tax = await _bill_line_tax(conn, po["tenant_id"], {"total": ic["subtotal"]}, kode[tax_rate], tax_rate, cache_faktor)
         lines.append({"po_item": po_item, "qty": qty, "unit_price": unit_price, "disc_pct": disc_pct, "ic": ic,
                       "tax_rate": float(po_item["tax_rate"] or 0), "tax": item_tax, "tax_code_id": kode[tax_rate], "batas": item["batas"]})
     # pajak header PO (baris tanpa pajak): ikut ke tagihan dengan kode masukan + faktor DPP-nya (dulu hilang diam)
     tarif_h = _d(po.get("tax_rate")) if not any(ln["tax"] for ln in lines) else NOL
     kode_h = await kode_pajak_masukan(conn, po["tenant_id"], tarif_h) if tarif_h > NOL else None
     if lines:
-        faktor = await resolve_dpp_factor(conn, po["tenant_id"], kode_h, tarif_h, "input") if tarif_h > NOL else (1, 1)
+        faktor = await faktor_masukan(conn, po["tenant_id"], tarif_h, cache_faktor)  # SATU penentu dgn PO (BUG-088)
         calc = BillCalculator.calculate(
             items=[{"qty": ln["qty"], "price": ln["unit_price"], "discount_percent": ln["disc_pct"]} for ln in lines],
             invoice_discount_percent=Decimal("0"), invoice_discount_amount=0.0, cash_discount_percent=Decimal("0"),

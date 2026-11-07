@@ -160,11 +160,11 @@ async def _simpan_baris(conn, po_id, baris: list):
         )
 
 
-async def _hitung_ulang_total(conn, po_id):
+async def _hitung_ulang_total(conn, po_id, tenant_id: str):
     """Total header dari baris DB + diskon/pajak header (trigger DB penimpa total sudah di-DROP, V435). Dipanggil sesudah SETIAP tulis baris/header."""
     po = await conn.fetchrow("SELECT discount_percent, discount_amount, tax_rate FROM purchase_orders WHERE id = $1", po_id)
     baris = await conn.fetch("SELECT subtotal, discount_amount, tax_amount FROM purchase_order_items WHERE po_id = $1", po_id)
-    t = PH.hitung_header([dict(b) for b in baris], po["discount_percent"], po["discount_amount"], po["tax_rate"])
+    t = (await PR.hitung_po(conn, tenant_id, [dict(b) for b in baris], po["discount_percent"], po["discount_amount"], po["tax_rate"]))["header"]
     await conn.execute(
         "UPDATE purchase_orders SET subtotal = $2, discount_amount = $3, tax_amount = $4, total_amount = $5, updated_at = NOW() WHERE id = $1",
         po_id, t["subtotal"], t["discount_amount"], t["tax_amount"], t["total_amount"])
@@ -757,8 +757,9 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
                     )
 
-                baris = [PH.hitung_baris(item.model_dump()) for item in body.items]
-                tot = PH.hitung_header(baris, body.discount_percent, body.discount_amount, body.tax_rate)
+                h = await PR.hitung_po(conn, ctx["tenant_id"], [item.model_dump() for item in body.items], body.discount_percent,
+                                       body.discount_amount, body.tax_rate, tolak=True)  # BUG-088: + faktor DPP
+                baris, tot = h["baris"], h["header"]
 
                 po_id = await conn.fetchval(
                     """
@@ -791,7 +792,7 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                 )
 
                 await _simpan_baris(conn, po_id, baris)
-                t = await _hitung_ulang_total(conn, po_id)  # sumber angka tersimpan = baris DB (satu jalur dgn patch)
+                t = await _hitung_ulang_total(conn, po_id, ctx["tenant_id"])  # sumber angka tersimpan = baris DB (satu jalur dgn patch)
 
                 logger.info(f"Purchase order created: {po_id}, number={po_number}")
 
@@ -859,7 +860,7 @@ async def update_purchase_order(
 
                 if "items" in update_data and update_data["items"]:
                     await conn.execute("DELETE FROM purchase_order_items WHERE po_id = $1", po_id)
-                    baris = [PH.hitung_baris(item.model_dump()) for item in body.items]
+                    baris = (await PR.hitung_po(conn, ctx["tenant_id"], [item.model_dump() for item in body.items], tolak=True))["baris"]
                     await _simpan_baris(conn, po_id, baris)
                     ubah_uang = True
                 update_data.pop("items", None)
@@ -883,7 +884,7 @@ async def update_purchase_order(
                     )
 
                 if ubah_uang:
-                    await _hitung_ulang_total(conn, po_id)
+                    await _hitung_ulang_total(conn, po_id, ctx["tenant_id"])
 
                 await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], _ad.nama("purchase_order", "updated"), ctx["user_id"],
                                     f"Pesanan pembelian {po['po_number']} diubah", meta={"fields": sorted(body.model_dump(exclude_unset=True))},
@@ -1446,8 +1447,9 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
     HALF_UP). Bentuk sejajar SO /calculate (per baris + header). vendor_id dicek milik tenant (blok, bukan galat). payload = badan create."""
     ctx = get_user_context(request)
     pool = await get_pool()
-    h = PR.hitung([i.model_dump() for i in body.items], body.discount_percent, body.discount_amount, body.tax_rate)
     async with pool.acquire() as conn:
+        h = await PR.hitung_po(conn, ctx["tenant_id"], [i.model_dump() for i in body.items], body.discount_percent, body.discount_amount,
+                               body.tax_rate)
         _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
         peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], body.vendor_id, h["header"]["tax_amount"])  # BUG-030-BE non-fatal
     bloks = list(bloks) + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create

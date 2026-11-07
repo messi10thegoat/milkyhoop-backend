@@ -18,5 +18,5 @@ def test_kode_sudah_menghitung_total_sendiri_sebelum_trigger_dibuang():
     import inspect, os
     os.environ.setdefault("OPENAI_API_KEY", "sk-boneka-unit-test-tanpa-jaringan")
     from app.routers import purchase_orders as PO
-    assert "_hitung_ulang_total(conn, po_id)" in inspect.getsource(PO.create_purchase_order)
-    assert "_hitung_ulang_total(conn, po_id)" in inspect.getsource(PO.update_purchase_order)
+    assert "_hitung_ulang_total(conn, po_id, ctx[\"tenant_id\"])" in inspect.getsource(PO.create_purchase_order)
+    assert "_hitung_ulang_total(conn, po_id, ctx[\"tenant_id\"])" in inspect.getsource(PO.update_purchase_order)

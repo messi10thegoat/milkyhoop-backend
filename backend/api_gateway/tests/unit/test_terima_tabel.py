@@ -203,10 +203,12 @@ async def test_pagar_posting_tagihan_batas_max_dipesan_diterima(monkeypatch, ini
 async def test_pajak_masukan_dari_tarif_baris_header_nol_dan_tarif_header_po(monkeypatch):
     async def bt(conn, tid, ids): return {str(i): _bt(D("10"), D("0"), False) for i in ids}
     monkeypatch.setattr(G, "batas_tagih", bt)
+
+    async def faktor(*a, **k): return (1, 1)
+    monkeypatch.setattr("app.services.bills_service.resolve_dpp_factor", faktor)  # BUG-088: pajak baris lewat _bill_line_tax (faktor kode)
     r = await PR.rencana_tagih(KonTagih([_poi(A, "10", "11")]), _po(), None, kunci=False)
     assert (r["lines"][0]["tax_code_id"], r["tax_rate"], r["tax_code_id"], r["bill_tax"]) == ("kode-11-in", 0.0, None, 11000.0)
 
-    async def faktor(*a, **k): return (1, 1)
     monkeypatch.setattr("app.services.tax_factor.resolve_dpp_factor", faktor)
     po = {**_po(), "tax_rate": D("11")}
     r = await PR.rencana_tagih(KonTagih([_poi(A, "10")]), po, None, kunci=False)
