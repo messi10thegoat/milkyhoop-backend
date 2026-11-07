@@ -68,3 +68,63 @@ def test_idempotensi_buat_opsional_sebelum_tulis():
     assert 'if kunci_penuh: await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "EXPENSE_CREATE"' in s  # replay benar-benar disimpan
     assert "if kunci_klien:" in s   # opsional (putusan MASTER 7 Nov; tiket wajibkan sesudah FE Biaya CW live)
     assert IDEM.SUMBER_BUAT["EXPENSE_CREATE"][0] == "expenses"
+
+
+class _Conn:
+    """Fake meniru asyncpg: jumlah argumen WAJIB == placeholder tertinggi (asyncpg menolak kelebihan/kurang)."""
+    def __init__(self):
+        self.kueri = []
+
+    def _cek(self, sql, a):
+        import re
+        n = max([int(x) for x in re.findall(r"\$(\d+)", sql)] or [0])
+        assert n == len(a), (n, len(a), sql[:120])
+        self.kueri.append(sql)
+
+    async def execute(self, sql, *a):
+        return None
+
+    async def fetchval(self, sql, *a):
+        self._cek(sql, a)
+        return 0
+
+    async def fetch(self, sql, *a):
+        self._cek(sql, a)
+        return []
+
+
+class _Acq:
+    def __init__(self, c):
+        self.c = c
+
+    async def __aenter__(self):
+        return self.c
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def test_daftar_per_kunci_argumen_sama_dengan_placeholder(monkeypatch):
+    import asyncio
+    from datetime import date
+    from starlette.requests import Request
+
+    async def pool():
+        class P:
+            def acquire(self):
+                return _Acq(c)
+        return P()
+
+    async def hari(conn, tid):
+        return date(2026, 11, 7)
+    monkeypatch.setattr(EX, "get_pool", pool)
+    monkeypatch.setattr(EX, "tanggal_dokumen", hari)
+    for k in (None,) + BD.SEMUA_KUNCI:
+        for cari in (None, "kopi susu"):
+            c = _Conn()
+            r = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+            r.state.user = {"tenant_id": "t1", "user_id": "00000000-0000-0000-0000-000000000001"}
+            h = asyncio.run(EX.list_expenses(r, skip=0, limit=5, status="all", vendor_id=None, account_id=None, date_from=None, date_to=None,
+                                             search=cari, sort_by="expense_date", sort_order="desc", is_billable=None, billing_status=None,
+                                             aksi=k, with_totals=True))
+            assert h["sum_total"] == 0.0 and len(c.kueri) == 3, (k, cari)

@@ -700,9 +700,11 @@ async def list_expenses(
                 conditions.append(cari[len(" AND "):])
                 params.extend(par_cari)
             if isinstance(aksi, str):  # Query() default = objek truthy saat dipanggil langsung
-                conditions.append(BD.sql_aksi(aksi, f"${param_idx}"))
-                params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
-                param_idx += 1
+                pred = BD.sql_aksi(aksi, f"${param_idx}")
+                conditions.append(pred)
+                if f"${param_idx}" in pred:  # hanya bulan_ini memakai tanggal bisnis (argumen lebih = InterfaceError asyncpg)
+                    params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
+                    param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
