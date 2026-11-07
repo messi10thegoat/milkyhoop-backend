@@ -126,6 +126,12 @@ class InvoicePaymentResponse(BaseModel):
 # =============================================================================
 
 
+class BayarTunai(BaseModel):
+    """BUG-046 penjualan tunai: faktur terbit + lunas di rekening ini dalam SATU transaksi (create_invoice)."""
+    bank_account_id: str
+    reference: Optional[str] = Field(None, max_length=100)
+
+
 class CreateInvoiceRequest(BaseModel):
     """Request body for creating a sales invoice (draft)."""
 
@@ -178,6 +184,9 @@ class CreateInvoiceRequest(BaseModel):
     #   'invoice'  -> recognize at post (auto-fulfill, parity with today)
     #   'delivery' -> defer; recognize at fulfillment (/fulfill)
     recognize_at: Optional[str] = None
+
+    # BUG-046: penjualan tunai satu langkah (wajib auto_post + customer_id; pengakuan 'invoice').
+    bayar_tunai: Optional[BayarTunai] = None
 
     # Rekening tujuan cetak (tiket MASTER). HANYA instruksi "bayar ke mana" di
     # PDF -- NOL dampak jurnal, dan sengaja TEKS bukan FK ke bank_accounts

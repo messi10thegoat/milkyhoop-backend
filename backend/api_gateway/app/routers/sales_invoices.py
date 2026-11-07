@@ -889,6 +889,14 @@ async def preview_journal(request: Request, body: dict = Body(...)):
                     "Status pembukuan bulan ini belum dapat diperiksa."
                 )
 
+        # BUG-046: penjualan tunai -> syarat SAMA dengan tulis; pengakuan dipaksa 'invoice'.
+        _bt = body.get("bayar_tunai") or None
+        if _bt:
+            _galat_bt = _tolak_bayar_tunai(_bt, body.get("auto_post", True), customer_id, body.get("recognize_at"))
+            if _galat_bt:
+                warnings.append(_galat_bt)
+            body["recognize_at"] = "invoice"
+
         # --- kebijakan pengakuan pendapatan EFEKTIF (urutan sama dgn posting) ---
         effective_policy = body.get("recognize_at")
         if not effective_policy:
@@ -1063,7 +1071,30 @@ async def preview_journal(request: Request, body: dict = Body(...)):
             lines.append({"account_name": inv_name, "account_code": inv_code,
                           "debit": 0, "credit": c, "event": "COGS"})
 
+        pembayaran = None
+        if _bt:
+            _total_bt = round(float(subtotal + tax_total + ship_amt), 2)
+            _rek = await _rekening_bayar_tunai(conn, ctx["tenant_id"], (_bt or {}).get("bank_account_id"))
+            if not _rek:
+                warnings.append("Rekening penerimaan tidak ditemukan.")
+            else:
+                _kas = await conn.fetchrow(
+                    "SELECT name, account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
+                    _rek["coa_id"], ctx["tenant_id"],
+                )
+                ar_name, ar_code = await _acct(AccountRole.AR_TRADE, "Piutang Usaha")
+                lines += [
+                    {"account_name": _kas["name"] if _kas else _rek["account_name"],
+                     "account_code": _kas["account_code"] if _kas else "",
+                     "debit": _total_bt, "credit": 0, "event": "PAYMENT"},
+                    {"account_name": ar_name, "account_code": ar_code,
+                     "debit": 0, "credit": _total_bt, "event": "PAYMENT"},
+                ]
+                pembayaran = {"bank_account_id": str(_rek["id"]),
+                              "bank_account_name": _rek["account_name"], "amount": _total_bt}
+
         return {
+            **({"pembayaran": pembayaran} if pembayaran else {}),
             "journal_lines": lines,
             "warnings": warnings,
             "total_cogs": round(float(total_cogs), 2) if cogs_will_post else 0,
@@ -3322,6 +3353,72 @@ async def _simpan_idem_buat(conn, ctx: dict, kunci_penuh, sidik, resp: dict, inv
     return resp
 
 
+def _tolak_bayar_tunai(bayar_tunai, auto_post, customer_id, recognize_at) -> Optional[str]:
+    """BUG-046: syarat penjualan tunai -- satu tempat untuk tulis (400) DAN pratinjau (peringatan)."""
+    if not bayar_tunai:
+        return None
+    if not auto_post:
+        return "Bayar tunai butuh faktur yang langsung diterbitkan."
+    if not customer_id:
+        return "Pilih pelanggan dulu (untuk pembeli eceran: Pelanggan Umum)."
+    if recognize_at == "delivery":
+        return "Penjualan tunai diakui saat faktur, tidak bisa saat dikirim."
+    return None
+
+
+async def _rekening_bayar_tunai(conn, tid: str, bank_account_id: str):
+    """BUG-046: rekening penerimaan milik tenant & aktif (Law 24/27: CoA dari bank_accounts.coa_id)."""
+    try:
+        bid = UUID(str(bank_account_id))
+    except (ValueError, TypeError):
+        return None
+    return await conn.fetchrow(
+        "SELECT id, coa_id, account_name FROM bank_accounts WHERE id = $1 AND tenant_id = $2 AND is_active",
+        bid, tid,
+    )
+
+
+async def _bayar_tunai_faktur(conn, ctx: dict, invoice_id, body) -> dict:
+    """BUG-046: pelunasan faktur yang BARU terbit, di transaksi PEMANGGIL (create_invoice). Inti = buat_penerimaan
+    (SAMA dengan record_payment / POST /receive-payments): jurnal DRAFT->POSTED, alokasi, cermin bank, cache.
+    Jumlah = sisa compute_ar_outstanding (turunan jurnal, Law 16/29). Galat -> HTTPException -> seluruh transaksi batal."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"INVOICE_PAYMENT:{invoice_id}")
+    rek = await _rekening_bayar_tunai(conn, ctx["tenant_id"], body.bayar_tunai.bank_account_id)
+    if not rek:
+        raise HTTPException(status_code=400, detail="Rekening penerimaan tidak ditemukan.")
+    from .receive_payments import buat_penerimaan, get_invoice_remaining_from_journal
+    from ..schemas.receive_payments import CreateReceivePaymentRequest
+    sisa = Decimal(str(await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id) or 0))
+    if sisa <= 0:
+        raise HTTPException(status_code=400, detail="Faktur tidak punya sisa tagihan untuk dibayar.")
+    inti = await buat_penerimaan(conn, ctx, CreateReceivePaymentRequest(
+        customer_id=str(body.customer_id),
+        customer_name=body.customer_name,
+        payment_date=body.invoice_date,
+        payment_method=None,  # turunkan dari jenis akun (#29)
+        bank_account_id=str(rek["id"]),
+        bank_account_name=rek["account_name"],
+        total_amount=sisa,
+        allocations=[{"invoice_id": str(invoice_id), "amount_applied": sisa}],
+        reference_number=body.bayar_tunai.reference,
+        save_as_draft=False,
+    ))
+    rp_id = UUID(inti["data"]["id"])
+    rp = await conn.fetchrow(
+        "SELECT journal_id, journal_number, payment_number FROM receive_payments WHERE id = $1 AND tenant_id = $2",
+        rp_id, ctx["tenant_id"],
+    )
+    return {
+        "id": str(rp_id),
+        "payment_number": rp["payment_number"],
+        "journal_id": str(rp["journal_id"]) if rp["journal_id"] else None,
+        "journal_number": rp["journal_number"],
+        "amount": float(sisa),
+        "bank_account_id": str(rek["id"]),
+        "bank_account_name": rek["account_name"],
+    }
+
+
 @router.post("", response_model=InvoiceResponse, status_code=201)
 async def create_invoice(request: Request, body: CreateInvoiceRequest, response: _Response = None):
     """Create a new sales invoice as draft (atau langsung posted bila auto_post).
@@ -3336,6 +3433,11 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
             _kunci_klien = kunci_idempotensi_klien(request)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        _galat_bt = _tolak_bayar_tunai(body.bayar_tunai, body.auto_post, body.customer_id, body.recognize_at)
+        if _galat_bt:
+            raise HTTPException(status_code=400, detail=_galat_bt)
+        if body.bayar_tunai:
+            body.recognize_at = "invoice"  # barang diserahkan di tempat (BUG-046)
         pool = await get_pool()
 
         # Fase C1.1: fail-loud if any tenant lacks required role mapping
@@ -3684,11 +3786,21 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         total_amount,
                     )
 
+                    pembayaran = None
+                    status_akhir = "posted"
+                    if body.bayar_tunai:
+                        pembayaran = await _bayar_tunai_faktur(conn, ctx, invoice_id, body)
+                        status_akhir = await conn.fetchval(
+                            "SELECT status FROM sales_invoices WHERE id = $1 AND tenant_id = $2",
+                            invoice_id, ctx["tenant_id"],
+                        )
+
                     return await _simpan_idem_buat(conn, ctx, _kunci_penuh, _sidik, {
                         "success": True,
-                        "message": "Faktur dibuat dan diterbitkan",
+                        "message": "Faktur dibuat, diterbitkan, dan dibayar" if pembayaran else "Faktur dibuat dan diterbitkan",
                         "data": {
-                            "status": "posted",
+                            **({"pembayaran": pembayaran} if pembayaran else {}),
+                            "status": status_akhir,
                             "id": str(invoice_id),
                             "invoice_number": invoice_number,
                             "total_amount": total_amount,
