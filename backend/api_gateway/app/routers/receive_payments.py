@@ -1643,6 +1643,14 @@ async def _perkiraan_nomor_ovp(conn, tid: str) -> str:
     return f"OVP-{bl['yymm']}-{((last or 0) + 1):04d}"
 
 
+async def nomor_rcv_pratinjau(conn, tid: str) -> str:
+    """Nomor RCV berikut TANPA menaikkan penghitung -- rumus SAMA dgn fungsi DB generate_receive_payment_number (V483, BUG-098):
+    RCV-YYMM-NNNN, penghitung per bulan tanggal bisnis tenant (receive_payment_sequences.year_month)."""
+    yymm, ym = await conn.fetchrow("SELECT to_char(t, 'YYMM'), to_char(t, 'YYYY-MM') FROM tanggal_bisnis($1) t", tid)
+    sq = await conn.fetchrow("SELECT last_number, year_month FROM receive_payment_sequences WHERE tenant_id = $1", tid)
+    return f"RCV-{yymm}-{((sq['last_number'] + 1) if (sq and sq['year_month'] == ym) else 1):04d}"
+
+
 async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentRequest) -> dict:
     """U-P4b-1 (2 Nov 2026, disetujui MASTER) -- penentu BUAT penerimaan BACA SAJA (tanpa kunci, tanpa tulis): pemeriksaan
     YANG SAMA dengan buat_penerimaan (_periksa_penerimaan kunci=False; galat pertama -> blok, kalimat sama), baris jurnal posting
@@ -1662,10 +1670,7 @@ async def rencana_penerimaan_ro(conn, ctx: dict, body: CreateReceivePaymentReque
                                 "message": d if isinstance(d, str) else (d.get("message") if isinstance(d, dict) else str(d))})
         return hasil
     hasil["cek"], hasil["payment_method"] = cek, cek["metode"]
-    th = await conn.fetchval("SELECT EXTRACT(YEAR FROM tanggal_bisnis($1))::int", tid)
-    sq = await conn.fetchrow("SELECT last_number, year FROM receive_payment_sequences WHERE tenant_id = $1", tid)
-    nomor = f"RCV-{th}-{((sq['last_number'] + 1) if (sq and sq['year'] == th) else 1):04d}"  # rumus SAMA dengan fungsi DB penomoran RCV (penghitung tabel, dibaca)
-    hasil["payment_number"] = nomor
+    hasil["payment_number"] = await nomor_rcv_pratinjau(conn, tid)
     hasil["invoices"] = _faktur_sesudah_penerimaan(cek["validated_allocations"], body.save_as_draft)
     if body.save_as_draft:
         return hasil  # draf: nol jurnal / bank / uang muka

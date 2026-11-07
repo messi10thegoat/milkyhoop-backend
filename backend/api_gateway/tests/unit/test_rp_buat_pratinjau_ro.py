@@ -2,6 +2,7 @@
 pratinjau terima pembayaran SI/SO). Pemeriksaan = _periksa_penerimaan (dipindah utuh dari buat_penerimaan, FOR UPDATE hanya
 kunci=True); baris jurnal = fungsi MURNI yang dipakai _post_payment (teks SQL INSERT persis seperti sebelum ekstraksi)."""
 import inspect
+import pathlib
 from decimal import Decimal
 
 from app.routers import receive_payments as RP
@@ -58,7 +59,12 @@ def test_pratinjau_baca_saja_tanpa_kunci_tanpa_penulis():
 
 def test_nomor_perkiraan_rumus_sama_dengan_generator():
     r = inspect.getsource(RP.rencana_penerimaan_ro)
-    assert "(sq['last_number'] + 1) if (sq and sq['year'] == th) else 1" in r and 'f"RCV-{th}-' in r
+    assert "await nomor_rcv_pratinjau(conn, tid)" in r
+    # BUG-098 (V483): RCV-YYMM-NNNN, penghitung per bulan -- cermin Python == fungsi DB di berkas migrasi
+    n = inspect.getsource(RP.nomor_rcv_pratinjau)
+    assert "(sq['last_number'] + 1) if (sq and sq['year_month'] == ym) else 1" in n and 'f"RCV-{yymm}-' in n
+    mig = (pathlib.Path(__file__).resolve().parents[3] / "migrations" / "V483__nomor_rcv_yymm_bulanan.sql").read_text()
+    assert "WHEN receive_payment_sequences.year_month = v_ym" in mig and "'RCV-' || TO_CHAR(v_tgl, 'YYMM')" in mig
     # U-P4b-2: rumus OVP pindah ke helper SATU sumber (pratinjau buat + pratinjau posting draf)
     assert "await _perkiraan_nomor_ovp(conn, tid)" in r
     assert "OVP-{bl['yymm']}-{((last or 0) + 1):04d}" in inspect.getsource(RP._perkiraan_nomor_ovp)
