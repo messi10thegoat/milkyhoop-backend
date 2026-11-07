@@ -44,15 +44,24 @@ async def asal_retur(conn, tid: str, bill_id, product_id, nd_id) -> Optional[dic
     sudah = Decimal(str(await conn.fetchval(
         """SELECT COALESCE(SUM(il.quantity_out), 0) - COALESCE(SUM(il.quantity_in), 0) FROM inventory_ledger il
            JOIN vendor_credits v ON v.id = il.source_id AND v.tenant_id = il.tenant_id
-           WHERE il.tenant_id = $1 AND il.source_type IN ('VENDOR_CREDIT', 'VENDOR_CREDIT_VOID') AND v.original_bill_id = $2
+           WHERE il.tenant_id = $1 AND il.source_type IN ('VENDOR_CREDIT', 'VENDOR_CREDIT_VOID') AND COALESCE(v.return_bill_id, v.original_bill_id) = $2
              AND il.product_id = $3 AND ($4::uuid IS NULL OR v.id <> $4::uuid)""", tid, bill_id, product_id, nd_id) or 0))
     return {"gudang": gudang, "masuk": masuk, "sudah_retur": sudah, "sisa": masuk - sudah}
 
 
+def sumber_retur(vc) -> tuple:
+    """BUG-069 (V485): faktur SUMBER retur = return_bill_id (retur dari faktur LUNAS, tanpa atribusi hutang) atau original_bill_id."""
+    g = vc.get if hasattr(vc, "get") else (lambda k: None)
+    if g("return_bill_id"):
+        return g("return_bill_id"), g("return_bill_number")
+    return g("original_bill_id"), g("original_bill_number")
+
+
 async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
     """Per baris barang dilacak: {item_row_id, product_id, nama, qty, gudang_id, gudang}. Blok lewat bl.galat (penulis: dilempar pertama)."""
-    if kunci and vc["original_bill_id"]:
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ND_RETUR_TAGIHAN:{vc['original_bill_id']}")
+    asal_id, asal_no = sumber_retur(vc)   # BUG-069: sumber retur, bukan atribusi hutang
+    if kunci and asal_id:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ND_RETUR_TAGIHAN:{asal_id}")
     bawaan = await conn.fetchval(  # == bills_service: FPB memasukkan stok ke gudang is_default
         "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1", tid)
     keluar, butuh, asal_cache = [], {}, {}
@@ -71,12 +80,12 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
             bl.galat(h_sd["blok"]["code"], h_sd["blok"]["status"], h_sd["blok"]["message"])
             continue
         qty = h_sd["qty_dasar"]
-        if vc["original_bill_id"]:
+        if asal_id:
             if p["id"] not in asal_cache:
-                asal_cache[p["id"]] = await asal_retur(conn, tid, vc["original_bill_id"], p["id"], vc.get("id"))
+                asal_cache[p["id"]] = await asal_retur(conn, tid, asal_id, p["id"], vc.get("id"))
             asal = asal_cache[p["id"]]
             if asal is None:
-                bl.galat("ND_BARANG_BELUM_MASUK", 400, tg.nd_barang_belum_masuk(nama, vc["original_bill_number"]))
+                bl.galat("ND_BARANG_BELUM_MASUK", 400, tg.nd_barang_belum_masuk(nama, asal_no))
                 continue
             gudang = asal["gudang"]
         else:
@@ -117,7 +126,7 @@ async def catatan_sudah_diretur(conn, tid: str, bill_id, baris_tagihan) -> list:
     nd = await conn.fetch(
         """SELECT v.credit_number, v.status, i.item_id, i.quantity, i.unit FROM vendor_credits v
            JOIN vendor_credit_items i ON i.vendor_credit_id = v.id
-           WHERE v.tenant_id = $1 AND v.original_bill_id = $2 AND v.status <> 'void' AND i.item_id IS NOT NULL
+           WHERE v.tenant_id = $1 AND COALESCE(v.return_bill_id, v.original_bill_id) = $2 AND v.status <> 'void' AND i.item_id IS NOT NULL
            ORDER BY v.credit_number""", tid, bill_id)
     if not nd:
         return []
