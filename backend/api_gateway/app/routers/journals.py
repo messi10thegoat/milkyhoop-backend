@@ -13,6 +13,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..services import teks_galat as tg
+from ..services import kasbank_tulis as KT
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.journals import (
     CreateJournalRequest,
@@ -466,6 +467,8 @@ async def create_journal(request: Request, body: CreateJournalRequest):
 
                 # Law 20: If intended status is POSTED, update after lines (triggers hash chain)
                 if initial_status == "POSTED":
+                    # K2 kas-negatif: jurnal MANUAL yang mengkredit rekening KAS tak boleh membuatnya minus (koreksi = hitung fisik)
+                    await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [(UUID(ln.account_id), ln.debit, ln.credit) for ln in body.lines])
                     await conn.execute(
                         "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
                         journal_id,
@@ -545,6 +548,9 @@ async def post_journal(request: Request, journal_id: UUID):
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"MANUAL_POST:{str(journal_id)}",
                 )
+                if journal["source_type"] == "MANUAL":  # K2 kas-negatif: sama dgn jalur buat-langsung-posting
+                    await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [tuple(b) for b in await conn.fetch(
+                        "SELECT account_id, debit, credit FROM journal_lines WHERE journal_id = $1", journal_id)])
 
                 # Post journal
                 await conn.execute(

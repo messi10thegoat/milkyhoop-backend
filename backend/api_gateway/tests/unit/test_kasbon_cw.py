@@ -115,6 +115,9 @@ class _C:
             return {"id": EMP, "name": "Suryani"} if self.emp_ada else None
         if "FROM bank_accounts WHERE coa_id" in s:
             return {"id": BA, "account_name": "BCA Pengeluaran"} if a[0] == BANK_COA else None
+        if "FROM bank_accounts ba WHERE ba.coa_id = $1" in s:  # K2 kas-negatif (kasbank_tulis.SQL_AKUN_COA): rekening BANK -> tak diblok
+            return {"id": BA, "account_name": "BCA Pengeluaran", "account_type": "bank", "coa_id": BANK_COA, "is_active": True,
+                    "saldo": Decimal("0")} if a[0] == BANK_COA else None
         if "FROM employee_advances a" in s:  # _muat_kasbon
             return {"id": ADV, "advance_number": "KSB-2609-0001", "employee_id": EMP, "employee_name": "Suryani",
                     "principal": Decimal("500000"), "granted_date": date(2026, 9, 1), "status": self.status,

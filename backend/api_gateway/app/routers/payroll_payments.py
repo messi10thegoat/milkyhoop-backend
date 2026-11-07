@@ -8,6 +8,7 @@ import logging
 import asyncpg
 
 from ..services import teks_galat as tg
+from ..services import kasbank_tulis as KT
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pay_group_access import run_dalam_cakupan
 from ..schemas.payroll import CreatePayrollPaymentRequest, VoidPayrollRequest
@@ -248,6 +249,10 @@ async def post_payment(request: Request, payment_id: UUID):
             if ptype != "salary":
                 bank_coa = await _bank_coa(payment["bank_account_id"])
                 credit_accounts.append((bank_coa, total_debit, f"Pembayaran {ptype}"))
+
+            # K2 kas-negatif (pemilik: kas minus DITOLAK -> hitung fisik): kaki kas dicek dgn aturan SATU kasbank_tulis; kunci per CoA kas
+            # DULU, baru saldo dibaca. Kaki bank tak diblok (bukan tipe kas).
+            await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [(c, 0, a) for c, a, _ in credit_accounts])
 
             # Create journal (DRAFT -> lines -> POSTED)
             journal_number = f"JV-PP-{ptype.upper()}-{payment_id.hex[:8]}"

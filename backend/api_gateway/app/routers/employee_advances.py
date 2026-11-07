@@ -30,6 +30,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..services import teks_galat as tg
+from ..services import kasbank_tulis as KT
+from ..services.galat_berkode import GalatBerkode
 from ..services.nama_pengguna import nama_untuk
 from ..utils.tanggal_tenant import tanggal_dokumen, zona_tenant
 from ..services.bank_sync import create_bank_transaction_for_journal, create_reversal_bank_transaction
@@ -124,8 +126,8 @@ async def _saring_pay_group(conn, ctx, alias_emp: str, params: list) -> Optional
 # GRANT — satu definisi (rencana + penulis), dipakai POST "" dan POST /preview
 # =============================================================================
 
-async def _rencana_kasbon(conn, ctx, body: GrantAdvanceRequest) -> dict:
-    """SEMUA penghalang grant (urutan = urutan galat rute lama). Nol tulisan."""
+async def _rencana_kasbon(conn, ctx, body: GrantAdvanceRequest, pratinjau: bool = False) -> dict:
+    """SEMUA penghalang grant (urutan = urutan galat rute lama). Nol tulisan. Tulis (pratinjau=False) = kunci kas K2 diambil di sini."""
     tid = ctx["tenant_id"]
     blocks = []
     principal = body.principal.quantize(_SEN, rounding=ROUND_HALF_UP)
@@ -169,6 +171,9 @@ async def _rencana_kasbon(conn, ctx, body: GrantAdvanceRequest) -> dict:
         await check_period_is_open(conn, tid, body.granted_date)  # Law 5 (dulu hanya trigger DB -> 500)
     except HTTPException as e:
         blocks.append(_blok("PERIOD_CLOSED", e.status_code, str(e.detail), e.detail))
+    if src and not body.opening_balance:  # K2 kas-negatif (pemilik: kas minus DITOLAK -> hitung fisik); tulis = kunci per CoA kas DULU
+        for b in await KT.tolak_kas_minus_coa(conn, tid, src["id"], principal, KT.Blok(True), kunci=not pratinjau):
+            blocks.append(_blok(b["code"], b["status"], b["message"]))
     rek = None
     if src and not body.opening_balance:
         rek = await conn.fetchrow(
@@ -287,6 +292,8 @@ async def grant_advance(request: Request, body: GrantAdvanceRequest):
             r = await _rencana_kasbon(conn, ctx, body)
             if r["blocks"]:
                 b = r["blocks"][0]
+                if b["code"] == "KAS_MINUS":  # bentuk galat SAMA dgn jalur kas keluar K1 ({detail, code, message})
+                    raise GalatBerkode(b["status"], b["code"], b["message"])
                 raise HTTPException(status_code=b["status"], detail=b["detail"])
             hasil = await _tulis_kasbon(conn, ctx, body, r)
             if kunci_penuh:
@@ -309,7 +316,7 @@ async def preview_grant_advance(request: Request, body: GrantAdvanceRequest):
         tr = conn.transaction()
         await tr.start()
         try:
-            r = await _rencana_kasbon(conn, ctx, body)
+            r = await _rencana_kasbon(conn, ctx, body, pratinjau=True)
             if not r["blocks"]:
                 try:
                     async with conn.transaction():  # savepoint

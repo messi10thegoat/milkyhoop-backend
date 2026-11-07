@@ -81,6 +81,9 @@ class _C:
             return {"id": EMP, "name": "Suryani"}
         if "FROM bank_accounts WHERE coa_id" in q:
             return {"id": BA} if a[0] == BANK_COA else None
+        if "FROM bank_accounts ba WHERE ba.coa_id = $1" in q:  # K2 kas-negatif (kasbank_tulis.SQL_AKUN_COA): rekening BANK -> tak diblok
+            return {"id": BA, "account_name": "BCA", "account_type": "bank", "coa_id": BANK_COA, "is_active": True,
+                    "saldo": Decimal("0")} if a[0] == BANK_COA else None
         if "FROM employee_advances" in q:
             return {"id": ADV, "employee_id": EMP, "principal": Decimal("500000.00"), "status": "active",
                     "grant_journal_id": GRANT_J, "source_account_id": self.sumber, "granted_date": date(2026, 9, 1),

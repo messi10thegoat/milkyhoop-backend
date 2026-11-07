@@ -19,6 +19,7 @@ import uuid as uuid_module
 import asyncpg
 from fastapi import Depends, APIRouter, HTTPException, Query, Request
 from ..services import teks_galat as tg
+from ..services import kasbank_tulis as KT
 from ..services.fitur_parkir import fitur_belum_tersedia
 
 from ..schemas.fixed_assets import (
@@ -756,6 +757,8 @@ async def activate_fixed_asset(
 
             # Law 5: Period check
             await check_period_is_open(conn, ctx["tenant_id"], fa["purchase_date"])
+            # K2 kas-negatif: dibayar dari rekening KAS -> saldo tak boleh minus (aturan SATU kasbank_tulis; kunci per CoA kas DULU)
+            await KT.tolak_kas_minus_coa(conn, ctx["tenant_id"], data.payment_account_id, Decimal(str(fa["purchase_price"])))
 
             # Generate journal number
             seq = await conn.fetchrow(
