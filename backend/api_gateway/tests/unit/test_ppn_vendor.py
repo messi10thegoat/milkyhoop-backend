@@ -63,6 +63,16 @@ def test_rute_po_calculate_vendor_bukan_pkp_peringatan_ok_tetap_true(monkeypatch
                 return {"id": V, "name": "CV Mitra Pangan Sulut"}
             raise AssertionError(sql[:80])
 
+        async def fetchval(self, sql, *a):  # BUG-088: /calculate menyelesaikan faktor DPP (kode masukan 11% = DPP penuh)
+            if "FROM tax_codes" in sql and "direction = 'input'" in sql:
+                return None
+            raise AssertionError(sql[:80])
+
+        async def fetch(self, sql, *a):
+            if "FROM tax_codes" in sql:
+                return [{"dpp_factor_num": 1, "dpp_factor_den": 1}]
+            raise AssertionError(sql[:80])
+
     class _P:
         def acquire(self):
             class _A:
