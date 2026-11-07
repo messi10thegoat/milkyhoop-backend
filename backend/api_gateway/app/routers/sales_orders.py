@@ -2456,6 +2456,28 @@ def _so_uuid_faktur(order_id):
         raise HTTPException(status_code=404, detail=SO_TIDAK_ADA)
 
 
+def qty_tagih_bawaan(sisa: Decimal, terkirim_belum_ditagih: Decimal) -> Decimal:
+    """BUG-109: bawaan qty faktur dari SO per baris = MIN(terkirim belum ditagih, sisa) bila ada; tanpa -> sisa (faktur-dulu)."""
+    return min(terkirim_belum_ditagih, sisa) if terkirim_belum_ditagih > 0 else sisa
+
+
+async def _terkirim_belum_ditagih(conn, tenant_id: str, so_id) -> dict:
+    """BUG-109: {soi_id: Decimal} qty terkirim lewat SJ-so yang BELUM ditagih = terkirim - sudah ditautkan ke faktur terbit
+    (sj_faktur_alokasi) - qty baris faktur DRAF pesanan ini (draf menaut saat terbit). Hanya nilai > 0."""
+    from ..services import sj_so as _SJ
+    out = {}
+    for r in await conn.fetch(_SJ.SQL_SJ_SO_PER_BARIS, tenant_id, so_id):
+        out[r["soi_id"]] = Decimal(str(r["s"])) - Decimal(str(r["alok"]))
+    for r in await conn.fetch(
+            """SELECT sii.sales_order_item_id AS soi_id, SUM(sii.quantity) AS q FROM sales_invoices si
+               JOIN sales_invoice_items sii ON sii.invoice_id = si.id
+               WHERE si.tenant_id = $1 AND si.sales_order_id = $2 AND si.status = 'draft' AND sii.sales_order_item_id IS NOT NULL
+               GROUP BY 1""", tenant_id, so_id):
+        if r["soi_id"] in out:
+            out[r["soi_id"]] -= Decimal(str(r["q"]))
+    return {k: v for k, v in out.items() if v > 0}
+
+
 async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
     """Inti to-invoice (validasi + kalkulator + INSERT faktur DRAF + qty tertagih SO), di transaksi PEMANGGIL.
     SATU-SATUNYA definisi: dipakai POST /to-invoice DAN /to-invoice/preview (yang selalu ROLLBACK) — pratinjau
@@ -2477,6 +2499,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
             detail=tg.tak_bisa_status("so", order["status"], "ditagih"),
         )
 
+    catatan_tagih = []   # BUG-109: catatan pratinjau bila bawaan dibatasi qty terkirim
     # Get items to invoice
     if body and body.items:
         # Partial invoice with specific quantities
@@ -2497,10 +2520,8 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
                     detail="Baris pesanan yang ditagih tidak ditemukan.",
                 )
 
-            remaining = float(soi["quantity"]) - float(
-                soi["quantity_invoiced"]
-            )
-            qty = remaining if qty_minta is None else qty_minta
+            remaining = Decimal(str(soi["quantity"])) - Decimal(str(soi["quantity_invoiced"]))
+            qty = remaining if qty_minta is None else Decimal(str(qty_minta))
 
             if qty > remaining:
                 raise HTTPException(
@@ -2510,22 +2531,27 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
 
             items_to_invoice.append({**dict(soi), "invoice_qty": qty})
     else:
-        # Invoice all uninvoiced quantities
+        # BUG-109 (pola NetSuite "bill fulfilled"): bawaan per baris = qty TERKIRIM lewat Surat Jalan tanpa faktur yang BELUM ditagih
+        # (SJ-so terkirim - sudah ditautkan - qty di faktur DRAF pesanan ini; satuan = satuan baris SO), dibatasi sisa belum ditagih.
+        # Tanpa SJ belum ditagih -> sisa belum ditagih (alur faktur-dulu + kirim otomatis saat terbit tetap). Decimal (Law 25).
         all_items = await conn.fetch(
             """
             SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced
         """,
             _so_uuid_faktur(order_id),
         )
-
-        items_to_invoice = [
-            {
-                **dict(i),
-                "invoice_qty": float(i["quantity"])
-                - float(i["quantity_invoiced"]),
-            }
-            for i in all_items
-        ]
+        tagih_sj = await _terkirim_belum_ditagih(conn, ctx["tenant_id"], _so_uuid_faktur(order_id))
+        items_to_invoice = []
+        for i in all_items:
+            sisa = Decimal(str(i["quantity"])) - Decimal(str(i["quantity_invoiced"]))
+            sj = tagih_sj.get(i["id"], Decimal("0"))
+            q = qty_tagih_bawaan(sisa, sj)
+            items_to_invoice.append({**dict(i), "invoice_qty": q})
+            if q < sisa:
+                sat = f" {i['unit']}" if i["unit"] else ""
+                catatan_tagih.append({"code": "TAGIH_SESUAI_KIRIM", "message": (
+                    f"{i['description']}: bawaan {tg.qty(q)}{sat} yang sudah dikirim; sisa {tg.qty(sisa - q)}{sat} belum dikirim "
+                    "bisa ditagih bila diketik.")})
 
     if not items_to_invoice:
         raise HTTPException(status_code=400, detail="Tidak ada barang yang bisa ditagih.")
@@ -2734,6 +2760,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
     return {
         "invoice_id": invoice_id, "invoice_number": invoice_number, "order_number": order["order_number"],
         "invoice_date": invoice_date, "due_date": due_date, "due_date_source": due_date_source, "total": total,
+        "catatan": catatan_tagih,
     }
 
 
@@ -2923,6 +2950,7 @@ async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
         "posted": h["posted"],
         "deposit_plan": [{**r, "amount": _f(r["amount"])} for r in rencana],
         "remaining_after_dp": _f(Decimal(str(inv["total_amount"])) - dp),
+        "notes": h.get("catatan", []),   # BUG-109: [{code, message}] dari server (bawaan = qty terkirim)
     }
 
 

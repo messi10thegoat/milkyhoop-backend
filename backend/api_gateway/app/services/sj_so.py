@@ -518,15 +518,13 @@ async def void(conn, ctx: dict, fid, alasan: str) -> dict:
 # ----------------------------------------------------------------------------
 # Alokasi saat faktur diposting (dipanggil sales_invoices di transaksi posting) & pelepasan/pembalik saat void faktur
 # ----------------------------------------------------------------------------
-async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> dict:
-    """Tautkan sisa SJ-so ke baris faktur bertautan baris SO yang sama, TERTUA-DULU (INSERT-only ke sj_faktur_alokasi), lalu naikkan
-    `sales_invoice_items.fulfilled_qty`. BER-STOK: jurnal reklas Dr HPP / Cr Barang Terkirim pada snapshot SJ + INVOICE_REVENUE
-    untuk qty teralokasi, `recognized_amount` naik. Non-stok: hanya tautan + fulfilled_qty (pendapatan sudah diakui saat posting).
-    Tanpa SJ-so -> nol efek. -> {"qty": Decimal total, "stok_qty": Decimal, "nilai_hpp": Decimal, "pendapatan": Decimal}."""
-    hasil = {"qty": _NOL, "stok_qty": _NOL, "nilai_hpp": _NOL, "pendapatan": _NOL}
+async def _rencana_alokasi(conn, tenant_id: str, invoice_id, kunci: bool = True) -> tuple:
+    """SATU penentu alokasi SJ-so -> baris faktur (TERTUA-DULU), dipakai alokasikan_saat_faktur (kunci=True: FOR UPDATE baris SJ) DAN
+    teks posisi draf BUG-109 (kunci=False: baca saja, tanpa tulis). -> (inv, [(item, chunks[(ifi_id, qty, biaya, nomor_sj)], qty, biaya,
+    pendapatan)]); (None, []) bila tenant tanpa SJ-so."""
     if not await conn.fetchval(
             "SELECT 1 FROM invoice_fulfillments WHERE tenant_id = $1 AND asal = 'so' AND status <> 'voided' LIMIT 1", tenant_id):
-        return hasil
+        return None, []
     inv = await conn.fetchrow(
         "SELECT invoice_number, invoice_date, customer_name FROM sales_invoices WHERE id = $1 AND tenant_id = $2", invoice_id, tenant_id)
     items = await conn.fetch(
@@ -545,7 +543,7 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
         if butuh <= _NOL:
             continue
         sisa_sj = await conn.fetch(
-            """SELECT i.id, i.quantity, i.unit_cost, i.total_cost,
+            """SELECT i.id, i.quantity, i.unit_cost, i.total_cost, f.fulfillment_number,
                       i.quantity - COALESCE((SELECT SUM(a.quantity) FROM sj_faktur_alokasi a
                                              WHERE a.fulfillment_item_id = i.id AND a.voided_at IS NULL), 0) AS sisa,
                       COALESCE((SELECT SUM(a.total_cost) FROM sj_faktur_alokasi a
@@ -554,7 +552,7 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
                JOIN invoice_fulfillments f ON f.id = i.fulfillment_id AND f.tenant_id = $1 AND f.asal = 'so'
                     AND f.status <> 'voided' AND f.voided_at IS NULL
                WHERE i.sales_order_item_id = $2
-               ORDER BY f.fulfillment_date, f.created_at, i.id FOR UPDATE OF i""", tenant_id, it["sales_order_item_id"])
+               ORDER BY f.fulfillment_date, f.created_at, i.id""" + (" FOR UPDATE OF i" if kunci else ""), tenant_id, it["sales_order_item_id"])
         chunks, ambil_total, biaya_total, sisa_butuh = [], _NOL, _NOL, butuh
         for s in sisa_sj:
             sisa = Decimal(str(s["sisa"]))
@@ -567,7 +565,7 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
                     else _r2(Decimal(str(s["unit_cost"])) * ambil)
             else:
                 biaya = _NOL
-            chunks.append((s["id"], ambil, biaya))
+            chunks.append((s["id"], ambil, biaya, s["fulfillment_number"]))
             sisa_butuh -= ambil
             ambil_total += ambil
             biaya_total += biaya
@@ -583,6 +581,19 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
             if pendapatan < _NOL:
                 pendapatan = _NOL
         rencana_alok.append((it, chunks, ambil_total, biaya_total, pendapatan))
+
+    return inv, rencana_alok
+
+
+async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> dict:
+    """Tautkan sisa SJ-so ke baris faktur bertautan baris SO yang sama, TERTUA-DULU (INSERT-only ke sj_faktur_alokasi), lalu naikkan
+    `sales_invoice_items.fulfilled_qty`. BER-STOK: jurnal reklas Dr HPP / Cr Barang Terkirim pada snapshot SJ + INVOICE_REVENUE
+    untuk qty teralokasi, `recognized_amount` naik. Non-stok: hanya tautan + fulfilled_qty (pendapatan sudah diakui saat posting).
+    Tanpa SJ-so -> nol efek. -> {"qty": Decimal total, "stok_qty": Decimal, "nilai_hpp": Decimal, "pendapatan": Decimal}."""
+    hasil = {"qty": _NOL, "stok_qty": _NOL, "nilai_hpp": _NOL, "pendapatan": _NOL}
+    inv, rencana_alok = await _rencana_alokasi(conn, tenant_id, invoice_id, kunci=True)
+    if inv is None:
+        return hasil
 
     cogs_jid = rev_jid = None
     total_hpp = sum((x[3] for x in rencana_alok), _NOL)
@@ -605,7 +616,7 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
             baris=[(akun_dimuka, total_rev, _NOL, f"Dimuka -> Penjualan {inv['invoice_number']}"),
                    (akun_jual, _NOL, total_rev, f"Penjualan {inv['invoice_number']}")])
     for it, chunks, ambil_total, biaya_total, pendapatan in rencana_alok:
-        for ifi_id, ambil, biaya in chunks:
+        for ifi_id, ambil, biaya, _nomor in chunks:
             await conn.execute(
                 """INSERT INTO sj_faktur_alokasi (tenant_id, fulfillment_item_id, invoice_item_id, quantity, total_cost,
                                                   cogs_journal_id, revenue_journal_id, created_by)
@@ -620,6 +631,20 @@ async def alokasikan_saat_faktur(conn, tenant_id: str, user_id, invoice_id) -> d
             hasil["stok_qty"] += ambil_total
     hasil["nilai_hpp"], hasil["pendapatan"] = total_hpp, total_rev
     return hasil
+
+
+async def teks_sj_akan_ditautkan(conn, tenant_id: str, invoice_id) -> Optional[str]:
+    """BUG-109 (B): faktur DRAF dari SO yang punya SJ tanpa faktur -> kalimat SJ yang AKAN ditautkan saat terbit (penentu SAMA dgn
+    alokasikan_saat_faktur, kunci=False, nol tulis). None bila tak ada."""
+    _inv, rencana = await _rencana_alokasi(conn, tenant_id, invoice_id, kunci=False)
+    per_sj = {}
+    for _it, chunks, *_ in rencana:
+        for _ifi, ambil, _b, nomor in chunks:
+            per_sj[nomor] = per_sj.get(nomor, _NOL) + ambil
+    if not per_sj:
+        return None
+    isi = ", ".join(f"{n} ({q.normalize():f})" for n, q in per_sj.items())
+    return f"Surat Jalan {isi} ditautkan saat terbit"
 
 
 async def balik_alokasi_faktur(conn, ctx: dict, invoice_id, hari, alasan: str) -> int:
