@@ -1094,11 +1094,11 @@ async def void_bank_transfer(
                 await conn.execute(
                     """
                     UPDATE bank_transactions
-                    SET status = 'void', voided_at = NOW()
-                    WHERE reference_type = 'bank_transfer'
+                    SET status = 'VOIDED', voided_at = NOW()  -- BUG-116: CHECK V110 (DRAFT/POSTED/VOIDED)
+                    WHERE reference_type = 'transfer'  -- BUG-116: = yang ditulis posting (dulu 'bank_transfer' -> 0 baris)
                       AND reference_id = $1
                       AND tenant_id = $2
-                      AND status != 'void'
+                      AND status != 'VOIDED'
                     """,
                     transfer_id,
                     ctx["tenant_id"],
