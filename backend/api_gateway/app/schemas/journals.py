@@ -6,6 +6,8 @@ Request and response models for /api/journals endpoints.
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
+
+from .aksi_tersedia import AksiTersediaPeta
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -141,6 +143,10 @@ class JournalResponse(BaseModel):
     created_at: datetime
     posted_at: Optional[datetime] = None
     posted_by: Optional[str] = None
+    # Standar SO (7 Nov 2026): teks posisi + kunci aksi + aksi tersedia dari server (services/jurnal_daftar)
+    position_text: Optional[str] = None
+    aksi_semua: List[str] = []
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 class JournalListItem(BaseModel):
@@ -156,6 +162,8 @@ class JournalListItem(BaseModel):
     total_credit: Decimal
     status: str
     created_at: datetime
+    aksi_semua: List[str] = []
+    position_text: Optional[str] = None
 
 
 class JournalSummary(BaseModel):
@@ -199,3 +207,36 @@ class JournalListResponse(BaseModel):
     data: List[JournalListItem]
     summary: JournalSummary
     pagination: dict
+    sum_debit: Optional[Decimal] = None   # with_totals=true: Σ debit BARIS jurnal tersaring (Law 1)
+    sum_kredit: Optional[Decimal] = None
+
+
+class JournalDetailResponse(BaseModel):
+    """Detail/buat/posting/balik/by-source: dulu response_model=dict (tanpa kontrak tipe)."""
+    success: bool = True
+    data: Optional[JournalResponse] = None
+
+
+class JournalKunciSummary(BaseModel):
+    """GET /api/journals/summary: {k}_count/_value per kunci services/jurnal_daftar.SEMUA_KUNCI (_value = Σ debit baris)."""
+    total: int
+    tidak_seimbang_count: int
+    tidak_seimbang_value: Decimal
+    draf_count: int
+    draf_value: Decimal
+    manual_count: int
+    manual_value: Decimal
+    dibalik_count: int
+    dibalik_value: Decimal
+    pembalik_count: int
+    pembalik_value: Decimal
+    dibatalkan_count: int
+    dibatalkan_value: Decimal
+    bulan_ini_count: int
+    bulan_ini_value: Decimal
+    pill_tampil: List[str]
+
+
+class JournalKunciSummaryResponse(BaseModel):
+    success: bool = True
+    data: JournalKunciSummary

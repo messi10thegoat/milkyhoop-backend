@@ -46,9 +46,11 @@ def test_aktiva_tetap_dijaga_sebelum_jurnal():
 
 
 def test_jurnal_manual_buat_posting_dan_posting_draf_dijaga_pembalikan_tidak():
-    c = _s(J.create_journal)
+    b = _s(J.create_journal)  # Jurnal standar SO (7 Nov): badan tulis pindah ke _tulis_jurnal_manual, dipanggil SESUDAH lock
+    assert b.index('f"MANUAL_CREATE:{ctx[\'tenant_id\']}"') < b.index("_tulis_jurnal_manual(")
+    c = _s(J._tulis_jurnal_manual)
     jaga = c.index('await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [(UUID(ln.account_id), ln.debit, ln.credit) for ln in body.lines])')
-    assert c.index('f"MANUAL_CREATE:{ctx[\'tenant_id\']}"') < jaga < c.index("UPDATE journal_entries SET status = 'POSTED'")
+    assert jaga < c.index("UPDATE journal_entries SET status = 'POSTED'")
     assert c.index('if initial_status == "POSTED":') < jaga   # draf tak dijaga saat dibuat; dijaga saat diposting
     p = _s(J.post_journal)
     jp = p.index("await KT.tolak_kas_minus_baris(")
