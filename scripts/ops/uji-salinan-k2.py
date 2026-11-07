@@ -124,7 +124,9 @@ async def main():
         await kasus("jurnal manual buat-posting kecil", lambda: manual(kecil), False)
 
     async def posting_draf(nilai):  # draf dibuat DI LUAR hitungan (DRAF = jurnal baru); yang dihitung = posting-nya
-        jid = (await manual(nilai, draf=True))["data"]["id"]
+        r = await manual(nilai, draf=True)  # get_journal -> JournalResponse (pydantic), bukan dict
+        d = r.model_dump() if hasattr(r, "model_dump") else r
+        jid = d["data"]["id"]
         async def posting():
             return await J.post_journal(req(uid), uuid.UUID(str(jid)))
         return posting
