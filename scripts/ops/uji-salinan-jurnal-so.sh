@@ -2,6 +2,8 @@
 # Jurnal Umum standar SO uji di SALINAN: klon penuh milkydb -> scratch_jrn_<ts>; handler ASLI; tulis HANYA di salinan; HAPUS salinan (trap).
 # Pakai: POHON=/root/<worktree> scripts/ops/uji-salinan-jurnal-so.sh (cek-sibuk dulu).
 set -u
+# penjaga: setiap SQL FROM di harness ini wajib tersaring tenant (putusan MASTER 7 Nov) -- gagal SEBELUM klon dibuat
+python3 "$(dirname "$0")/cek-saring-tenant.py" "$0" "$(dirname "$0")/uji-salinan-jurnal-so.py" || { echo "rc=3 (SQL tanpa saring tenant)"; exit 3; }
 P=milkyhoop-dev-postgres-1; S=scratch_jrn_$(date +%s); POHON=${POHON:-/root/mh-jurnal-so}
 hapus() { docker exec $P psql -U postgres -At -c "DROP DATABASE IF EXISTS $S" >/dev/null
           echo "salinan $S dihapus; sisa DB scratch_jrn%: $(docker exec $P psql -U postgres -At -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'scratch_jrn%'")"; }
