@@ -37,6 +37,10 @@ class _C:
         if "pg_advisory_xact_lock" in q:
             self.kunci.append(a[0])
 
+    async def fetchval(self, q, *a):
+        assert "SELECT customer_id FROM sales_invoices" in q and a == (INV, T)
+        return UUID(CUST)  # kanonik tersimpan di faktur
+
     async def fetchrow(self, q, *a):
         if "FROM bank_accounts" in q:
             assert "tenant_id = $2" in q and "is_active" in q
@@ -48,7 +52,7 @@ class _C:
 
 
 def _badan(**ubah):
-    d = dict(customer_id=CUST, customer_name="Pelanggan Umum (Eceran)", invoice_date=date(2026, 11, 7),
+    d = dict(customer_id=CUST.upper(),  # badan mentah huruf besar; pelanggan penerimaan = yang tersimpan customer_name="Pelanggan Umum (Eceran)", invoice_date=date(2026, 11, 7),
              items=[{"item_id": "11111111-1111-1111-1111-111111111111", "description": "Sania", "quantity": 3,
                      "unit_price": 31900}],
              auto_post=True, bayar_tunai={"bank_account_id": str(BA), "reference": "QRIS-8812"})
@@ -128,9 +132,11 @@ def test_create_satu_transaksi_urutan_terbit_lalu_bayar():
     assert tolak < acq < terbit < bayar < simpan  # syarat sebelum tulis; bayar sesudah terbit, sebelum amplop idem
     assert src.count("async with conn.transaction()") == 1  # bayar di transaksi create yang SAMA
     assert 'body.recognize_at = "invoice"' in src
+    assert src.index("body.bayar_tunai and not _kunci_klien") < acq  # kunci idempotensi WAJIB, sebelum tulis
 
 
 def test_pratinjau_baris_payment_dari_rekening_yang_sama():
     src = inspect.getsource(SI.preview_journal)
     assert "_tolak_bayar_tunai(" in src and "_rekening_bayar_tunai(" in src
     assert src.count('"event": "PAYMENT"') == 2 and "AccountRole.AR_TRADE" in src
+    assert "_total_bt <= 0" in src

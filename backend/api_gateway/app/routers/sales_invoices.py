@@ -1075,6 +1075,8 @@ async def preview_journal(request: Request, body: dict = Body(...)):
         if _bt:
             _total_bt = round(float(subtotal + tax_total + ship_amt), 2)
             _rek = await _rekening_bayar_tunai(conn, ctx["tenant_id"], (_bt or {}).get("bank_account_id"))
+            if _total_bt <= 0:
+                warnings.append("Faktur tidak punya sisa tagihan untuk dibayar.")
             if not _rek:
                 warnings.append("Rekening penerimaan tidak ditemukan.")
             else:
@@ -3388,11 +3390,14 @@ async def _bayar_tunai_faktur(conn, ctx: dict, invoice_id, body) -> dict:
         raise HTTPException(status_code=400, detail="Rekening penerimaan tidak ditemukan.")
     from .receive_payments import buat_penerimaan, get_invoice_remaining_from_journal
     from ..schemas.receive_payments import CreateReceivePaymentRequest
+    pelanggan = await conn.fetchval(
+        "SELECT customer_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2", invoice_id, ctx["tenant_id"],
+    )
     sisa = Decimal(str(await get_invoice_remaining_from_journal(conn, ctx["tenant_id"], invoice_id) or 0))
     if sisa <= 0:
         raise HTTPException(status_code=400, detail="Faktur tidak punya sisa tagihan untuk dibayar.")
     inti = await buat_penerimaan(conn, ctx, CreateReceivePaymentRequest(
-        customer_id=str(body.customer_id),
+        customer_id=str(pelanggan),
         customer_name=body.customer_name,
         payment_date=body.invoice_date,
         payment_method=None,  # turunkan dari jenis akun (#29)
@@ -3436,6 +3441,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
         _galat_bt = _tolak_bayar_tunai(body.bayar_tunai, body.auto_post, body.customer_id, body.recognize_at)
         if _galat_bt:
             raise HTTPException(status_code=400, detail=_galat_bt)
+        if body.bayar_tunai and not _kunci_klien:
+            raise HTTPException(status_code=400, detail="Penjualan tunai butuh kunci idempotensi.")
         if body.bayar_tunai:
             body.recognize_at = "invoice"  # barang diserahkan di tempat (BUG-046)
         pool = await get_pool()
