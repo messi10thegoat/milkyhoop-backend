@@ -227,6 +227,12 @@ class PurchaseOrderItemResponse(BaseModel):
 # RESPONSE MODELS - Purchase Order
 # =============================================================================
 
+class FakturDrafPo(BaseModel):
+    """Faktur DRAF bertaut baris PO (services/po_daftar.faktur_draf_po) -> pill "Buka faktur draf"."""
+    id: str
+    bill_number: Optional[str] = None
+
+
 class PurchaseOrderListItem(BaseModel):
     """Purchase order item for list responses."""
     id: str
@@ -250,6 +256,11 @@ class PurchaseOrderListItem(BaseModel):
     terima_teks: str = "—"
     position_text: Optional[str] = None
     aksi: Optional[str] = None
+    # BUG-097: dihitung rute (po_daftar) tapi dulu tak dideklarasikan -> dibuang response_model; FE pill draf/jasa buta
+    belum_ditagih_sesudah_draf: Optional[float] = None
+    draft_bills: List[FakturDrafPo] = []
+    terima_tersedia: Optional[bool] = None
+    tagih_tersedia: Optional[bool] = None
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
 
@@ -279,6 +290,11 @@ class PurchaseOrderDetail(BaseModel):
     terima_teks: str = "—"
     position_text: Optional[str] = None
     aksi: Optional[str] = None
+    # BUG-097: dihitung rute (po_daftar) tapi dulu tak dideklarasikan -> dibuang response_model; FE pill draf/jasa buta
+    belum_ditagih_sesudah_draf: Optional[float] = None
+    draft_bills: List[FakturDrafPo] = []
+    terima_tersedia: Optional[bool] = None
+    tagih_tersedia: Optional[bool] = None
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
 
