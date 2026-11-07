@@ -52,7 +52,8 @@ class _C:
 
 
 def _badan(**ubah):
-    d = dict(customer_id=CUST.upper(),  # badan mentah huruf besar; pelanggan penerimaan = yang tersimpan customer_name="Pelanggan Umum (Eceran)", invoice_date=date(2026, 11, 7),
+    # badan mentah HURUF BESAR; pelanggan penerimaan = customer_id kanonik yang tersimpan di faktur
+    d = dict(customer_id=CUST.upper(), customer_name="Pelanggan Umum (Eceran)", invoice_date=date(2026, 11, 7),
              items=[{"item_id": "11111111-1111-1111-1111-111111111111", "description": "Sania", "quantity": 3,
                      "unit_price": 31900}],
              auto_post=True, bayar_tunai={"bank_account_id": str(BA), "reference": "QRIS-8812"})
