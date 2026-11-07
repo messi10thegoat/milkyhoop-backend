@@ -11,6 +11,7 @@ Features:
 - Stricter limits for auth endpoints
 - Graceful fallback to in-memory if Redis unavailable
 """
+import re
 import time
 import logging
 from collections import defaultdict
@@ -31,6 +32,33 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
     logger.warning("Redis not available, using in-memory rate limiting")
+
+
+# ROW (m) 8 Nov 2026: pratinjau CW = ember sendiri. Dulu SEMUA non-GET masuk ember tulis (100/60 dtk per pengguna); pratinjau
+# +-2 POST per suntingan baris -> kasir grosir yang mengetik cepat menghabiskan ember dan SIMPAN sungguhan kena 429.
+# DAFTAR PUTIH templat rute PERSIS (bukan awalan/akhiran longgar). Syarat masuk: handler NOL TULIS -- diukur 8 Nov: transaksi
+# READ ONLY atau jalur tulis yang sama lalu ROLLBACK. Rute baru masuk sini hanya sesudah diukur sama.
+PRATINJAU_NOL_TULIS = (
+    "/api/sales-invoices/calculate", "/api/bills/calculate", "/api/expenses/calculate",
+    "/api/purchase-orders/calculate", "/api/sales-orders/calculate", "/api/quotes/calculate",
+    "/api/sales-invoices/preview-journal", "/api/bills/preview-journal", "/api/expenses/preview-journal",
+    "/api/receive-payments/preview-journal", "/api/bill-payments/preview-journal",
+    "/api/receive-payments/preview", "/api/bill-payments/preview", "/api/customer-deposits/preview",
+    "/api/vendor-deposits/preview", "/api/credit-notes/preview", "/api/vendor-credits/preview",
+    "/api/bank-transfers/preview", "/api/proformas/preview", "/api/employee-advances/preview",
+    "/api/stock-transfers/preview", "/api/customers/preview", "/api/price-lists/preview", "/api/items/preview",
+    "/api/quotes/{quote_id}/edit/preview", "/api/bills/{bill_id}/edit/preview",
+    "/api/purchase-orders/{po_id}/edit/preview", "/api/sales-orders/{order_id}/edit/preview",
+    "/api/customer-deposits/{deposit_id}/edit/preview", "/api/vendor-deposits/{deposit_id}/edit/preview",
+    "/api/price-lists/{price_list_id}/items/{line_id}/edit/preview",
+    "/api/sales-invoices/{invoice_id}/post/preview", "/api/bills/{bill_id}/post/preview",
+    "/api/receive-payments/{payment_id}/post/preview", "/api/bill-payments/{payment_id}/post/preview",
+    "/api/vendor-deposits/{deposit_id}/post/preview", "/api/credit-notes/{credit_note_id}/post/preview",
+    "/api/vendor-credits/{vendor_credit_id}/post/preview", "/api/bank-transfers/{transfer_id}/post/preview",
+    "/api/inventory/stok-baris", "/api/price-lists/resolve/{modul}",
+)
+_POLA_PRATINJAU = re.compile("^(?:" + "|".join(
+    "/".join("[^/]+" if b.startswith("{") else re.escape(b) for b in t.split("/")) for t in PRATINJAU_NOL_TULIS) + ")$")
 
 
 class RedisRateLimiter:
@@ -262,6 +290,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return "publik"  # P5: tautan publik tanpa login -> per-IP ketat (tebak token + pemborosan render)
         if method in ("GET", "HEAD", "OPTIONS"):
             return "read"
+        if method == "POST" and _POLA_PRATINJAU.match(path):
+            return "pratinjau"  # ROW (m): pratinjau nol tulis tak memakan ember SIMPAN
         return "write"
 
     def _get_limits(self, path: str, method: str = "POST") -> Tuple[int, int]:
@@ -271,6 +301,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return settings.RATE_LIMIT_AUTH_REQUESTS, settings.RATE_LIMIT_AUTH_WINDOW
         if b == "read":
             return settings.RATE_LIMIT_READ_REQUESTS, settings.RATE_LIMIT_WINDOW
+        if b == "pratinjau":
+            return settings.RATE_LIMIT_PREVIEW_REQUESTS, settings.RATE_LIMIT_WINDOW
         if b == "publik":
             return 30, 60  # 30/menit per IP: cukup untuk pelanggan membuka ulang + unduh + suar
         return settings.RATE_LIMIT_REQUESTS, settings.RATE_LIMIT_WINDOW

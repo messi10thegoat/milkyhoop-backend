@@ -63,6 +63,8 @@ class Settings:
     RATE_LIMIT_AUTH_WINDOW: int = int(os.getenv("RATE_LIMIT_AUTH_WINDOW", "60"))
     # #26: baca (GET/HEAD) punya anggaran sendiri; RATE_LIMIT_REQUESTS kini = TULIS saja.
     RATE_LIMIT_READ_REQUESTS: int = int(os.getenv("RATE_LIMIT_READ_REQUESTS", "600"))
+    # ROW (m): pratinjau nol tulis (daftar putih di rate_limit_middleware) punya anggaran sendiri, terpisah dari tulis.
+    RATE_LIMIT_PREVIEW_REQUESTS: int = int(os.getenv("RATE_LIMIT_PREVIEW_REQUESTS", "600"))
 
     # CORS Configuration
     CORS_ORIGINS: List[str] = [
