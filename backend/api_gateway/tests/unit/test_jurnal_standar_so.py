@@ -43,6 +43,13 @@ def test_aksi_semua_dan_timpang_baris_vs_header():
     assert JD.aksi_semua(_j(baris_debit=D("1000.004"))) == []                                     # di bawah sen
 
 
+def test_sql_tidak_seimbang_baris_dan_header():
+    sql = " ".join(JD.sql_aksi("tidak_seimbang", "$2").split())
+    for bagian in ("ABS(jb.d - jb.k) >= 0.01", "ABS(jb.d - je.total_debit) >= 0.01", "ABS(jb.k - je.total_credit) >= 0.01"):
+        assert bagian in sql, bagian
+    assert "journal_lines l WHERE l.journal_id = je.id" in JD.SQL_BARIS
+
+
 def test_position_text():
     assert JD.position_text(_j()) == "Diposting"
     assert JD.position_text(_j(status="DRAFT")) == "Draf · belum diposting"
