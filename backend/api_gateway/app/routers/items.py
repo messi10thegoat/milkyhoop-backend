@@ -2814,7 +2814,10 @@ async def get_item_history(
                 il.source_number,
                 il.quantity_in,
                 il.quantity_out,
-                il.quantity_balance,
+                -- BUG-099: saldo berjalan DIHITUNG SAAT BACA (Law 1/11), urutan tampilan; kolom quantity_balance = snapshot
+                -- tulis-waktu yang basi bila ada gerak bertanggal mundur -> tidak dipakai tampilan, tidak ditulis ulang (Rule 8)
+                SUM(COALESCE(il.quantity_in, 0) - COALESCE(il.quantity_out, 0))
+                    OVER (ORDER BY il.movement_date, il.created_at, il.id) AS saldo_berjalan,
                 il.unit_cost,
                 il.total_cost,
                 il.average_cost,
@@ -2838,7 +2841,7 @@ async def get_item_history(
                 AND il.source_id::text = b.id::text
                 AND b.tenant_id = $2
             WHERE il.product_id = $1 AND il.tenant_id = $2
-            ORDER BY il.movement_date DESC, il.created_at DESC
+            ORDER BY il.movement_date DESC, il.created_at DESC, il.id DESC
             LIMIT $3 OFFSET $4
         """
         rows = await conn.fetch(query, str(item_id), tenant_id, limit, offset)
@@ -2857,7 +2860,7 @@ async def get_item_history(
                     "source_number": row["source_number"],
                     "quantity_in": row["quantity_in"] or 0,
                     "quantity_out": row["quantity_out"] or 0,
-                    "quantity_balance": row["quantity_balance"] or 0,
+                    "quantity_balance": row["saldo_berjalan"] or 0,  # BUG-099: saldo berjalan saat baca (bukan snapshot)
                     "unit_cost": float(_rp(row["unit_cost"])),  # BUG-038: dulu int() membuang sen
                     "total_cost": float(_rp(row["total_cost"])),
                     "average_cost": float(_rp(row["average_cost"])) if row["average_cost"] else None,
@@ -3131,7 +3134,7 @@ async def get_item_transactions(
                 il.notes
             FROM inventory_ledger il
             WHERE il.product_id = $1::uuid AND il.tenant_id = $2
-            ORDER BY il.movement_date DESC, il.created_at DESC
+            ORDER BY il.movement_date DESC, il.created_at DESC, il.id DESC
             LIMIT $3 OFFSET $4
         """
         rows = await conn.fetch(tx_query, str(item_id), tenant_id, limit, offset)
@@ -3606,7 +3609,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                         SELECT average_cost FROM inventory_ledger
                         WHERE product_id = p.id AND tenant_id = CAST(p.tenant_id AS TEXT)
                           AND average_cost IS NOT NULL AND average_cost > 0
-                        ORDER BY movement_date DESC, created_at DESC LIMIT 1
+                        ORDER BY movement_date DESC, created_at DESC, id DESC LIMIT 1
                     ) il ON true
                     WHERE p.id = $1 AND p.tenant_id = $2
                 """,
