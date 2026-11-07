@@ -9,7 +9,7 @@ trap hapus EXIT
 echo "salinan: $S"
 docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl | psql -q -U postgres -d $S" >/tmp/brg_restore.log 2>&1
-echo "restore galat: $(grep -c ERROR /tmp/brg_restore.log); produk salinan=$(docker exec $P psql -U postgres -d $S -At -c 'SELECT count(*) FROM products') prod=$(docker exec $P psql -U postgres -d milkydb -At -c 'SELECT count(*) FROM products')"
+echo "restore galat: $(grep -c ERROR /tmp/brg_restore.log); produk salinan=$(docker exec $P psql -U postgres -d $S -At -c "SELECT count(*) FROM products WHERE tenant_id IN ('kaos-biru-konveksi','pt-kita-nyawit-bersama')") prod=$(docker exec $P psql -U postgres -d milkydb -At -c "SELECT count(*) FROM products WHERE tenant_id IN ('kaos-biru-konveksi','pt-kita-nyawit-bersama')")"
 timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S -e TENANT=${TENANT:-kaos-biru-konveksi,pt-kita-nyawit-bersama} \
   -v "$POHON/backend:/app/backend:ro" -v "$(cd "$(dirname "$0")" && pwd)/uji-salinan-barang-so.py:/uji.py:ro" -w /app/backend/api_gateway \
   --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py 2>&1 | grep -E "^(PASS|FAIL|HASIL|\[|Traceback|  File)|Error"
