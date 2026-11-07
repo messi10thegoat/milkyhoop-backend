@@ -105,7 +105,7 @@ async def main():
     _, timpang = await daftar(tid, u, aksi="tidak_seimbang")
     cek("benih: position_text selisih Rp 200", [b.position_text for b in timpang] == ["Tidak seimbang · selisih Rp 200"], str([b.position_text for b in timpang]))
     d = (await RJ.get_journal(req(tid, u), jid))["data"]
-    cek("benih: detail posting tak tersedia + alasan", d.aksi_tersedia["posting"]["tersedia"] is False and "tidak seimbang" in d.aksi_tersedia["posting"]["alasan"],
+    cek("benih: detail posting tak tersedia + alasan", d.aksi_tersedia["posting"].tersedia is False and "tidak seimbang" in d.aksi_tersedia["posting"].alasan,
         str(d.aksi_tersedia["posting"]))
     await periksa(tid, u)   # paritas per kunci ULANG sesudah benih
 
