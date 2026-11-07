@@ -29,6 +29,11 @@ H = date(2026, 10, 22)
     ("received", date(2026, 10, 12), "0", "selesai", "12 Okt", None),
     ("billed", date(2026, 10, 12), "0", "selesai", "12 Okt", None),
     ("closed", date(2026, 10, 12), "0", "selesai", "12 Okt", None),
+    # BUG-112 (c)2: sudah ditagih tapi barang masih bersisa -> terima TERBUKA (dulu "selesai", PO-2611-0010 4 karton hilang)
+    ("partial_billed", date(2026, 10, 12), "4", "telat", "12 Okt, lewat jadwal", -10),
+    ("partial_billed", date(2026, 10, 25), "4", "akan", "25 Okt", 3),
+    ("billed", date(2026, 10, 25), "4", "akan", "25 Okt", 3),
+    ("closed", date(2026, 10, 12), "4", "selesai", "12 Okt", None),   # ditutup = sisa dilepas (pola NetSuite), bukan terbuka
 ])
 def test_terima_fakta(status, tgl, sisa, harap_keadaan, harap_teks, harap_hari):
     f = PD.terima_fakta(status, tgl, Decimal(sisa), H)
@@ -50,6 +55,18 @@ def test_terima_fakta(status, tgl, sisa, harap_keadaan, harap_teks, harap_hari):
     ("billed", date(2026, 10, 12), "0", "0", None),                                 # fully billed = selesai otomatis, BUKAN pill
     ("closed", date(2026, 10, 12), "0", "0", None),
     ("cancelled", date(2026, 10, 12), "10", "0", None),
+    # BUG-112 (c): telat_terima kini juga PO yang sudah ditagih tapi bersisa terima (perluasan arti, putusan MASTER (c)2)
+    ("partial_billed", date(2026, 10, 12), "4", "0", "telat_terima"),
+    ("billed", date(2026, 10, 12), "4", "0", "telat_terima"),
+    # perlu_diterima (MASTER (A) SEMPIT): sudah mulai diterima/ditagih, sisa terima > 0, tak telat, tak ada kunci di atasnya
+    ("partial_billed", date(2026, 10, 30), "4", "0", "perlu_diterima"),             # PO-2611-0010: 10 pesan, 6 terima, 6 tagih
+    ("partial_billed", None, "4", "0", "perlu_diterima"),
+    ("partial_received", date(2026, 10, 30), "4", "0", "perlu_diterima"),
+    ("billed", None, "4", "0", "perlu_diterima"),
+    ("partial_received", date(2026, 10, 30), "4", "6", "perlu_ditagih"),             # kunci di atasnya menang
+    ("sent", None, "10", "0", None),                                                # 'sent' murni = menunggu_barang, BUKAN pill (22 Okt)
+    ("closed", None, "4", "0", None),
+    ("cancelled", None, "4", "0", None),
 ])
 def test_aksi_po(status, tgl, sisa, belum, harap):
     assert PD.aksi_po(status, tgl, Decimal(sisa), Decimal(belum), H) == harap
@@ -57,7 +74,7 @@ def test_aksi_po(status, tgl, sisa, belum, harap):
 
 def test_kosakata_pill_dan_bukan_pill():
     # PO-DRAF retarget (b), putusan MASTER B 4 Nov: kunci partisi baru draf_tagihan ("Buka faktur draf"); bisa_diterima = saringan, bukan pill
-    assert PD.AKSI == ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan")
+    assert PD.AKSI == ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "perlu_diterima")  # BUG-112 (c)3: aditif, terakhir
     assert "menunggu_barang" not in PD.AKSI and "perlu_ditutup" not in PD.AKSI and "bisa_diterima" not in PD.AKSI
 
 
@@ -65,6 +82,19 @@ def test_position_text_semua_status_dan_tak_dikenal():
     assert [PD.position_text(s) for s in ("draft", "sent", "partial_received", "received", "partial_billed", "billed", "closed", "cancelled")] == [
         "Draf", "Terkirim ke vendor", "Diterima sebagian", "Diterima", "Ditagih sebagian", "Ditagih", "Selesai", "Dibatalkan"]
     assert PD.position_text("aneh") == "aneh" and PD.position_text(None) == ""
+
+
+@pytest.mark.parametrize("status,sisa,diterima,harap", [
+    ("partial_billed", "4", "6", "Diterima sebagian · ditagih sebagian"),    # PO-2611-0010
+    ("partial_billed", "10", "0", "Belum diterima · ditagih sebagian"),
+    ("billed", "4", "6", "Diterima sebagian · ditagih"),
+    ("partial_billed", "0", "10", "Ditagih sebagian"),                       # tanpa sisa terima = teks lama
+    ("billed", "0", "10", "Ditagih"),
+    ("partial_received", "4", "6", "Diterima sebagian"),
+    ("sent", "10", "0", "Terkirim ke vendor"),
+])
+def test_bug112_position_text_dua_dimensi(status, sisa, diterima, harap):
+    assert PD.position_text(status, Decimal(sisa), Decimal(diterima)) == harap
 
 
 def test_jumlah_turunan_half_up_per_baris():
@@ -77,13 +107,17 @@ def test_jumlah_turunan_half_up_per_baris():
 
 
 def test_sql_aksi_partisi_bentuk():
-    a, b, c, d = (PD.sql_aksi(k, "$2") for k in PD.AKSI)  # PO-DRAF retarget (b): + draf_tagihan
+    a, b, c, d, e = (PD.sql_aksi(k, "$2") for k in PD.AKSI)  # PO-DRAF retarget (b): + draf_tagihan; BUG-112 (c)3: + perlu_diterima
     assert "po.status = 'draft'" in a
     assert "po.expected_date < $2::date" in b and "ag.sisa_terima > 0" in b
+    assert "'partial_billed', 'billed'" in b                                         # BUG-112 (c)2: telat juga sesudah ditagih
     dasar = "(po.status IN ('sent', 'partial_received', 'received', 'partial_billed') AND ag.belum_ditagih > 0 AND NOT "  # JASA-TANPA-TERIMA: + sent
     assert dasar in c and dasar in d                                                 # predikat tagih SAMA, dibelah sesudah-draf
     assert c.endswith("AND ag.belum_ditagih_sesudah_draf > 0)") and d.endswith("AND ag.belum_ditagih_sesudah_draf <= 0)")
     assert b[1:-1] in c and b[1:-1] in d                                             # ... AND NOT telat (partisi)
+    # perlu_diterima: status sudah mulai terima/tagih ('sent' murni TIDAK), sisa > 0, NOT telat, NOT tagih (partisi)
+    assert "po.status IN ('partial_received', 'received', 'partial_billed', 'billed') AND ag.sisa_terima > 0" in e and "'sent'" not in e.split(" AND NOT ")[0]
+    assert f"NOT {b}" in e and dasar in e
     with pytest.raises(KeyError):
         PD.sql_aksi("menunggu_barang", "$2")
 
