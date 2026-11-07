@@ -40,7 +40,7 @@ class Conn:
         self.sql.append(sql)
         return [{"id": uuid.uuid4(), "movement_type": "OUT", "movement_date": datetime(2026, 9, 26),
                  "source_type": "INVOICE_FULFILLMENT", "source_id": uuid.uuid4(), "source_number": "SJ-1",
-                 "quantity_in": 0, "quantity_out": 2, "quantity_balance": 8, "unit_cost": 1, "total_cost": 2,
+                 "quantity_in": 0, "quantity_out": 2, "quantity_balance": 8, "saldo_berjalan": 8, "unit_cost": 1, "total_cost": 2,
                  "average_cost": 1, "warehouse_id": None, "batch_id": None, "notes": None,
                  "created_at": datetime(2026, 9, 26), "created_by": None, "counterparty": "Toko Merdeka"}]
 
