@@ -27,6 +27,42 @@ KOLOM = [
     ("harga_beli_besar", "Harga beli / satuan besar", False), ("kategori", "Kategori", False), ("barcode", "Barcode", False),
     ("stok_awal", "Stok awal (satuan dasar)", False), ("harga_pokok_awal", "Harga pokok awal / satuan dasar", False),
 ]
+# BUG-101 (K-10, MASTER 7 Nov; pola Accurate "Excel apa pun"): judul kolom berkas BEBAS. Judul dinormalisasi (_norm_judul) lalu dicocokkan
+# PERSIS dengan sinonim per medan -- tak pernah awalan/mengandung, jadi sinonim pendek ("harga", "satuan") tak menelan judul spesifik
+# ("harga beli", "satuan besar"). Satu sinonim = satu medan (penjaga unik di tes); judul templat (KOLOM) selalu termasuk.
+SINONIM = {
+    "nama": ["nama barang", "nama", "nama produk", "produk", "name", "item", "nama item", "barang"],
+    "kode": ["kode", "kode barang", "kode produk", "sku", "code", "item code"],
+    "tipe": ["tipe barang non stok jasa", "tipe", "jenis", "jenis barang", "type"],
+    "satuan_dasar": ["satuan dasar", "satuan", "unit", "uom", "satuan kecil"],
+    "harga_jual": ["harga jual satuan dasar", "harga jual", "jual", "price", "harga"],
+    "harga_beli": ["harga beli satuan dasar", "harga beli", "beli", "cost"],
+    "satuan_besar": ["satuan besar", "satuan konversi", "kemasan", "unit besar"],
+    "isi": ["isi satuan besar satuan dasar", "isi satuan besar", "isi", "isi karton", "isi kemasan", "konversi", "faktor"],
+    "harga_jual_besar": ["harga jual satuan besar"],
+    "harga_beli_besar": ["harga beli satuan besar"],
+    "kategori": ["kategori", "category", "kelompok"],
+    "barcode": ["barcode", "ean"],
+    "stok_awal": ["stok awal satuan dasar", "stok awal", "stok", "qty awal"],
+    "harga_pokok_awal": ["harga pokok awal satuan dasar", "harga pokok awal", "hpp awal"],
+}
+_PENGISI = {"per", "dalam"}
+
+
+def _norm_judul(h) -> str:
+    """"Harga jual / satuan dasar" == "Harga jual per satuan dasar" == "HARGA  JUAL (satuan dasar)" -> "harga jual satuan dasar"."""
+    kata = re.sub(r"[^0-9a-z]+", " ", str(h or "").lower()).split()
+    return " ".join(k for k in kata if k not in _PENGISI)
+
+
+def _peta_sinonim() -> dict:
+    peta: dict = {}
+    for medan, daftar in SINONIM.items():
+        for j in daftar + [j for k, j, _ in KOLOM if k == medan]:
+            peta.setdefault(_norm_judul(j), set()).add(medan)
+    return peta
+
+
 _TIPE = {"barang": "goods", "goods": "goods", "stok": "goods", "non stok": "non_inventory", "non_stok": "non_inventory",
          "nonstok": "non_inventory", "non_inventory": "non_inventory", "jasa": "service", "service": "service"}
 _KALI = {"rb": 1000, "ribu": 1000, "k": 1000, "jt": 1000000, "juta": 1000000}
@@ -190,8 +226,9 @@ def templat_xlsx(satuan: list) -> bytes:
     return buf.getvalue()
 
 
-def baca_xlsx(isi: bytes) -> list:
-    """Lembar pertama -> baris impor. Kolom dicocokkan dengan JUDUL (urutan bebas); baris kosong dilewati."""
+def baca_xlsx(isi: bytes) -> dict:
+    """Lembar pertama -> {baris, pemetaan, tak_dipakai, peringatan}. Judul berkas bebas (SINONIM, urutan bebas); kolom tak dikenal
+    DISEBUT (BUG-101: dulu dibuang diam -> "Isi karton wajib diisi"), bukan diabaikan; baris kosong dilewati."""
     from openpyxl import load_workbook
     try:
         wb = load_workbook(io.BytesIO(isi), read_only=True, data_only=True)
@@ -199,18 +236,35 @@ def baca_xlsx(isi: bytes) -> list:
         raise HTTPException(status_code=400, detail={"code": "BERKAS_TIDAK_TERBACA", "message": "Berkas bukan Excel (.xlsx) yang sah."})
     rows = list(wb.worksheets[0].iter_rows(values_only=True))
     if not rows:
-        return []
-    peta = {j.lower(): k for k, j, _ in KOLOM}
-    kepala = [peta.get(str(h or "").strip().lower()) for h in rows[0]]
-    if "nama" not in kepala or "satuan_dasar" not in kepala:
-        raise HTTPException(status_code=400, detail={"code": "KOLOM_TIDAK_DIKENAL",
-                                                     "message": "Judul kolom tak cocok dengan templat. Unduh templat lalu isi."})
+        return {"baris": [], "pemetaan": [], "tak_dipakai": [], "peringatan": []}
+    sinonim, label = _peta_sinonim(), {k: j for k, j, _ in KOLOM}
+    kepala, pemetaan, tak_dipakai, oleh = [], [], [], {}
+    for h in rows[0]:
+        judul = str(h).strip() if h is not None else ""
+        cocok = sinonim.get(_norm_judul(judul), set()) if judul else set()
+        if len(cocok) > 1:
+            raise HTTPException(status_code=400, detail={"code": "KOLOM_AMBIGU", "message": f"Judul kolom '{judul}' cocok ke lebih dari satu isian."})
+        medan = next(iter(cocok), None)
+        if medan and medan in oleh:
+            raise HTTPException(status_code=400, detail={"code": "KOLOM_GANDA", "message":
+                                f"Kolom '{oleh[medan]}' dan '{judul}' sama-sama berarti {label[medan]}. Hapus salah satu."})
+        if medan:
+            oleh[medan] = judul
+            pemetaan.append({"judul_berkas": judul, "medan": medan, "label": label[medan]})
+        elif judul:
+            tak_dipakai.append(judul)
+        kepala.append(medan)
+    for wajib in ("nama", "satuan_dasar"):
+        if wajib not in oleh:
+            raise HTTPException(status_code=400, detail={"code": "KOLOM_TIDAK_DIKENAL", "message":
+                                f"Kolom {label[wajib].lower()} tidak ditemukan. Judul yang dikenali: {', '.join(x.capitalize() for x in SINONIM[wajib][:5])}."})
     hasil = []
     for r in rows[1:]:
         b = {k: v for k, v in zip(kepala, r) if k and v is not None and str(v).strip() != ""}
         if b:
             hasil.append({k: (v.strip() if isinstance(v, str) else v) for k, v in b.items()})
-    return hasil
+    return {"baris": hasil, "pemetaan": pemetaan, "tak_dipakai": tak_dipakai,
+            "peringatan": [f"Kolom '{j}' tidak dipakai" for j in tak_dipakai]}
 
 
 # ---------------------------------------------------------------- baris -> badan POST /items

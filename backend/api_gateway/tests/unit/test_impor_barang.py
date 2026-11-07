@@ -91,7 +91,7 @@ def test_ke_badan_blok(b, kode):
 # ---------------------------------------------------------------- Excel
 def test_templat_bolak_balik():
     isi = IB.templat_xlsx([{"abbreviation": "Pcs"}, {"abbreviation": "Pouch"}])
-    baris = IB.baca_xlsx(isi)
+    baris = IB.baca_xlsx(isi)["baris"]  # BUG-101: baca_xlsx -> {baris, pemetaan, tak_dipakai, peringatan}
     assert baris[0]["nama"] == "Minyak Goreng 2L" and baris[0]["isi"] == 12 and baris[0]["satuan_besar"] == "Karton"
 
 
