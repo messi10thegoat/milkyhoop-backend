@@ -1226,8 +1226,8 @@ async def get_expense_detail(request: Request, expense_id: UUID):
                 str(expense_id),
             )
             result["attachments"] = [dict(a) for a in attachments]
-
-            return {"success": True, "data": result}
+            from ..services.biaya_aksi import aksi_tersedia_biaya   # Biaya t2: penentu SAMA dgn post/void
+            return {"success": True, "data": result, "aksi_tersedia": await aksi_tersedia_biaya(conn, ctx["tenant_id"], expense)}
 
     except HTTPException:
         raise
