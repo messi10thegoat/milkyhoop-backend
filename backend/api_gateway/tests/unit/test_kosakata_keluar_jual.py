@@ -110,4 +110,5 @@ def test_profitabilitas_pakai_konstanta():
     for rel in ("services/profitability_query.py", "services/profitability_reconciliation.py"):
         s, _ = _modul(rel)
         assert "IN ('SALES_INVOICE', 'INVOICE_FULFILLMENT')" not in s.split('"""', 2)[2]      # di luar docstring modul
-        assert 'sql_daftar(KELUAR_JUAL_FAKTUR)' in s
+        # BUG-102: rekonsiliasi tak punya kueri sendiri lagi -- memakai SQL_HPP_JUAL profitability_query (SATU sumber, berkonstanta)
+        assert ('sql_daftar(KELUAR_JUAL_FAKTUR)' in s) if rel.endswith("query.py") else ("import SQL_BARIS_JUAL, SQL_HPP_JUAL" in s)

@@ -4049,3 +4049,44 @@ async def get_profit_loss_query_params(
     except Exception as e:
         logger.error(f"Error getting profit/loss report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get profit/loss report")
+
+
+# ============================================================================
+# BUG-106 (K-11, MASTER 7 Nov 2026; pola Accurate "Penjualan per Pelanggan"): penjualan BERSIH retur per pelanggan (subtotal faktur
+# posted − Nota Kredit posted/applied, tanpa pajak, periode tanggal dokumen). SATU sumber dengan Profitabilitas (profitability_query.
+# SQL_BARIS_JUAL) -> Σ penjualan_bersih == Pendapatan L/R; status rekonsiliasi dikirim supaya FE jujur bila ≠ match.
+# ============================================================================
+@router.get("/sales-by-customer")
+async def penjualan_per_pelanggan(
+    request: Request,
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    from ..services.db_pool import get_db_pool
+    from ..services.profitability_query import get_sales_by_customer
+    from ..services.profitability_reconciliation import check_reconciliation
+    from .reports_profitability import _get_tenant_id, _parse_dates, _set_rls
+
+    tenant_id = _get_tenant_id(request)
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _set_rls(conn, tenant_id)
+            sd, ed = _parse_dates(start_date, end_date, await tanggal_dokumen(conn, tenant_id))
+            items, ringkas = await get_sales_by_customer(conn, tenant_id, sd, ed, limit, offset)
+            recon = await check_reconciliation(conn, tenant_id, sd, ed)
+    total = ringkas["jumlah_pelanggan"]
+    return {
+        "success": True,
+        "data": {
+            "period": {"start_date": sd.isoformat(), "end_date": ed.isoformat(), "days": (ed - sd).days + 1},
+            "summary": ringkas,
+            "items": items,
+            "pagination": {"total": total, "limit": limit, "offset": offset, "has_more": (offset + limit) < total},
+            "reconciliation": {"status": "match" if recon["revenue_drift"] <= 0.01 else "drift",
+                               "pnl_revenue": recon["pnl_revenue"], "selisih": recon["revenue_drift"]},
+        },
+    }
+
