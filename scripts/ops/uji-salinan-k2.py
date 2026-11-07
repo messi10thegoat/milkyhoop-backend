@@ -59,7 +59,7 @@ async def main():
         saldo = Decimal(str(kas["saldo"]))
         besar, kecil = saldo + Decimal(1000), Decimal(1)
         print(f"[{MODE}] kas={kas['account_name']} saldo={saldo} emp={bool(emp)} run={bool(run)} beban={bool(beban)}", flush=True)
-        cek("prasyarat: kas bersaldo > 1, karyawan, run gaji, akun beban", saldo > 1 and emp and run and beban)
+        cek("prasyarat: kas bersaldo > 1, karyawan, run gaji, akun beban", bool(saldo > 1 and emp and run and beban))
 
     async def jurnal():
         async with pool.acquire() as c:
