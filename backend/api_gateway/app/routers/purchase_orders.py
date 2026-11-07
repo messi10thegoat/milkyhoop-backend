@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.tanggal_uang_muka import tgl as _tgl_id  # BUG-095: "7 Nov 2026"
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
 from ..services import po_agregat as PA  # #4 agregat Workspace (cermin so_agregat Q-012)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
@@ -1114,7 +1115,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 )
 
                 await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], _ad.nama("purchase_order", "received"), ctx["user_id"],
-                                    f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {body.receive_date.isoformat()})",
+                                    f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {_tgl_id(body.receive_date)})",
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
 

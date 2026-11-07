@@ -87,6 +87,26 @@ def hitung(ktx: dict, product_id, unit: Optional[str], qty, mode: str, aksi: str
     return hasil
 
 
+def qty_dasar_baris(ktx: dict, product_id, unit: Optional[str], qty) -> dict:
+    """BUG-095: qty baris dalam SATUAN DASAR untuk teks FE ("= 12 botol") -- server yang mengonversi. Baris tanpa barang /
+    satuan tak terkonversi -> None (FE tak menulis padanan)."""
+    if product_id is None:
+        return {"qty_dasar": None, "satuan_dasar": None}
+    h = hitung(ktx, product_id, unit, qty, "konversi")
+    if h["blok"] or not h["satuan_dasar"]:
+        return {"qty_dasar": None, "satuan_dasar": None}
+    return {"qty_dasar": float(h["qty_dasar"]), "satuan_dasar": h["satuan_dasar"]}
+
+
+def total_dasar(baris: Iterable) -> list:
+    """BUG-095: Σ qty_dasar dokumen PER satuan dasar (urutan kemunculan) -> [{qty, satuan}]; barang beda satuan tak dijumlah."""
+    jumlah = {}
+    for b in baris:
+        if b.get("qty_dasar") is not None:
+            jumlah[b["satuan_dasar"]] = jumlah.get(b["satuan_dasar"], Decimal("0")) + Decimal(str(b["qty_dasar"]))
+    return [{"qty": float(v), "satuan": k} for k, v in jumlah.items()]
+
+
 def tolak_bila(h: dict) -> dict:
     """Penulis: blok -> GalatBerkode (kalimat sama dengan blok pratinjau)."""
     if h["blok"]:
