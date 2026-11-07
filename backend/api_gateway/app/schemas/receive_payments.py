@@ -21,6 +21,7 @@ Journal Entry on POST (From Deposit):
 
 from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator
+from .posisi import PosisiTerima  # position_text Pembayaran Masuk (standar SO v3)
 from typing import Optional, List, Literal, Dict
 from datetime import date
 
@@ -156,7 +157,7 @@ class AllocationResponse(BaseModel):
 # =============================================================================
 
 
-class ReceivePaymentListItem(BaseModel):
+class ReceivePaymentListItem(PosisiTerima):
     """Receive payment item for list responses."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
     sales_orders: List[Dict[str, Optional[str]]] = []  # SEMUA SO yang dibayar {id, number, order_code, order_title} (5 Okt)
@@ -202,7 +203,7 @@ class ReceivePaymentListItem(BaseModel):
     source_document_number: Optional[str] = None
 
 
-class ReceivePaymentDetail(BaseModel):
+class ReceivePaymentDetail(PosisiTerima):
     """Full receive payment detail."""
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
     sales_orders: List[Dict[str, Optional[str]]] = []  # SEMUA SO yang dibayar {id, number, order_code, order_title} (5 Okt)

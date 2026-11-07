@@ -10,6 +10,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 """
 
 from pydantic import BaseModel, Field, field_validator
+from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from decimal import Decimal
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date, datetime
@@ -200,7 +201,7 @@ class NkSaldoKredit(BaseModel):
     status: Optional[str] = None
 
 
-class CreditNoteListItem(BaseModel):
+class CreditNoteListItem(PosisiDariStatus):
     """Credit note item for list responses."""
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
@@ -238,7 +239,7 @@ class CreditNoteListItem(BaseModel):
     void_reason: Optional[str] = None
 
 
-class CreditNoteDetail(BaseModel):
+class CreditNoteDetail(PosisiDariStatus):
     """Full credit note detail."""
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None

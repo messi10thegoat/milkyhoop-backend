@@ -7,6 +7,7 @@ This module defines request and response models for the /api/vendors endpoints.
 from decimal import Decimal
 from uuid import UUID
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal, Union
 import re
 
@@ -297,7 +298,7 @@ class UpdateVendorRequest(FieldFormPemasok):
 # =============================================================================
 
 
-class VendorListItem(BaseModel):
+class VendorListItem(PosisiDariStatus):
     """Vendor item for list responses."""
 
     id: str
@@ -351,7 +352,7 @@ class VendorListResponse(BaseModel):
 # =============================================================================
 
 
-class VendorDetail(BaseModel):
+class VendorDetail(PosisiDariStatus):
     """Full vendor detail."""
 
     id: str

@@ -33,6 +33,15 @@ def sql_belum(rp: str) -> str:
     return f"GREATEST({sql_bruto(rp)} - {sql_dialokasi(rp)}, 0)"
 
 
+def posisi_terima(status: Optional[str], alokasi_teks: Optional[str]) -> str:
+    """position_text Pembayaran Masuk = Draf | Batal | alokasi_teks (cermin pembayaran_keluar_daftar.posisi_bayar; SATU penentu baris+detail)."""
+    if status == "draft":
+        return "Draf"
+    if status in ("voided", "void"):
+        return "Batal"
+    return alokasi_teks or TEKS["tanpa"]
+
+
 def alokasi_fakta(wrapper: bool, status: Optional[str], bruto, dialokasi) -> dict:
     """Pure: bruto = receive_payments.total_amount + discount_amount (jumlah efektif), dialokasi = Σ alokasi aktif (keduanya None untuk non-wrapper)."""
     if not wrapper or status != "posted" or bruto is None:

@@ -10,6 +10,7 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 """
 
 from pydantic import BaseModel, Field, field_validator
+from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal
 from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; UangMasuk = permintaan Decimal (ND-BUAT)
 from decimal import Decimal
@@ -179,7 +180,7 @@ class VendorCreditRefundResponse(BaseModel):
 # RESPONSE MODELS - Vendor Credit
 # =============================================================================
 
-class VendorCreditListItem(BaseModel):
+class VendorCreditListItem(PosisiDariStatus):
     """Vendor credit item for list responses."""
     id: str
     vendor_credit_number: str
@@ -209,7 +210,7 @@ class VendorCreditListItem(BaseModel):
     doc_count: int = 0
 
 
-class VendorCreditDetail(BaseModel):
+class VendorCreditDetail(PosisiDariStatus):
     """Full vendor credit detail."""
     id: str
     vendor_credit_number: str

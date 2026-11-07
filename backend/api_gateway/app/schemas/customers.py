@@ -6,6 +6,7 @@ Following QB/Xero/Zoho patterns for customer master data.
 """
 
 from pydantic import BaseModel, Field, field_validator
+from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
 import re
@@ -177,7 +178,7 @@ class UpdateCustomerRequest(IdentitasPajakPembeli):
 # =============================================================================
 
 
-class CustomerListItem(BaseModel):
+class CustomerListItem(PosisiDariStatus):
     """Customer item for list responses."""
 
     id: str
@@ -239,7 +240,7 @@ class CustomerListResponse(BaseModel):
 # =============================================================================
 
 
-class CustomerDetail(BaseModel):
+class CustomerDetail(PosisiDariStatus):
     """Full customer detail."""
 
     id: str
