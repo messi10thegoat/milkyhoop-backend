@@ -126,7 +126,7 @@ async def main():
     async def posting_draf(nilai):  # draf dibuat DI LUAR hitungan (DRAF = jurnal baru); yang dihitung = posting-nya
         r = await manual(nilai, draf=True)  # get_journal -> JournalResponse (pydantic), bukan dict
         d = r.model_dump() if hasattr(r, "model_dump") else r
-        jid = d["data"]["id"]
+        jid = d["id"] if "id" in d else d["data"]["id"]  # JournalResponse: id di tingkat atas
         async def posting():
             return await J.post_journal(req(uid), uuid.UUID(str(jid)))
         return posting
