@@ -50,8 +50,8 @@ async def semua(tid, **kw):
             return r, hasil
 
 
-async def main():
-    for tid in TENANT:
+async def periksa(tid):
+    if True:
         ring = (await RI.get_items_summary(req(tid), search=None)).data
         st = await RI.get_items_stats(req(tid))
         r0, barang = await semua(tid)
@@ -98,6 +98,50 @@ async def main():
             d = (await RI.get_item(req(tid), contoh.id)).data
             cek(f"{tid} detail: position_text + aksi_tersedia", d["position_text"] == contoh.position_text and set(d["aksi_tersedia"]) == {"nonaktifkan", "aktifkan", "sesuaikan_stok"},
                 f"{d['position_text']} | {d['aksi_semua']}")
+        return ring, {b.id: b for b in barang}
+
+
+BENIH_TID = "pt-kita-nyawit-bersama"
+
+
+async def benih():
+    """HANYA di salinan: A = titik pesan = stok (0 < stok <= titik); B = gerak keluar stok+3 (stok minus 3)."""
+    conn = await RI.get_db_connection()
+    try:
+        assert (await conn.fetchval("SELECT current_database()")).startswith("scratch_"), "benih hanya di salinan"
+        rows = await conn.fetch(f"""SELECT p.id, per.jumlah FROM products p {BD.SQL_PER_STOK} WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
+            AND {BD.sql_dilacak()} AND per.jumlah > 0 AND COALESCE(p.reorder_level, 0) = 0 ORDER BY p.id LIMIT 2""", BENIH_TID)
+        assert len(rows) == 2, "butuh 2 barang dilacak ber-stok"
+        a, b = rows
+        await conn.execute("UPDATE products SET reorder_level = $3 WHERE id = $1 AND tenant_id = $2", a["id"], BENIH_TID, a["jumlah"])
+        gudang = None  # chk_ws_quantity menolak warehouse_stock < 0 lewat trigger; ledger tanpa gudang ada di data hidup (14 baris)
+        await conn.execute("""INSERT INTO inventory_ledger (tenant_id, product_id, warehouse_id, movement_type, movement_date, source_type,
+            quantity_in, quantity_out, quantity_balance, unit_cost, total_cost) VALUES ($1, $2, $3, 'ADJUSTMENT', CURRENT_DATE, 'UJI_BENIH',
+            0, $4, -3, 0, 0)""", BENIH_TID, b["id"], gudang, b["jumlah"] + 3)
+        return a["id"], b["id"]
+    finally:
+        await conn.close()
+
+
+async def main():
+    awal = {}
+    for tid in TENANT:
+        awal[tid] = await periksa(tid)
+    if BENIH_TID in TENANT:
+        r0, b0 = awal[BENIH_TID]
+        cek("kontrol tanpa benih: di_bawah_titik_pesan = 0", r0["di_bawah_titik_pesan_count"] == 0, str(r0["di_bawah_titik_pesan_count"]))
+        cek("kontrol tanpa benih: stok minus = 0", not [b for b in b0.values() if (b.current_stock or 0) < 0])
+        ida, idb = await benih()
+        print("[benih] salinan: A titik pesan = stok, B minus 3", flush=True)
+        r1, br = await periksa(BENIH_TID)
+        cek("benih: di_bawah_titik_pesan = 1 = A", r1["di_bawah_titik_pesan_count"] == 1 and br[ida].aksi_semua[:1] == ["di_bawah_titik_pesan"],
+            f"{r1['di_bawah_titik_pesan_count']} {br[ida].aksi_semua}")
+        cek("benih: di_bawah value = nilai stok A > 0", r1["di_bawah_titik_pesan_value"] == RI._rp(br[ida].stock_value) > 0,
+            f"{r1['di_bawah_titik_pesan_value']}")
+        cek("benih: minus masuk stok_habis (+1)", r1["stok_habis_count"] == r0["stok_habis_count"] + 1 and "stok_habis" in br[idb].aksi_semua,
+            f"{r0['stok_habis_count']} -> {r1['stok_habis_count']}")
+        cek("benih: position_text minus", br[idb].position_text.startswith("Stok minus 3") and br[idb].position_text.endswith("· perlu hitung fisik"),
+            br[idb].position_text)
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
 
