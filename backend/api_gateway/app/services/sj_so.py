@@ -427,7 +427,7 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
         await serah_mod.tulis(conn, tid, uid, fid, r["serah"])
     await catat_riwayat(conn, tid, "invoice_fulfillments", fid, nomor, "SURAT_JALAN_SO_DIBUAT", uid,
                         f"Surat Jalan {nomor} dibuat dari pesanan {so['order_number']} (tanpa faktur, {len(r['lines'])} baris"
-                        + (f", barang terkirim Rp{r['total_value']:,.2f}" if stok_lines else "") + ")",
+                        + (f", barang terkirim {tg.rp(r['total_value'])}" if stok_lines else "") + ")",
                         {"sales_order_id": str(so_id), "baris": len(r["lines"]), "nilai": str(r["total_value"])},
                         source="api:sj_so.create")
     return {"fulfillment_id": fid, "fulfillment_number": nomor, "rencana": r, "journal_id": jid}
