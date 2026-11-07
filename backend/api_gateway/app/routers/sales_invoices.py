@@ -1601,6 +1601,10 @@ async def get_invoice(request: Request, invoice_id: UUID):
             # S1 detail faktur (20 Okt 2026): medan baris daftar dari fungsi YANG SAMA (detail == baris daftar, diuji
             # berpasangan). sisa = aturan baris daftar (faktur_daftar.sisa_baris).
             _sisa_daftar = _fd.sisa_baris(invoice["status"], ar_row["outstanding"] if ar_row else None)
+            _sj_draf = None
+            if invoice["status"] == "draft" and invoice.get("sales_order_id"):
+                from ..services import sj_so as _sj_so_draf
+                _sj_draf = await _sj_so_draf.teks_sj_akan_ditautkan(conn, ctx["tenant_id"], invoice["id"])
             _dok = (await _fd.dokumen_per_faktur(conn, ctx["tenant_id"], [invoice["id"]])).get(
                 invoice["id"], _fd.dokumen_faktur(0, 0))
             from ..services.kode_order import tempel_kode as _tempel_kode
@@ -1626,7 +1630,8 @@ async def get_invoice(request: Request, invoice_id: UUID):
                     "jatuh_tempo_hari": _fd.jatuh_tempo_hari(_terbuka, invoice["due_date"], _hari_jt),
                     "jatuh_tempo_minggu_ini": _fa.aksi_faktur(invoice["status"], _sisa_daftar, invoice["due_date"], invoice["invoice_date"], _hari_jt, _ambang_d) == "segera_tempo",  # USANG: alias segera_tempo
                     "jatuh_tempo_keadaan": _fd.jatuh_tempo_keadaan(invoice["status"], _terbuka, invoice["due_date"], _hari_jt),
-                    "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar),
+                    "position_text": _fd.posisi_faktur(invoice["status"], invoice["total_amount"], _sisa_daftar)
+                    + (f" · {_sj_draf}" if _sj_draf else ""),   # BUG-109 (B): SJ yang ditautkan saat terbit (draf dari SO)
                     # PARITAS detail == baris (21 Okt 2026): format SAMA dengan baris daftar (string 2 desimal / null)
                     "outstanding_amount": None if _sisa_daftar is None else f"{Decimal(str(_sisa_daftar)):.2f}",
                     "payment_summary": _fd.ringkasan_bayar_faktur(invoice["status"], invoice["total_amount"], _rincian),
