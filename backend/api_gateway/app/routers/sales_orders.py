@@ -15,6 +15,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services import stok_baris as SB
+from ..services import satuan_dasar as SD
 from ..services.so_faktur_draf import penanda_faktur_so
 from ..services.proforma_terbayar import memo_ringkasan  # PERF-DAFTAR-SO (16 Okt 2026)
 from ..services.so_posisi import fakta_daftar, jumlah_daftar  # P1 SO-dokumen: Posisi/Kirim/Dok. (1 Okt 2026)
@@ -602,6 +603,8 @@ async def get_sales_order_detail(request: Request, order_id: str):
             # 21 Okt 2026: aksi/aksi_semua detail == baris daftar (so_aksi.fakta, fungsi SAMA)
             _fakta_det = (await so_aksi.fakta(conn, ctx["tenant_id"], _hari_det, [order["id"]], laporan=True)).get(order["id"], {})
             _aksi_det = list(_fakta_det.get("aksi", []))
+            _ktx_det = await SD.muat(conn, ctx["tenant_id"], [i["item_id"] for i in items])  # BUG-095
+            _dasar_det = {str(i["id"]): SD.qty_dasar_baris(_ktx_det, i["item_id"], i["unit"], i["quantity"]) for i in items}
 
             return SalesOrderDetailResponse(
                 success=True,
@@ -670,8 +673,10 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     payment_bank_name=order["payment_bank_name"],
                     payment_account_number=order["payment_account_number"],
                     payment_account_holder=order["payment_account_holder"],
+                    total_dasar=SD.total_dasar(_dasar_det.values()),
                     items=[
                         SalesOrderItemResponse(
+                            **_dasar_det[str(item["id"])],
                             id=str(item["id"]),
                             item_id=str(item["item_id"]) if item["item_id"] else None,
                             description=item["description"],
@@ -2879,10 +2884,14 @@ async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
         h["invoice_id"], ctx["tenant_id"],
     )
     items = await conn.fetch(
-        """SELECT sales_order_item_id, description, quantity, unit_price, subtotal, total
+        """SELECT sales_order_item_id, item_id, unit, description, quantity, unit_price, subtotal, total
            FROM sales_invoice_items WHERE invoice_id = $1 ORDER BY line_number""",
         h["invoice_id"],
     )
+    _ktx = await SD.muat(conn, ctx["tenant_id"], [i["item_id"] for i in items])  # BUG-095: qty dasar per baris dari server
+    _lines = [{"so_item_id": str(i["sales_order_item_id"]) if i["sales_order_item_id"] else None,
+               "name": i["description"], "qty": _f(i["quantity"]), "unit_price": _f(i["unit_price"]),
+               "line_total": _f(i["subtotal"]), **SD.qty_dasar_baris(_ktx, i["item_id"], i["unit"], i["quantity"])} for i in items]
     if h["posted"]:
         rencana = await _uang_muka_terterap(conn, ctx["tenant_id"], h["invoice_id"])  # yang tertulis (lalu rollback)
     elif body is None or body.apply_deposits:
@@ -2902,9 +2911,8 @@ async def _baca_pratinjau(conn, ctx, h: dict, body) -> dict:
         inv["warehouse_id"], kecuali_so=inv["sales_order_id"], kecuali_sumber=[h["invoice_id"]])
     return {
         "isyarat_stok": _isyarat,  # B2 BUG-049/075
-        "lines": [{"so_item_id": str(i["sales_order_item_id"]) if i["sales_order_item_id"] else None,
-                   "name": i["description"], "qty": _f(i["quantity"]), "unit_price": _f(i["unit_price"]),
-                   "line_total": _f(i["subtotal"])} for i in items],
+        "lines": _lines,
+        "total_dasar": SD.total_dasar(_lines),  # BUG-095: [{qty, satuan}] per satuan dasar
         "subtotal": _f(inv["subtotal"]),
         "discount": _f(inv["discount_amount"] or 0),
         "shipping": _f(inv["shipping_amount"] or 0),

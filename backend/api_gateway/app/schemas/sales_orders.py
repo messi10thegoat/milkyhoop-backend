@@ -69,6 +69,8 @@ class SalesOrderItemResponse(BaseModel):
     unfulfilled_qty: float = 0
     unfulfilled_value: float = 0  # (qty - terkirim) x line_net/qty; NETO sebelum pajak, tanpa diskon header/ongkir
     unit: Optional[str] = None
+    qty_dasar: Optional[float] = None  # BUG-095: quantity dalam satuan dasar (server mengonversi); None = tak terkonversi
+    satuan_dasar: Optional[str] = None
     unit_price: Union[int, float]  # bulat tetap int (JSON tanpa desimal), pecahan float 2dp
     line_amount: Optional[float] = None  # jumlah baris tersimpan (V427); NULL = qty x harga
     discount_percent: float = 0
@@ -439,6 +441,7 @@ class SalesOrderDetail(BaseModel):
     payment_bank_name: Optional[str] = None
     payment_account_number: Optional[str] = None
     payment_account_holder: Optional[str] = None
+    total_dasar: List[Dict[str, Any]] = []  # BUG-095: [{qty, satuan}] per satuan dasar
     items: List[SalesOrderItemResponse] = []
     shipments: List[ShipmentDetail] = []
     invoices: List[Dict[str, Any]] = []  # List of related invoices
