@@ -10,9 +10,9 @@ from app.services import nota_debit_rencana as NDR
 
 def test_nd_melebihi_sisa_tagihan_rupiah_bersen():
     assert NDR.kalimat_nd_melebihi_sisa_tagihan(Decimal("500.50"), Decimal("1000"), "PB-2611-0001") == \
-        "Melebihi sisa tagihan Rp 500,50: nota debit Rp 1.000 atas PB-2611-0001."
+        "Melebihi sisa tagihan Rp 500,50: nota debit Rp 1.000 atas PB-2611-0001. Kurangi qty retur, atau buat sesudah tagihan lunas (nota debit lalu jadi saldo kredit vendor)."
     assert NDR.kalimat_nd_melebihi_sisa_tagihan(Decimal("0"), Decimal("1250000"), None) == \
-        "Melebihi sisa tagihan Rp 0: nota debit Rp 1.250.000 atas tagihan."
+        "Melebihi sisa tagihan Rp 0: nota debit Rp 1.250.000 atas tagihan. Kurangi qty retur, atau buat sesudah tagihan lunas (nota debit lalu jadi saldo kredit vendor)."
 
 
 def test_nd_refund_melebihi_sisa_rupiah_bersen():
