@@ -774,12 +774,13 @@ async def templat_impor_barang(request: Request):
 
 @router.post("/items/impor/baca")
 async def baca_impor_barang(request: Request, berkas: UploadFile = File(...)):
-    """Urai .xlsx -> {baris:[...]} (nol DB). FE menampilkan lalu mengirim baris ke /items/impor/pratinjau."""
+    """Urai .xlsx -> {baris, pemetaan[{judul_berkas, medan, label}], tak_dipakai, peringatan} (nol DB; BUG-101 judul bebas + kolom tak
+    dikenal disebut). FE menampilkan lalu mengirim baris ke /items/impor/pratinjau."""
     get_user_context(request)
     isi = await berkas.read(2 * 1024 * 1024 + 1)
     if len(isi) > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail={"code": "BERKAS_TERLALU_BESAR", "message": "Berkas maksimal 2 MB."})
-    return {"success": True, "data": {"baris": IB.baca_xlsx(isi)}}
+    return {"success": True, "data": IB.baca_xlsx(isi)}
 
 
 def _baris_impor(body: dict) -> list:
