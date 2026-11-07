@@ -67,7 +67,8 @@ async def _rencana_jurnal_nd(conn, tid: str, source_type: str, deskripsi: str, t
 
 def kalimat_nd_melebihi_sisa_tagihan(sisa, total, nomor_tagihan) -> str:
     """Cermin NK (credit_notes 'Melebihi sisa faktur ...'); tg.rp, sen tidak dibulatkan (Law 9)."""
-    return f"Melebihi sisa tagihan {tg.rp(sisa)}: nota debit {tg.rp(total)} atas {nomor_tagihan or 'tagihan'}."
+    return (f"Melebihi sisa tagihan {tg.rp(sisa)}: nota debit {tg.rp(total)} atas {nomor_tagihan or 'tagihan'}. "
+            "Kurangi qty retur, atau buat sesudah tagihan lunas (nota debit lalu jadi saldo kredit vendor).")
 
 
 def kalimat_nd_refund_melebihi_sisa(jumlah, sisa) -> str:
