@@ -45,7 +45,7 @@ FUNGSI = {
     "routers/proformas.py": ["create_proforma"],
     "routers/journals.py": ["get_next_journal_number", "reclassify_bill_inventory"],
     "routers/bank_accounts.py": ["create_bank_account"],
-    "routers/expenses.py": ["void_expense"],
+    "routers/expenses.py": ["_batal_biaya"],  # Biaya t2: badan void_expense dipindah UTUH ke inti (dipakai /void DAN /void/preview)
     "routers/bank_transfers.py": ["void_bank_transfer"],
 }
 # Default saat klien kosong: tanggal bisnis HANYA boleh jadi cabang cadangan.
@@ -244,7 +244,7 @@ async def test_batal_giro_jurnal_pembalik_bertanggal_bisnis(jam, monkeypatch, in
 
 
 @pytest.mark.parametrize("berkas,nama", [
-    ("routers/expenses.py", "void_expense"),
+    ("routers/expenses.py", "_batal_biaya"),  # Biaya t2: inti void biaya (rute void_expense kini hanya pembungkus)
     ("routers/bank_transfers.py", "void_bank_transfer"),
     ("routers/bill_payments.py", "void_bill_payment"),
 ])

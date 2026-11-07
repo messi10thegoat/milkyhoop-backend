@@ -83,7 +83,10 @@ def _fungsi_void(src, rute):
                         and getattr(d.func, "attr", "") == "post":
                     # 4 Okt 2026 (U3a): handler bisa mendelegasikan ke inti di modul yang sama (void_deposit_core,
                     # dipakai /void DAN /void/preview) -> periksa INTI itu; invarian (cek sesudah kunci, sebelum tulis) tetap.
-                    inti = {f.name: f for f in t.body if isinstance(f, ast.AsyncFunctionDef) and f.name.endswith("_core")}
+                    # Biaya t2 (7 Nov 2026): void_expense mendelegasikan ke _batal_biaya (badan dipindah UTUH; dipakai /void DAN
+                    # /void/preview) -> nama inti eksplisit, bukan berakhiran _core.
+                    inti = {f.name: f for f in t.body if isinstance(f, ast.AsyncFunctionDef)
+                            and (f.name.endswith("_core") or f.name in ("_batal_biaya",))}
                     dipanggil = [c.func.id for c in ast.walk(n) if isinstance(c, ast.Call)
                                  and getattr(c.func, "id", "") in inti]
                     return inti[dipanggil[0]] if dipanggil else n

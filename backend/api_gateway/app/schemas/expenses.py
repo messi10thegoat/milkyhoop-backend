@@ -247,6 +247,44 @@ class ExpenseDetailResponse(BaseModel):
     aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
+class ExpenseDocAnchor(BaseModel):
+    """Biaya t2: jangkar bundel dokumen (services/biaya_riwayat; position_text = biaya_daftar.position_text, SAMA dgn daftar)."""
+
+    kind: Literal["expense"] = "expense"
+    id: str
+    number: Optional[str] = None
+    date: Optional[str] = None
+    position_text: str
+    total: str
+    account_name: Optional[str] = None
+
+
+class ExpenseDocumentsData(BaseModel):
+    anchor: ExpenseDocAnchor
+    default: Dict[str, Any]
+    groups: List[Dict[str, Any]]
+
+
+class ExpenseDocumentsResponse(BaseModel):
+    success: bool = True
+    data: ExpenseDocumentsData
+
+
+class ExpenseHistoryData(BaseModel):
+    """Bentuk SAMA dgn riwayat SO/tagihan (so_riwayat._selesaikan)."""
+
+    expense_id: str
+    expense_number: Optional[str] = None
+    events: List[Dict[str, Any]]
+    total: int
+    omitted: List[str]
+
+
+class ExpenseHistoryResponse(BaseModel):
+    success: bool = True
+    data: ExpenseHistoryData
+
+
 class CreateExpenseResponse(BaseModel):
     """Response for create expense endpoint."""
 

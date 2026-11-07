@@ -33,6 +33,8 @@ from ..schemas.expenses import (
     ExpenseSummaryResponse,
     CalculateExpenseResponse,
     ExpenseAutocompleteResponse,
+    ExpenseDocumentsResponse,
+    ExpenseHistoryResponse,
 )
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.rekening_bawaan import paid_through_bawaan
@@ -2943,3 +2945,29 @@ async def get_expense_journal_entries(request: Request, expense_id: UUID):
     except Exception as e:
         logger.error(f"Error getting expense journal entries: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get journal entries")
+
+
+@router.get("/{expense_id}/documents", response_model=ExpenseDocumentsResponse)
+async def get_expense_documents(request: Request, expense_id: UUID):
+    """Biaya t2: bundel dokumen satu biaya {anchor, default, groups} -- biaya · jurnal (+ pembalik) · bukti (services/biaya_riwayat)."""
+    from ..services.biaya_riwayat import dokumen_biaya
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await dokumen_biaya(conn, ctx["tenant_id"], expense_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Biaya tidak ditemukan.")
+    return {"success": True, "data": data}
+
+
+@router.get("/{expense_id}/history", response_model=ExpenseHistoryResponse)
+async def get_expense_history(request: Request, expense_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Biaya t2: riwayat satu biaya, bentuk SAMA dgn /sales-orders/{id}/history (services/biaya_riwayat; hapus bukti TAK tercatat)."""
+    from ..services.biaya_riwayat import riwayat_biaya
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await riwayat_biaya(conn, ctx["tenant_id"], expense_id, limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Biaya tidak ditemukan.")
+    return {"success": True, "data": data}
