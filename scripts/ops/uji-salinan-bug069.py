@@ -15,7 +15,7 @@ from starlette.requests import Request
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import items as RI  # noqa: E402
 from app.routers import vendor_credits as RVC  # noqa: E402
-from app.schemas.vendor_credits import ApplyVendorCreditRequest, CreateVendorCreditRequest, ReceiveRefundRequest  # noqa: E402
+from app.schemas.vendor_credits import ApplyVendorCreditRequest, CreateVendorCreditRequest, ReceiveRefundRequest, UnapplyVendorCreditRequest  # noqa: E402
 
 TID = "pt-kita-nyawit-bersama"
 HASIL = []
@@ -138,18 +138,16 @@ async def main():
     cek("T5 terapkan ke BILL-0007: sisa turun sebesar total, kredit ND jadi 0", s7a - s7b == tot and D(str(await RVC.ND.sisa_nd(c, TID, UUID_(vid)))) == 0,
         f"BILL-0007 {s7a} -> {s7b}")
 
-    # T6 ND kedua -> refund tunai ke Mandiri (bank) -> cermin bank
-    lines2 = [{"original_bill_item_id": str(baris[-1]["id"]), "quantity": "1"}]
-    pv2 = await RVC.preview_create_vendor_credit(req(uid), RVC.VendorCreditPreviewRequest(original_bill_id=str(b8["id"]), reason="return", lines=lines2))
-    r2 = await RVC.create_vendor_credit(req(uid, f"k069-{uuid.uuid4()}"), CreateVendorCreditRequest(**pv2["data"]["payload"]))
-    v2 = (r2["data"] if isinstance(r2, dict) else r2.data)["id"]
-    await RVC.post_vendor_credit(req(uid, f"k069p-{uuid.uuid4()}"), UUID_(v2))
-    t2 = int(D(str(await c.fetchval("SELECT total_amount FROM vendor_credits WHERE id = $1", UUID_(v2)))))
-    bank = await c.fetchval("SELECT id FROM bank_accounts WHERE tenant_id = $1 AND account_name = 'Mandiri Operasional'", TID)
-    await RVC.receive_refund(req(uid, f"k069r-{uuid.uuid4()}"), UUID_(v2),
-                             ReceiveRefundRequest(amount=t2, refund_date=date.today(), payment_method="transfer", bank_account_id=str(bank)))
-    bt = await c.fetchval("SELECT count(*) FROM bank_transactions bt JOIN journal_entries je ON je.id = bt.journal_id WHERE je.source_id::text = $1 AND je.source_type = 'VENDOR_CREDIT_REFUND'", v2)
-    cek("T6 ND kedua refund tunai: kredit 0 + cermin bank_transactions", D(str(await RVC.ND.sisa_nd(c, TID, UUID_(v2)))) == 0 and bt >= 1, f"refund {t2} bank_txn {bt}")
+    # T6 lepas penerapan (jalur yang ada) lalu refund tunai penuh ke Mandiri (bank) -> cermin bank (stok UJI3 di salinan tak cukup utk ND kedua)
+    await RVC.unapply_vendor_credit(req(uid, f"k069u-{uuid.uuid4()}"), UUID_(vid), UnapplyVendorCreditRequest(reason="uji salinan BUG-069"))
+    s7c = await sisa(c, b7)
+    kr = D(str(await RVC.ND.sisa_nd(c, TID, UUID_(vid))))
+    cek("T6a lepas: BILL-0007 kembali, kredit vendor kembali = total", s7c == s7a and kr == tot, f"BILL-0007 {s7c} kredit {kr}")
+    bank = await c.fetchval("SELECT id FROM bank_accounts WHERE tenant_id = $1 AND account_name = $2", TID, "Mandiri Operasional")
+    await RVC.receive_refund(req(uid, f"k069r-{uuid.uuid4()}"), UUID_(vid),
+                             ReceiveRefundRequest(amount=int(tot), refund_date=date.today(), payment_method="transfer", bank_account_id=str(bank)))
+    bt = await c.fetchval("SELECT count(*) FROM bank_transactions bt JOIN journal_entries je ON je.id = bt.journal_id WHERE je.source_id::text = $1 AND je.source_type = $2", vid, "VENDOR_CREDIT_REFUND")
+    cek("T6b refund tunai: kredit 0 + cermin bank_transactions", D(str(await RVC.ND.sisa_nd(c, TID, UUID_(vid)))) == 0 and bt >= 1, f"refund {tot} bank_txn {bt}")
 
     # T7 sebagian lunas -> blok berkalimat (BILL-0007 sisa kini lebih kecil dari ND semua baris)
     pv3 = await RVC.preview_create_vendor_credit(req(uid), RVC.VendorCreditPreviewRequest(original_bill_id=str(b7), reason="return"))
