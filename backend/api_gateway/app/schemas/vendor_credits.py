@@ -56,6 +56,8 @@ class CreateVendorCreditRequest(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=255)
     vendor_credit_date: date
     original_bill_id: Optional[str] = Field(None, description="Original bill UUID")
+    # BUG-069 (V485): faktur SUMBER retur (batas qty, gudang, WAC) TANPA atribusi hutang -> retur dari faktur LUNAS = saldo kredit vendor
+    return_bill_id: Optional[str] = Field(None, description="Faktur sumber retur (tanpa atribusi hutang)")
     reason: Literal["return", "pricing_error", "discount", "damaged", "other"]
     reason_detail: Optional[str] = Field(None, max_length=500)
     ref_no: Optional[str] = Field(None, max_length=100, description="Vendor's credit note number")

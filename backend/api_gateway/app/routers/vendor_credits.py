@@ -669,8 +669,17 @@ async def _susun_nd(conn, ctx: dict, body: CreateVendorCreditRequest, bl) -> dic
                                                                      UUID(body.vendor_id) if body.vendor_id else None))
         if bill:
             original_bill_number = bill["invoice_number"]
+    return_bill_id, return_bill_number = None, None   # BUG-069 (V485): sumber retur = return_bill_id, atau atribusi bila bukan potongan
+    if body.return_bill_id:
+        rb = await bl.coba("TAGIHAN_TIDAK_SESUAI", ND.tagihan_milik(conn, ctx["tenant_id"], body.return_bill_id,
+                                                                   UUID(body.vendor_id) if body.vendor_id else None))
+        if rb:
+            return_bill_id, return_bill_number = rb["id"], rb["invoice_number"]
+    elif body.original_bill_id and body.reason not in ND.ALASAN_POTONGAN:
+        return_bill_id, return_bill_number = UUID(str(body.original_bill_id)), original_bill_number
     return {"items": calculated_items, "subtotal": subtotal, "discount_amount": overall_discount, "tax_amount": overall_tax,
-            "total_amount": total_amount, "original_bill_number": original_bill_number}
+            "total_amount": total_amount, "original_bill_number": original_bill_number,
+            "return_bill_id": return_bill_id, "return_bill_number": return_bill_number}
 
 
 @router.post("", response_model=VendorCreditResponse, status_code=201)
@@ -713,9 +722,9 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
                         status, credit_date, reason, reason_detail,
-                        ref_no, notes, created_by
+                        ref_no, notes, created_by, return_bill_id, return_bill_number
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                              'draft', $13, $14, $15, $16, $17, $18)
+                              'draft', $13, $14, $15, $16, $17, $18, $19, $20)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -736,6 +745,8 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                     body.ref_no,
                     body.notes,
                     ctx["user_id"],
+                    s["return_bill_id"],
+                    s["return_bill_number"],
                 )
 
                 # Insert items
@@ -906,9 +917,18 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
     if penuh:
         diskon_dok = _q2(diskon_dok_tagihan)  # ND penuh = diskon dokumen tagihan PENUH (tanpa selisih pembulatan pro-rata)
     create = None
+    # BUG-069 (putusan pemilik LANGSUNG 7 Nov, pola Accurate/NetSuite): faktur sudah LUNAS (sisa hutang jurnal 0) -> retur tetap dari
+    # faktur ini (return_bill_id: batas qty, gudang, WAC) tetapi TANPA atribusi hutang -> nilai ND = saldo kredit vendor (compute_ap
+    # cabang 5), dipotong ke tagihan berikut (terapkan) atau diterima tunai (receive-refund). Sebagian lunas -> blok MELEBIHI_SISA_TAGIHAN.
+    _sisa_t = await ND.sisa_tagihan_jurnal(conn, tid, bid)   # None = tagihan tak aktif (draf/batal) -> BUKAN lunas (blok lain berlaku)
+    lunas = body.reason not in ND.ALASAN_POTONGAN and _sisa_t is not None and _sisa_t <= 0
+    if lunas and items:
+        notes.append(_b("ND_JADI_KREDIT_VENDOR", f"Faktur pembelian {nomor} sudah lunas — nilai nota debit jadi saldo kredit vendor "
+                        "(bisa dipotong ke tagihan berikutnya atau diterima tunai)."))
     if items:
         create = {"vendor_id": str(bill["vendor_id"]) if bill["vendor_id"] else None, "vendor_name": bill["vendor_name"] or "-",
-                  "vendor_credit_date": body.vendor_credit_date, "original_bill_id": str(bill["id"]), "reason": body.reason,
+                  "vendor_credit_date": body.vendor_credit_date, "original_bill_id": None if lunas else str(bill["id"]),
+                  **({"return_bill_id": str(bill["id"])} if lunas else {}), "reason": body.reason,
                   "reason_detail": body.reason_detail, "ref_no": body.ref_no, "notes": body.notes, "items": items,
                   "discount_percent": 0, "discount_amount": diskon_dok, "tax_rate": 0 if per_baris else float(bill["tax_rate"] or 0)}
     return {**kosong, "lines": lines, "create": create, "penuh": penuh and bool(items)}
@@ -976,6 +996,7 @@ async def preview_create_vendor_credit(request: Request, body: VendorCreditPrevi
                     vc = {"id": _uuid.uuid4(), "status": "draft", "credit_number": nomor, "vendor_name": badan.vendor_name,
                           "original_bill_id": UUID(badan.original_bill_id) if badan.original_bill_id else None,
                           "original_bill_number": s["original_bill_number"], "subtotal": s["subtotal"], "tax_amount": s["tax_amount"],
+                          "return_bill_id": s["return_bill_id"], "return_bill_number": s["return_bill_number"],
                           "total_amount": s["total_amount"], "reason": badan.reason, "credit_date": badan.vendor_credit_date}
                     baris = _baris_maya(s["items"])
                     r = await NDR.rencana_posting(conn, ctx, vc, pratinjau=True, items=baris)
