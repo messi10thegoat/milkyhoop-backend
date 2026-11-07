@@ -119,3 +119,23 @@ def test_router_mencatat_riwayat_dan_rute_history():
     assert '_ad.nama("purchase_order", "updated")' in inspect.getsource(PO.update_purchase_order)
     assert '_ad.nama("purchase_order", "received")' in inspect.getsource(PO.receive_goods)
     assert any(r.path == "/{po_id}/history" and "GET" in r.methods for r in PO.router.routes)
+
+
+def test_kontrol_riwayat_tagihan_tetap_memuat_pembayaran(monkeypatch):
+    """Kontrol: riwayat faktur pembelian (pemakai lama bagian_tagihan) tetap memuat dibuat/diposting/dibayar, satu tagihan."""
+    from app.services import tagihan_riwayat as TR
+    b = _bill(posted_at=W(6), posted_by=U1)
+    bp = {"id": uuid.uuid4(), "payment_number": "BP-1", "posted_at": W(7), "posted_by": U2, "voided_at": None, "voided_by": None,
+          "void_reason": None, "bill_id": b["id"], "jumlah": Decimal("1110")}
+
+    class KT(Kon):
+        async def fetchrow(self, sql, *a):
+            return b
+    tangkap = {}
+    async def sel(conn, tid, k, ent, lihat, limit):
+        tangkap.update(ev=k.ev, ent=ent); return [], len(k.ev)
+    monkeypatch.setattr(TR, "_selesaikan", sel)
+    async def boleh(m): return True
+    r = asyncio.run(TR.riwayat_tagihan(KT(bayar=[bp]), T, b["id"], boleh))
+    assert [e["jenis"] for e in tangkap["ev"]] == ["TAGIHAN_DIBUAT", "TAGIHAN_DIPOSTING", "PEMBAYARAN_DIBAYAR"]
+    assert tangkap["ent"] == {"bill": [b["id"]]} and r["invoice_number"] == "PB-2610-0003" and r["omitted"] == []

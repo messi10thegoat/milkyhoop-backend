@@ -3,14 +3,26 @@ supaya petaRiwayatPolish FE dipakai apa adanya. Ekor bersama (_selesaikan: gabun
 
 Sumber kejadian:
   kolom siklus PO (beraktor): dibuat (created_by), dikirim (sent_by), dibatalkan (cancelled_by + alasan), ditutup (closed_by)
-  audit_logs beraktor (catat_riwayat di router PO, kejadian TANPA kolom): PO_UPDATED (medan), PO_RECEIVED (penerimaan), PO_BILLED (tagihan dari PO)
-  tagihan bertaut (bills.purchase_order_id) tampil bila izin baca purchase_invoice; tanpa izin -> `omitted`.
+  audit_logs beraktor (catat_riwayat di router PO, kejadian TANPA kolom): PO_UPDATED (medan), PO_RECEIVED (penerimaan)
+  tagihan bertaut (bills.purchase_order_id ATAU baris bill_items.purchase_order_item_id -- data BUG-036) tampil bila izin baca
+  purchase_invoice; kejadiannya = tagihan_riwayat.bagian_tagihan (dibuat/diposting/dibatalkan + bayar keluar/UM vendor/nota debit, BUG-112 d,
+  SATU sumber dengan riwayat faktur pembelian). Tanpa izin -> `omitted`.
 None = PO tak ada di tenant ini (-> 404)."""
 from typing import Awaitable, Callable, Optional
 
 from .so_riwayat import _Kumpul, _rp, _selesaikan
+from .tagihan_riwayat import MODUL_TAGIHAN, SQL_TAGIHAN, bagian_tagihan
 
-MODUL_PO = {"purchase_order": "purchase_order", "bill": "purchase_invoice"}
+MODUL_PO = {"purchase_order": "purchase_order", **MODUL_TAGIHAN}
+
+
+async def tagihan_po(conn, tenant_id: str, po_id) -> list:
+    """Tagihan bertaut PO: kepala bills.purchase_order_id ATAU baris bill_items.purchase_order_item_id (padanan po_daftar.po_terkait_bill)."""
+    return await conn.fetch(
+        f"""{SQL_TAGIHAN}
+            WHERE b.tenant_id = $1 AND (b.purchase_order_id = $2 OR b.id IN (
+                SELECT bi.bill_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id WHERE i.po_id = $2))
+            ORDER BY b.created_at""", tenant_id, po_id)
 
 
 async def riwayat_po(conn, tenant_id: str, po_id, boleh: Callable[[str], Awaitable[bool]], limit: int = 200) -> Optional[dict]:
@@ -34,11 +46,7 @@ async def riwayat_po(conn, tenant_id: str, po_id, boleh: Callable[[str], Awaitab
     alasan = f": {po['cancelled_reason']}" if po["cancelled_reason"] else ""
     k.tambah(po["cancelled_at"], "PO_DIBATALKAN", f"Pesanan pembelian {n} dibatalkan{alasan}", po["cancelled_by"], "purchase_order", po["id"], n)
     k.tambah(po["closed_at"], "PO_DITUTUP", f"Pesanan pembelian {n} ditutup", po["closed_by"], "purchase_order", po["id"], n)
-    if lihat["bill"]:
-        for b in await conn.fetch(
-            """SELECT id, invoice_number, grand_total, created_at, created_by FROM bills
-               WHERE tenant_id = $1 AND purchase_order_id = $2 ORDER BY created_at""", tenant_id, po_id):
-            k.tambah(b["created_at"], "TAGIHAN_DIBUAT", f"Tagihan {b['invoice_number']} {_rp(b['grand_total'])} dibuat dari pesanan {n}",
-                     b["created_by"], "bill", b["id"], b["invoice_number"])
-    keluar, total = await _selesaikan(conn, tenant_id, k, {"purchase_order": [po["id"]]}, lihat, limit)
+    bills = await tagihan_po(conn, tenant_id, po["id"]) if lihat["bill"] else []
+    await bagian_tagihan(conn, tenant_id, k, bills, lihat)
+    keluar, total = await _selesaikan(conn, tenant_id, k, {"purchase_order": [po["id"]], "bill": [b["id"] for b in bills]}, lihat, limit)
     return {"purchase_order_id": str(po["id"]), "po_number": n, "events": keluar, "total": total, "omitted": omitted}
