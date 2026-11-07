@@ -185,10 +185,7 @@ class EntityResolver:
             _rj_nomor = (entities or {}).get("journal_number") or (entities or {}).get("name")
             _rj_nomor = str(_rj_nomor).strip() if _rj_nomor else ""
             if _rj_nomor:
-                try:
-                    from ...routers.journals import REVERSAL_ALLOWLIST as _RJ_ALLOW
-                except Exception:  # noqa: BLE001
-                    _RJ_ALLOW = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT"}
+                from ..jurnal_daftar import REVERSAL_ALLOWLIST as _RJ_ALLOW  # satu daftar (salinan cadangan basi dihapus 7 Nov)
                 _rj = await self.db.fetchrow(
                     """SELECT id, source_type, source_id FROM journal_entries
                        WHERE tenant_id = $1 AND journal_number ILIKE $2 ORDER BY created_at DESC LIMIT 1""",

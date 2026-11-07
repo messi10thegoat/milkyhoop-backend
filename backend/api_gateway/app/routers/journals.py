@@ -4,7 +4,7 @@ Journals Router - Manual Journal Entry Management
 CRUD endpoints for manual journal entries with double-entry validation.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional
 from uuid import UUID
 import logging
@@ -14,6 +14,8 @@ from decimal import Decimal
 
 from ..services import teks_galat as tg
 from ..services import kasbank_tulis as KT
+from ..services import jurnal_daftar as JD  # standar SO (7 Nov): satu penentu kunci aksi/teks posisi/aksi tersedia
+from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.journals import (
     CreateJournalRequest,
@@ -23,6 +25,8 @@ from ..schemas.journals import (
     JournalListItem,
     JournalListResponse,
     JournalSummary,
+    JournalDetailResponse,
+    JournalKunciSummaryResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,6 +116,8 @@ async def list_journals(
     sort_order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    aksi: Optional[str] = Query(None, description="Kunci: tidak_seimbang, draf, manual, dibalik, pembalik, dibatalkan, bulan_ini"),
+    with_totals: bool = Query(False, description="Sertakan sum_debit/sum_kredit dari BARIS jurnal (Law 1)"),
 ):
     """List journal entries with filters."""
     try:
@@ -119,7 +125,6 @@ async def list_journals(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             conditions = ["je.tenant_id = $1"]
             params = [ctx["tenant_id"]]
@@ -140,7 +145,9 @@ async def list_journals(
                 params.append(end_date)
                 param_idx += 1
 
-            if status:
+            if isinstance(status, str) and status.lower() == "reversed":  # skema lama menjanjikan 'reversed' -> dulu selalu 0
+                conditions.append(JD.sql_aksi("dibalik", ""))
+            elif status:
                 conditions.append(f"je.status = ${param_idx}")
                 params.append(status.upper())
                 param_idx += 1
@@ -160,10 +167,19 @@ async def list_journals(
                 params.append(account_id)
                 param_idx += 1
 
-            if search:
-                conditions.append(f"je.description ILIKE ${param_idx}")
-                params.append(f"%{search}%")
-                param_idx += 1
+            cari_sql, cari_params = _syarat_cari(search, param_idx)
+            if cari_sql:
+                conditions.append(cari_sql)
+                params.extend(cari_params)
+                param_idx += len(cari_params)
+
+            if isinstance(aksi, str) and aksi:
+                if aksi not in JD.SEMUA_KUNCI:
+                    raise HTTPException(status_code=422, detail=f"aksi tidak dikenal: {aksi}")
+                conditions.append(JD.sql_aksi(aksi, f"${param_idx}"))
+                if aksi == "bulan_ini":
+                    params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
+                    param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
@@ -189,8 +205,10 @@ async def list_journals(
                     COUNT(*) FILTER (WHERE status = 'POSTED') as posted_count,
                     COUNT(*) FILTER (WHERE status = 'VOID')   as void_count,
                     COUNT(*) FILTER (WHERE reversed_by_id IS NOT NULL) as reversed_count,
-                    COALESCE(SUM(je.total_debit), 0) as total_amount
+                    COALESCE(SUM(jb.d), 0) as total_amount,
+                    COALESCE(SUM(jb.k), 0) as total_kredit
                 FROM journal_entries je
+                {JD.SQL_BARIS}
                 WHERE {where_clause}
             """
             counts = await conn.fetchrow(count_query, *params)
@@ -214,8 +232,12 @@ async def list_journals(
 
             query = f"""
                 SELECT je.id, je.journal_number, je.journal_date, je.description,
-                       je.source_type, je.total_debit, je.total_credit, je.status, je.created_at
+                       je.source_type, je.total_debit, je.total_credit, je.status, je.created_at,
+                       je.reversed_by_id, je.reversal_of_id, jb.d AS baris_debit, jb.k AS baris_kredit,
+                       rb.journal_number AS nomor_pembalik, ro.journal_number AS nomor_asal
                 FROM journal_entries je
+                {JD.SQL_BARIS}
+                {JD.SQL_TAUTAN}
                 WHERE {where_clause}
                 ORDER BY {order_clause}
                 LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -236,6 +258,8 @@ async def list_journals(
                     total_credit=row["total_credit"] or Decimal("0"),
                     status=row["status"].lower() if row["status"] else "draft",
                     created_at=row["created_at"],
+                    aksi_semua=JD.aksi_semua(row),
+                    position_text=JD.position_text(row),
                 )
                 for row in rows
             ]
@@ -256,6 +280,8 @@ async def list_journals(
                     "total": counts["total"],
                     "has_more": offset + len(items) < counts["total"],
                 },
+                sum_debit=counts["total_amount"] if with_totals is True else None,
+                sum_kredit=counts["total_kredit"] if with_totals is True else None,
             )
 
     except HTTPException:
@@ -265,10 +291,41 @@ async def list_journals(
         raise HTTPException(status_code=500, detail="Failed to list journals")
 
 
+def _syarat_cari(search, idx: int):
+    """Cari keterangan ATAU nomor jurnal; SATU predikat untuk daftar dan /summary -> (sql, params)."""
+    if not isinstance(search, str) or not search.strip():
+        return "", []
+    return f"(je.description ILIKE ${idx} OR je.journal_number ILIKE ${idx})", [f"%{search.strip()}%"]
+
+
+@router.get("/summary", response_model=JournalKunciSummaryResponse)
+async def journals_summary(request: Request, search: Optional[str] = Query(None)):
+    """Ringkasan kunci: {k}_count/_value (Σ debit BARIS) dengan predikat + pencarian SAMA dengan GET /api/journals?aksi=k.
+    pill_tampil = urutan pill yang ditampilkan: tidak_seimbang HANYA bila > 0 (putusan MASTER P1), draf selalu."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        cari_sql, cari_params = _syarat_cari(search, 3)
+        kolom = ",\n".join(f"COUNT(*) FILTER (WHERE {JD.sql_aksi(k, '$2')}) AS {k}_count, "
+                           f"COALESCE(SUM(jb.d) FILTER (WHERE {JD.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in JD.SEMUA_KUNCI)
+        row = await conn.fetchrow(f"""
+            SELECT COUNT(*) AS total, {kolom}
+            FROM journal_entries je
+            {JD.SQL_BARIS}
+            WHERE je.tenant_id = $1 {"AND " + cari_sql if cari_sql else ""}""", ctx["tenant_id"], hari, *cari_params)
+    data = {"total": row["total"]}
+    for k in JD.SEMUA_KUNCI:
+        data[f"{k}_count"] = row[f"{k}_count"]
+        data[f"{k}_value"] = row[f"{k}_value"]
+    data["pill_tampil"] = [k for k in JD.AKSI_JURNAL if k == "draf" or row[f"{k}_count"] > 0]
+    return {"success": True, "data": data}
+
+
 # =============================================================================
 # GET JOURNAL DETAIL
 # =============================================================================
-@router.get("/{journal_id}", response_model=dict)
+@router.get("/{journal_id}", response_model=JournalDetailResponse)
 async def get_journal(request: Request, journal_id: UUID):
     """Get journal entry detail with lines."""
     try:
@@ -276,14 +333,18 @@ async def get_journal(request: Request, journal_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Get journal header
             je_row = await conn.fetchrow(
-                """
-                SELECT je.*, fp.period_name
+                f"""
+                SELECT je.*, fp.period_name, jb.d AS baris_debit, jb.k AS baris_kredit,
+                       rb.journal_number AS nomor_pembalik, ro.journal_number AS nomor_asal,
+                       (SELECT p.status FROM fiscal_periods p WHERE p.tenant_id = je.tenant_id
+                         AND je.journal_date BETWEEN p.start_date AND p.end_date ORDER BY p.start_date DESC LIMIT 1) AS status_periode
                 FROM journal_entries je
                 LEFT JOIN fiscal_periods fp ON fp.id = je.period_id
+                {JD.SQL_BARIS}
+                {JD.SQL_TAUTAN}
                 WHERE je.id = $1 AND je.tenant_id = $2
             """,
                 journal_id,
@@ -335,8 +396,7 @@ async def get_journal(request: Request, journal_id: UUID):
                     lines=line_responses,
                     total_debit=je_row["total_debit"] or Decimal("0"),
                     total_credit=je_row["total_credit"] or Decimal("0"),
-                    is_balanced=(je_row["total_debit"] or 0)
-                    == (je_row["total_credit"] or 0),
+                    is_balanced="tidak_seimbang" not in JD.aksi_semua(je_row),  # dulu header saja; kini baris vs header (Law 4)
                     status=je_row["status"].lower() if je_row["status"] else "draft",
                     reversal_of_id=str(je_row["reversal_of_id"])
                     if je_row["reversal_of_id"]
@@ -352,6 +412,9 @@ async def get_journal(request: Request, journal_id: UUID):
                     if je_row["status"] == "POSTED"
                     else None,
                     posted_by=None,
+                    aksi_semua=JD.aksi_semua(je_row),
+                    position_text=JD.position_text(je_row),
+                    aksi_tersedia=JD.aksi_tersedia(je_row, je_row["status_periode"] in ("CLOSED", "LOCKED")),
                 ),
             }
 
@@ -365,15 +428,18 @@ async def get_journal(request: Request, journal_id: UUID):
 # =============================================================================
 # CREATE JOURNAL
 # =============================================================================
-@router.post("", response_model=dict, status_code=201)
-async def create_journal(request: Request, body: CreateJournalRequest):
+@router.post("", response_model=JournalDetailResponse, status_code=201)
+async def create_journal(request: Request, body: CreateJournalRequest, response: Response = None):
     """Create a manual journal entry."""
     try:
         ctx = get_user_context(request)
+        try:
+            kunci_klien = kunci_idempotensi_klien(request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check period is open
             period = await conn.fetchrow(
@@ -406,73 +472,36 @@ async def create_journal(request: Request, body: CreateJournalRequest):
                 "DRAFT" if body.save_as_draft or needs_approval else "POSTED"
             )
 
-            # Calculate totals
-            total_debit = sum(line.debit for line in body.lines)
-            total_credit = sum(line.credit for line in body.lines)
-
             async with conn.transaction():
                 # Law 13: Advisory lock on manual journal creation
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"MANUAL_CREATE:{ctx['tenant_id']}",
                 )
+                # Law 14 (Jurnal standar SO, 7 Nov): X-Idempotency-Key OPSIONAL (sekali per buka form). Lock di atas hanya
+                # men-serialkan (tap 2x = 2 jurnal); kunci sama + isi sama = replay jurnal yang sama, isi beda = 409.
+                kunci_penuh = sidik = lama = None
+                if kunci_klien:
+                    kunci_penuh = f"JOURNAL_CREATE:{ctx['user_id']}:{kunci_klien}"
+                    sidik = hash_payload(body.model_dump(mode="json"))
+                    try:
+                        lama = await ambil_replay_klien(conn, ctx["tenant_id"], kunci_penuh, sidik)
+                    except LookupError as e:
+                        asli = (getattr(e, "respons", None) or {})
+                        raise HTTPException(status_code=409, detail={
+                            "code": "IDEMPOTENCY_KEY_REUSED",
+                            "message": "Kunci idempotensi sudah dipakai untuk jurnal dengan isi berbeda. Muat ulang formulir.",
+                            "journal_id": asli.get("id")})
+                    if lama is not None and response is not None:
+                        response.headers["X-Idempotent-Replay"] = "true"
 
-                # Law 23: Generate journal number inside transaction
-                journal_number = await get_next_journal_number(
-                    conn, ctx["tenant_id"], "JV", body.entry_date
-                )
-
-                # Law 31 Gate 4: Block derived-layer accounts in manual journal
-                await validate_no_derived_layer_accounts(
-                    conn, ctx["tenant_id"], body.lines
-                )
-
-                # Law 20: Always INSERT as DRAFT first
-                journal_id = await conn.fetchval(
-                    """
-                    INSERT INTO journal_entries (
-                        tenant_id, journal_number, journal_date, description,
-                        source_type, total_debit, total_credit, status,
-                        period_id, created_by
-                    )
-                    VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'DRAFT', $7, $8)
-                    RETURNING id
-                """,
-                    ctx["tenant_id"],
-                    journal_number,
-                    body.entry_date,
-                    body.description,
-                    total_debit,
-                    total_credit,
-                    period["id"] if period else None,
-                    ctx["user_id"],
-                )
-
-                # Create journal lines
-                for i, line in enumerate(body.lines, 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            journal_id, line_number, account_id, memo, debit, credit
-                        )
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                        journal_id,
-                        i,
-                        UUID(line.account_id),
-                        line.description,
-                        line.debit,
-                        line.credit,
-                    )
-
-                # Law 20: If intended status is POSTED, update after lines (triggers hash chain)
-                if initial_status == "POSTED":
-                    # K2 kas-negatif: jurnal MANUAL yang mengkredit rekening KAS tak boleh membuatnya minus (koreksi = hitung fisik)
-                    await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [(UUID(ln.account_id), ln.debit, ln.credit) for ln in body.lines])
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        journal_id,
-                    )
+                if lama is not None:
+                    journal_id = UUID(str(lama["id"]))
+                else:
+                    journal_id = await _tulis_jurnal_manual(conn, ctx, body, period, initial_status)
+                    if kunci_penuh:
+                        await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "JOURNAL_CREATE", sidik,
+                                                  {"id": str(journal_id)}, result_id=journal_id)
 
         # Law 32: koneksi pertama DILEPAS dulu (get_journal mengambil koneksi pool sendiri; dulu 10 permintaan
         # jurnal bersamaan = pool 10 habis, semua menunggu koneksi kedua -> gateway beku, 28 Sep journey V323).
@@ -485,10 +514,74 @@ async def create_journal(request: Request, body: CreateJournalRequest):
         raise HTTPException(status_code=500, detail="Failed to create journal")
 
 
+async def _tulis_jurnal_manual(conn, ctx: dict, body: CreateJournalRequest, period, initial_status: str) -> UUID:
+    """Tulis jurnal MANUAL di transaksi pemanggil (sesudah lock): nomor -> pagar lapisan turunan -> DRAFT -> baris -> POSTED."""
+    total_debit = sum(line.debit for line in body.lines)
+    total_credit = sum(line.credit for line in body.lines)
+
+    # Law 23: Generate journal number inside transaction
+    journal_number = await get_next_journal_number(
+        conn, ctx["tenant_id"], "JV", body.entry_date
+    )
+
+    # Law 31 Gate 4: Block derived-layer accounts in manual journal
+    await validate_no_derived_layer_accounts(
+        conn, ctx["tenant_id"], body.lines
+    )
+
+    # Law 20: Always INSERT as DRAFT first
+    journal_id = await conn.fetchval(
+        """
+        INSERT INTO journal_entries (
+            tenant_id, journal_number, journal_date, description,
+            source_type, total_debit, total_credit, status,
+            period_id, created_by
+        )
+        VALUES ($1, $2, $3, $4, 'MANUAL', $5, $6, 'DRAFT', $7, $8)
+        RETURNING id
+    """,
+        ctx["tenant_id"],
+        journal_number,
+        body.entry_date,
+        body.description,
+        total_debit,
+        total_credit,
+        period["id"] if period else None,
+        ctx["user_id"],
+    )
+
+    # Create journal lines
+    for i, line in enumerate(body.lines, 1):
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                journal_id, line_number, account_id, memo, debit, credit
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+            journal_id,
+            i,
+            UUID(line.account_id),
+            line.description,
+            line.debit,
+            line.credit,
+        )
+
+    # Law 20: If intended status is POSTED, update after lines (triggers hash chain)
+    if initial_status == "POSTED":
+        # K2 kas-negatif: jurnal MANUAL yang mengkredit rekening KAS tak boleh membuatnya minus (koreksi = hitung fisik)
+        await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [(UUID(ln.account_id), ln.debit, ln.credit) for ln in body.lines])
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1 AND tenant_id = $2",
+            journal_id, ctx["tenant_id"],
+        )
+    return journal_id
+
+
 # =============================================================================
 # POST DRAFT JOURNAL
 # =============================================================================
-@router.post("/{journal_id}/post", response_model=dict)
+@router.post("/{journal_id}/post", response_model=JournalDetailResponse)
 async def post_journal(request: Request, journal_id: UUID):
     """Post a draft journal entry."""
     try:
@@ -496,7 +589,6 @@ async def post_journal(request: Request, journal_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check journal exists and is draft
             journal = await conn.fetchrow(
@@ -548,6 +640,11 @@ async def post_journal(request: Request, journal_id: UUID):
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"MANUAL_POST:{str(journal_id)}",
                 )
+                # T2 (7 Nov): status diperiksa ULANG sesudah lock -- dua "Posting" bersamaan: yang kedua 409 berkata-kata
+                kini = await conn.fetchval("SELECT status FROM journal_entries WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                                           journal_id, ctx["tenant_id"])
+                if kini != "DRAFT":
+                    raise HTTPException(status_code=409, detail="Jurnal sudah diposting.")
                 if journal["source_type"] == "MANUAL":  # K2 kas-negatif: sama dgn jalur buat-langsung-posting
                     await KT.tolak_kas_minus_baris(conn, ctx["tenant_id"], [tuple(b) for b in await conn.fetch(
                         "SELECT account_id, debit, credit FROM journal_lines WHERE journal_id = $1", journal_id)])
@@ -577,38 +674,10 @@ async def post_journal(request: Request, journal_id: UUID):
 # =============================================================================
 # REVERSE JOURNAL
 # =============================================================================
-# 14 Sep 2026 Gate 5 (TIKET-pembalikan-generik): pembalikan jurnal UMUM hanya untuk jurnal manual/penyesuaian yang
-# TAK punya dokumen/lapisan pemilik. Jurnal milik dokumen dibalik lewat VOID dokumennya supaya dokumen + lapisan
-# turunannya ikut dibalik. Allowlist = fail-closed (source_type baru otomatis ditolak). REVERSAL dikeluarkan (Law 26).
-REVERSAL_ALLOWLIST = {"MANUAL", "ADJUSTMENT", "RECONCILIATION_ADJUSTMENT", "RECLASSIFY_CN_COGS_GAP", "RECLASSIFY_TAX_D1_DRIFT", "RECLASSIFY_BILL_INVENTORY"}
-_VOID_PANDUAN = [
-    (("BILL", "PURCHASE_INVOICE", "PAYMENT_BILL", "BILL_PAYMENT", "BILL_PAYMENT_VOID"), "batalkan tagihan/pembayarannya (void bill)"),
-    (("INVOICE", "SALES_INVOICE", "SALES_INVOICE_COGS", "INVOICE_FULFILLMENT", "INVOICE_REVENUE", "CASH_SALE", "POS_SALE", "POS_COGS", "SALES_RECEIPT", "SALES_RECEIPT_COGS"), "batalkan fakturnya (void invoice)"),
-    (("RECEIVE_PAYMENT", "PAYMENT_RECEIVED", "PAYMENT_MADE"), "batalkan pembayarannya (void payment)"),
-    (("EXPENSE", "EXPENSE_REVERSAL"), "batalkan bebannya (void expense)"),
-    (("CUSTOMER_DEPOSIT", "VENDOR_DEPOSIT", "DEPOSIT_APPLICATION", "DEPOSIT_REFUND"), "batalkan/kembalikan uang mukanya lewat modulnya"),
-    (("CREDIT_NOTE", "CREDIT_NOTE_COGS", "CREDIT_NOTE_REFUND", "VENDOR_CREDIT", "VENDOR_CREDIT_COGS", "VENDOR_CREDIT_REFUND"), "batalkan nota kredit/kredit vendornya lewat modulnya"),
-    (("PRODUCTION_OUTPUT", "PRODUCTION_LABOR", "PRODUCTION_OVERHEAD", "PRODUCTION_VARIANCE", "PRODUCTION_OUTPUT_VOID", "PRODUCTION_RECONCILE", "MATERIAL_ISSUE", "FG_RECEIPT"), "batalkan lewat modul produksi (batalkan work order: POST /api/production/{id}/cancel, atau void rekonsiliasi bulanan)"),
-    (("BANK_TRANSACTION", "BANK_TRANSFER", "BRANCH_TRANSFER"), "batalkan lewat modul kas & bank (void transaksi/transfer)"),
-    (("CHEQUE_RECEIVED", "CHEQUE_ISSUED", "CHEQUE_DEPOSIT", "CHEQUE_BOUNCE_AR", "CHEQUE_BOUNCE_CHARGES", "CHEQUE_BOUNCE_REVERSAL", "CHEQUE_CANCEL", "CHEQUE_DELETE"), "batalkan lewat modul cek"),
-    (("PAYROLL", "PAYROLL_PAYMENT", "PAYROLL_BPJS_PAYMENT", "PAYROLL_TAX_PAYMENT"), "batalkan lewat modul penggajian"),
-    (("FIXED_ASSET", "ASSET_DISPOSAL", "ASSET_SALE", "DEPRECATION"), "batalkan lewat modul aset tetap"),
-    (("STOCK_ADJUSTMENT", "STOCK_TRANSFER"), "batalkan lewat modul stok"),
-    (("DELIVERY_NOTE", "DELIVERY_NOTE_REVERSAL", "DELIVERY_INVOICED", "DELIVERY_INVOICED_REVERSAL"), "batalkan Surat Jalan atau faktur terkait lewat modulnya (void)"),
-    (("OPENING", "OPENING_BALANCE", "VENDOR_OPENING_BALANCE"), "perbaiki lewat modul saldo awal"),
-    (("INTERCOMPANY",), "batalkan lewat modul antar-perusahaan"),
-    (("CLOSING",), "buka kembali lewat proses tutup buku"),
-]
+REVERSAL_ALLOWLIST = JD.REVERSAL_ALLOWLIST  # dipindah ke services/jurnal_daftar (satu daftar untuk router + aksi_tersedia)
 
 
-def _panduan_void(source_type: str) -> str:
-    for tipe, pesan in _VOID_PANDUAN:
-        if source_type in tipe:
-            return pesan
-    return "batalkan lewat dokumen/modul sumbernya, bukan pembalikan jurnal umum"
-
-
-@router.post("/{journal_id}/reverse", response_model=dict)
+@router.post("/{journal_id}/reverse", response_model=JournalDetailResponse)
 async def reverse_journal(
     request: Request, journal_id: UUID, body: ReverseJournalRequest
 ):
@@ -618,14 +687,15 @@ async def reverse_journal(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check journal exists and is posted
             journal = await conn.fetchrow(
                 """
-                SELECT id, status, reversed_by_id, journal_number, description, source_type, reversal_of_id
-                FROM journal_entries
-                WHERE id = $1 AND tenant_id = $2
+                SELECT je.id, je.status, je.reversed_by_id, je.journal_number, je.description, je.source_type, je.reversal_of_id,
+                       rb.journal_number AS nomor_pembalik
+                FROM journal_entries je
+                LEFT JOIN journal_entries rb ON rb.id = je.reversed_by_id AND rb.tenant_id = je.tenant_id
+                WHERE je.id = $1 AND je.tenant_id = $2
             """,
                 journal_id,
                 ctx["tenant_id"],
@@ -634,33 +704,10 @@ async def reverse_journal(
             if not journal:
                 raise HTTPException(status_code=404, detail="Journal not found")
 
-            if journal["status"] == "DRAFT":
-                raise HTTPException(
-                    status_code=400, detail="Cannot reverse draft journal"
-                )
-
-            if journal["reversed_by_id"]:
-                raise HTTPException(
-                    status_code=409, detail="Journal is already reversed"
-                )
-
-            # Gate 5: pembalik-atas-pembalik ditolak (Law 26; juga dijaga trigger DB trg_prevent_reverse_of_reversal).
-            if journal["reversal_of_id"] is not None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Jurnal ini sendiri adalah pembalikan; pembalikan atas pembalikan tidak diizinkan (Law 26).",
-                )
-
-            # Gate 5: hanya jurnal manual/penyesuaian yang boleh dibalik lewat pintu umum ini. Jurnal milik dokumen
-            # HARUS dibalik lewat void dokumennya agar dokumen + lapisan turunannya ikut dibalik.
-            if journal["source_type"] not in REVERSAL_ALLOWLIST:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Jurnal {journal['source_type']} milik dokumen/modul dan tak bisa dibalik lewat pembalikan "
-                        f"jurnal umum; {_panduan_void(journal['source_type'])}."
-                    ),
-                )
+            # SATU penentu dengan aksi_tersedia.balik (kalimat sama); sudah dibalik = 409, lainnya 400
+            alasan = JD.alasan_tak_bisa_balik(dict(journal))
+            if alasan:
+                raise HTTPException(status_code=409 if journal["reversed_by_id"] else 400, detail=alasan)
 
             # Get original lines
             lines = await conn.fetch(
@@ -703,6 +750,14 @@ async def reverse_journal(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"MANUAL_REVERSE:{str(journal_id)}",
                 )
+                # T2 (7 Nov): diperiksa ULANG sesudah lock -- dua "Balik" bersamaan dulu menabrak idx_je_single_reversal (500)
+                kini = await conn.fetchrow(
+                    """SELECT je.status, je.reversed_by_id, je.reversal_of_id, je.source_type, rb.journal_number AS nomor_pembalik
+                       FROM journal_entries je LEFT JOIN journal_entries rb ON rb.id = je.reversed_by_id AND rb.tenant_id = je.tenant_id
+                       WHERE je.id = $1 AND je.tenant_id = $2 FOR UPDATE OF je""", journal_id, ctx["tenant_id"])
+                alasan = JD.alasan_tak_bisa_balik(dict(kini))
+                if alasan:
+                    raise HTTPException(status_code=409 if kini["reversed_by_id"] else 400, detail=alasan)
 
                 # Law 23: Generate journal number inside transaction
                 reversal_number = await get_next_journal_number(
@@ -749,8 +804,8 @@ async def reverse_journal(
 
                 # Law 20: DRAFT -> POSTED after lines (triggers hash chain)
                 await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_id,
+                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1 AND tenant_id = $2",
+                    reversal_id, ctx["tenant_id"],
                 )
 
                 # Link original to reversal
@@ -787,7 +842,6 @@ async def delete_journal(request: Request, journal_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             # Check journal exists and is draft
             journal = await conn.fetchrow(
@@ -856,7 +910,7 @@ async def get_journals_by_account(
 # =============================================================================
 # GET JOURNAL BY SOURCE
 # =============================================================================
-@router.get("/by-source/{source_type}/{source_id}", response_model=dict)
+@router.get("/by-source/{source_type}/{source_id}", response_model=JournalDetailResponse)
 async def get_journal_by_source(
     request: Request,
     source_type: str,
@@ -868,7 +922,6 @@ async def get_journal_by_source(
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             journal = await conn.fetchrow(
                 """
@@ -1007,7 +1060,7 @@ async def reclassify_bill_inventory(
                 " VALUES ($1,$2,$3,$4,0,$5)",
                 journal_id, ln, src["id"],
                 f"Reklas {r['invoice_number']} keluar Persediaan", r["amt"])
-        await conn.execute("UPDATE journal_entries SET status='POSTED' WHERE id=$1", journal_id)
+        await conn.execute("UPDATE journal_entries SET status='POSTED' WHERE id=$1 AND tenant_id=$2", journal_id, tenant_id)
         return {"status": "posted", "posted": float(total), "amount": float(total),
                 "journal_number": jnum, "journal_id": str(journal_id),
                 "bill_count": len(bills), "bills": bills}
@@ -1030,7 +1083,6 @@ async def reclassify_bill_inventory_endpoint(
         raise HTTPException(status_code=403, detail="Hanya OWNER yang boleh reklasifikasi.")
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
         try:
             res = await reclassify_bill_inventory(
                 conn, ctx["tenant_id"], ctx["user_id"], body.target_account_code,
@@ -1064,7 +1116,6 @@ async def reclassify_bill_cogs_class_endpoint(request: Request, body: Reclassify
         raise HTTPException(status_code=403, detail="Hanya OWNER yang boleh reklasifikasi.")
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("SELECT set_config('app.tenant_id', $1, false)", ctx["tenant_id"])
         if body.reverse_journal_id:
             res = await RKB.balik(conn, ctx["tenant_id"], ctx["user_id"], body.reverse_journal_id, body.reason)
         else:

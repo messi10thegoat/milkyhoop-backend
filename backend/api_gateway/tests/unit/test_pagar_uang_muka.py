@@ -75,7 +75,8 @@ def test_pagar_jurnal_manual_memanggil_cek_uang_muka():
 
 
 def test_buat_posting_balik_semuanya_lewat_pagar():
-    assert "validate_no_derived_layer_accounts(" in inspect.getsource(J.create_journal)
+    assert "_tulis_jurnal_manual(" in inspect.getsource(J.create_journal)  # badan tulis pindah (Jurnal standar SO 7 Nov)
+    assert "validate_no_derived_layer_accounts(" in inspect.getsource(J._tulis_jurnal_manual)
     src_post = inspect.getsource(J.post_journal)
     assert 'journal["source_type"] == "MANUAL"' in src_post and "validate_no_derived_layer_accounts(" in src_post
     # pagar dijalankan SEBELUM UPDATE ... POSTED
