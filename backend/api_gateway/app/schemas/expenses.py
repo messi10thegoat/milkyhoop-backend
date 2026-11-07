@@ -6,6 +6,7 @@ Supports both single expenses and itemized expenses with multiple accounts.
 """
 
 from pydantic import BaseModel, Field, field_validator
+from .aksi_tersedia import AksiTersediaPeta
 from typing import Optional, List, Literal, Dict, Any
 from uuid import UUID
 from datetime import date, datetime
@@ -241,6 +242,9 @@ class ExpenseDetailResponse(BaseModel):
 
     success: bool = True
     data: Dict[str, Any]
+    # Biaya t2: SATU bentuk aksi_tersedia (schemas/aksi_tersedia; penjaga test_aksi_tersedia_satu_bentuk) -- sejajar `data` supaya
+    # bertipe (data = Dict bebas tak terlihat penjaga)
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 class CreateExpenseResponse(BaseModel):
