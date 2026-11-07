@@ -54,7 +54,7 @@ def _klien(c, monkeypatch):
 
 BARIS = {"total_items": 3, "total_goods": 2, "total_services": 1, "total_non_inventory": 0, "in_stock": 1, "low_stock": 0, "out_of_stock": 1,
          "inventory_value": D("9270720.5"), "total": 3, "goods_count": 2, "service_count": 1, "tracked_count": 2, "in_stock_count": 1,
-         "low_stock_count": 0, "out_of_stock_count": 1}
+         "low_stock_count": 0, "out_of_stock_count": 1, "aktif": 3, "nonaktif": 0, "di_bawah_reorder": 0}
 
 
 def test_rute_stats_inventory_value_sigma_server(monkeypatch):

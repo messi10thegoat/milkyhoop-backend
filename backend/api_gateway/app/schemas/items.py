@@ -470,6 +470,7 @@ class ItemsStatsStockResponse(BaseModel):
     inStock: int = 0
     lowStock: int = 0
     outOfStock: int = 0
+    belowReorder: int = 0  # BUG-092: aktif, reorder_level > 0, stok <= reorder_level
 
 
 class ItemsStatsResponse(BaseModel):
@@ -478,6 +479,8 @@ class ItemsStatsResponse(BaseModel):
     totalGoods: int = 0
     totalServices: int = 0
     totalNonInventory: int = 0
+    activeItems: int = 0
+    inactiveItems: int = 0
     stock: ItemsStatsStockResponse = Field(default_factory=ItemsStatsStockResponse)
     inventoryValue: Decimal = Decimal("0.00")  # BUG-034: Σ nilai persediaan ledger (barang ber-stok)
 

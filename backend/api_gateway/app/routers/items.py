@@ -2001,6 +2001,55 @@ async def get_items_summary(request: Request):
 # =============================================================================
 
 
+# BUG-092: hitungan stok = barang AKTIF saja; di_bawah_reorder (kartu STOK RENDAH) hanya barang ber-titik pesan
+# ulang (reorder_level > 0), pola NetSuite/SAP; aktif/nonaktif = Σ server, tak bergantung filter daftar.
+STATS_SQL = """
+    SELECT
+        COUNT(*) as total_items,
+        COUNT(*) FILTER (WHERE p.item_type = 'goods') as total_goods,
+        COUNT(*) FILTER (WHERE p.item_type = 'service') as total_services,
+        COUNT(*) FILTER (WHERE p.item_type = 'non_inventory') as total_non_inventory,
+        COUNT(*) FILTER (
+            WHERE p.item_type = 'goods'
+              AND p.track_inventory = true
+              AND p.status = 'active'
+              AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
+        ) as in_stock,
+        COUNT(*) FILTER (
+            WHERE p.item_type = 'goods'
+              AND p.track_inventory = true
+              AND p.status = 'active'
+              AND COALESCE(per.jumlah, 0) > 0
+              AND COALESCE(p.reorder_level, 0) > 0
+              AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
+        ) as low_stock,
+        COUNT(*) FILTER (
+            WHERE p.item_type = 'goods'
+              AND p.track_inventory = true
+              AND p.status = 'active'
+              AND COALESCE(per.jumlah, 0) <= 0
+        ) as out_of_stock,
+        COUNT(*) FILTER (
+            WHERE p.item_type = 'goods'
+              AND p.track_inventory = true
+              AND p.status = 'active'
+              AND p.reorder_level > 0
+              AND COALESCE(per.jumlah, 0) <= p.reorder_level
+        ) as di_bawah_reorder,
+        COUNT(*) FILTER (WHERE p.status = 'active') as aktif,
+        COUNT(*) FILTER (WHERE p.status <> 'active') as nonaktif,
+        COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
+    FROM products p
+    LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
+                    COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
+                    FROM inventory_ledger il
+                    WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
+                ) per ON true
+    WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
+"""
+
+
 @router.get("/items/stats", response_model=ItemsStatsResponse)
 async def get_items_stats(request: Request):
     """
@@ -2017,40 +2066,7 @@ async def get_items_stats(request: Request):
     try:
         conn = await get_db_connection()
 
-        stats_query = """
-            SELECT
-                COUNT(*) as total_items,
-                COUNT(*) FILTER (WHERE p.item_type = 'goods') as total_goods,
-                COUNT(*) FILTER (WHERE p.item_type = 'service') as total_services,
-                COUNT(*) FILTER (WHERE p.item_type = 'non_inventory') as total_non_inventory,
-                COUNT(*) FILTER (
-                    WHERE p.item_type = 'goods'
-                      AND p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
-                ) as in_stock,
-                COUNT(*) FILTER (
-                    WHERE p.item_type = 'goods'
-                      AND p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) > 0
-                      AND COALESCE(p.reorder_level, 0) > 0
-                      AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
-                ) as low_stock,
-                COUNT(*) FILTER (
-                    WHERE p.item_type = 'goods'
-                      AND p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) <= 0
-                ) as out_of_stock,
-                COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
-            FROM products p
-            LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
-                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
-                            FROM inventory_ledger il
-                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                        ) per ON true
-            WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
-        """
-        row = await conn.fetchrow(stats_query, tenant_id)
+        row = await conn.fetchrow(STATS_SQL, tenant_id)
 
         return ItemsStatsResponse(
             totalItems=row["total_items"] or 0,
@@ -2061,7 +2077,10 @@ async def get_items_stats(request: Request):
                 inStock=row["in_stock"] or 0,
                 lowStock=row["low_stock"] or 0,
                 outOfStock=row["out_of_stock"] or 0,
+                belowReorder=row["di_bawah_reorder"] or 0,
             ),
+            activeItems=row["aktif"] or 0,
+            inactiveItems=row["nonaktif"] or 0,
             inventoryValue=_rp(row["inventory_value"]),  # BUG-034: Σ server semua barang, bukan Σ halaman termuat
         )
 

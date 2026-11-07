@@ -152,7 +152,7 @@ def tafsir_baris(teks: str) -> dict:
             b["tipe"] = g["tipe"]
     tak = " ".join(x.strip(" ,;") for x in sisa if x.strip(" ,;"))
     if tak:
-        b.setdefault("_galat", []).append(f"tak terbaca: \"{tak}\"")
+        b.setdefault("_galat", []).append(f"Tak terbaca: \"{tak}\". Ketik ulang baris ini atau hapus \"{tak}\".")
     if b.pop("_stok_besar", False):  # "stok 10 karton" -> satuan dasar (stok awal selalu dalam satuan dasar)
         try:
             b["stok_awal"] = str(angka(b["stok_awal"]) * angka(b["isi"]))
@@ -178,7 +178,7 @@ def templat_xlsx(satuan: list) -> bytes:
         c.font = Font(bold=True)
     ws.append(["Minyak Goreng 2L", "", "barang", "Botol", 35000, 31000, "Karton", 12, 410000, 365000, "Minyak", "", "", ""])
     p = wb.create_sheet("Petunjuk")
-    for t in ["Satu baris = satu barang baru. Kolom berbintang di judul tidak ada; wajib: Nama barang, Satuan dasar.",
+    for t in ["Satu baris = satu barang baru. Wajib: Nama barang, Satuan dasar.",
               "Harga ditulis per satuan sesuai kolomnya; harga satuan besar tidak dihitung otomatis.",
               "Satuan atau kategori yang belum ada akan dibuat saat impor (terlihat di pratinjau).",
               "Stok awal hanya untuk usaha yang belum bertransaksi; selain itu pakai Penyesuaian stok.",
