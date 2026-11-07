@@ -282,6 +282,12 @@ def test_dari_fpb_penuh_total_beda_tagihan_diblok(monkeypatch):
     assert [b["code"] for b in d["blocks"]] == ["ND_TOTAL_BEDA_TAGIHAN"] and d["payload"] is None and d["journals"] == []
 
 
+def test_pesan_total_beda_tagihan_rupiah_baku(monkeypatch):
+    """BUG-112 (b): pesan blok memakai tg.rp, bukan en-US '10,001.00'."""
+    d = _pv(Kon(bill=_tagihan(amount=D("10001.00")), items=_baris()), monkeypatch, original_bill_id=str(BID), reason="return")
+    assert d["blocks"][0]["message"] == "Nota debit penuh Rp 9.990 tidak sama dengan faktur pembelian Rp 10.001; belum didukung."
+
+
 @pytest.mark.parametrize("tagihan,baris,lines,kode", [
     ({"status_v2": "draft"}, {}, None, "ND_TAGIHAN_TAK_AKTIF"),
     ({"status_v2": "void"}, {}, None, "ND_TAGIHAN_TAK_AKTIF"),
