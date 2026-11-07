@@ -103,10 +103,12 @@ async def profitability_items(
                 "offset": offset,
                 "has_more": (offset + limit) < total_count,
             },
-            "reconciliation": {
+            "reconciliation": {  # BUG-102: status jujur ke FE (match | minor_drift | major_drift) + selisih HPP + HPP non-penjualan diungkap
                 "matches_pnl": recon["matches_pnl"],
                 "severity": recon["severity"],
                 "drift_amount": recon["revenue_drift"],
+                "cogs_drift": recon["cogs_drift"],
+                "pnl_cogs_non_jual": recon["pnl_cogs_non_jual"],
             },
         },
     }

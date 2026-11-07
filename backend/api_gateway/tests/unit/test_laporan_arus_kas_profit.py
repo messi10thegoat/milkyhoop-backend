@@ -56,4 +56,4 @@ def test_profitabilitas_qty_satuan_dasar_di_kueri_barang_bukan_jasa():
     for q in (PQ.ITEMS_QUERY, PQ.SUMMARY_QUERY):
         assert PQ.QTY_DASAR in q
         assert "__QTY_DASAR__" not in q and "SUM(sii.quantity)" not in q and "uc.conversion_factor" in q
-    assert "SUM(sii.quantity) AS qty_sold" in PQ.SERVICES_QUERY  # jasa tanpa konversi
+    assert "SUM(b.qty_baris) AS qty_sold" in PQ.SERVICES_QUERY  # jasa tanpa konversi (BUG-102: dari baris bertanda SQL_BARIS_JUAL)
