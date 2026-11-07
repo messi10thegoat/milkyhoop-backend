@@ -209,6 +209,11 @@ SQL_BARANG_TERPAKAI = "SELECT EXISTS (" + " UNION ALL ".join(
 KODE_SATUAN_DASAR_TERPAKAI = "SATUAN_DASAR_TERPAKAI"
 
 
+async def dasar_terpakai(conn, tid: str, product_id) -> bool:
+    """Barang sudah punya riwayat stok / baris dokumen -> satuan DASAR terkunci (SATU sumber: penolak tolak_ubah_dasar DAN tanda GET item)."""
+    return bool(await conn.fetchval(SQL_BARANG_TERPAKAI, product_id, tid))
+
+
 async def tolak_ubah_dasar(conn, tid: str, product_id, dasar_lama: Optional[str], dasar_baru: Optional[str]) -> None:
     """Satuan DASAR barang terkunci sesudah barang punya riwayat stok / baris dokumen (putusan pemilik LANGSUNG 5 Nov, pola NetSuite
     units type): mengganti dasar = menafsir ulang seluruh riwayat. Sama (alias kamus) atau belum terpakai -> boleh; else 409."""
@@ -217,7 +222,7 @@ async def tolak_ubah_dasar(conn, tid: str, product_id, dasar_lama: Optional[str]
     alias = await _alias(conn, tid)
     if kanon(dasar_baru, alias) == kanon(dasar_lama, alias):
         return
-    if await conn.fetchval(SQL_BARANG_TERPAKAI, product_id, tid):
+    if await dasar_terpakai(conn, tid, product_id):
         raise GalatBerkode(409, KODE_SATUAN_DASAR_TERPAKAI, tg.satuan_dasar_terpakai(dasar_lama))
 
 

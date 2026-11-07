@@ -301,6 +301,7 @@ class UnitConversionResponse(BaseModel):
     purchase_price: Optional[float] = None
     sales_price: Optional[float] = None
     is_active: bool = True
+    terpakai: bool = False  # BUG-086: sudah dipakai transaksi -> faktor/satuan terkunci (409 KONVERSI_TERPAKAI); harga tetap boleh
 
 
 # =============================================================================

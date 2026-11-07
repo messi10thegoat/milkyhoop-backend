@@ -2959,6 +2959,10 @@ async def get_item(request: Request, item_id: UUID):
             ORDER BY conversion_factor ASC
         """
         conversion_rows = await conn.fetch(conversions_query, str(item_id), tenant_id)
+        # BUG-086: tanda TERKUNCI dari penentu YANG SAMA dengan penolak PUT (satuan_dasar.konversi_terpakai / dasar_terpakai)
+        from ..services import satuan_dasar as _SDK
+        terpakai = {str(c["id"]): await _SDK.konversi_terpakai(conn, tenant_id, str(item_id), c["conversion_unit"]) for c in conversion_rows}
+        base_unit_terpakai = await _SDK.dasar_terpakai(conn, tenant_id, str(item_id))
 
         conversions = [
             {
@@ -2969,6 +2973,7 @@ async def get_item(request: Request, item_id: UUID):
                 "purchase_price": c.get("purchase_price"),
                 "sales_price": c.get("sales_price"),
                 "is_active": c.get("is_active", True),
+                "terpakai": terpakai[str(c["id"])],
             }
             for c in conversion_rows
         ]
@@ -2982,6 +2987,7 @@ async def get_item(request: Request, item_id: UUID):
                 "track_inventory": row.get("track_inventory", True),
                 "bisa_dikirim": bool(row.get("bisa_dikirim") or False),
                 "base_unit": row.get("base_unit") or row["satuan"],
+                "base_unit_terpakai": base_unit_terpakai,  # BUG-086: True -> satuan dasar tak bisa diganti (409 SATUAN_DASAR_TERPAKAI)
                 "barcode": row.get("barcode"),
                 "kategori": row.get("kategori"),
                 "deskripsi": row.get("deskripsi"),
