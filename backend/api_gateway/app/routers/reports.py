@@ -3551,7 +3551,7 @@ async def get_aging_receivable(request: Request):
                     }
                 by_customer[cid]["invoices"].append(
                     {
-                        "invoice_id": str(row["invoice_id"]),
+                        "invoice_id": str(row["invoice_id"]) if row["invoice_id"] else None,  # baris kredit tanpa faktur: null, bukan "None"
                         "invoice_number": row["invoice_number"],
                         "invoice_date": row["invoice_date"].isoformat(),
                         "due_date": row["due_date"].isoformat(),
@@ -3564,6 +3564,9 @@ async def get_aging_receivable(request: Request):
                 )
                 by_customer[cid]["totals"][row["aging_bucket"]] += row["balance"]
 
+            # BUG-104 (WORKSPACE): total per pelanggan = Σ ember pihak itu (kalkulator SAMA, compute_ar_outstanding) == Σ balance
+            for cust in by_customer.values():
+                cust["total"] = sum(cust["totals"].values())
             # Summary totals
             summary = {"current": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
             for cust in by_customer.values():
@@ -3701,7 +3704,7 @@ async def get_aging_payable(request: Request):
                     }
                 by_vendor[vid]["bills"].append(
                     {
-                        "bill_id": str(row["bill_id"]),
+                        "bill_id": str(row["bill_id"]) if row["bill_id"] else None,  # baris tanpa tagihan (bayar/kredit vendor): null, bukan "None"
                         "bill_number": row["bill_number"],
                         "bill_date": row["bill_date"].isoformat(),
                         "due_date": row["due_date"].isoformat(),
@@ -3714,6 +3717,9 @@ async def get_aging_payable(request: Request):
                 )
                 by_vendor[vid]["totals"][row["aging_bucket"]] += row["balance"]
 
+            # BUG-105 (WORKSPACE): total per vendor = Σ ember pihak itu (kalkulator SAMA, compute_ap_outstanding) == Σ balance
+            for vendor in by_vendor.values():
+                vendor["total"] = sum(vendor["totals"].values())
             # Summary totals
             summary = {"current": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
             for vendor in by_vendor.values():
