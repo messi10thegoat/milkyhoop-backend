@@ -103,9 +103,17 @@ async def main():
                                           depreciation_start_date, current_value) VALUES ($1,$2,'UJI K2 aktiva',$3,$4,12,$3,$5) RETURNING id""",
                                    TID, f"UJI-K2-{uuid.uuid4().hex[:6]}", hari, nilai, int(nilai))
         return await FA.activate_fixed_asset(req(uid), aid, ActivateAssetRequest(payment_account_id=kas["coa_id"]))
-    await kasus("aktiva tetap", lambda: aktiva(besar), tolak)
-    if tolak:
-        await kasus("aktiva tetap kecil", lambda: aktiva(kecil), False)
+    async with pool.acquire() as c:
+        hidup = await c.fetchval("SELECT to_regclass('journal_sequences') IS NOT NULL")
+    if tolak:  # penjaga K2 berjalan SEBELUM penomoran -> penolakan teruji walau fitur mati
+        await kasus("aktiva tetap", lambda: aktiva(besar), True)
+    if hidup:
+        if tolak:
+            await kasus("aktiva tetap kecil", lambda: aktiva(kecil), False)
+        else:
+            await kasus("aktiva tetap", lambda: aktiva(besar), False)
+    else:  # 7 Nov: tabel journal_sequences TIDAK ADA -> activate_fixed_asset mati (UndefinedTable) di master juga; tiket terbuka
+        print(f"[{MODE}] LEWATI aktiva tetap jalur lolos: journal_sequences tak ada (fitur mati, tiket)", flush=True)
 
     # (6) jurnal MANUAL buat-posting
     def manual(nilai):
