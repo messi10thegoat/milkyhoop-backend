@@ -32,7 +32,7 @@ class _K:
         self.nd = nd
 
     async def fetch(self, sql, *a):
-        assert "v.status <> 'void'" in sql and "v.original_bill_id = $2" in sql and "v.tenant_id = $1" in sql
+        assert "v.status <> 'void'" in sql and "COALESCE(v.return_bill_id, v.original_bill_id) = $2" in sql and "v.tenant_id = $1" in sql
         return self.nd
 
 
