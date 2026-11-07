@@ -37,6 +37,7 @@ from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..services import teks_jurnal as TJ  # TEKS-JURNAL-NKND
+from ..services import teks_galat as tg  # BUG-112 (b): Rupiah baku untuk pesan
 from ..services import nota_debit_daftar as NDD  # U3c (23 Okt 2026): daftar/detail/bundel seragam (kembar nota_kredit_daftar)
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal posting = nomor ND
 from ..services import nota_debit_rencana as NDR  # U3d (23 Okt 2026): penentu per aksi SATU untuk tulis + pratinjau
@@ -966,7 +967,7 @@ async def preview_create_vendor_credit(request: Request, body: VendorCreditPrevi
                     _nd_bulat = (await _ta.pembulatan_dokumen(conn, tid, s["total_amount"]))["total"]  # c-2: dibandingkan nilai BULAT
                     if _q2(_nd_bulat) != _q2(jumlah_tagihan):  # MASTER (a): ND penuh == tagihan PERSIS, selisih = blok, bukan catatan
                         bl.galat("ND_TOTAL_BEDA_TAGIHAN", 400, {"code": "ND_TOTAL_BEDA_TAGIHAN", "message": (
-                            f"Nota debit penuh {_q2(_nd_bulat):,.2f} tidak sama dengan faktur pembelian {_q2(jumlah_tagihan):,.2f}; "
+                            f"Nota debit penuh {tg.rp(_nd_bulat)} tidak sama dengan faktur pembelian {tg.rp(jumlah_tagihan)}; "
                             "belum didukung.")})
                 nomor, r = None, {}
                 if s is not None and not bl.daftar:
