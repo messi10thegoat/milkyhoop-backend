@@ -47,13 +47,13 @@ async def drift(conn):
         JOIN chart_of_accounts c ON c.id = jl.account_id WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)
         AND c.account_type = 'PAYABLE'""", TID)
     sub = await conn.fetchval("SELECT COALESCE(SUM(outstanding), 0) FROM compute_ap_outstanding($1)", TID)
-    adj = await conn.fetchval("SELECT COALESCE(SUM(net), 0) FROM compute_ap_adjustments($1)", TID)
-    return D(str(raw)) - D(str(sub)) - D(str(adj))
+    # compute_ap_adjustments TIDAK ADA di DB (diukur 7 Nov; klaim skill = hipotesis, Law 34) -> drift = GL AP - Sigma subledger, dibanding sebelum/sesudah
+    return D(str(raw)) - D(str(sub))
 
 
 async def r9(conn):
     await conn.execute(f"SET app.tenant_id = '{TID}'")
-    return len(await conn.fetch("SELECT * FROM check_bank_sync_health($1)", TID))
+    return D(str(await conn.fetchval("SELECT COALESCE(SUM(ABS(gap)), 0) + COALESCE(SUM(orphan_journals + orphan_bank_txns), 0) FROM check_bank_sync_health($1)", TID)))
 
 
 async def sisa(conn, bill_id):
@@ -160,7 +160,7 @@ async def main():
     # T8 Rule 8 + R9 tak berubah
     d1, r91 = await drift(c), await r9(c)
     cek("T8 drift AP Rule 8 tak berubah", d1 == d0, f"{d0} -> {d1}")
-    cek("T8b R9 bank tak berubah", r91 == r90, f"{r90} -> {r91} baris")
+    cek("T8b R9 bank (Sigma|gap| + yatim) tak berubah", r91 == r90, f"{r90} -> {r91}")
     await c.close()
     print(f"RINGKAS {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
 
