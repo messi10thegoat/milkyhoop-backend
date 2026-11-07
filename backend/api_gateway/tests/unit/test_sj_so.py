@@ -114,7 +114,7 @@ class Konek:
         if "FROM sales_invoice_items sii" in s:
             return self.faktur_items
         if "FROM invoice_fulfillment_items i" in s:
-            return self.sj_items
+            return [{"fulfillment_number": "SJ-UJI", **x} for x in self.sj_items]   # BUG-109: kolom nomor SJ ikut dipilih
         return []
 
     async def execute(self, sql, *a):
