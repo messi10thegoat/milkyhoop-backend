@@ -2,6 +2,8 @@
 # Barang & Jasa standar SO uji di SALINAN: klon penuh milkydb -> scratch_brg_<ts>; handler ASLI, BACA saja; HAPUS salinan (trap).
 # Pakai: POHON=/root/<worktree> scripts/ops/uji-salinan-barang-so.sh (cek-sibuk dulu).
 set -u
+# penjaga: setiap SQL FROM di harness ini wajib tersaring tenant (putusan MASTER 7 Nov) -- gagal SEBELUM klon dibuat
+python3 "$(dirname "$0")/cek-saring-tenant.py" "$0" "$(dirname "$0")/uji-salinan-barang-so.py" || { echo "rc=3 (SQL tanpa saring tenant)"; exit 3; }
 P=milkyhoop-dev-postgres-1; S=scratch_brg_$(date +%s); POHON=${POHON:-/root/mh-barang-so}
 hapus() { docker exec $P psql -U postgres -At -c "DROP DATABASE IF EXISTS $S" >/dev/null
           echo "salinan $S dihapus; sisa DB scratch_brg%: $(docker exec $P psql -U postgres -At -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'scratch_brg%'")"; }
