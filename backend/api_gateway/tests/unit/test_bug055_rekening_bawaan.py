@@ -49,6 +49,12 @@ def test_kas_bila_tanpa_utama():
     assert h == {"id": str(C), "nama": "Kas Toko", "sumber": "kas"} and p == [RB.SQL_TERAKHIR, RB.SQL_UTAMA, RB.SQL_KAS]
 
 
+def test_pilih_urutan_terakhir_utama_kas():
+    t, u, k = r(A, "Kas Kecil"), r(B, "BCA"), r(C, "Kas Toko")
+    assert [(RB.pilih(*x) or {}).get("sumber") for x in ((t, u, k), (None, u, k), (None, None, k), (None, None, None))] == [
+        "terakhir", "utama", "kas", None]
+
+
 def test_none_bila_tak_ada_apa_pun():
     assert jalan({})[0] is None
 
