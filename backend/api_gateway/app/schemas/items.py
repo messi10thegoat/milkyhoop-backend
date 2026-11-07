@@ -352,10 +352,15 @@ class ItemListItem(BaseModel):
     current_stock: Optional[float] = None
     stock_value: Optional[float] = None
     low_stock: bool = False
+    transaction_count: int = 0  # dulu dikirim router tapi tak dideklarasi -> dibuang diam (pola BUG-097)
     # Unit conversions
     conversions: List[ItemListConversion] = []
     created_at: datetime
     updated_at: datetime
+    # Standar SO (7 Nov 2026): kunci aksi (urut desak), teks posisi server, bisa dijual (stok - dipesan SO terbuka)
+    aksi_semua: List[str] = []
+    position_text: Optional[str] = None
+    bisa_dijual: Optional[Decimal] = None
 
 
 class ItemListResponse(BaseModel):
@@ -364,6 +369,7 @@ class ItemListResponse(BaseModel):
     items: List[ItemListItem]
     total: int
     has_more: bool
+    sum_nilai_stok: Optional[Decimal] = None  # with_totals=true: Σ nilai stok (ledger) baris tersaring
 
 
 class ItemDetailResponse(BaseModel):

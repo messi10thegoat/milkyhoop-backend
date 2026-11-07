@@ -28,6 +28,8 @@ from decimal import Decimal
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
+from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
+from ..services import stok_baris as SB
 from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -308,6 +310,15 @@ def get_user_context(request):
 # =============================================================================
 
 
+def _syarat_cari(search, idx: int):
+    """Cari per kata (nama/barcode), SATU predikat untuk daftar dan /summary -> (sql "AND (...)" | "", params)."""
+    words = search.strip().split() if isinstance(search, str) else []
+    if not words:
+        return "", []
+    syarat = [f"(p.nama_produk ILIKE ${idx + i} OR p.barcode ILIKE ${idx + i})" for i in range(len(words))]
+    return f"AND ({' AND '.join(syarat)})", [f"%{w}%" for w in words]
+
+
 @router.get("/items", response_model=ItemListResponse)
 async def list_items(
     request: Request,
@@ -334,6 +345,8 @@ async def list_items(
     ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    aksi: Optional[str] = Query(None, description="Kunci aksi: stok_habis, di_bawah_titik_pesan, tanpa_harga_jual, nonaktif"),
+    with_totals: bool = Query(False, description="Sertakan sum_nilai_stok (Σ server baris tersaring)"),
 ):
     """
     List all items with optional filtering.
@@ -351,12 +364,7 @@ async def list_items(
         query_parts = [
             """SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count,
             v.name as vendor_name,
-            CASE
-                WHEN p.track_inventory = true AND COALESCE(per.jumlah, 0) > 0
-                     AND p.reorder_level IS NOT NULL AND COALESCE(per.jumlah, 0) <= p.reorder_level
-                THEN true
-                ELSE false
-            END as low_stock,
+            """ + BD.sql_aksi("di_bawah_titik_pesan") + """ as low_stock,
             COALESCE(
                 (SELECT json_agg(json_build_object(
                     'conversion_unit', uc.conversion_unit,
@@ -423,43 +431,26 @@ async def list_items(
             params.append(status)
             param_idx += 1
 
-        if search:
-            # Split search into words — each word must match name or barcode
-            # "kaos oblong 24s" matches "Kaos Oblong + Sablon, Lengan Pendek 24s"
-            words = search.strip().split()
-            if len(words) == 1:
-                query_parts.append(
-                    f"AND (p.nama_produk ILIKE ${param_idx} OR p.barcode ILIKE ${param_idx})"
-                )
-                params.append(f"%{words[0]}%")
-                param_idx += 1
-            else:
-                word_conditions = []
-                for word in words:
-                    word_conditions.append(
-                        f"(p.nama_produk ILIKE ${param_idx} OR p.barcode ILIKE ${param_idx})"
-                    )
-                    params.append(f"%{word}%")
-                    param_idx += 1
-                query_parts.append(f"AND ({' AND '.join(word_conditions)})")
+        cari_sql, cari_params = _syarat_cari(search, param_idx)
+        if cari_sql:
+            query_parts.append(cari_sql)
+            params.extend(cari_params)
+            param_idx += len(cari_params)
 
-        if stock_status:
-            query_parts.append("AND p.item_type = 'goods' AND p.track_inventory = true")
-            if stock_status == "in_stock":
-                query_parts.append(
-                    "AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)"
-                )
-            elif stock_status == "low_stock":
-                query_parts.append(
-                    "AND COALESCE(p.reorder_level, 0) > 0 AND COALESCE(per.jumlah, 0) > 0 AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)"
-                )
-            elif stock_status == "out_of_stock":
-                query_parts.append("AND COALESCE(per.jumlah, 0) <= 0")
+        # stock_status lama = predikat BD yang sama dengan pill/kartu (dulu tanpa syarat aktif -> nyawit 19 vs kartu 11)
+        if isinstance(stock_status, str) and stock_status:
+            query_parts.append("AND " + {"in_stock": BD.sql_ada_stok(), "low_stock": BD.sql_aksi("di_bawah_titik_pesan"),
+                                         "out_of_stock": BD.sql_aksi("stok_habis")}.get(stock_status, BD.sql_dilacak()))
+        if isinstance(aksi, str) and aksi:
+            if aksi not in BD.SEMUA_KUNCI:
+                raise HTTPException(status_code=422, detail=f"aksi tidak dikenal: {aksi}")
+            query_parts.append("AND " + BD.sql_aksi(aksi))
 
-        # Count total - use simplified query for count
+        # Count total (+ Σ nilai stok server bila with_totals)
         count_parts = [part for part in query_parts if not part.startswith("SELECT")]
-        count_query = "SELECT COUNT(*) FROM products p " + " ".join(count_parts[1:])
-        total = await conn.fetchval(count_query, *params)
+        count_query = f"SELECT COUNT(*) AS total, {BD.SQL_NILAI_STOK} AS nilai FROM products p " + " ".join(count_parts[1:])
+        hitung_row = await conn.fetchrow(count_query, *params)
+        total = hitung_row["total"]
 
         # Add ordering and pagination (whitelisted, prevents SQL injection)
         SORT_COLUMN_WHITELIST = {
@@ -481,10 +472,15 @@ async def list_items(
         # Execute query
         query = " ".join(query_parts)
         rows = await conn.fetch(query, *params)
+        # bisa dijual per halaman: SATU panggilan stok_baris (kueri tetap, bukan N+1) untuk barang dilacak saja
+        dilacak_ids = [row["id"] for row in rows if BD.dilacak(row)]
+        stok_halaman = (await SB.hitung(conn, tenant_id, dilacak_ids, await tanggal_dokumen(conn, tenant_id)))["barang"] \
+            if dilacak_ids else {}
 
         # Transform rows to response
         items = []
         for row in rows:
+            sb = stok_halaman.get(str(row["id"])) or {}
             # Parse conversions from JSON
             conversions_data = row.get("conversions") or []
             if isinstance(conversions_data, str):
@@ -544,6 +540,10 @@ async def list_items(
                     conversions=conversions,
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
+                    aksi_semua=BD.aksi_semua(row, row.get("current_stock")),
+                    position_text=BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
+                                                   sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
+                    bisa_dijual=sb.get("bisa_dijual"),
                 )
             )
 
@@ -552,8 +552,11 @@ async def list_items(
             items=items,
             total=total or 0,
             has_more=(offset + limit) < (total or 0),
+            sum_nilai_stok=_rp(hitung_row["nilai"]) if with_totals is True else None,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing items: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1934,59 +1937,50 @@ async def list_taxes(request: Request):
 
 
 @router.get("/items/summary", response_model=ItemsSummaryResponse)
-async def get_items_summary(request: Request):
-    """Get summary counts for items."""
+async def get_items_summary(request: Request, search: Optional[str] = Query(None)):
+    """Ringkasan barang: kunci aksi {k}_count/_value dengan predikat + pencarian SAMA dengan GET /items?aksi=k (paritas per kunci).
+    tanpa_harga_jual BUKAN partisi stok: barang bisa ada di dua pill. _value = Σ nilai stok (ledger) barang dilacak di kunci itu."""
     tenant_id = get_tenant_id(request)
     conn = None
 
     try:
         conn = await get_db_connection()
-
-        summary_query = """
+        cari_sql, cari_params = _syarat_cari(search, 2)
+        kunci = ",\n".join(
+            f"COUNT(*) FILTER (WHERE {BD.sql_aksi(k)}) AS {k}_count, "
+            f"COALESCE(SUM(per.total_nilai) FILTER (WHERE {BD.sql_aksi(k)} AND p.item_type = 'goods' AND p.track_inventory = true), 0) AS {k}_value"
+            for k in BD.SEMUA_KUNCI)
+        summary_query = f"""
             SELECT
                 COUNT(*) as total,
                 COUNT(*) FILTER (WHERE p.item_type = 'goods') as goods_count,
                 COUNT(*) FILTER (WHERE p.item_type = 'service') as service_count,
                 COUNT(*) FILTER (WHERE p.track_inventory = true) as tracked_count,
-                COUNT(*) FILTER (
-                    WHERE p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
-                ) as in_stock_count,
-                COUNT(*) FILTER (
-                    WHERE p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) > 0
-                      AND p.reorder_level IS NOT NULL
-                      AND COALESCE(per.jumlah, 0) <= p.reorder_level
-                ) as low_stock_count,
-                COUNT(*) FILTER (
-                    WHERE p.track_inventory = true
-                      AND COALESCE(per.jumlah, 0) <= 0
-                ) as out_of_stock_count,
-                COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
+                COUNT(*) FILTER (WHERE {BD.sql_ada_stok()}) as in_stock_count,
+                COUNT(*) FILTER (WHERE {BD.sql_aksi("di_bawah_titik_pesan")}) as low_stock_count,
+                COUNT(*) FILTER (WHERE {BD.sql_aksi("stok_habis")}) as out_of_stock_count,
+                {kunci},
+                {BD.SQL_NILAI_STOK} as inventory_value
             FROM products p
-            LEFT JOIN LATERAL (
-                            SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
-                            COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
-                            FROM inventory_ledger il
-                            WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                        ) per ON true
-            WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
+            {BD.SQL_PER_STOK}
+            WHERE p.tenant_id = $1 AND p.deleted_at IS NULL {cari_sql}
         """
-        row = await conn.fetchrow(summary_query, tenant_id)
+        row = await conn.fetchrow(summary_query, tenant_id, *cari_params)
 
-        return ItemsSummaryResponse(
-            success=True,
-            data={
-                "total": row["total"] or 0,
-                "goods_count": row["goods_count"] or 0,
-                "service_count": row["service_count"] or 0,
-                "tracked_count": row["tracked_count"] or 0,
-                "in_stock_count": row["in_stock_count"] or 0,
-                "low_stock_count": row["low_stock_count"] or 0,
-                "out_of_stock_count": row["out_of_stock_count"] or 0,
-                "inventory_value": _rp(row["inventory_value"]),  # BUG-034 (sama dengan stats.inventoryValue)
-            },
-        )
+        data = {
+            "total": row["total"] or 0,
+            "goods_count": row["goods_count"] or 0,
+            "service_count": row["service_count"] or 0,
+            "tracked_count": row["tracked_count"] or 0,
+            "in_stock_count": row["in_stock_count"] or 0,
+            "low_stock_count": row["low_stock_count"] or 0,
+            "out_of_stock_count": row["out_of_stock_count"] or 0,
+            "inventory_value": _rp(row["inventory_value"]),  # BUG-034 (sama dengan stats.inventoryValue)
+        }
+        for k in BD.SEMUA_KUNCI:
+            data[f"{k}_count"] = row[f"{k}_count"] or 0
+            data[f"{k}_value"] = _rp(row[f"{k}_value"])
+        return ItemsSummaryResponse(success=True, data=data)
 
     except Exception as e:
         logger.error(f"Error getting summary: {e}")
@@ -2003,49 +1997,21 @@ async def get_items_summary(request: Request):
 
 # BUG-092: hitungan stok = barang AKTIF saja; di_bawah_reorder (kartu STOK RENDAH) hanya barang ber-titik pesan
 # ulang (reorder_level > 0), pola NetSuite/SAP; aktif/nonaktif = Σ server, tak bergantung filter daftar.
-STATS_SQL = """
+STATS_SQL = f"""
     SELECT
         COUNT(*) as total_items,
         COUNT(*) FILTER (WHERE p.item_type = 'goods') as total_goods,
         COUNT(*) FILTER (WHERE p.item_type = 'service') as total_services,
         COUNT(*) FILTER (WHERE p.item_type = 'non_inventory') as total_non_inventory,
-        COUNT(*) FILTER (
-            WHERE p.item_type = 'goods'
-              AND p.track_inventory = true
-              AND p.status = 'active'
-              AND COALESCE(per.jumlah, 0) > COALESCE(p.reorder_level, 0)
-        ) as in_stock,
-        COUNT(*) FILTER (
-            WHERE p.item_type = 'goods'
-              AND p.track_inventory = true
-              AND p.status = 'active'
-              AND COALESCE(per.jumlah, 0) > 0
-              AND COALESCE(p.reorder_level, 0) > 0
-              AND COALESCE(per.jumlah, 0) <= COALESCE(p.reorder_level, 0)
-        ) as low_stock,
-        COUNT(*) FILTER (
-            WHERE p.item_type = 'goods'
-              AND p.track_inventory = true
-              AND p.status = 'active'
-              AND COALESCE(per.jumlah, 0) <= 0
-        ) as out_of_stock,
-        COUNT(*) FILTER (
-            WHERE p.item_type = 'goods'
-              AND p.track_inventory = true
-              AND p.status = 'active'
-              AND p.reorder_level > 0
-              AND COALESCE(per.jumlah, 0) <= p.reorder_level
-        ) as di_bawah_reorder,
+        COUNT(*) FILTER (WHERE {BD.sql_ada_stok()}) as in_stock,
+        COUNT(*) FILTER (WHERE {BD.sql_aksi("di_bawah_titik_pesan")}) as low_stock,
+        COUNT(*) FILTER (WHERE {BD.sql_aksi("stok_habis")}) as out_of_stock,
+        COUNT(*) FILTER (WHERE {BD.sql_di_bawah_reorder()}) as di_bawah_reorder,
         COUNT(*) FILTER (WHERE p.status = 'active') as aktif,
         COUNT(*) FILTER (WHERE p.status <> 'active') as nonaktif,
-        COALESCE(SUM(per.total_nilai) FILTER (WHERE p.item_type = 'goods' AND p.track_inventory = true), 0) as inventory_value
+        {BD.SQL_NILAI_STOK} as inventory_value
     FROM products p
-    LEFT JOIN LATERAL (
-                    SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
-                    COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai
-                    FROM inventory_ledger il
-                    WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
-                ) per ON true
+    {BD.SQL_PER_STOK}
     WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
 """
 
@@ -2963,6 +2929,8 @@ async def get_item(request: Request, item_id: UUID):
         from ..services import satuan_dasar as _SDK
         terpakai = {str(c["id"]): await _SDK.konversi_terpakai(conn, tenant_id, str(item_id), c["conversion_unit"]) for c in conversion_rows}
         base_unit_terpakai = await _SDK.dasar_terpakai(conn, tenant_id, str(item_id))
+        sb = (await SB.hitung(conn, tenant_id, [item_id], await tanggal_dokumen(conn, tenant_id)))["barang"].get(str(item_id), {}) \
+            if BD.dilacak(row) else {}
 
         conversions = [
             {
@@ -3060,6 +3028,11 @@ async def get_item(request: Request, item_id: UUID):
                 "stock_value": row.get("stock_value"),
                 **hpp_dan_margin(row.get("stock_value"), row.get("current_stock"), row.get("sales_price") or row.get("harga_jual")),
                 "transaction_count": int(row.get("transaction_count", 0)),
+                "aksi_semua": BD.aksi_semua(row, row.get("current_stock")),
+                "position_text": BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
+                                                  sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
+                "bisa_dijual": sb.get("bisa_dijual"),
+                "aksi_tersedia": BD.aksi_tersedia(row),
                 "conversions": conversions,
                 "created_at": row["created_at"].isoformat()
                 if row["created_at"]
