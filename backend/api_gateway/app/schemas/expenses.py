@@ -278,6 +278,14 @@ class TopAccount(BaseModel):
     count: int
 
 
+class PaidThroughBawaan(BaseModel):
+    """BUG-055: rekening bayar bawaan form biaya (services/rekening_bawaan) -- sumber 'terakhir' | 'utama' | 'kas'."""
+
+    id: UUID
+    nama: str
+    sumber: Literal["terakhir", "utama", "kas"]
+
+
 class ExpenseSummaryData(BaseModel):
     """Summary data structure."""
 
@@ -289,6 +297,7 @@ class ExpenseSummaryData(BaseModel):
     billable_count: int
     billable_amount: int
     top_accounts: List[TopAccount]
+    paid_through_bawaan: Optional[PaidThroughBawaan] = None
 
 
 class ExpenseSummaryResponse(BaseModel):

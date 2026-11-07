@@ -32,6 +32,7 @@ from ..schemas.expenses import (
     ExpenseAutocompleteResponse,
 )
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services.rekening_bawaan import paid_through_bawaan
 from ..services.role_resolver import (
     AccountRole,
     resolve_account_id_by_role,
@@ -492,11 +493,14 @@ async def get_expenses_summary(
                 ctx["tenant_id"],
                 hari_ini,
             )
+            # BUG-055: rekening bayar bawaan form biaya = penentu SERVER (terakhir -> utama -> kas), bukan rekening pertama abjad FE
+            bawaan = await paid_through_bawaan(conn, ctx["tenant_id"])
 
             return {
                 "success": True,
                 "data": {
                     "period": period,
+                    "paid_through_bawaan": bawaan,
                     "total_count": journal_summary["total_count"],
                     "total_amount": journal_summary["total_amount"],
                     "total_tax": total_tax,
