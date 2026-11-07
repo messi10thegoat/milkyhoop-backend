@@ -116,12 +116,32 @@ async def main():
         print(f"[{MODE}] LEWATI aktiva tetap jalur lolos: journal_sequences tak ada (fitur mati, tiket)", flush=True)
 
     # (6) jurnal MANUAL buat-posting
-    def manual(nilai):
-        return J.create_journal(req(uid), CreateJournalRequest(entry_date=hari, description="UJI K2 manual", lines=[
+    def manual(nilai, draf=False):
+        return J.create_journal(req(uid), CreateJournalRequest(entry_date=hari, description="UJI K2 manual", save_as_draft=draf, lines=[
             {"account_id": str(beban), "debit": nilai}, {"account_id": str(kas["coa_id"]), "credit": nilai}]))
-    await kasus("jurnal manual", lambda: manual(besar), tolak)
+    await kasus("jurnal manual buat-posting", lambda: manual(besar), tolak)
     if tolak:
-        await kasus("jurnal manual kecil", lambda: manual(kecil), False)
+        await kasus("jurnal manual buat-posting kecil", lambda: manual(kecil), False)
+
+    async def posting_draf(nilai):  # draf dibuat DI LUAR hitungan (DRAF = jurnal baru); yang dihitung = posting-nya
+        jid = (await manual(nilai, draf=True))["data"]["id"]
+        async def posting():
+            return await J.post_journal(req(uid), uuid.UUID(str(jid)))
+        return posting
+    async def kasus_posting(nama, nilai, harap_tolak):
+        p = await posting_draf(nilai)
+        async with pool.acquire() as c:
+            n0 = await c.fetchval("SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND status = 'POSTED'", TID)
+        h = await coba(p())
+        async with pool.acquire() as c:
+            n1 = await c.fetchval("SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND status = 'POSTED'", TID)
+        if harap_tolak:
+            cek(f"{nama}: > saldo kas DITOLAK KAS_MINUS, nol posting", h[0] == "galat" and h[1] == "KAS_MINUS" and h[2] == 400 and n1 == n0, f"{h[:3]} posted +{n1 - n0}")
+        else:
+            cek(f"{nama}: lolos, terposting", h[0] == "ok" and n1 == n0 + 1, f"{h[0]} {h[1:] if h[0] != 'ok' else ''} posted +{n1 - n0}")
+    await kasus_posting("jurnal manual posting draf", besar, tolak)
+    if tolak:
+        await kasus_posting("jurnal manual posting draf kecil", kecil, False)
 
     print(f"HASIL[{MODE}]: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
