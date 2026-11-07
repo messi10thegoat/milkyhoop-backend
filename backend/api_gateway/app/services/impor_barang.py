@@ -152,7 +152,7 @@ def tafsir_baris(teks: str) -> dict:
             b["tipe"] = g["tipe"]
     tak = " ".join(x.strip(" ,;") for x in sisa if x.strip(" ,;"))
     if tak:
-        b.setdefault("_galat", []).append(f"Tak terbaca: \"{tak}\". Ketik ulang baris ini atau hapus \"{tak}\".")
+        b.setdefault("_galat", []).append(f"Tak terbaca: \"{tak}\"")
     if b.pop("_stok_besar", False):  # "stok 10 karton" -> satuan dasar (stok awal selalu dalam satuan dasar)
         try:
             b["stok_awal"] = str(angka(b["stok_awal"]) * angka(b["isi"]))
@@ -214,9 +214,11 @@ def baca_xlsx(isi: bytes) -> list:
 
 
 # ---------------------------------------------------------------- baris -> badan POST /items
-def ke_badan(b: dict) -> tuple:
-    """-> (payload CreateItemRequest, blok[], harga[{arah, teks}]). Harga = persis kolomnya (tanpa turunan)."""
-    bl, harga = [blok("TAK_TERBACA", g) for g in b.get("_galat", [])], []
+def ke_badan(b: dict, no: Optional[int] = None) -> tuple:
+    """-> (payload CreateItemRequest, blok[], harga[{arah, teks}]). Harga = persis kolomnya (tanpa turunan).
+    no = nomor baris pratinjau (sama dengan baris[].no = nomor tabel FE) -> jalan keluar TAK_TERBACA "hapus <no>"."""
+    keluar = f". Ketik ulang baris ini atau hapus {no}." if no else ""
+    bl, harga = [blok("TAK_TERBACA", g + keluar) for g in b.get("_galat", [])], []
     def uang(k, label):
         try:
             v = angka(b.get(k))
@@ -299,7 +301,7 @@ async def rencana(conn, ctx: dict, baris: list) -> dict:
     kat = {SM.kunci(r["name"]): r["name"] for r in await conn.fetch("SELECT name FROM item_categories WHERE tenant_id = $1", tid)}
     satuan_baru, kategori_baru, pertama, maks, out = {}, {}, {}, {}, []
     for no, b in enumerate(baris, 1):
-        p, bl, harga = ke_badan(b)
+        p, bl, harga = ke_badan(b, no)
         for kunci_p, wadah in (("base_unit", p), *(("conversion_unit", c) for c in p.get("conversions", []))):
             u = wadah.get(kunci_p)
             if u:  # satuan yang ada = ejaan tenant; baru = dibuat sekali

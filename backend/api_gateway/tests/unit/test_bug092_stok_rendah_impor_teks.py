@@ -3,8 +3,11 @@ ber-reorder_level > 0 (pola NetSuite/SAP) -> barang baru stok 0 tanpa titik pesa
 ITEM AKTIF/nonaktif = hitungan server, tak bergantung filter daftar. BUG-093 + TAK_TERBACA: teks impor dari server."""
 import io
 
+import pytest
+
 from app.routers import items as RI
 from app.services import impor_barang as IB
+from tests.unit.test_impor_barang import CTX, _b, _Conn, palsu  # noqa: F401
 from tests.unit.test_nilai_hpp_margin import BARIS, _C, _klien
 
 
@@ -37,4 +40,14 @@ def test_tak_terbaca_menyebut_jalan_keluar():
     b = IB.tafsir_baris("teh pucuk jual 4rb blabla")
     _, bl, _ = IB.ke_badan(b)
     assert bl[0]["code"] == "TAK_TERBACA"
-    assert bl[0]["message"] == 'Tak terbaca: "blabla". Ketik ulang baris ini atau hapus "blabla".'
+    assert bl[0]["message"] == 'Tak terbaca: "blabla"'
+    _, bl, _ = IB.ke_badan(b, 3)
+    assert bl[0]["message"] == 'Tak terbaca: "blabla". Ketik ulang baris ini atau hapus 3.'
+
+
+@pytest.mark.asyncio
+async def test_tak_terbaca_nomor_baris_sama_dengan_no_pratinjau(palsu):
+    r = await IB.rencana(_Conn(), CTX, [_b("A"), _b("B"), IB.tafsir_baris("teh pucuk jual 4rb jual abc")])
+    x = r["baris"][2]
+    assert x["no"] == 3 and not x["ok"]
+    assert x["blocks"][0]["message"] == 'Tak terbaca: "jual abc". Ketik ulang baris ini atau hapus 3.'
