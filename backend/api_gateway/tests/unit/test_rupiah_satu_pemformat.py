@@ -30,8 +30,10 @@ def test_riwayat_tetap_aman_untuk_masukan_tak_sah():
 BERKAS = ["routers/sales_orders.py", "routers/sales_invoices.py", "routers/quotes.py", "routers/proformas.py",
           "routers/receive_payments.py", "routers/customer_deposits.py", "routers/credit_notes.py",
           "routers/deliveries.py", "services/so_pelunasan.py", "services/so_riwayat.py",
-          "services/so_ubah_terkonfirmasi.py", "services/pihak_helpers.py", "services/proforma_atribusi.py"]
-IDIOM = re.compile(r':,\.[02]f\}"?\.(replace|translate)')
+          "services/so_ubah_terkonfirmasi.py", "services/pihak_helpers.py", "services/proforma_atribusi.py",
+          "services/sj_so.py", "routers/vendor_credits.py"]  # BUG-112 (b): riwayat SJ-SO + pesan ND
+# BUG-112 (b): juga en-US TELANJANG "Rp{x:,.2f}" -> "Rp558,000.00" (dulu hanya idiom ber-.replace yang ditangkap)
+IDIOM = re.compile(r':,(\.[0-9]f)?\}"?(\.(replace|translate))?')
 
 
 @pytest.mark.parametrize("rel", BERKAS)
@@ -43,4 +45,6 @@ def test_tak_ada_idiom_rupiah_float_lokal(rel):
 def test_pemindai_bisa_merah():
     assert IDIOM.search('"Rp" + f"{float(x):,.2f}".replace(",", "#")')
     assert IDIOM.search('f"{x:,.0f}".replace(",", ".")')
-    assert not IDIOM.search("tg.rp(x)")
+    assert IDIOM.search("f\", barang terkirim Rp{r['total_value']:,.2f}\"")
+    assert IDIOM.search('f"{n:,}"')
+    assert not IDIOM.search("tg.rp(x)") and not IDIOM.search('f"{x:.2f}"')

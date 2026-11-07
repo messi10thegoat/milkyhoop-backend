@@ -611,3 +611,14 @@ def test_void_faktur_membalik_semua_invoice_revenue_bukan_satu():
     assert "orphan_rev = await conn.fetchrow(" not in src
     assert "balik_alokasi_faktur(conn, ctx, invoice_id, today, body.reason)" in src
     assert "_alok = await _sj_so.alokasikan_saat_faktur(" in src
+
+
+def test_riwayat_sj_stok_rupiah_baku(monkeypatch):
+    """BUG-112 (b): ringkas riwayat 'barang terkirim Rp 500.000' (tg.rp), bukan en-US 'Rp500,000.00'."""
+    teks = []
+
+    async def riwayat(conn, tenant_id, entity_type, entity_id, entity_number, event, user_id, ringkas, meta=None, source="api"):
+        teks.append(ringkas)
+    monkeypatch.setattr(S, "catat_riwayat", riwayat)
+    jalan(S.tulis(Konek(rows=_stok_rows(10), flag_stok=True), ctx(), SO, S.SJSOIn()))
+    assert len(teks) == 1 and "barang terkirim Rp 500.000)" in teks[0], teks
