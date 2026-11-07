@@ -1,13 +1,17 @@
 """PEMBELIAN-SERAGAM / Pesanan Pembelian (22 Okt 2026, P-U2): data daftar/detail/bundel dihitung SERVER, FE hanya memformat.
 
-  terima_terbuka = status sent|partial_received DAN masih ada sisa terima DAN bertanggal `expected_date`
+  terima_terbuka = status STATUS_TERIMA_TERBUKA DAN masih ada sisa terima DAN bertanggal `expected_date` (BUG-112 c2: termasuk PO yang
+                   sudah ditagih -- dulu partial_billed menyembunyikan barang yang belum datang)
   terima_hari    = expected_date - hari ini (tanggal BISNIS tenant); None bila tak terbuka; <0 = lewat jadwal
   terima_keadaan = telat | hari_ini | akan | selesai (sudah diterima penuh, tanggal redup) | tanpa
   terima_teks    = "Hari ini" / "Besok" / "24 Okt" / "12 Okt, lewat jadwal" / "—"
-  position_text  = Draf | Terkirim ke vendor | Diterima sebagian | Diterima | Ditagih sebagian | Ditagih | Selesai | Dibatalkan
-  aksi (pill; putusan MASTER 22 Okt): perlu_dikirim > telat_terima > perlu_ditagih > draf_tagihan -- PARTISI (satu baris = satu pill;
+  position_text  = Draf | Terkirim ke vendor | Diterima sebagian | Diterima | Ditagih sebagian | Ditagih | Selesai | Dibatalkan;
+                   BUG-112 (c1): status tagih + barang bersisa -> dua dimensi "Diterima sebagian · ditagih sebagian" (cermin SO posisi|kirim)
+  aksi (pill; putusan MASTER 22 Okt): perlu_dikirim > telat_terima > perlu_ditagih > draf_tagihan > perlu_diterima -- PARTISI (satu baris = satu pill;
                  ?aksi=k, hitungan summary dan `aksi` baris memakai predikat yang sama). `menunggu_barang` (keadaan normal tiap PO terkirim)
                  dan `perlu_ditutup` (Fully Billed = selesai otomatis, pola NetSuite) BUKAN pill; tutup manual = aksi di detail.
+                 perlu_diterima (BUG-112 c3, MASTER (A) 7 Nov): PO yang SUDAH mulai diterima/ditagih (STATUS_MULAI_TERIMA) masih bersisa
+                 terima, tak telat, tak kena kunci di atasnya; PO 'sent' murni tetap menunggu_barang.
   amount_received/amount_billed = TURUNAN dari baris (qty_diterima x total / qty, 2dp HALF_UP), bukan kolom cache PO.
   DITAGIH (1 Nov 2026, putusan MASTER, cermin SO "faktur draf = belum difaktur" 25 Sep): amount_billed/sisa_ditagih/aksi/status dari bill
                  POSTED saja; porsi bill DRAF terpisah (draft_bill_amount). PAGAR (to-bill, posting, ubah/batal PO) tetap SEMUA bill non-void
@@ -32,7 +36,8 @@ from . import tagihan_daftar as TD  # dok tagihan: SATU pembentuk dgn bundel tag
 
 NOL = Decimal("0")
 DUA = Decimal("0.01")
-STATUS_TERIMA_TERBUKA = ("sent", "partial_received")
+STATUS_MULAI_TERIMA = ("partial_received", "received", "partial_billed", "billed")  # BUG-112 c3: syarat status perlu_diterima
+STATUS_TERIMA_TERBUKA = ("sent",) + STATUS_MULAI_TERIMA  # BUG-112 c2: + received/partial_billed/billed (bersisa terima tetap terbuka)
 STATUS_SUDAH_TERIMA = ("received", "partial_billed", "billed", "closed")
 STATUS_BISA_TAGIH = ("sent", "partial_received", "received", "partial_billed")  # sent: baris jasa (barang 'sent' = belum_ditagih 0)
 # PO tanpa sisa ditagih (22 Okt 2026, temuan nyata kaos PO-2610-0001; pola NetSuite: baris PO yang DITUTUP tak bisa ditagih):
@@ -52,7 +57,7 @@ def sql_qty_tagih(jenis: str, i: str = "i", tenant: str = "$2") -> str:
     """Σ qty bill_items bertaut ke baris PO `i` pada bill tenant `tenant` dengan predikat PRED_TAGIH[jenis]. SATU sumber."""
     return (f"COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id "
             f"WHERE bi.purchase_order_item_id = {i}.id AND b.tenant_id = {tenant} AND {PRED_TAGIH[jenis]}), 0)")
-AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan")  # urutan desak (PARTISI)
+AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "perlu_diterima")  # urutan desak (PARTISI)
 SARINGAN = ("bisa_diterima",)  # ?aksi= daftar saja: bukan pill, tak dihitung summary
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}
@@ -66,8 +71,12 @@ def r2(x) -> Decimal:
     return _d(x).quantize(DUA, rounding=ROUND_HALF_UP)
 
 
-def position_text(status: Optional[str]) -> str:
-    """Kolom Status FE (SATU fungsi: baris daftar, detail, anchor bundel)."""
+def position_text(status: Optional[str], sisa_terima=None, diterima=None) -> str:
+    """Kolom Status FE (SATU fungsi: baris daftar, detail, anchor bundel). BUG-112 (c1): status tagih (enum tersimpan: tagih menang)
+    + barang masih bersisa terima -> dua dimensi; sisa_terima/diterima = qty BARANG (SQL_AGREGAT). Tanpa sisa = teks lama."""
+    if status in ("partial_billed", "billed") and _d(sisa_terima) > NOL:
+        terima = "Diterima sebagian" if _d(diterima) > NOL else "Belum diterima"
+        return f"{terima} · {'ditagih sebagian' if status == 'partial_billed' else 'ditagih'}"
     return POSISI.get(status or "", status or "")
 
 
@@ -98,6 +107,8 @@ def aksi_po(status: Optional[str], expected_date: Optional[date], sisa_terima, b
     if status in STATUS_BISA_TAGIH and _d(belum_ditagih) > NOL:
         sesudah = belum_ditagih if belum_ditagih_sesudah_draf is None else belum_ditagih_sesudah_draf
         return "perlu_ditagih" if _d(sesudah) > NOL else "draf_tagihan"
+    if status in STATUS_MULAI_TERIMA and _d(sisa_terima) > NOL:
+        return "perlu_diterima"
     return None
 
 
@@ -117,6 +128,7 @@ def jumlah_turunan(baris: list) -> dict:
 SQL_AGREGAT = f"""
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(CASE WHEN q.jasa THEN 0 ELSE GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0) END), 0) AS sisa_terima,
+               COALESCE(SUM(CASE WHEN q.jasa THEN 0 ELSE COALESCE(i.quantity_received, 0) END), 0) AS diterima_barang,
                COALESCE(SUM(GREATEST(q.dasar - q.posted, 0)), 0) AS belum_ditagih,
                COALESCE(SUM(GREATEST(q.dasar - q.pagar, 0)), 0) AS belum_ditagih_sesudah_draf,
                COALESCE(SUM(ROUND(COALESCE(i.quantity_received, 0) * i.total / NULLIF(i.quantity, 0), 2)), 0) AS amount_received,
@@ -135,8 +147,8 @@ SQL_AGREGAT = f"""
 def sql_aksi(aksi: str, hari: str, po: str = "po", ag: str = "ag", status_terima: tuple = ()) -> str:
     """Predikat SQL setara aksi_po(...) == aksi (PARTISI) + saringan bisa_diterima (status_terima = po_rencana.status_bisa_terima(flag)).
     `hari` = placeholder tanggal bisnis (mis. '$2')."""
-    telat = (f"({po}.status IN ('sent', 'partial_received') AND {ag}.sisa_terima > 0 AND {po}.expected_date IS NOT NULL "
-             f"AND {po}.expected_date < {hari}::date)")
+    telat = (f"({po}.status IN ({', '.join(repr(s) for s in STATUS_TERIMA_TERBUKA)}) AND {ag}.sisa_terima > 0 "
+             f"AND {po}.expected_date IS NOT NULL AND {po}.expected_date < {hari}::date)")
     tagih = f"({po}.status IN ({', '.join(repr(s) for s in STATUS_BISA_TAGIH)}) AND {ag}.belum_ditagih > 0 AND NOT {telat})"
     if aksi == "bisa_diterima":
         return f"({po}.status IN ({', '.join(repr(s) for s in status_terima) or 'NULL'}) AND {ag}.sisa_terima > 0)"
@@ -145,6 +157,8 @@ def sql_aksi(aksi: str, hari: str, po: str = "po", ag: str = "ag", status_terima
         "telat_terima": telat,
         "perlu_ditagih": f"({tagih} AND {ag}.belum_ditagih_sesudah_draf > 0)",
         "draf_tagihan": f"({tagih} AND {ag}.belum_ditagih_sesudah_draf <= 0)",
+        "perlu_diterima": (f"({po}.status IN ({', '.join(repr(s) for s in STATUS_MULAI_TERIMA)}) AND {ag}.sisa_terima > 0 "
+                           f"AND NOT {telat} AND NOT {tagih})"),
     }[aksi]
 
 
@@ -187,7 +201,7 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
         return {}
     out = {}
     for r in await conn.fetch(
-        f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.amount_received, ag.amount_billed,
+        f"""SELECT po.id, po.status, po.expected_date, po.total_amount, ag.sisa_terima, ag.belum_ditagih, ag.diterima_barang, ag.amount_received, ag.amount_billed,
                    ag.draft_bill_amount, ag.belum_ditagih_sesudah_draf,
                    EXISTS (SELECT 1 FROM tenant_features tf WHERE tf.tenant_id = po.tenant_id AND tf.feature = '{FLAG}' AND tf.enabled) AS aturan_d
             FROM purchase_orders po {SQL_AGREGAT}
@@ -195,7 +209,7 @@ async def fakta_po(conn, tenant_id: str, po_ids: list, hari_ini: date) -> dict:
         sisa = NOL if r["status"] in STATUS_TANPA_SISA_TAGIH else r2(r["total_amount"]) - r2(r["amount_billed"])
         out[r["id"]] = {
             **terima_fakta(r["status"], r["expected_date"], r["sisa_terima"], hari_ini),
-            "position_text": position_text(r["status"]),
+            "position_text": position_text(r["status"], r["sisa_terima"], r["diterima_barang"]),
             "aksi": aksi_po(r["status"], r["expected_date"], r["sisa_terima"], r["belum_ditagih"], hari_ini, r["belum_ditagih_sesudah_draf"]),
             "amount_received": r2(r["amount_received"]), "amount_billed": r2(r["amount_billed"]),
             "sisa_ditagih": max(sisa, NOL), "draft_bill_amount": r2(r["draft_bill_amount"]),

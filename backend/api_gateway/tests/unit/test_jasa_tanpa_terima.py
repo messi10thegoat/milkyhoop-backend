@@ -241,7 +241,7 @@ class KonFakta:
 
 
 def _rf(status, sisa_terima, belum, aturan_d=False):
-    return {"id": uuid.uuid4(), "status": status, "expected_date": None, "total_amount": D("100"), "sisa_terima": D(sisa_terima),
+    return {"id": uuid.uuid4(), "status": status, "expected_date": None, "total_amount": D("100"), "diterima_barang": 0, "sisa_terima": D(sisa_terima),
             "belum_ditagih": D(belum), "amount_received": D("0"), "amount_billed": D("0"), "draft_bill_amount": D("0"),
             "belum_ditagih_sesudah_draf": D(belum), "aturan_d": aturan_d}
 

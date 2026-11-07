@@ -42,7 +42,7 @@ def _po(total, status="sent", nomor=None, ditagih=0, draf=0, nama="Bahan Jaya", 
             "vendor_name": nama, "po_date": tgl, "status": status, "total_amount": D(str(total)),
             "draft_bill_amount": D(str(draf)), "expected_date": tiba,
             # medan LATERAL SQL_AGREGAT (turunan baris PO) -- dibaca PD.fakta_po
-            "sisa_terima": D(0), "belum_ditagih": D(0), "amount_received": D(str(total)), "amount_billed": D(str(ditagih)),
+            "diterima_barang": 0, "sisa_terima": D(0), "belum_ditagih": D(0), "amount_received": D(str(total)), "amount_billed": D(str(ditagih)),
             "belum_ditagih_sesudah_draf": D(0), "aturan_d": False}  # PO-DRAF retarget (a): kolom SQL_AGREGAT baru, = belum_ditagih (tanpa draf = perilaku lama)
 
 
