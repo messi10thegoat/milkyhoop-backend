@@ -275,3 +275,39 @@ class BankAccountBalanceResponse(BaseModel):
 
     success: bool = True
     data: BankAccountBalanceInfo
+
+
+# B2 / B2b: GET /api/bank-accounts/transactions/recent (services/kasbank_ringkas.mutasi). Dideklarasikan (pola BUG-097: medan tak
+# dideklarasikan DIBUANG diam-diam oleh response_model); penjaga AST di tests/unit/test_kasbank_ringkas.py.
+class PihakMutasi(BaseModel):
+    jenis: Optional[Literal["pelanggan", "vendor"]] = None
+    id: Optional[str] = None
+    nama: str
+
+
+class MutasiTerakhirItem(BaseModel):
+    id: str
+    journal_id: str
+    nomor_jurnal: Optional[str] = None
+    bank_account_id: str
+    account_name: Optional[str] = None
+    transaction_date: Optional[str] = None
+    created_at: Optional[str] = None
+    arah: Literal["masuk", "keluar"]
+    amount: str
+    description: Optional[str] = None
+    sumber: str
+    sumber_teks: str
+    source_id: Optional[str] = None
+    status: Literal["tercatat", "dibatalkan", "pembatalan"]
+    nomor_dokumen: Optional[str] = None
+    pihak: Optional[PihakMutasi] = None
+
+
+class MutasiTerakhirData(BaseModel):
+    items: List[MutasiTerakhirItem]
+
+
+class MutasiTerakhirResponse(BaseModel):
+    success: bool = True
+    data: MutasiTerakhirData

@@ -5,10 +5,15 @@ from uuid import uuid4
 
 import pytest
 
+import ast
+import inspect
+
 from app.routers import bank_accounts as RB
+from app.schemas import bank_accounts as SB
 from app.services import kasbank_ringkas as KR
 
 T0 = datetime(2026, 11, 6, 9, 0)
+PID, SID = uuid4(), uuid4()
 
 
 def _akun(tipe, saldo, nama="Kas", jumlah=3, terakhir=date(2026, 11, 5)):
@@ -16,10 +21,12 @@ def _akun(tipe, saldo, nama="Kas", jumlah=3, terakhir=date(2026, 11, 5)):
             "saldo": saldo, "mutasi_terakhir": terakhir, "jumlah": jumlah}
 
 
-def _baris(net, st="RECEIVE_PAYMENT", rev_of=None, rev_by=None, memo="Terima INV-1"):
+def _baris(net, st="RECEIVE_PAYMENT", rev_of=None, rev_by=None, memo="Terima INV-1", nomor="RCV-2611-0001", jenis="pelanggan",
+           pid=PID, nama="Toko Sinar"):
     return {"id": uuid4(), "journal_id": uuid4(), "journal_number": "JE-1", "journal_date": date(2026, 11, 5), "created_at": T0,
-            "source_type": st, "source_id": "s1", "reversal_of_id": rev_of, "reversed_by_id": rev_by, "bank_account_id": uuid4(),
-            "account_name": "BCA", "net": net, "keterangan": memo}
+            "source_type": st, "source_id": SID, "reversal_of_id": rev_of, "reversed_by_id": rev_by, "bank_account_id": uuid4(),
+            "account_name": "BCA", "net": net, "keterangan": memo, "nomor_dokumen": nomor, "pihak_jenis": jenis, "pihak_id": pid,
+            "pihak_nama": nama}
 
 
 # ---------------------------------------------------------------- B1
@@ -136,3 +143,40 @@ def test_rute_mutasi_terakhir_limit(klien):
     assert k.get("/api/bank-accounts/transactions/recent?limit=5").status_code == 200 and c.panggil[-1][1] == ("t1", 5)
     assert k.get("/api/bank-accounts/transactions/recent?limit=0").status_code == 422
     assert k.get("/api/bank-accounts/transactions/recent?limit=101").status_code == 422
+
+
+# ---------------------------------------------------------------- B2b: nomor_dokumen + pihak dari dokumen sumber (MASTER 7 Nov)
+def test_mutasi_nomor_dokumen_dan_pihak():
+    m = KR.mutasi([_baris(150000), _baris(-50000, "BANK_TRANSACTION", nomor="BT-1", jenis=None, pid=None, nama="Pak Budi"),
+                   _baris(-10000, "BANK_TRANSFER", nomor="TRF-2611-0001", jenis=None, pid=None, nama=None),
+                   _baris(-2000, "BANK_OPENING_BALANCE", nomor=None, jenis=None, pid=None, nama=None)])
+    assert (m[0]["nomor_dokumen"], m[0]["pihak"]) == ("RCV-2611-0001", {"jenis": "pelanggan", "id": str(PID), "nama": "Toko Sinar"})
+    assert m[1]["pihak"] == {"jenis": None, "id": None, "nama": "Pak Budi"}  # mutasi manual: teks bebas payee_payer
+    assert (m[2]["nomor_dokumen"], m[2]["pihak"]) == ("TRF-2611-0001", None) and (m[3]["nomor_dokumen"], m[3]["pihak"]) == (None, None)
+    assert m[0]["source_id"] == str(SID)
+
+
+def test_sql_dokumen_sumber_per_tabel_dan_tenant():
+    s = KR.SQL_MUTASI
+    for st, tabel in (("CUSTOMER_DEPOSIT", "customer_deposits"), ("RECEIVE_PAYMENT", "receive_payments"), ("CREDIT_NOTE_REFUND", "credit_notes"),
+                      ("BILL_PAYMENT", "bill_payments_v2"), ("VENDOR_DEPOSIT", "vendor_deposits"), ("EXPENSE_REVERSAL", "expenses"),
+                      ("BANK_TRANSACTION", "bank_transactions"), ("DEPOSIT_REFUND", "vendor_deposits")):
+        assert f"'{st}'" in s and f"FROM {tabel} x" in s, st
+    assert s.count("x.tenant_id = je.tenant_id") == 7 and s.count("c.tenant_id = x.tenant_id") == 3 and s.count("v.tenant_id = x.tenant_id") == 3
+    assert "LIMIT 1" in s and "c.nama" in s
+
+
+def _kunci_kamus(fungsi):
+    pohon = ast.parse(inspect.getsource(fungsi))
+    return [{k.value for k in n.keys if isinstance(k, ast.Constant)} for n in ast.walk(pohon) if isinstance(n, ast.Dict)]
+
+
+def test_skema_mutasi_menyatakan_semua_kunci_rakitan():
+    assert _kunci_kamus(KR.mutasi) == [set(SB.MutasiTerakhirItem.model_fields)]
+    assert _kunci_kamus(KR.pihak) == [set(SB.PihakMutasi.model_fields)]
+
+
+def test_rute_mutasi_menyampaikan_pihak_lewat_response_model(klien):
+    k, _ = klien
+    it = k.get("/api/bank-accounts/transactions/recent").json()["data"]["items"][0]
+    assert (it["nomor_dokumen"], it["pihak"]["nama"], it["pihak"]["jenis"], it["sumber_teks"]) == ("RCV-2611-0001", "Toko Sinar", "pelanggan", "Terima pembayaran")

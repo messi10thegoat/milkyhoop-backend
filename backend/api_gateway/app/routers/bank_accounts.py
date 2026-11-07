@@ -38,6 +38,7 @@ from ..schemas.bank_accounts import (
     BankAccountListResponse,
     BankTransactionListResponse,
     BankAccountBalanceResponse,
+    MutasiTerakhirResponse,
 )
 from ..services.resolve_account import resolve_account_id
 from ..services.role_resolver import (
@@ -398,7 +399,7 @@ async def ringkasan_kas_bank(request: Request):
         return {"success": True, "data": KR.ringkasan(baris, await tanggal_dokumen(conn, ctx["tenant_id"]))}
 
 
-@router.get("/transactions/recent")
+@router.get("/transactions/recent", response_model=MutasiTerakhirResponse)
 async def mutasi_terakhir_kas_bank(request: Request, limit: int = Query(10, ge=1, le=100)):
     """B2: mutasi terakhir semua akun kas/bank dari baris jurnal POSTED; services/kasbank_ringkas."""
     ctx = get_user_context(request)
