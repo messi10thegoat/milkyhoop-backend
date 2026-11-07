@@ -20,10 +20,10 @@ def _exp(status, journal=None):
 
 @pytest.fixture
 def periode(monkeypatch):
-    keadaan = {"tutup": False, "rekon": False}
+    keadaan = {"tutup": False, "rekon": False, "tutup_tgl": set()}
 
     async def cek(conn, tid, tgl):
-        if keadaan["tutup"]:
+        if keadaan["tutup"] or tgl in keadaan["tutup_tgl"]:
             raise HTTPException(status_code=403, detail="Periode November 2026 sudah ditutup.")
 
     async def rekon(conn, tid, sid):
@@ -63,6 +63,19 @@ def test_periode_tutup_dan_rekon_memberi_alasan(periode):
     assert _a(_exp("draft"))["posting"]["alasan"] == "Periode November 2026 sudah ditutup."
     periode["tutup"], periode["rekon"] = False, True
     assert _a(_exp("posted", journal=uuid.uuid4()))["batalkan"]["alasan"] == "Sudah direkonsiliasi bank."
+
+
+def test_posting_hanya_draf_walau_tanpa_jurnal(periode):
+    """Sabotase s6: status bukan draf ditolak SENDIRI, bukan menumpang cek jurnal."""
+    assert _a(_exp("posted"))["posting"] == {"tersedia": False, "alasan": "Hanya biaya draf yang bisa diterbitkan."}
+
+
+def test_batal_periode_hari_ini_tutup(periode):
+    """Sabotase s7: tanggal biaya terbuka tetapi periode HARI INI (jurnal pembalik) tutup -> batalkan tak tersedia."""
+    periode["tutup_tgl"].add(date(2026, 11, 7))
+    e = _exp("posted", journal=uuid.uuid4())
+    e["expense_date"] = date(2026, 10, 1)
+    assert _a(e)["batalkan"] == {"tersedia": False, "alasan": "Periode November 2026 sudah ditutup."}
 
 
 def test_batal(periode):
