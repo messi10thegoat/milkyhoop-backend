@@ -320,6 +320,8 @@ class VendorListItem(BaseModel):
     status_text: Optional[str] = None
     aksi: Optional[str] = None  # kunci aksi pertama (urut desak) atau null
     aksi_semua: List[str] = []  # SEMUA kunci yang berlaku untuk baris ini
+    is_pkp: Optional[bool] = None  # BUG-088: bawaan pajak vendor (== VendorDetail)
+    default_tax_code: Optional[str] = None
 
 
     """Vendor item for list responses."""

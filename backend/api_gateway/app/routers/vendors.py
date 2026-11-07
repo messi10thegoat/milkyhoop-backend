@@ -421,7 +421,7 @@ async def list_vendors(
                 pos = {str(i): n for n, i in enumerate(h["ids"])}
                 rows = sorted(await conn.fetch(
                     """SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
-                              payment_terms_days, is_active, created_at FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])""",
+                              payment_terms_days, is_active, created_at, is_pkp, default_tax_code FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])""",
                     ctx["tenant_id"], h["ids"]), key=lambda r: pos[str(r["id"])])
             else:
                 # Get total count
@@ -432,7 +432,7 @@ async def list_vendors(
                 if use_ap_balance_sort:
                     query = f"""
                         SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email, v.city,
-                               v.payment_terms_days, v.is_active, v.created_at,
+                               v.payment_terms_days, v.is_active, v.created_at, v.is_pkp, v.default_tax_code,
                                COALESCE(ap.ap_balance, 0) as ap_balance
                         FROM vendors v
                         LEFT JOIN (
@@ -448,7 +448,7 @@ async def list_vendors(
                 else:
                     query = f"""
                         SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
-                               payment_terms_days, is_active, created_at
+                               payment_terms_days, is_active, created_at, is_pkp, default_tax_code
                         FROM vendors v
                         WHERE {where_clause}
                         ORDER BY {sort_field} {sort_dir}
@@ -476,6 +476,8 @@ async def list_vendors(
                     "payment_terms_days": row["payment_terms_days"],
                     "is_active": row["is_active"],
                     "created_at": row["created_at"].isoformat(),
+                    "is_pkp": row["is_pkp"],  # BUG-088: bawaan pajak vendor untuk form PO/FPB (== GET /{id})
+                    "default_tax_code": row["default_tax_code"],
                     "ap_balance": KD.medan_baris("vendor", row, fakta)["saldo"],
                     **KD.medan_baris("vendor", row, fakta),
                 }

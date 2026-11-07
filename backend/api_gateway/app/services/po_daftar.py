@@ -268,9 +268,10 @@ def dok_vendor_deposit(d) -> dict:
 
 
 async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
-    """{po_id: [kelompok]} bundel PO: po (PO itu sendiri) · faktur (bill bertaut purchase_order_id; draf & void tetap tampil) ·
+    """{po_id: [kelompok]} bundel PO: po (PO itu sendiri) · grn (Penerimaan Barang bertaut purchase_order_id, BUG-080) · faktur (bill bertaut purchase_order_id; draf & void tetap tampil) ·
     uang_muka (vendor_deposits purchase_order_id; tak void) · bayar (Pembayaran Keluar posted atas bill-bill itu, via alokasi).
     Pembentuk SATU tempat; documents[] baris daftar = turunannya (documents_baris)."""
+    from .grn_daftar import dok_goods_receipt  # malas: grn_daftar mengimpor po_daftar
     if not po_ids:
         return {}
     ids = list(po_ids)
@@ -288,6 +289,13 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
            WHERE tenant_id = $1 AND purchase_order_id = ANY($2::uuid[]) AND status <> 'void' ORDER BY deposit_date, deposit_number""",
         tenant_id, ids):
         vds.setdefault(d["purchase_order_id"], []).append(d)
+    grn: dict = {}  # BUG-080: Penerimaan Barang bertaut PO (void tetap tampil bertanda batal, == faktur draf/void)
+    for g in await conn.fetch(
+        """SELECT g.id, g.purchase_order_id, g.receipt_number, g.receipt_date, g.status,
+                  (SELECT COALESCE(SUM(i.amount), 0) FROM goods_receipt_items i WHERE i.goods_receipt_id = g.id) AS amount
+           FROM goods_receipts g WHERE g.tenant_id = $1 AND g.purchase_order_id = ANY($2::uuid[])
+           ORDER BY g.receipt_date, g.receipt_number""", tenant_id, ids):
+        grn.setdefault(g["purchase_order_id"], []).append(g)
     bayar: dict = {}
     bill_ke_po = {b["id"]: p for p, bs in bills.items() for b in bs}
     if bill_ke_po:
@@ -303,6 +311,8 @@ async def dokumen_po(conn, tenant_id: str, po_ids: list) -> dict:
         if not r:
             continue
         kel = [{"key": "po", "label": "Pesanan Pembelian", "docs": [dok_purchase_order(r)]}]
+        if grn.get(pid):  # urutan alur == bundel berjangkar GRN (grn_daftar.kelompok_grn_banyak): po -> grn -> faktur
+            kel.append({"key": "grn", "label": "Penerimaan Barang", "docs": [dok_goods_receipt(g) for g in grn[pid]]})
         if bills.get(pid):
             kel.append({"key": "faktur", "label": "Faktur Pembelian", "docs": [dok_bill(b) for b in bills[pid]]})
         if vds.get(pid):
