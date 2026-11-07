@@ -65,5 +65,6 @@ def test_idempotensi_buat_opsional_sebelum_tulis():
     s = " ".join(inspect.getsource(EX.create_expense).split())
     assert s.index("kunci_idempotensi_klien(request)") < s.index("ambil_replay_klien(") < s.index("buat_biaya_inti(") < s.index("simpan_replay_klien(")
     assert 'f"IDEM:{ctx[\'tenant_id\']}:{kunci_penuh}"' in s and "IDEMPOTENCY_KEY_REUSED" in s and 'X-Idempotent-Replay' in s
+    assert 'if kunci_penuh: await simpan_replay_klien(conn, ctx["tenant_id"], kunci_penuh, "EXPENSE_CREATE"' in s  # replay benar-benar disimpan
     assert "if kunci_klien:" in s   # opsional (putusan MASTER 7 Nov; tiket wajibkan sesudah FE Biaya CW live)
     assert IDEM.SUMBER_BUAT["EXPENSE_CREATE"][0] == "expenses"
