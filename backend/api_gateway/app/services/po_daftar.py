@@ -58,8 +58,8 @@ def sql_qty_tagih(jenis: str, i: str = "i", tenant: str = "$2") -> str:
     return (f"COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id "
             f"WHERE bi.purchase_order_item_id = {i}.id AND b.tenant_id = {tenant} AND {PRED_TAGIH[jenis]}), 0)")
 AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "perlu_diterima")  # urutan desak (PARTISI)
-# Nilai kartu summary <aksi>_value: bawaan Σ total PO; perlu_diterima = Σ nilai SISA terima (barang belum datang; 8 Nov, MASTER grosir)
-NILAI_AKSI = {"perlu_diterima": "ag.nilai_sisa_terima"}
+# Nilai kartu summary <aksi>_value: bawaan Σ total PO; kartu barang-belum-datang (perlu_diterima, telat_terima) = Σ nilai SISA terima (8 Nov, MASTER)
+NILAI_AKSI = {k: "ag.nilai_sisa_terima" for k in ("perlu_diterima", "telat_terima")}
 SARINGAN = ("bisa_diterima",)  # ?aksi= daftar saja: bukan pill, tak dihitung summary
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}

@@ -185,9 +185,10 @@ def teks_keadaan_nk(k: dict) -> dict:
 
 # ---- U-P6 (2 Nov 2026): kunci bentuk Nota Debit (ADITIF; kunci lama tetap). Alias dihitung dari nilai YANG SAMA, bukan penentu kedua.
 def stok_bentuk_nd(restock: list) -> list:
-    """Baris rencana restock -> bentuk ND stock[] (nota_debit_rencana.stok_retur): product_id, product, quantity, unit_cost, total_cost."""
+    """Baris rencana restock -> bentuk ND stock[] (nota_debit_rencana.stok_retur): product_id, product, quantity, unit (satuan dasar
+    quantity; BUG-138), unit_cost, total_cost."""
     return [{"product_id": str(x["product_id"]), "product": x["nama"], "quantity": float(x["qty"]),
-             "unit_cost": float(x["unit_cost"]), "total_cost": float(x["line_cost"])} for x in restock]
+             "unit_cost": float(x["unit_cost"]), "total_cost": float(x["line_cost"]), "unit": x.get("satuan")} for x in restock]
 
 
 def bank_bentuk_nd(bank) -> list:
@@ -388,7 +389,8 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
             continue
         # QTY-DASAR R1: == penulis (satuan_dasar mode konversi; blok berkalimat sama)
         from . import satuan_dasar as SD
-        h = SD.hitung(await SD.muat(conn, tid, [product["id"]] if SD.normal(item.get("unit")) else []), product["id"], item.get("unit"),
+        # BUG-138: muat selalu (baris tanpa satuan pun) -> satuan_dasar untuk stock[].unit; qty tetap (tanpa satuan = dasar)
+        h = SD.hitung(await SD.muat(conn, tid, [product["id"]]), product["id"], item.get("unit"),
                       item["quantity"], "konversi")
         if h["blok"]:
             bl.galat(h["blok"]["code"], h["blok"]["status"], h["blok"]["message"])
@@ -416,13 +418,13 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
         if line_cost <= 0:
             if semua:
                 out.append({"product_id": product["id"], "nama": product["nama_produk"], "qty": qty, "unit_cost": unit_cost,
-                            "line_cost": line_cost, "inv": None, "cogs": None})
+                            "line_cost": line_cost, "inv": None, "cogs": None, "satuan": h["satuan_dasar"]})
             continue
         akun = await conn.fetchrow("SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1", product["id"])
         cogs = (akun["cogs_account_id"] if akun else None) or await _peran(conn, tid, AccountRole.COGS_SALES, bl, True)
         inv = (akun["inventory_account_id"] if akun else None) or await _peran(conn, tid, AccountRole.INVENTORY_MERCHANDISE, bl, True)
         out.append({"product_id": product["id"], "nama": product["nama_produk"], "qty": qty, "unit_cost": unit_cost, "line_cost": line_cost,
-                    "inv": inv, "cogs": cogs})
+                    "inv": inv, "cogs": cogs, "satuan": h["satuan_dasar"]})
     return out
 
 

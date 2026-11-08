@@ -75,7 +75,8 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
         # QTY-DASAR R2: ND = jalur KELUAR -> qty dokumen ke SATUAN DASAR (penentu SATU; penulis + pratinjau): batas sisa (asal_retur
         # sudah dasar), stok gudang, kartu, dan HPP dalam dasar; tanpa konversi -> blok berkalimat
         from . import satuan_dasar as SD
-        h_sd = SD.hitung(await SD.muat(conn, tid, [p["id"]] if SD.normal(it.get("unit")) else []), p["id"], it.get("unit"), it["quantity"], "konversi")
+        # BUG-138: muat selalu (baris tanpa satuan pun) -> satuan_dasar untuk stock[].unit pratinjau; qty tetap
+        h_sd = SD.hitung(await SD.muat(conn, tid, [p["id"]]), p["id"], it.get("unit"), it["quantity"], "konversi")
         if h_sd["blok"]:
             bl.galat(h_sd["blok"]["code"], h_sd["blok"]["status"], h_sd["blok"]["message"])
             continue
@@ -94,7 +95,8 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
             gudang, asal = bawaan, None
         kunci_b = (p["id"], gudang)
         butuh[kunci_b] = butuh.get(kunci_b, NOL) + qty
-        keluar.append({"item_row_id": it.get("id"), "product_id": p["id"], "nama": nama, "qty": qty, "gudang_id": gudang, "_asal": asal})
+        keluar.append({"item_row_id": it.get("id"), "product_id": p["id"], "nama": nama, "qty": qty, "satuan": h_sd["satuan_dasar"],
+                       "gudang_id": gudang, "_asal": asal})
     # batas sisa (per produk, Σ baris) lalu stok gudang (FOR UPDATE di penulis: dua posting serentak tak sama-sama lolos)
     for (pid, gudang), q in sorted(butuh.items(), key=lambda x: (str(x[0][0]), str(x[0][1]))):
         k = next(x for x in keluar if x["product_id"] == pid and x["gudang_id"] == gudang)

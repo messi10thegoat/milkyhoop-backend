@@ -227,10 +227,10 @@ async def rencana_retur(conn, tid: str, keluar: list, baris_dok) -> Optional[dic
 
 
 def stok_retur(retur) -> list:
-    """Bentuk stock[] pratinjau (== penulis: satu gerak keluar per baris barang dilacak)."""
+    """Bentuk stock[] pratinjau (== penulis: satu gerak keluar per baris barang dilacak); unit = satuan dasar quantity (BUG-138)."""
     return [{"product_id": str(b["produk"]["id"]), "product": b["produk"]["nama_produk"], "quantity": float(b["qty"]),
              "unit_cost": _f(b["unit_cost"]), "total_cost": _f(b["total"]), "cost_source": b["cost_source"],
-             "warehouse_id": str(b["gudang_id"]), "warehouse": b["gudang"]} for b in (retur["baris"] if retur else [])]
+             "warehouse_id": str(b["gudang_id"]), "warehouse": b["gudang"], "unit": b.get("satuan")} for b in (retur["baris"] if retur else [])]
 
 
 # ------------------------------------------------------------------ terapkan / lepas (tanpa jurnal)

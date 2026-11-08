@@ -106,6 +106,10 @@ async def test_restock_semua_ikutkan_baris_biaya_nol(monkeypatch):
             return 0
         if "FROM warehouses" in q:
             return uuid.uuid4()
+        if "FROM product_units" in q or "FROM unit_conversions" in q:  # BUG-138: SD.muat selalu (satuan dasar stock[].unit)
+            return []
+        if "COALESCE(NULLIF(base_unit, ''), satuan) AS dasar FROM products" in q:
+            return [{"id": pid, "nama_produk": "Kaos", "dasar": "pcs"}]
         raise AssertionError(q)
     monkeypatch.setattr(CR, "_cn_memulihkan_stok", lambda r: True)
     cn = {"id": uuid.uuid4(), "original_invoice_id": None, "reason": "return", "original_invoice_number": None}
@@ -113,4 +117,4 @@ async def test_restock_semua_ikutkan_baris_biaya_nol(monkeypatch):
     bl = NKR.Blok(True)
     assert await NKR._rencana_restock_nk(_Baca(jawab), {"tenant_id": "t"}, cn, bl, items=items) == []
     r = await NKR._rencana_restock_nk(_Baca(jawab), {"tenant_id": "t"}, cn, bl, items=items, semua=True)
-    assert [(x["nama"], x["qty"], x["line_cost"]) for x in r] == [("Kaos", Decimal("2"), Decimal("0"))]
+    assert [(x["nama"], x["qty"], x["line_cost"], x["satuan"]) for x in r] == [("Kaos", Decimal("2"), Decimal("0"), "pcs")]
