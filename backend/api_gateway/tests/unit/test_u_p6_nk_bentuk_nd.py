@@ -15,7 +15,7 @@ RESTOCK = [{"product_id": PID, "nama": "Kaos Biru", "qty": Decimal("2"), "unit_c
 
 def test_stok_bentuk_nd_dari_restock_yang_sama():
     assert NKR.stok_bentuk_nd(RESTOCK) == [{"product_id": str(PID), "product": "Kaos Biru", "quantity": 2.0,
-                                            "unit_cost": 12500.5, "total_cost": 25001.0}]
+                                            "unit_cost": 12500.5, "total_cost": 25001.0, "unit": None}]  # BUG-138: unit aditif (restock tanpa satuan -> None)
     assert NKR.stok_bentuk_nd([]) == []
 
 
