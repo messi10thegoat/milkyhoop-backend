@@ -3,7 +3,9 @@ T1 paritas per kunci PD.AKSI: summary {k}_count == daftar ?aksi=k total; himpuna
 T2 'sent' murni tak pernah perlu_diterima (putusan 22 Okt + MASTER (A)).
 T3 PO-2611-0010 (nyawit): teks dua dimensi di baris == detail == anchor; aksi perlu_diterima|telat_terima; terima tak "selesai";
    riwayat memuat TAGIHAN_DIPOSTING + PEMBAYARAN_DIBAYAR BP-2611-0009.
-T4 riwayat semua PO tanpa galat; [info] dampak teks/aksi baru (hitungan)."""
+T4 riwayat semua PO tanpa galat; [info] dampak teks/aksi baru (hitungan).
+T5 (i)-r2 gabung BUG-052: setiap ND atas faktur (vendor_credits.original_bill_id) tampil di riwayat BILL itu DAN di riwayat PO-nya
+   (tagihan bertaut kepala/baris) lewat bagian_tagihan bersama."""
 import asyncio
 import os
 import sys
@@ -13,7 +15,7 @@ from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import purchase_orders as RO  # noqa: E402
-from app.services import po_daftar as PD, po_riwayat as PRW  # noqa: E402
+from app.services import po_daftar as PD, po_riwayat as PRW, tagihan_riwayat as TRW  # noqa: E402
 
 HASIL = []
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
@@ -70,6 +72,25 @@ async def periksa(tid):
                 galat += 1
                 print(f"[galat] riwayat {b['po_number']}: {e!r}", flush=True)
     cek(f"{tid} riwayat semua PO tanpa galat", galat == 0, f"{len(baris)} PO")
+    async with pool.acquire() as conn:
+        nds = await conn.fetch(
+            """SELECT vc.credit_number, b.id AS bill_id, b.invoice_number, b.purchase_order_id,
+                      (SELECT i.po_id FROM bill_items bi JOIN purchase_order_items i ON i.id = bi.purchase_order_item_id
+                        WHERE bi.bill_id = b.id LIMIT 1) AS po_baris
+               FROM vendor_credits vc JOIN bills b ON b.id = vc.original_bill_id AND b.tenant_id = vc.tenant_id
+               WHERE vc.tenant_id = $1 ORDER BY vc.credit_number""", tid)
+        ber_po = 0
+        for v in nds:
+            rt = await TRW.riwayat_tagihan(conn, tid, v["bill_id"], boleh)
+            cek(f"{tid} {v['credit_number']} di riwayat {v['invoice_number']}",
+                any(e["jenis"] == "NOTA_DEBIT_DIBUAT" and (e.get("dokumen") or {}).get("nomor") == v["credit_number"] for e in rt["events"]))
+            po = v["purchase_order_id"] or v["po_baris"]
+            if po:
+                ber_po += 1
+                rp = await PRW.riwayat_po(conn, tid, po, boleh)
+                cek(f"{tid} {v['credit_number']} ({v['invoice_number']}) di riwayat PO-nya",
+                    any(e["jenis"] == "NOTA_DEBIT_DIBUAT" and (e.get("dokumen") or {}).get("nomor") == v["credit_number"] for e in rp["events"]))
+        print(f"[info] {tid}: ND atas faktur={len(nds)} bertaut PO={ber_po}", flush=True)
     if tid == "pt-kita-nyawit-bersama":
         x = [b for b in baris if b["po_number"] == "PO-2611-0010"]
         cek("PO-2611-0010 ada di salinan", len(x) == 1)

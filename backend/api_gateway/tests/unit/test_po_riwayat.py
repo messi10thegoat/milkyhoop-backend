@@ -139,3 +139,27 @@ def test_kontrol_riwayat_tagihan_tetap_memuat_pembayaran(monkeypatch):
     r = asyncio.run(TR.riwayat_tagihan(KT(bayar=[bp]), T, b["id"], boleh))
     assert [e["jenis"] for e in tangkap["ev"]] == ["TAGIHAN_DIBUAT", "TAGIHAN_DIPOSTING", "PEMBAYARAN_DIBAYAR"]
     assert tangkap["ent"] == {"bill": [b["id"]]} and r["invoice_number"] == "PB-2610-0003" and r["omitted"] == []
+
+
+def test_bug052_nd_atas_tagihan_po_mengalir_ke_riwayat_po(monkeypatch):
+    """(i)-r2: ND atas faktur (vendor_credits.original_bill_id, BUG-052) lewat bagian_tagihan BERSAMA -> riwayat PO memuat ND atas
+    SEMUA tagihan PO (ANY) + id ND ikut gabungan audit; tanpa izin debit_note -> tak tampil."""
+    b1, b2 = _bill(), _bill(invoice_number="PB-2610-0004")
+    vc = {"id": uuid.uuid4(), "credit_number": "VC-2611-0001", "total_amount": Decimal("463536"), "created_at": W(8), "created_by": U1,
+          "posted_at": W(9), "posted_by": U2, "voided_at": None, "voided_by": None, "voided_reason": None}
+
+    class KN(Kon):
+        async def fetch(self, sql, *a):
+            if "FROM vendor_credits WHERE" in sql and "original_bill_id" in sql:
+                self.sql.append(" ".join(sql.split())); self.arg = a
+                return [vc]
+            return await super().fetch(sql, *a)
+    kon = KN(bills=[b1, b2])
+    r, t = _jalan(monkeypatch, kon)
+    ev = {e["jenis"]: e for e in t["ev"]}
+    assert ev["NOTA_DEBIT_DIBUAT"]["ringkas"] == "Nota debit VC-2611-0001 Rp 463.536 dibuat"
+    assert ev["NOTA_DEBIT_DIPOSTING"]["aktor_id"] == str(U2)
+    assert "original_bill_id = ANY($2::uuid[])" in kon.sql[-1] and list(kon.arg[1]) == [b1["id"], b2["id"]]
+    assert t["ent"] == {"purchase_order": [PID], "bill": [b1["id"], b2["id"]], "debit_note": [vc["id"]]}
+    r, t = _jalan(monkeypatch, KN(bills=[b1]), izin=("purchase_order", "purchase_invoice"))
+    assert not [e for e in t["ev"] if e["jenis"].startswith("NOTA_DEBIT")] and "debit_note" not in t["ent"]
