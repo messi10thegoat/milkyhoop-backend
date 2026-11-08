@@ -74,4 +74,4 @@ def test_bawaan_perilaku_lama_tanpa_saringan(monkeypatch):
     for j in ("count", "daftar"):
         assert "NOT EXISTS (SELECT 1 FROM journal_entries je" not in q[j][0], j
     _, q2 = _panggil(monkeypatch, tanpa_batal=False)
-    assert q2["count"] == q["count"]
+    assert q2["count"][0] == q["count"][0] and q2["daftar"][0] == q["daftar"][0]

@@ -1224,8 +1224,10 @@ async def get_bank_transactions(
     is_reconciled: Optional[bool] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    tanpa_batal: bool = Query(False),
 ):
-    """Get transaction history for a bank account."""
+    """Get transaction history for a bank account. tanpa_batal=true (BUG-141): tanpa baris dibatalkan + pembaliknya (KR.sql_bt_tanpa_batal,
+    satu definisi dgn /transactions/recent), di COUNT dan daftar; saldo berjalan dihitung sesudah saring (pasangan net nol)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1269,6 +1271,11 @@ async def get_bank_transactions(
             if is_reconciled is not None:
                 conditions.append(f"bt.is_reconciled = ${param_idx}")
                 params.append(is_reconciled)
+                param_idx += 1
+
+            if tanpa_batal is True:  # panggilan langsung (uji) tanpa argumen = objek Query -> mati
+                conditions.append(KR.sql_bt_tanpa_batal("bt", f"${param_idx}"))
+                params.append(ctx["tenant_id"])
                 param_idx += 1
 
             where_clause = " AND ".join(conditions)

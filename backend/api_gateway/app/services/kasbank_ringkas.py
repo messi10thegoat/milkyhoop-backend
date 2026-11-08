@@ -80,6 +80,12 @@ SARING_TANPA_BATAL = """
 assert SQL_MUTASI.count("AND ba.is_active = true\n") == 1
 SQL_MUTASI_TANPA_BATAL = SQL_MUTASI.replace("AND ba.is_active = true\n", "AND ba.is_active = true" + SARING_TANPA_BATAL + "\n")
 
+
+def sql_bt_tanpa_batal(bt: str = "bt", tenant: str = "$2") -> str:
+    """BUG-141: predikat baris bank_transactions `bt` BUKAN dibatalkan/pembalik -- SATU definisi dgn SARING_TANPA_BATAL atas jurnal baris itu
+    (asli reversed_by_id + pembalik reversal_of_id/REVERSAL; semua sumber: transfer, manual, biaya, uang muka, bayar tagihan). Tanpa jurnal lolos."""
+    return f"NOT EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = {bt}.journal_id AND je.tenant_id = {tenant} AND NOT (TRUE{SARING_TANPA_BATAL}))"
+
 LABEL_SUMBER = {
     "RECEIVE_PAYMENT": "Terima pembayaran", "PAYMENT_RECEIVED": "Terima pembayaran",
     "BILL_PAYMENT": "Bayar tagihan", "PAYMENT_BILL": "Bayar tagihan", "PAYMENT_MADE": "Bayar tagihan",
