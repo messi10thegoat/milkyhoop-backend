@@ -58,3 +58,36 @@ def test_detail_dan_daftar_memuat_draft_bills():
     assert "GD.draf_tagihan_banyak(" in inspect.getsource(GR.get_goods_receipt)
     assert "GD.draf_tagihan_banyak(" in inspect.getsource(GR.list_goods_receipts)
     assert "COALESCE(b.status_v2, b.status) = 'draft'" in GD.SQL_DRAF_TAGIHAN and "b.tenant_id = $1" in GD.SQL_DRAF_TAGIHAN
+
+
+def test_summary_sql_memuat_filter_tiap_kunci_dan_kunci_keluaran(monkeypatch):
+    """Perilaku (bukan sumber): SQL /summary memuat FILTER dengan predikat SAMA sql_aksi(k) untuk SETIAP kunci GD.AKSI."""
+    import asyncio
+    from starlette.requests import Request
+    tangkap = []
+
+    class K:
+        async def fetchrow(self, sql, *a):
+            tangkap.append(sql)
+            return {"total": 3, "posted": 3, "void": 0, "today_count": 0, "n_belum_ditagih": 2, "v_belum_ditagih": D("10"),
+                    "n_draf_tagihan": 1, "v_draf_tagihan": D("5")}
+
+    class P:
+        def acquire(self):
+            class Cm:
+                async def __aenter__(s):
+                    return K()
+
+                async def __aexit__(s, *a):
+                    return False
+            return Cm()
+
+    async def pool():
+        return P()
+    monkeypatch.setattr(GR, "get_pool", pool)
+    r = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    r.state.user = {"tenant_id": "t1", "user_id": "u1"}
+    d = asyncio.run(GR.goods_receipts_summary(r, purchase_order_id=None, search=None))["data"]
+    for k in GD.AKSI:
+        assert f"FILTER (WHERE {GD.sql_aksi(k)}) AS n_{k}" in tangkap[0], k
+    assert (d["belum_ditagih_count"], d["draf_tagihan_count"], d["draf_tagihan_value"]) == (2, 1, "5.00")
