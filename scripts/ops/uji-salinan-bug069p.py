@@ -51,7 +51,7 @@ async def periksa(conn, tid):
     cek(f"{tid} T1 bentuk aksi_tersedia.nota_debit benar di semua faktur", not salah_bentuk, f"n={len(bills)} salah={salah_bentuk[:5]}")
     cek(f"{tid} T1 v1 == v2", not v1v2, f"beda={v1v2[:5]}")
     cek(f"{tid} T3 paritas aksi == blok kepala pratinjau ND", not salah_paritas, "; ".join(salah_paritas[:3]))
-    print(f"[info] {tid}: (status, tersedia) -> jumlah: " + ", ".join(f"{k}={len(v)}" for k, v in sorted(status.items())), flush=True)
+    print(f"[info] {tid}: (status, tersedia) -> jumlah: " + ", ".join(f"{k}={len(v)}" for k, v in sorted(status.items(), key=lambda kv: str(kv[0]))), flush=True)
     lunas = [b for b in bills if b["status_v2"] == "paid"]
     cek(f"{tid} T2 faktur LUNAS menawarkan nota debit",
         all(n in status.get(("paid", True), []) for n in [b["invoice_number"] for b in lunas]), f"lunas={len(lunas)}")
