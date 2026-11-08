@@ -71,6 +71,15 @@ WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND ba.is_active = true
 ORDER BY je.journal_date DESC, je.created_at DESC, jl.id DESC
 LIMIT $2"""
 
+# ROW (q) 8 Nov 2026: ?tanpa_batal=true (FE ui_v3 "Mutasi terakhir") -- baris dibatalkan + pembaliknya disaring di WHERE, SEBELUM
+# LIMIT (cermin status_mutasi != "tercatat"). Dulu FE menyaring sesudah limit -> kaos: 10 terbaru semuanya batal/pembalik -> daftar
+# kosong. Tanpa parameter = SQL_MUTASI apa adanya (semua baris POSTED, cocok dengan saldo).
+SARING_TANPA_BATAL = """
+  AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
+  AND COALESCE(je.source_type, '') <> 'REVERSAL' AND right(COALESCE(je.source_type, ''), 9) <> '_REVERSAL'"""
+assert SQL_MUTASI.count("AND ba.is_active = true\n") == 1
+SQL_MUTASI_TANPA_BATAL = SQL_MUTASI.replace("AND ba.is_active = true\n", "AND ba.is_active = true" + SARING_TANPA_BATAL + "\n")
+
 LABEL_SUMBER = {
     "RECEIVE_PAYMENT": "Terima pembayaran", "PAYMENT_RECEIVED": "Terima pembayaran",
     "BILL_PAYMENT": "Bayar tagihan", "PAYMENT_BILL": "Bayar tagihan", "PAYMENT_MADE": "Bayar tagihan",

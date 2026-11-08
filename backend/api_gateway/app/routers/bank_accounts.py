@@ -400,12 +400,13 @@ async def ringkasan_kas_bank(request: Request):
 
 
 @router.get("/transactions/recent", response_model=MutasiTerakhirResponse)
-async def mutasi_terakhir_kas_bank(request: Request, limit: int = Query(10, ge=1, le=100)):
-    """B2: mutasi terakhir semua akun kas/bank dari baris jurnal POSTED; services/kasbank_ringkas."""
+async def mutasi_terakhir_kas_bank(request: Request, limit: int = Query(10, ge=1, le=100), tanpa_batal: bool = Query(False)):
+    """B2: mutasi terakhir semua akun kas/bank dari baris jurnal POSTED; services/kasbank_ringkas.
+    tanpa_batal=true (ROW q): tanpa baris dibatalkan + pembaliknya, disaring SEBELUM limit."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        baris = await conn.fetch(KR.SQL_MUTASI, ctx["tenant_id"], limit)
+        baris = await conn.fetch(KR.SQL_MUTASI_TANPA_BATAL if tanpa_batal else KR.SQL_MUTASI, ctx["tenant_id"], limit)
     return {"success": True, "data": {"items": KR.mutasi(baris)}}
 
 
