@@ -17,6 +17,8 @@ from decimal import Decimal
 # =============================================================================
 
 
+from .aksi_tersedia import AksiTersediaPeta  # noqa: E402
+
 class BillItemRequest(BaseModel):
     """Single line item in a bill."""
 
@@ -240,6 +242,8 @@ class BillDetailResponse(BaseModel):
 
     success: bool = True
     data: Dict[str, Any]
+    # BUG-069 REOPEN (ROW p): SATU bentuk aksi_tersedia (schemas/aksi_tersedia), sejajar `data` (pola Biaya t2); kini nota_debit
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 class CreateBillResponse(BaseModel):

@@ -851,23 +851,16 @@ async def rakit_dari_tagihan(conn, tid: str, body: VendorCreditPreviewRequest) -
         return kosong
     nomor = bill["invoice_number"]
     kosong["tagihan"] = {"id": str(bill["id"]), "invoice_number": nomor, "amount": float(bill["amount"] or 0)}
-    if (bill["status_v2"] or "") in ("draft", "void"):
-        blocks.append(_b("ND_TAGIHAN_TAK_AKTIF", f"Faktur pembelian {nomor} belum diposting atau sudah batal."))
     if body.vendor_id and bill["vendor_id"] and str(bill["vendor_id"]) != str(body.vendor_id):
         blocks.append(_b("ND_TAGIHAN_VENDOR_LAIN", f"Faktur pembelian {nomor} milik vendor lain."))
-    if bill["tax_inclusive"]:
-        blocks.append(_b("ND_PAJAK_INKLUSIF_BELUM_DIDUKUNG", "Faktur pembelian harga termasuk PPN belum didukung di nota debit."))
-    if bill["dpp_manual"] is not None:
-        blocks.append(_b("ND_DPP_MANUAL_BELUM_DIDUKUNG", "Faktur pembelian dengan DPP manual belum didukung di nota debit."))
     rows = await conn.fetch(
         """SELECT id, product_id, product_code, product_name, description, quantity, unit, unit_price, discount_percent, discount_amount,
                   tax_rate, tax_code_id
            FROM bill_items WHERE bill_id = $1 ORDER BY line_number""", bid)
     per_baris = any(Decimal(str(r["tax_rate"] or 0)) > 0 for r in rows)
     diskon_dok_tagihan = _dpp_header_discount(bill["invoice_discount_total"], bill["cash_discount_total"])
-    if per_baris and diskon_dok_tagihan > 0:
-        blocks.append(_b("ND_DISKON_DOKUMEN_BER_PPN_BELUM",
-                         f"Faktur pembelian {nomor} berdiskon dokumen dengan PPN per baris belum didukung di nota debit."))
+    # blok kepala = penentu SAMA dengan aksi_tersedia.nota_debit detail faktur (BUG-069 REOPEN)
+    blocks.extend(_b(c, m) for c, m in ND.blok_kepala_dari_tagihan(bill, per_baris, diskon_dok_tagihan))
     from ..services import nota_debit_gudang as NG  # BUG-081: angka nyata per produk (termasuk draf), bukan catatan umum
     notes.extend(await NG.catatan_sudah_diretur(conn, tid, bid, rows))
     pilih = None

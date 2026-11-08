@@ -16,6 +16,7 @@ import asyncpg
 
 from ..services.nama_pengguna import nama_pengguna, nama_untuk
 from ..services import idem_buat  # AS-GP2: idempotensi aksi post/void/hapus/ubah v2 (kunci klien saja)
+from ..services import nota_debit as _ND  # BUG-069 REOPEN: aksi_tersedia.nota_debit detail faktur
 from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor bukan PKP (non-fatal)
 from ..services.fitur_parkir import fitur_belum_tersedia  # P2P-1 (25 Okt): rute tagihan v1 dipensiunkan
 from ..utils.sorting import parse_sort_param
@@ -819,7 +820,10 @@ async def get_bill_detail(request: Request, bill_id: UUID):
         if not bill:
             raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
-        return {"success": True, "data": bill}
+        pool = await get_pool()
+        async with pool.acquire() as conn:  # BUG-069 REOPEN: penentu SAMA dengan pratinjau ND dari faktur
+            aksi_t = await _ND.aksi_tersedia_tagihan(conn, ctx["tenant_id"], bill_id)
+        return {"success": True, "data": bill, "aksi_tersedia": aksi_t}
 
     except HTTPException:
         raise
@@ -1864,7 +1868,10 @@ async def get_bill_v2(request: Request, bill_id: UUID):
         if not bill:
             raise HTTPException(status_code=404, detail=PESAN_TAGIHAN_TAK_ADA)
 
-        return {"success": True, "data": bill}
+        pool = await get_pool()
+        async with pool.acquire() as conn:  # BUG-069 REOPEN: penentu SAMA dengan pratinjau ND dari faktur
+            aksi_t = await _ND.aksi_tersedia_tagihan(conn, ctx["tenant_id"], bill_id)
+        return {"success": True, "data": bill, "aksi_tersedia": aksi_t}
 
     except HTTPException:
         raise

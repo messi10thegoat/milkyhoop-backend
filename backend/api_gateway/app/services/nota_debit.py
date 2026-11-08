@@ -165,3 +165,43 @@ async def balik_hpp_stok_pajak(conn, ctx: dict, vc, tanggal, jurnal_balik=None) 
                                         notes_prefix="VOID_ND", journal_id=vc["journal_id"])
     await conn.execute("DELETE FROM document_tax_lines WHERE tenant_id = $1 AND document_id = $2", tid, vc["id"])
     return n
+
+
+# ---- BUG-069 REOPEN (ROW p, 8 Nov 2026): aksi nota debit di detail faktur pembelian ----
+def blok_kepala_dari_tagihan(bill, per_baris: bool, diskon_dok) -> list:
+    """Blok KEPALA nota debit dari faktur pembelian -> [(code, message)]. SATU penentu untuk pratinjau ND dari faktur
+    (routers.vendor_credits.rakit_dari_tagihan) DAN aksi_tersedia.nota_debit detail faktur, jadi menu dan Tinjau tak bisa berbeda.
+    Faktur LUNAS bukan blok (BUG-069: nilai ND jadi saldo kredit vendor)."""
+    nomor = bill["invoice_number"]
+    blok = []
+    if (bill["status_v2"] or "") in ("draft", "void"):
+        blok.append(("ND_TAGIHAN_TAK_AKTIF", f"Faktur pembelian {nomor} belum diposting atau sudah batal."))
+    if bill["tax_inclusive"]:
+        blok.append(("ND_PAJAK_INKLUSIF_BELUM_DIDUKUNG", "Faktur pembelian harga termasuk PPN belum didukung di nota debit."))
+    if bill["dpp_manual"] is not None:
+        blok.append(("ND_DPP_MANUAL_BELUM_DIDUKUNG", "Faktur pembelian dengan DPP manual belum didukung di nota debit."))
+    if per_baris and diskon_dok > 0:
+        blok.append(("ND_DISKON_DOKUMEN_BER_PPN_BELUM",
+                     f"Faktur pembelian {nomor} berdiskon dokumen dengan PPN per baris belum didukung di nota debit."))
+    return blok
+
+
+async def alasan_nd_dari_tagihan(conn, tenant_id: str, bill_id) -> Optional[str]:
+    """None = nota debit bisa dibuat dari faktur ini; selain itu kalimat alasan (blok kepala pertama)."""
+    from .bills_service import _dpp_header_discount
+    bill = await conn.fetchrow(
+        """SELECT id, invoice_number, status_v2, tax_inclusive, dpp_manual, invoice_discount_total, cash_discount_total
+           FROM bills WHERE id = $1 AND tenant_id = $2""", bill_id, tenant_id)
+    if not bill:
+        return "Faktur pembelian tidak ditemukan."
+    per_baris = bool(await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM bill_items WHERE bill_id = $1 AND COALESCE(tax_rate, 0) > 0)", bill_id))
+    blok = blok_kepala_dari_tagihan(bill, per_baris, _dpp_header_discount(bill["invoice_discount_total"], bill["cash_discount_total"]))
+    return blok[0][1] if blok else None
+
+
+async def aksi_tersedia_tagihan(conn, tenant_id: str, bill_id) -> dict:
+    """aksi_tersedia detail faktur pembelian (SATU bentuk schemas/aksi_tersedia; label = resep FE). Aditif: kini hanya nota_debit."""
+    from ..schemas.aksi_tersedia import aksi
+    a = await alasan_nd_dari_tagihan(conn, tenant_id, bill_id)
+    return {"nota_debit": aksi(a is None, a)}
