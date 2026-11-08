@@ -381,6 +381,23 @@ def _jatuh_tempo_lewat(due: Optional[date], hari_ini: date) -> bool:
     return due is None or hari_ini > due
 
 
+MAKS_TERBUKA = 10
+
+
+def daftar_terbuka(rows, hari_ini: date, kolom_id: str, kolom_nomor: str, kunci_pihak: str, kolom_pihak: str) -> tuple:
+    """SATU penentu "siapa yang belum bayar / belum dibayar" untuk piutang (BUG-103) dan hutang (BUG-128): SEMUA dokumen
+    terbuka (sisa > 0, ber-dokumen -> saldo awal tanpa faktur/tagihan dan kredit tak ikut), urut jatuh tempo lalu nomor,
+    maks MAKS_TERBUKA + jumlah penuh. Σ terbuka (semua) == total bila tanpa saldo awal/kredit. days_overdue = hari lewat
+    jatuh tempo menurut tanggal tenant (0 bila belum; null bila tanpa jatuh tempo)."""
+    buka = sorted((r for r in rows if r[kolom_id] is not None and d(r["outstanding"]) > NOL),
+                  key=lambda r: (r["due_date"] or date.min, r[kolom_nomor] or ""))
+    return len(buka), [{kolom_id: str(r[kolom_id]), "number": r[kolom_nomor], kunci_pihak: r[kolom_pihak],
+                        "due_date": r["due_date"].isoformat() if r["due_date"] else None,
+                        "balance": uang(r["outstanding"]),
+                        "days_overdue": max((hari_ini - r["due_date"]).days, 0) if r["due_date"] else None}
+                       for r in buka[:MAKS_TERBUKA]]
+
+
 async def piutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
     rows = baris if baris is not None else await conn.fetch(
         "SELECT * FROM compute_ar_outstanding($1)", tenant_id)
@@ -399,17 +416,11 @@ async def piutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
             if r["due_date"] is None or r["due_date"] <= hari_ini + timedelta(days=7):
                 due7.append(r)
     due7.sort(key=lambda r: (r["due_date"] or date.min, r["invoice_number"] or ""))
-    # BUG-103 (K-11): "siapa yang belum bayar" = SEMUA faktur terbuka (dulu FE hanya punya due_7d -> faktur jatuh tempo > 7 hari
-    # hilang padahal ikut `total`). Urut jatuh tempo, maks 10 + jumlah penuh; Σ terbuka (semua) == total bila tanpa kredit pelanggan.
-    buka = sorted((r for r in rows if r["invoice_id"] is not None and d(r["outstanding"]) > NOL),
-                  key=lambda r: (r["due_date"] or date.min, r["invoice_number"] or ""))
+    buka_n, buka = daftar_terbuka(rows, hari_ini, "invoice_id", "invoice_number", "customer", "customer_name")
     return {
         "total": uang(total), "not_due": uang(belum), "overdue_total": uang(telat),
         "overdue_count": n_telat, "customer_count": len(pelanggan),
-        "terbuka_count": len(buka),
-        "terbuka": [{"invoice_id": str(r["invoice_id"]), "number": r["invoice_number"], "customer": r["customer_name"],
-                     "due_date": r["due_date"].isoformat() if r["due_date"] else None,
-                     "balance": uang(r["outstanding"])} for r in buka[:10]],
+        "terbuka_count": buka_n, "terbuka": buka,
         "due_7d": [{"invoice_id": str(r["invoice_id"]), "number": r["invoice_number"],
                     "customer": r["customer_name"],
                     "due_date": r["due_date"].isoformat() if r["due_date"] else None,
@@ -435,8 +446,10 @@ async def hutang(conn, tenant_id: str, hari_ini: date, baris=None) -> dict:
             if r["due_date"] is None or r["due_date"] <= hari_ini + timedelta(days=7):
                 due7.append(r)
     due7.sort(key=lambda r: (r["due_date"] or date.min, r["bill_number"] or ""))
+    buka_n, buka = daftar_terbuka(rows, hari_ini, "bill_id", "bill_number", "vendor", "vendor_name")
     return {"total": uang(total), "overdue_total": uang(telat),
             "not_due": uang(total - telat), "overdue_count": n_telat, "vendor_count": len(vendor),
+            "terbuka_count": buka_n, "terbuka": buka,
             "due_7d": [{"bill_id": str(r["bill_id"]) if r["bill_id"] else None, "number": r["bill_number"],
                         "vendor": r["vendor_name"], "due_date": r["due_date"].isoformat() if r["due_date"] else None,
                         "balance": uang(r["outstanding"])} for r in due7[:50]]}
