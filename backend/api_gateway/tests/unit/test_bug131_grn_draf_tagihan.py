@@ -15,7 +15,7 @@ def _m(dasar, taut, draf):
 
 
 @pytest.mark.parametrize("dasar,taut,draf,aksi,state,sisa", [
-    ("10", "0", "10", "draf_tagihan", "belum_ditagih", "0"),         # GRN-2611-0011: draf penuh -> Buka faktur draf, teks tetap
+    ("10", "0", "10", "draf_tagihan", "belum_ditagih", "0"),         # GRN-2611-0011: draf penuh -> Buka faktur draf, teks "· faktur draf" (BUG-136)
     ("10", "0", "4", "belum_ditagih", "belum_ditagih", "6"),         # draf sebagian -> masih bisa dibuatkan faktur
     ("10", "6", "4", "draf_tagihan", "sebagian_ditagih", "0"),       # posted sebagian + draf sisanya
     ("10", "6", "0", "belum_ditagih", "sebagian_ditagih", "4"),
@@ -24,7 +24,7 @@ def _m(dasar, taut, draf):
 def test_partisi_aksi_dari_sisa_sesudah_draf_status_tetap_posted(dasar, taut, draf, aksi, state, sisa):
     m = _m(dasar, taut, draf)
     assert (m["aksi"], m["billing_state"], m["belum_ditagih_sesudah_draf"]) == (aksi, state, sisa)
-    assert m["status_text"] == GD.TEKS_TAGIH[state] and m["aksi_semua"] == ([aksi] if aksi else [])
+    assert m["status_text"] == GD.teks_tagih(state, aksi) and m["aksi_semua"] == ([aksi] if aksi else [])
 
 
 def test_dua_kunci_aksi_satu_kosakata_dengan_po():

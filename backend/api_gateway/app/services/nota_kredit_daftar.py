@@ -60,9 +60,15 @@ def keadaan_nk(status: str, status_detail: str, original_invoice_id) -> str:
     return _KEADAAN_DARI_DETAIL.get(sd, sd)
 
 
-def status_text_nk(status: str, status_detail: str, original_invoice_id) -> str:
+TEKS_JADI_SALDO_KREDIT = "Jadi saldo kredit"  # BUG-147: NK habis terpakai DAN kelebihannya jadi saldo kredit pelanggan (KRD)
+
+
+def status_text_nk(status: str, status_detail: str, original_invoice_id, saldo_kredit: bool = False) -> str:
+    """SATU pembentuk teks status NK (daftar, detail, dokumen, pratinjau aksi). saldo_kredit = NK punya uang muka KRD dari kelebihannya
+    (credit_notes.created_deposit_id / customer_credit pratinjau): "Terpakai" dibaca owner seolah kredit habis -> "Jadi saldo kredit"."""
     from . import teks_galat as tg
-    return tg.status_id("cn", _detail_efektif(status, status_detail, original_invoice_id))
+    sd = _detail_efektif(status, status_detail, original_invoice_id)
+    return TEKS_JADI_SALDO_KREDIT if sd == "applied" and saldo_kredit else tg.status_id("cn", sd)
 
 
 def keadaan_cocok_sisa(keadaan: str, total, sisa) -> bool:

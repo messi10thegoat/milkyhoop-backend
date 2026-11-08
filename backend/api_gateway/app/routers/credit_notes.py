@@ -587,7 +587,7 @@ async def list_credit_notes(
                     "sisa_keadaan": _nkd.keadaan_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
                                                     row["original_invoice_id"]),
                     "status_text": _nkd.status_text_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
-                                                       row["original_invoice_id"]),
+                                                       row["original_invoice_id"], saldo_kredit=row["created_deposit_id"] is not None),
                 }
                 for row in rows
             ]
@@ -832,7 +832,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                     "sisa_keadaan": _nkd.keadaan_nk(cn["status"], status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
                                                     cn["original_invoice_id"]),
                     "status_text": _nkd.status_text_nk(cn["status"], status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]),
-                                                       cn["original_invoice_id"]),
+                                                       cn["original_invoice_id"], saldo_kredit=cn["created_deposit_id"] is not None),
                     "credit_note_date": cn["credit_note_date"].isoformat(),
                     "reason": cn["reason"],
                     "reason_label": LABEL_ALASAN_NK.get(cn["reason"], cn["reason"]),

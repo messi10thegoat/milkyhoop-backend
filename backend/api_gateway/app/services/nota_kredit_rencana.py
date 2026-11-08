@@ -178,7 +178,7 @@ def teks_keadaan_nk(k: dict) -> dict:
     from .nota_kredit_daftar import keadaan_nk, status_text_nk
     if k.get("exists", True) and k.get("status"):
         fid = k.get("original_invoice_id")
-        k["status_text"] = status_text_nk(k["status"], k["status_detail"], fid)
+        k["status_text"] = status_text_nk(k["status"], k["status_detail"], fid, saldo_kredit=bool(k.get("customer_credit")))
         k["sisa_keadaan"] = keadaan_nk(k["status"], k["status_detail"], fid)
     return k
 

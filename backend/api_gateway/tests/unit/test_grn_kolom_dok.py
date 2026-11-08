@@ -47,8 +47,9 @@ def test_batch_dua_kueri_berapa_pun_baris_dan_bertenant():
     grs = [_gr(PO1), _gr(PO1), _gr(PO2), _gr(None if False else PO2, "void"), _gr(PO1)]
     k = _K(grs, {grs[0]["id"]: [_bill(grs[0]["id"], "PB-1")]})
     out = asyncio.run(GD.kelompok_grn_banyak(k, T, grs))
-    assert len(k.sql) == 3 and set(out) == {str(g["id"]) for g in grs}  # L7 (31 Okt): + 1 batch tautan bagikan (tetap konstan)
-    (s1, a1), (s2, a2), (s3, a3) = k.sql
+    assert len(k.sql) == 4 and set(out) == {str(g["id"]) for g in grs}  # L7 (31 Okt): + 1 batch tautan bagikan; BUG-136: + 1 batch faktur draf (tetap konstan)
+    (s1, a1), (s2, a2), (sd, ad), (s3, a3) = k.sql
+    assert sd == GD.SQL_DRAF_TAGIHAN and ad == (T, [g["id"] for g in grs])  # BUG-136: faktur draf satu batch bertenant
     assert "tenant_id = $1 AND id = ANY($2::uuid[])" in s1 and a1[0] == T and sorted(a1[1], key=str) == sorted({PO1, PO2}, key=str)
     assert "b.tenant_id = $1" in s2 and "l.status = 'active'" in s2 and "i.goods_receipt_id = ANY($2::uuid[])" in s2 and a2 == (T, [g["id"] for g in grs])
     pasangan = list(zip(a3[1], a3[2]))
@@ -116,7 +117,7 @@ def test_daftar_aditif_documents_doc_count_dan_tanpa_n_plus_1(monkeypatch):
     req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": T, "user_id": str(uuid4())}), headers={})
     monkeypatch.setattr(GR, "get_user_context", lambda r: {"tenant_id": T, "user_id": uuid4()})
     out = asyncio.run(GR.list_goods_receipts(req, None, None, None, 50, 0))["data"]["items"]
-    assert len(k.sql) == 5   # count + baris + 2 batch + 1 batch tautan bagikan L7 (BUKAN 5 + 3N)
+    assert len(k.sql) == 6   # count + baris + 3 batch (BUG-136 + draf) + 1 batch tautan bagikan L7 (BUKAN 6 + 3N)
     assert out[0]["doc_count"] == 3 and [d["type"] for d in out[0]["documents"]] == ["purchase_order", "goods_receipt", "bill"]
     assert all(o["doc_count"] == len(o["documents"]) for o in out) and out[1]["doc_count"] == 2
     assert "receipt_number" in out[0] and "status" in out[0]   # medan lama tetap (aditif)

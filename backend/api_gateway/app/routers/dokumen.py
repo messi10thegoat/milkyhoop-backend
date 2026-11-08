@@ -700,7 +700,7 @@ async def susun_dokumen_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> di
     tid = ctx["tenant_id"]
     c = await conn.fetchrow(
         """SELECT cn.id, cn.credit_note_number, cn.customer_name, cn.customer_id, cn.status, cn.total_amount, cn.amount_applied,
-                  cn.amount_refunded, cn.original_invoice_id, si.sales_order_id AS so_id
+                  cn.amount_refunded, cn.original_invoice_id, cn.created_deposit_id, si.sales_order_id AS so_id
            FROM credit_notes cn LEFT JOIN sales_invoices si ON si.id = cn.original_invoice_id AND si.tenant_id = cn.tenant_id
            WHERE cn.id = $1 AND cn.tenant_id = $2""", credit_note_id, tid)
     if not c:
@@ -711,7 +711,7 @@ async def susun_dokumen_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> di
     return await _kepala_jangkar(conn, tid, kelompok, "nk", "credit_note", c["id"], c["credit_note_number"], c["customer_name"],
                                  c["customer_id"], c["so_id"],
                                  NKD.status_text_nk(c["status"], status_detail_nk(c["status"], c["amount_applied"], c["amount_refunded"]),
-                                                    c["original_invoice_id"]),
+                                                    c["original_invoice_id"], saldo_kredit=c["created_deposit_id"] is not None),
                                  c["total_amount"], sisa)
 
 

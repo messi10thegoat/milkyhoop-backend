@@ -27,6 +27,12 @@ TEKS_TAGIH = {"batal": "Dibatalkan", "belum_ditagih": "Belum ditagih", "sebagian
               "sudah_ditagih": "Sudah ditagih", None: "Diterima"}
 
 
+def teks_tagih(bs, aksi) -> str:
+    """SATU pembentuk status_text GRN. BUG-136 (putusan MASTER (1) 9 Nov): sisa tertutup faktur DRAF (aksi draf_tagihan) -> dua dimensi
+    "<billing> · faktur draf" (pola BUG-112 PO); billing_state + partisi pill tetap."""
+    return TEKS_TAGIH[bs] + (" · faktur draf" if aksi == AKSI_DRAF_TAGIHAN else "")
+
+
 def sql_qty_dasar(g: str = "g") -> str:
     return (f"(SELECT COALESCE(SUM(i.quantity - i.quantity_returned), 0) FROM goods_receipt_items i WHERE i.goods_receipt_id = {g}.id"
             " AND (i.ber_stok OR EXISTS (SELECT 1 FROM goods_receipt_bill_links lg WHERE lg.goods_receipt_item_id = i.id AND lg.kind = 'legacy')))")
@@ -98,13 +104,13 @@ def medan(r) -> dict:
     ak = None
     if bs in ("belum_ditagih", "sebagian_ditagih"):
         ak = AKSI_BELUM_DITAGIH if sisa > NOL else AKSI_DRAF_TAGIHAN
-    return {"billing_state": bs, "status_text": TEKS_TAGIH[bs], "grni_open_amount": f"{_d(r['grni_terbuka']):.2f}",
+    return {"billing_state": bs, "status_text": teks_tagih(bs, ak), "grni_open_amount": f"{_d(r['grni_terbuka']):.2f}",
             "aksi": ak, "aksi_semua": [ak] if ak else [], "belum_ditagih_sesudah_draf": f"{sisa.normalize():f}"}
 
 
 # ---------------------------------------------------------------- faktur DRAF atas GRN (BUG-131: pill "Buka faktur draf")
 SQL_DRAF_TAGIHAN = f"""
-    SELECT DISTINCT i.goods_receipt_id AS gr_id, b.id, b.invoice_number, b.created_at
+    SELECT DISTINCT i.goods_receipt_id AS gr_id, b.id, b.invoice_number, b.created_at, b.issue_date, b.amount
     FROM goods_receipt_items i
     JOIN bill_items bi ON bi.purchase_order_item_id = i.purchase_order_item_id
     JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1 AND {PRED_DRAF}
@@ -155,8 +161,8 @@ def dok_goods_receipt(r) -> dict:
 
 async def kelompok_grn_banyak(conn, tenant_id: str, grs: list) -> dict:
     """{gr_id (str): [kelompok]} -- pembentuk SATU bundel berjangkar GRN (kamus FE pembelian) untuk DETAIL (kelompok_grn) dan kolom Dok DAFTAR
-    (L5b, 31 Okt 2026): po (PO asal) · grn (ITU SENDIRI) · faktur (tagihan bertaut AKTIF; dokumen SAMA dgn bundel tagihan = TD.dok_tagihan).
-    DUA kueri batch berapa pun barisnya (PO by id[] + tagihan bertaut aktif by gr_id[]) -- bukan N+1. `grs` = baris SQL_HEADER (sudah bertenant)."""
+    (L5b, 31 Okt 2026): po (PO asal) · grn (ITU SENDIRI) · faktur (tagihan bertaut AKTIF + faktur DRAF SQL_DRAF_TAGIHAN berstatus "draf",
+    BUG-136; dokumen SAMA dgn bundel tagihan = TD.dok_tagihan). TIGA kueri batch berapa pun barisnya (PO by id[] + tagihan bertaut aktif by gr_id[]) -- bukan N+1. `grs` = baris SQL_HEADER (sudah bertenant)."""
     from . import tagihan_daftar as TD
     from .po_daftar import dok_purchase_order
     if not grs:
@@ -175,6 +181,10 @@ async def kelompok_grn_banyak(conn, tenant_id: str, grs: list) -> dict:
                 WHERE i.goods_receipt_id = ANY($2::uuid[])
                 ORDER BY b.issue_date, b.invoice_number""", tenant_id, [g["id"] for g in grs]):
         tagihan.setdefault(b["gr_id"], []).append(b)
+    for b in await conn.fetch(SQL_DRAF_TAGIHAN, tenant_id, [g["id"] for g in grs]):  # BUG-136: faktur DRAF (belum bertaut) = status "draf"
+        ada = tagihan.setdefault(b["gr_id"], [])
+        if all(x["id"] != b["id"] for x in ada):
+            ada.append({**dict(b), "keadaan": "draft"})
     hasil = {}
     for g in grs:
         kel = []
