@@ -388,13 +388,13 @@ def daftar_terbuka(rows, hari_ini: date, kolom_id: str, kolom_nomor: str, kunci_
     """SATU penentu "siapa yang belum bayar / belum dibayar" untuk piutang (BUG-103) dan hutang (BUG-128): SEMUA dokumen
     terbuka (sisa > 0, ber-dokumen -> saldo awal tanpa faktur/tagihan dan kredit tak ikut), urut jatuh tempo lalu nomor,
     maks MAKS_TERBUKA + jumlah penuh. Σ terbuka (semua) == total bila tanpa saldo awal/kredit. days_overdue = hari lewat
-    jatuh tempo menurut tanggal tenant (0 bila belum; null bila tanpa jatuh tempo)."""
+    jatuh tempo menurut tanggal tenant, SELALU int (kontrak FE): 0 bila belum telat atau tanpa jatuh tempo."""
     buka = sorted((r for r in rows if r[kolom_id] is not None and d(r["outstanding"]) > NOL),
                   key=lambda r: (r["due_date"] or date.min, r[kolom_nomor] or ""))
     return len(buka), [{kolom_id: str(r[kolom_id]), "number": r[kolom_nomor], kunci_pihak: r[kolom_pihak],
                         "due_date": r["due_date"].isoformat() if r["due_date"] else None,
                         "balance": uang(r["outstanding"]),
-                        "days_overdue": max((hari_ini - r["due_date"]).days, 0) if r["due_date"] else None}
+                        "days_overdue": max((hari_ini - r["due_date"]).days, 0) if r["due_date"] else 0}
                        for r in buka[:MAKS_TERBUKA]]
 
 

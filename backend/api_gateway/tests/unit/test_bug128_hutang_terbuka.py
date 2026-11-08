@@ -67,3 +67,13 @@ def test_satu_penentu_terbuka_dipanggil_piutang_dan_hutang():
         dipanggil = {n.func.id for n in ast.walk(pohon) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
         assert "daftar_terbuka" in dipanggil, fn.__name__
     assert callable(DV.daftar_terbuka)
+
+
+def test_days_overdue_selalu_int_juga_tanpa_jatuh_tempo():
+    r = asyncio.run(DV.hutang(None, "t", HARI, [_bill("X", None, "5000")]))
+    x = r["terbuka"][0]
+    assert x["due_date"] is None and x["days_overdue"] == 0 and type(x["days_overdue"]) is int
+    assert all(type(y["days_overdue"]) is int for y in asyncio.run(DV.hutang(None, "t", HARI, _rows()))["terbuka"])
+    # bentuk = due_7d + days_overdue (kontrak FE CONVERSATIONAL)
+    r = asyncio.run(DV.hutang(None, "t", HARI, _rows()))
+    assert set(r["terbuka"][0]) == set(r["due_7d"][0]) | {"days_overdue"} and type(r["terbuka_count"]) is int
