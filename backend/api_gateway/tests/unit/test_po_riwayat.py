@@ -163,3 +163,20 @@ def test_bug052_nd_atas_tagihan_po_mengalir_ke_riwayat_po(monkeypatch):
     assert t["ent"] == {"purchase_order": [PID], "bill": [b1["id"], b2["id"]], "debit_note": [vc["id"]]}
     r, t = _jalan(monkeypatch, KN(bills=[b1]), izin=("purchase_order", "purchase_invoice"))
     assert not [e for e in t["ev"] if e["jenis"].startswith("NOTA_DEBIT")] and "debit_note" not in t["ent"]
+
+
+def test_bug069_nd_atas_tagihan_lunas_po_lewat_return_bill_id(monkeypatch):
+    """BUG-069 (V485): ND retur dari tagihan PO yang LUNAS (original_bill_id NULL, return_bill_id = tagihan) tetap di riwayat PO."""
+    b1 = _bill()
+    vc = {"id": uuid.uuid4(), "credit_number": "VC-2611-0009", "total_amount": Decimal("100000"), "created_at": W(8), "created_by": U1,
+          "posted_at": W(9), "posted_by": U2, "voided_at": None, "voided_by": None, "voided_reason": None}
+
+    class KL(Kon):
+        async def fetch(self, sql, *a):
+            if "FROM vendor_credits WHERE" in sql:
+                return [vc] if "return_bill_id = ANY($2::uuid[])" in sql else []
+            return await super().fetch(sql, *a)
+    r, t = _jalan(monkeypatch, KL(bills=[b1]))
+    ev = {e["jenis"]: e for e in t["ev"]}
+    assert ev["NOTA_DEBIT_DIBUAT"]["ringkas"] == "Nota debit VC-2611-0009 Rp 100.000 dibuat"
+    assert t["ent"]["debit_note"] == [vc["id"]]

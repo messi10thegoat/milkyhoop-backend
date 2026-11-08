@@ -56,3 +56,28 @@ def test_riwayat_tagihan_memuat_nota_debit_atas_faktur_ini(monkeypatch):
 def test_tanpa_izin_debit_note_tak_tampil(monkeypatch):
     r, _ = _jalan(monkeypatch, izin=False)
     assert not [e for e in r["events"] if e["jenis"].startswith("NOTA_DEBIT")]
+
+
+def test_bug069_nd_atas_tagihan_lunas_tetap_tampil_lewat_return_bill_id(monkeypatch):
+    """BUG-069 (V485): retur dari tagihan LUNAS = ND bebas (original_bill_id NULL) dengan return_bill_id = tagihan sumber.
+    Riwayat tagihan itu tetap memuat ND-nya (dibuat/diposting) -- kueri membaca return_bill_id ATAU original_bill_id."""
+    class KL(_K):
+        async def fetch(self, sql, *a):
+            if "FROM vendor_credits WHERE" in sql and "return_bill_id = ANY($2::uuid[])" in sql:
+                return await super().fetch(sql, *a)
+            if "FROM vendor_credits WHERE" in sql:
+                return []
+            return await super().fetch(sql, *a)
+    tangkap = {}
+
+    async def selesai(conn, tid, k, ids, lihat, limit):
+        tangkap["ids"] = ids
+        return k.ev, len(k.ev)
+
+    async def boleh(m):
+        return True
+    monkeypatch.setattr(TRW, "_selesaikan", selesai)
+    r = asyncio.run(TRW.riwayat_tagihan(KL(), "t", BILL, boleh))
+    jenis = [e["jenis"] for e in r["events"]]
+    assert "NOTA_DEBIT_DIBUAT" in jenis and "NOTA_DEBIT_DIPOSTING" in jenis
+    assert tangkap["ids"]["debit_note"] == [VC]
