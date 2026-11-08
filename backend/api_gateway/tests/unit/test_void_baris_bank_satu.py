@@ -119,4 +119,5 @@ def test_baris_transfer_memuat_reference_id_baris_manual_null(monkeypatch):
     assert out[0]["reference_id"] == str(trf) and out[0]["void_reason"] == "salah rekening" and out[0]["voided_by"] == str(u)
     assert out[0]["voided_at"] == w.isoformat()
     assert out[1]["reference_id"] is None and out[1]["void_reason"] is None and out[1]["voided_at"] is None
-    assert "bt.reference_id" in sql[0] and "bt.void_reason" in sql[0]
+    pilih = re.search(r"SELECT bt\.id(.*?)FROM bank_transactions bt", sql[0], re.S).group(1)  # daftar kolom CTE, bukan JOIN
+    assert {"bt.reference_id", "bt.voided_by", "bt.voided_at", "bt.void_reason"} <= set(re.findall(r"bt\.\w+", pilih))
