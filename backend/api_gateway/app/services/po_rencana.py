@@ -166,19 +166,35 @@ async def rencana_kirim(conn, tid: str, po) -> dict:
     return {"blocks": bloks, "status_sesudah": "sent"}
 
 
+def _qty_baris(baris: list, nilai) -> tuple:
+    """BUG-130 (pola BUG-044: tanpa jumlah lintas satuan): (teks, seragam). Satuan baris seragam -> "<Σ qty> <satuan>"; beda satuan ->
+    "<nama> <qty> <satuan>, ..." per baris. Angka teks_galat.qty (1.250,5). None bila tak ada baris bernilai > 0."""
+    from .teks_galat import qty as _q
+    isi = [(b, nilai(b)) for b in baris if nilai(b) > NOL]
+    if not isi:
+        return None, True
+    sat = lambda b: (b.get("unit") or "").strip()  # noqa: E731
+    if len({sat(b) for b, _ in isi}) == 1:
+        return f"{_q(sum(q for _, q in isi))} {sat(isi[0][0])}".rstrip(), True
+    return ", ".join(f"{b['description']} {_q(q)} {sat(b)}".rstrip() for b, q in isi), False
+
+
 async def rencana_tutup(conn, po) -> dict:
     bloks = [] if po["status"] not in STATUS_TAK_BISA_TUTUP else [
         blok("PO_TAK_BISA_DITUTUP", f"Pesanan pembelian berstatus '{po['status']}' tidak bisa ditutup.")]
-    q = await conn.fetchrow(
-        """SELECT COALESCE(SUM(GREATEST(quantity - COALESCE(quantity_received, 0), 0)), 0) AS sisa_terima,
-                  COALESCE(SUM(GREATEST(COALESCE(quantity_received, 0) - COALESCE(quantity_billed, 0), 0)), 0) AS belum_ditagih
-           FROM purchase_order_items WHERE po_id = $1""", po["id"]) or {}
+    baris = await conn.fetch(
+        """SELECT description, unit, quantity, quantity_received, quantity_billed FROM purchase_order_items
+           WHERE po_id = $1 ORDER BY line_number""", po["id"])
     catatan = []
-    if _d(q.get("sisa_terima")) > NOL:
-        catatan.append({"code": "SISA_BARANG_TAK_DITERIMA", "message": f"Sisa {PH.r2(q['sisa_terima'])} unit belum diterima tidak akan ditunggu lagi."})
-    if _d(q.get("belum_ditagih")) > NOL:
-        catatan.append({"code": "DITERIMA_BELUM_DITAGIH",
-                        "message": f"{PH.r2(q['belum_ditagih'])} unit sudah diterima tetapi belum ditagih; sesudah ditutup tidak bisa ditagih dari pesanan ini."})
+    sisa, satu = _qty_baris(baris, lambda b: max(_d(b["quantity"]) - _d(b["quantity_received"]), NOL))
+    if sisa:
+        catatan.append({"code": "SISA_BARANG_TAK_DITERIMA", "message": f"Sisa {sisa} belum diterima tidak akan ditunggu lagi." if satu
+                        else f"Sisa belum diterima tidak akan ditunggu lagi: {sisa}."})
+    belum, satu = _qty_baris(baris, lambda b: max(_d(b["quantity_received"]) - _d(b["quantity_billed"]), NOL))
+    if belum:
+        ekor = "sesudah ditutup tidak bisa ditagih dari pesanan ini."
+        catatan.append({"code": "DITERIMA_BELUM_DITAGIH", "message": f"{belum} sudah diterima tetapi belum ditagih; {ekor}" if satu
+                        else f"Sudah diterima tetapi belum ditagih: {belum}; {ekor}"})
     return {"blocks": bloks, "status_sesudah": "closed", "sisa_ditagih_sesudah": NOL, "notes": catatan}
 
 
