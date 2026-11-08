@@ -2435,14 +2435,8 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
                                 ctx.get("user_id"),
                                 hari_ini,  # t10-tanggal-bisnis
                             )
-                            await conn.execute(
-                                "UPDATE bank_transactions SET status = 'VOIDED', "
-                                "voided_by = $2, voided_at = NOW(), void_reason = $3 "
-                                "WHERE id = $1",
-                                original_btxn["id"],
-                                ctx.get("user_id"),
-                                body.reason,
-                            )
+                            await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx.get("user_id"), body.reason,
+                                                       tx_id=original_btxn["id"])
 
                 # Update expense status
                 await conn.execute(

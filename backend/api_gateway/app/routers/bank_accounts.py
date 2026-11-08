@@ -1297,7 +1297,8 @@ async def get_bank_transactions(
                                ELSE bt.amount
                            END as amount,
                            COALESCE(NULLIF(btrim(trf.notes), ''), bt.description) AS description,  -- BUG-083: keterangan transfer
-                           bt.payee_payer, bt.reference_type, bt.reference_number,
+                           bt.payee_payer, bt.reference_type, bt.reference_id, bt.reference_number,
+                           bt.voided_by, bt.voided_at, bt.void_reason,  -- ROW (n): FE BUG-116 void transfer + jejak batal
                            bt.is_reconciled, bt.created_at, bt.source_module, bt.status,
                            je.journal_number AS journal_number,
                            je.source_type AS origin_type,
@@ -1338,6 +1339,7 @@ async def get_bank_transactions(
                     "description": row["description"],
                     "payee_payer": row["payee_payer"],
                     "reference_type": row["reference_type"],
+                    "reference_id": str(row["reference_id"]) if row["reference_id"] else None,
                     "reference_number": row["reference_number"],
                     "is_reconciled": row["is_reconciled"],
                     "created_at": row["created_at"].isoformat(),
@@ -1349,6 +1351,9 @@ async def get_bank_transactions(
                     "related_bill_number": row.get("related_bill_number"),
                     "journal_number": row.get("journal_number"),
                     "origin_type": row.get("origin_type"),
+                    "voided_by": str(row["voided_by"]) if row["voided_by"] else None,
+                    "voided_at": row["voided_at"].isoformat() if row["voided_at"] else None,
+                    "void_reason": row["void_reason"],
                 }
                 for row in rows
             ]

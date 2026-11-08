@@ -56,6 +56,20 @@ async def kunci_kas(conn, tid: str, coa_id) -> None:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"KAS_KELUAR:{tid}:{coa_id}")
 
 
+SQL_TANDAI_VOID = """UPDATE bank_transactions SET status = 'VOIDED', voided_by = $2, voided_at = NOW(), void_reason = $3
+                     WHERE tenant_id = $1 AND status <> 'VOIDED' AND """
+
+
+async def tandai_baris_void(conn, tid: str, user_id, alasan: str, *, tx_id=None, referensi: tuple = None) -> str:
+    """ROW (n): SATU penanda baris mutasi bank batal -- status VOIDED (CHECK V110) + aktor + waktu + alasan -- untuk void manual
+    (kasbank_v2), void biaya, dan void transfer. Per baris (`tx_id`) atau per dokumen asal (`referensi` = (reference_type, id)).
+    Dulu UPDATE disalin tiga kali; void transfer tak mengisi aktor dan alasan."""
+    if tx_id is not None:
+        return await conn.execute(SQL_TANDAI_VOID + "id = $4", tid, user_id, alasan, tx_id)
+    jenis, ref_id = referensi
+    return await conn.execute(SQL_TANDAI_VOID + "reference_type = $4 AND reference_id = $5", tid, user_id, alasan, jenis, ref_id)
+
+
 async def tolak_kas_minus_coa(conn, tid: str, coa_id, keluar, bl: Blok = None, kunci: bool = None) -> list:
     """Aturan kas minus untuk jalur yang hanya tahu CoA kredit (biaya, bayar tagihan, uang muka vendor, refund NK/UM). Tanpa bl = tulis
     (melempar KAS_MINUS); dengan Blok(True) = pratinjau (blok dikumpulkan). CoA bukan rekening kas -> tak ada blok.
