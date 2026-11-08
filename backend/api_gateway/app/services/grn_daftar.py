@@ -7,7 +7,12 @@ Medan per GRN (SATU sumber SQL untuk baris daftar, detail, ?aksi=, /summary -- p
   billing_state    = batal | belum_ditagih | sebagian_ditagih | sudah_ditagih, dari qty: dasar = Σ (qty - retur) baris yang DAPAT ditautkan
                      tagihan (ber-stok, atau baris legacy), tertaut = Σ qty tautan AKTIF. Dasar 0 (GRN berisi barang non-stok/jasa saja; tagihan
                      atas baris non-stok tidak bertaut GRN -- grn_tagih hanya baris PO ber-stok) -> None + status_text "Diterima".
-  aksi             = belum_ditagih (pill) <=> posted AND tertaut < dasar (mencakup sebagian ditagih) -- predikat SAMA ?aksi= & /summary."""
+  aksi             = PARTISI (BUG-131 / ROW r 8 Nov 2026, cermin PO DRAF-TAGIHAN): posted AND tertaut < dasar, lalu
+                     sisa sesudah draf = dasar - tertaut - qty_draf > 0 -> belum_ditagih ("Buat faktur") | <= 0 -> draf_tagihan ("Buka faktur draf").
+                     billing_state/status_text TETAP dari tautan (= tagihan POSTED). Predikat SAMA ?aksi= & /summary.
+  qty_draf         = cakupan bill_items faktur DRAF pada baris PO yang sama atas qty TERBUKA baris GRN ber-stok, dialokasikan FIFO dengan
+                     urutan posting grn_tagih (receipt_date, created_at, line_number) -- = yang akan tertaut saat draf diposting. Qty bill_items
+                     tanpa konversi satuan, sama dengan PRED_TAGIH PO (po_daftar.sql_qty_tagih)."""
 from decimal import Decimal
 from typing import Awaitable, Callable, Optional
 from . import audit_dokumen as _ad  # AUDIT-DOKUMEN: nama event dari SATU tabel
@@ -15,7 +20,9 @@ from .dokumen_bagikan import lapis_kirim  # L7: sent bundel dari tautan bagikan
 
 NOL = Decimal("0")
 AKSI_BELUM_DITAGIH = "belum_ditagih"
-AKSI = (AKSI_BELUM_DITAGIH,)
+AKSI_DRAF_TAGIHAN = "draf_tagihan"  # satu kosakata dengan po_daftar.AKSI
+AKSI = (AKSI_BELUM_DITAGIH, AKSI_DRAF_TAGIHAN)
+PRED_DRAF = "COALESCE(b.status_v2, b.status) = 'draft'"  # == po_daftar.PRED_TAGIH["draf"]
 TEKS_TAGIH = {"batal": "Dibatalkan", "belum_ditagih": "Belum ditagih", "sebagian_ditagih": "Sebagian ditagih",
               "sudah_ditagih": "Sudah ditagih", None: "Diterima"}
 
@@ -30,6 +37,23 @@ def sql_qty_tertaut(g: str = "g") -> str:
             f" WHERE i.goods_receipt_id = {g}.id AND l.status = 'active')")
 
 
+def _sql_terbuka(i: str) -> str:
+    return (f"GREATEST({i}.quantity - {i}.quantity_returned - COALESCE((SELECT SUM(l.quantity) FROM goods_receipt_bill_links l"
+            f" WHERE l.goods_receipt_item_id = {i}.id AND l.status = 'active'), 0), 0)")
+
+
+def sql_qty_draf(g: str = "g") -> str:
+    """Σ per baris GRN ber-stok: LEAST(GREATEST(qty draf baris PO - qty terbuka baris GRN posted LEBIH DULU, 0), qty terbuka baris ini)."""
+    draf = ("COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id"
+            f" WHERE bi.purchase_order_item_id = i.purchase_order_item_id AND b.tenant_id = {g}.tenant_id AND {PRED_DRAF}), 0)")
+    dulu = (f"COALESCE((SELECT SUM({_sql_terbuka('j')}) FROM goods_receipt_items j"
+            f" JOIN goods_receipts gj ON gj.id = j.goods_receipt_id AND gj.tenant_id = {g}.tenant_id AND gj.status = 'posted'"
+            " WHERE j.purchase_order_item_id = i.purchase_order_item_id AND j.ber_stok"
+            f" AND (gj.receipt_date, gj.created_at, j.line_number) < ({g}.receipt_date, {g}.created_at, i.line_number)), 0)")
+    return (f"(SELECT COALESCE(SUM(LEAST(GREATEST({draf} - {dulu}, 0), {_sql_terbuka('i')})), 0) FROM goods_receipt_items i"
+            f" WHERE i.goods_receipt_id = {g}.id AND i.ber_stok)")
+
+
 def sql_grni_terbuka(g: str = "g") -> str:
     return (f"(CASE WHEN {g}.status = 'void' THEN 0 ELSE"
             f" (SELECT COALESCE(SUM(ROUND((i.quantity - i.quantity_returned) * i.unit_cost, 2)), 0) FROM goods_receipt_items i"
@@ -40,13 +64,16 @@ def sql_grni_terbuka(g: str = "g") -> str:
 
 def sql_kolom(g: str = "g") -> str:
     """Kolom turunan untuk SELECT header (daftar & detail)."""
-    return f"{sql_qty_dasar(g)} AS qty_dasar, {sql_qty_tertaut(g)} AS qty_tertaut, {sql_grni_terbuka(g)} AS grni_terbuka"
+    return (f"{sql_qty_dasar(g)} AS qty_dasar, {sql_qty_tertaut(g)} AS qty_tertaut, {sql_qty_draf(g)} AS qty_draf,"
+            f" {sql_grni_terbuka(g)} AS grni_terbuka")
 
 
 def sql_aksi(aksi: str, g: str = "g") -> str:
-    if aksi != AKSI_BELUM_DITAGIH:
+    if aksi not in AKSI:
         raise ValueError(f"aksi GRN tak dikenal: {aksi}")
-    return f"({g}.status = 'posted' AND {sql_qty_tertaut(g)} < {sql_qty_dasar(g)})"
+    sisa = f"({sql_qty_dasar(g)} - {sql_qty_tertaut(g)} - {sql_qty_draf(g)})"
+    banding = "> 0" if aksi == AKSI_BELUM_DITAGIH else "<= 0"
+    return f"({g}.status = 'posted' AND {sql_qty_tertaut(g)} < {sql_qty_dasar(g)} AND {sisa} {banding})"
 
 
 def _d(v) -> Decimal:
@@ -67,9 +94,33 @@ def billing_state(status: str, qty_dasar, qty_tertaut) -> Optional[str]:
 def medan(r) -> dict:
     """SEMUA medan turunan untuk satu GRN (baris daftar DAN detail -- paritas). r membawa status, qty_dasar, qty_tertaut, grni_terbuka."""
     bs = billing_state(r["status"], r["qty_dasar"], r["qty_tertaut"])
-    ak = AKSI_BELUM_DITAGIH if bs in ("belum_ditagih", "sebagian_ditagih") else None
+    sisa = max(_d(r["qty_dasar"]) - _d(r["qty_tertaut"]) - _d(r.get("qty_draf")), NOL)
+    ak = None
+    if bs in ("belum_ditagih", "sebagian_ditagih"):
+        ak = AKSI_BELUM_DITAGIH if sisa > NOL else AKSI_DRAF_TAGIHAN
     return {"billing_state": bs, "status_text": TEKS_TAGIH[bs], "grni_open_amount": f"{_d(r['grni_terbuka']):.2f}",
-            "aksi": ak, "aksi_semua": [ak] if ak else []}
+            "aksi": ak, "aksi_semua": [ak] if ak else [], "belum_ditagih_sesudah_draf": f"{sisa.normalize():f}"}
+
+
+# ---------------------------------------------------------------- faktur DRAF atas GRN (BUG-131: pill "Buka faktur draf")
+SQL_DRAF_TAGIHAN = f"""
+    SELECT DISTINCT i.goods_receipt_id AS gr_id, b.id, b.invoice_number, b.created_at
+    FROM goods_receipt_items i
+    JOIN bill_items bi ON bi.purchase_order_item_id = i.purchase_order_item_id
+    JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1 AND {PRED_DRAF}
+    WHERE i.goods_receipt_id = ANY($2::uuid[]) AND i.ber_stok
+    ORDER BY b.created_at, b.invoice_number
+"""
+
+
+async def draf_tagihan_banyak(conn, tenant_id: str, rows: list) -> dict:
+    """{gr_id (str): [{id, bill_number}]} faktur DRAF pada baris PO GRN -- hanya untuk GRN ber-qty_draf > 0 (cermin PO draft_bills). Satu kueri."""
+    ids = [r["id"] for r in rows if _d(r.get("qty_draf")) > NOL]
+    hasil = {}
+    if ids:
+        for b in await conn.fetch(SQL_DRAF_TAGIHAN, tenant_id, ids):
+            hasil.setdefault(str(b["gr_id"]), []).append({"id": str(b["id"]), "bill_number": b["invoice_number"]})
+    return hasil
 
 
 # ---------------------------------------------------------------- tagihan terkait (detail bills[])

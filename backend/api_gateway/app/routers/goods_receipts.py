@@ -91,7 +91,7 @@ def _syarat_cari(search, mulai: int):
 @router.get("")
 async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID] = Query(None),
                               status: Optional[str] = Query(None, pattern="^(posted|void)$"),
-                              aksi: Optional[str] = Query(None, pattern="^belum_ditagih$"),
+                              aksi: Optional[str] = Query(None, pattern="^(belum_ditagih|draf_tagihan)$"),
                               limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                               search: Optional[str] = Query(None),
                               date_from: Optional[date] = Query(None), date_to: Optional[date] = Query(None),
@@ -130,9 +130,11 @@ async def list_goods_receipts(request: Request, purchase_order_id: Optional[UUID
         rows = await conn.fetch(f"{SQL_HEADER}{syarat} ORDER BY {urut.format(o=arah)}, g.id {arah} LIMIT {int(limit)} OFFSET {int(offset)}", *par)
         # L5b (31 Okt 2026, aditif): documents[]/doc_count per baris = bundel detail TANPA rekap, pembentuk batch SATU (2 kueri, bukan N+1)
         kel = await GD.kelompok_grn_banyak(conn, ctx["tenant_id"], rows)
+        draf = await GD.draf_tagihan_banyak(conn, ctx["tenant_id"], rows)  # BUG-131: faktur draf (pill "Buka faktur draf")
     items = []
     for r in rows:
         it = _bentuk(r)
+        it["draft_bills"] = draf.get(str(r["id"]), [])
         it["documents"] = GD.documents_baris(kel.get(str(r["id"]), []))
         it["doc_count"] = len(it["documents"])
         items.append(it)
@@ -160,14 +162,14 @@ async def goods_receipts_summary(request: Request, purchase_order_id: Optional[U
         r = await conn.fetchrow(
             f"""SELECT count(*) AS total, count(*) FILTER (WHERE g.status = 'posted') AS posted, count(*) FILTER (WHERE g.status = 'void') AS void,
                        count(*) FILTER (WHERE g.receipt_date = tanggal_bisnis($1)) AS today_count,
-                       count(*) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}) AS n_aksi,
-                       COALESCE(SUM({GD.sql_grni_terbuka()}) FILTER (WHERE {GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)}), 0) AS v_aksi
+                       {", ".join(f"count(*) FILTER (WHERE {GD.sql_aksi(k)}) AS n_{k}, "
+                                  f"COALESCE(SUM({GD.sql_grni_terbuka()}) FILTER (WHERE {GD.sql_aksi(k)}), 0) AS v_{k}" for k in GD.AKSI)}
                 {FROM_RINGKASAN}{syarat}""", *par)
     return {"success": True, "data": {"total": int(r["total"]), "posted": int(r["posted"]), "void": int(r["void"]),
                                       "total_all": int(r["total"]), "total_posted": int(r["posted"]), "total_voided": int(r["void"]),
                                       "today_count": int(r["today_count"]),
-                                      f"{GD.AKSI_BELUM_DITAGIH}_count": int(r["n_aksi"]),
-                                      f"{GD.AKSI_BELUM_DITAGIH}_value": f"{G._d(r['v_aksi']):.2f}"}}
+                                      **{f"{k}_count": int(r[f"n_{k}"]) for k in GD.AKSI},  # BUG-131: satu predikat per kunci (partisi)
+                                      **{f"{k}_value": f"{G._d(r[f'v_{k}']):.2f}" for k in GD.AKSI}}}
 
 
 @router.get("/{gr_id}")
@@ -185,7 +187,8 @@ async def get_goods_receipt(request: Request, gr_id: UUID):
                FROM goods_receipt_items i JOIN purchase_order_items poi ON poi.id = i.purchase_order_item_id
                WHERE i.goods_receipt_id = $1 ORDER BY i.line_number""", gr_id)
         tagihan = await GD.tagihan_terkait(conn, ctx["tenant_id"], gr_id)
-    return {"success": True, "data": {**_bentuk(gr, items), "bills": tagihan}}
+        draf = await GD.draf_tagihan_banyak(conn, ctx["tenant_id"], [gr])
+    return {"success": True, "data": {**_bentuk(gr, items), "bills": tagihan, "draft_bills": draf.get(str(gr["id"]), [])}}
 
 
 @router.get("/{gr_id}/documents")

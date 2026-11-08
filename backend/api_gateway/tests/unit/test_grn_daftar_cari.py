@@ -40,7 +40,7 @@ class _K:
 
     async def fetchrow(self, sql, *a):
         self.sql.append((sql, a))
-        return {"total": 7, "posted": 5, "void": 2, "today_count": 1, "n_aksi": 3, "v_aksi": "1250.50"}
+        return {"total": 7, "posted": 5, "void": 2, "today_count": 1, "n_belum_ditagih": 3, "v_belum_ditagih": "1250.50", "n_draf_tagihan": 0, "v_draf_tagihan": 0}  # BUG-131: kolom per kunci
 
     async def fetchval(self, sql, *a):
         self.sql.append((sql, a))

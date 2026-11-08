@@ -19,7 +19,7 @@ def test_billing_state(status, dasar, taut, harap):
 def test_medan_aksi_dan_teks_paritas():
     m = GD.medan({"status": "posted", "qty_dasar": D("10"), "qty_tertaut": D("4"), "grni_terbuka": D("6000")})
     assert m == {"billing_state": "sebagian_ditagih", "status_text": "Sebagian ditagih", "grni_open_amount": "6000.00",
-                 "aksi": "belum_ditagih", "aksi_semua": ["belum_ditagih"]}
+                 "aksi": "belum_ditagih", "aksi_semua": ["belum_ditagih"], "belum_ditagih_sesudah_draf": "6"}  # BUG-131: + sisa sesudah draf
     assert GD.medan({"status": "posted", "qty_dasar": D("10"), "qty_tertaut": D("10"), "grni_terbuka": D("0")})["aksi"] is None
     m0 = GD.medan({"status": "posted", "qty_dasar": D("0"), "qty_tertaut": D("0"), "grni_terbuka": D("0")})
     assert m0["status_text"] == "Diterima" and m0["aksi"] is None  # GRN non-stok saja: tak bisa diukur tagihnya
@@ -31,7 +31,7 @@ def test_satu_predikat_aksi_untuk_daftar_dan_summary():
     p = GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)
     assert GD.sql_qty_tertaut() in p and GD.sql_qty_dasar() in p and "status = 'posted'" in p
     assert "GD.sql_aksi(ak)" in inspect.getsource(GR.list_goods_receipts)
-    assert "GD.sql_aksi(GD.AKSI_BELUM_DITAGIH)" in inspect.getsource(GR.goods_receipts_summary)
+    assert "GD.sql_aksi(k)" in inspect.getsource(GR.goods_receipts_summary)  # BUG-131: satu predikat per kunci GD.AKSI
     assert "isinstance(aksi, str)" in inspect.getsource(GR.list_goods_receipts)  # pemanggilan langsung: default = objek Query
 
 
