@@ -105,7 +105,8 @@ def test_baris_mutasi_asal_ditandai_voided_dengan_reference_type_post(monkeypatc
     upd = [(s, a) for s, a in exe if s.startswith("UPDATE bank_transactions")]
     assert len(upd) == 1, upd
     s, a = upd[0]
-    assert "reference_type = 'transfer'" in s and "reference_id = $1" in s and "tenant_id = $2" in s and a[:2] == (TRF, T)
+    # ROW (n): lewat kasbank_tulis.tandai_baris_void -- predikat reference_type/reference_id sebagai parameter ("transfer" = yang ditulis posting)
+    assert "reference_type = $4" in s and "reference_id = $5" in s and "tenant_id = $1" in s and a[0] == T and a[3:] == ("transfer", TRF)
     st = re.search(r"SET status = '([A-Za-z]+)'", s).group(1)
     assert st in _status_v110() and st == "VOIDED"                 # CHECK V110: nilai lain = 500 di prod
     assert "status <> 'VOIDED'" in s or "status != 'VOIDED'" in s  # idempoten: baris yang sudah batal tak disentuh

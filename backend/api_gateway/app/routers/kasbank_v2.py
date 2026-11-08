@@ -31,6 +31,7 @@ import logging
 import asyncpg
 import uuid as uuid_module
 
+from ..services import kasbank_tulis as KT
 from ..services import teks_galat as tg
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -465,20 +466,7 @@ async def void_transaction(
                     hari_ini,  # t10-tanggal-bisnis
                 )
 
-                # Mark transaction as VOIDED
-                await conn.execute(
-                    """
-                    UPDATE bank_transactions
-                    SET status = 'VOIDED',
-                        voided_by = $2,
-                        voided_at = NOW(),
-                        void_reason = $3
-                    WHERE id = $1
-                    """,
-                    transaction_id,
-                    ctx["user_id"],
-                    body.reason,
-                )
+                await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], body.reason, tx_id=transaction_id)
 
                 row = await conn.fetchrow(
                     "SELECT * FROM bank_transactions WHERE id = $1", transaction_id

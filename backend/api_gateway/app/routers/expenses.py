@@ -2473,14 +2473,7 @@ async def _batal_biaya(conn, ctx: dict, expense_id, body) -> dict:
                     ctx.get("user_id"),
                     hari_ini,  # t10-tanggal-bisnis
                 )
-                await conn.execute(
-                    "UPDATE bank_transactions SET status = 'VOIDED', "
-                    "voided_by = $2, voided_at = NOW(), void_reason = $3 "
-                    "WHERE id = $1",
-                    original_btxn["id"],
-                    ctx.get("user_id"),
-                    body.reason,
-                )
+                await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx.get("user_id"), body.reason, tx_id=original_btxn["id"])
 
     # Update expense status
     await conn.execute(

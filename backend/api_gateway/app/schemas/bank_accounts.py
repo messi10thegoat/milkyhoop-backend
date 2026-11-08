@@ -217,6 +217,11 @@ class BankTransactionListItem(BaseModel):
     related_bill_number: Optional[str] = None
     journal_number: Optional[str] = None  # BUG-083: dihitung router tapi dulu dibuang response_model -> rincian "NO. JURNAL —"
     origin_type: Optional[str] = None
+    # ROW (n) 8 Nov 2026: id dokumen asal (FE BUG-116: POST /bank-transfers/{reference_id}/void) + jejak batal baris (aktor, waktu, alasan)
+    reference_id: Optional[str] = None
+    voided_by: Optional[str] = None
+    voided_at: Optional[str] = None
+    void_reason: Optional[str] = None
 
 
 class BankAccountBalanceInfo(BaseModel):

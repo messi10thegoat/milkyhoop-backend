@@ -1090,19 +1090,8 @@ async def void_bank_transfer(
                     hari_ini,  # t10-tanggal-bisnis
                 )
 
-                # Mark original bank transactions as voided
-                await conn.execute(
-                    """
-                    UPDATE bank_transactions
-                    SET status = 'VOIDED', voided_at = NOW()  -- BUG-116: CHECK V110 (DRAFT/POSTED/VOIDED)
-                    WHERE reference_type = 'transfer'  -- BUG-116: = yang ditulis posting (dulu 'bank_transfer' -> 0 baris)
-                      AND reference_id = $1
-                      AND tenant_id = $2
-                      AND status != 'VOIDED'
-                    """,
-                    transfer_id,
-                    ctx["tenant_id"],
-                )
+                # BUG-116: reference_type 'transfer' = yang ditulis posting (dulu 'bank_transfer' -> 0 baris); ROW (n): + aktor + alasan
+                await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], body.reason, referensi=("transfer", transfer_id))
 
                 # Update transfer status
                 await conn.execute(
