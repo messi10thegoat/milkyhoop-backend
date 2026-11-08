@@ -44,7 +44,7 @@ def test_pratinjau_sesudah_kelebihan_jadi_saldo_kredit_keadaan_tetap():
 
 def test_daftar_detail_dokumen_memakai_fakta_krd():
     src = inspect.getsource(RC)
-    assert src.count('saldo_kredit=row["created_deposit_id"] is not None') == 1
+    assert src.count('saldo_kredit=row.get("created_deposit_id") is not None') == 1
     assert src.count('saldo_kredit=cn["created_deposit_id"] is not None') == 1
     d = inspect.getsource(RD)
     assert 'saldo_kredit=c["created_deposit_id"] is not None' in d and "cn.amount_refunded, cn.original_invoice_id, cn.created_deposit_id" in d

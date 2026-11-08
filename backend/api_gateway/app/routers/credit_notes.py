@@ -587,7 +587,7 @@ async def list_credit_notes(
                     "sisa_keadaan": _nkd.keadaan_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
                                                     row["original_invoice_id"]),
                     "status_text": _nkd.status_text_nk(row["status"], status_detail_nk(row["status"], row["amount_applied"], row["amount_refunded"]),
-                                                       row["original_invoice_id"], saldo_kredit=row["created_deposit_id"] is not None),
+                                                       row["original_invoice_id"], saldo_kredit=row.get("created_deposit_id") is not None),
                 }
                 for row in rows
             ]
