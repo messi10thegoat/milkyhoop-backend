@@ -89,10 +89,12 @@ async def bagian_tagihan(conn, tenant_id: str, k: _Kumpul, bills: list, lihat: d
                      a["reversed_by"], "debit_note", a["id"], cn, kunci=a["kunci"])
 
     # ---- nota debit ATAS tagihan ini (BUG-052): retur dari faktur memotong hutang langsung saat posting, tanpa baris applications ----
+    # BUG-069 (V485): retur dari tagihan LUNAS = ND bebas (original_bill_id NULL) bersumber return_bill_id -> ikut dibaca
     if lihat["debit_note"]:
         vcs = await conn.fetch(
             """SELECT id, credit_number, total_amount, created_at, created_by, posted_at, posted_by, voided_at, voided_by, voided_reason
-               FROM vendor_credits WHERE tenant_id = $1 AND original_bill_id = ANY($2::uuid[])""", tenant_id, ids)
+               FROM vendor_credits WHERE tenant_id = $1
+                AND (original_bill_id = ANY($2::uuid[]) OR return_bill_id = ANY($2::uuid[]))""", tenant_id, ids)
         if vcs:
             entitas_audit["debit_note"] = [v["id"] for v in vcs]
         for v in vcs:
