@@ -86,7 +86,7 @@ def test_summary_sql_memuat_filter_tiap_kunci_dan_kunci_keluaran(monkeypatch):
         return P()
     monkeypatch.setattr(GR, "get_pool", pool)
     r = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
-    r.state.user = {"tenant_id": "t1", "user_id": "u1"}
+    r.state.user = {"tenant_id": "t1", "user_id": "00000000-0000-0000-0000-000000000001"}
     d = asyncio.run(GR.goods_receipts_summary(r, purchase_order_id=None, search=None))["data"]
     for k in GD.AKSI:
         assert f"FILTER (WHERE {GD.sql_aksi(k)}) AS n_{k}" in tangkap[0], k
