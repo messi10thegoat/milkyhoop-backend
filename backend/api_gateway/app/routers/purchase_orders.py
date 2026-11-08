@@ -443,7 +443,7 @@ async def get_purchase_orders_summary(request: Request, search: Optional[str] = 
             w = f" AND {cari}" if cari else ""
             pill = ", ".join(
                 f"COUNT(*) FILTER (WHERE {PD.sql_aksi(k, '$2')}) AS {k}_count, "
-                f"COALESCE(SUM(po.total_amount) FILTER (WHERE {PD.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in PD.AKSI)
+                f"COALESCE(SUM({PD.NILAI_AKSI.get(k, 'po.total_amount')}) FILTER (WHERE {PD.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in PD.AKSI)
             query = f"""
                 SELECT
                     COUNT(*) as total,

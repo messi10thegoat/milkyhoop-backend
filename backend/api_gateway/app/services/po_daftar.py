@@ -58,6 +58,8 @@ def sql_qty_tagih(jenis: str, i: str = "i", tenant: str = "$2") -> str:
     return (f"COALESCE((SELECT SUM(bi.quantity) FROM bill_items bi JOIN bills b ON b.id = bi.bill_id "
             f"WHERE bi.purchase_order_item_id = {i}.id AND b.tenant_id = {tenant} AND {PRED_TAGIH[jenis]}), 0)")
 AKSI = ("perlu_dikirim", "telat_terima", "perlu_ditagih", "draf_tagihan", "perlu_diterima")  # urutan desak (PARTISI)
+# Nilai kartu summary <aksi>_value: bawaan Σ total PO; perlu_diterima = Σ nilai SISA terima (barang belum datang; 8 Nov, MASTER grosir)
+NILAI_AKSI = {"perlu_diterima": "ag.nilai_sisa_terima"}
 SARINGAN = ("bisa_diterima",)  # ?aksi= daftar saja: bukan pill, tak dihitung summary
 POSISI = {"draft": "Draf", "sent": "Terkirim ke vendor", "partial_received": "Diterima sebagian", "received": "Diterima",
           "partial_billed": "Ditagih sebagian", "billed": "Ditagih", "closed": "Selesai", "cancelled": "Dibatalkan"}
@@ -128,6 +130,7 @@ def jumlah_turunan(baris: list) -> dict:
 SQL_AGREGAT = f"""
     LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(CASE WHEN q.jasa THEN 0 ELSE GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0) END), 0) AS sisa_terima,
+               COALESCE(SUM(CASE WHEN q.jasa THEN 0 ELSE ROUND(GREATEST(i.quantity - COALESCE(i.quantity_received, 0), 0) * i.total / NULLIF(i.quantity, 0), 2) END), 0) AS nilai_sisa_terima,
                COALESCE(SUM(CASE WHEN q.jasa THEN 0 ELSE COALESCE(i.quantity_received, 0) END), 0) AS diterima_barang,
                COALESCE(SUM(GREATEST(q.dasar - q.posted, 0)), 0) AS belum_ditagih,
                COALESCE(SUM(GREATEST(q.dasar - q.pagar, 0)), 0) AS belum_ditagih_sesudah_draf,
