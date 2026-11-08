@@ -3,7 +3,7 @@ tagihan dan pembayaran sebuah Pesanan Penjualan. SATU pemuat untuk PDF dan HTML 
 
 Angka TANPA rumus baru (Iron Law 1/16/29):
   tertutup / dp / faktur = proforma_terbayar.ringkasan_pesanan (journal-derived; sama dengan Posisi P1 & payment_summary)
-  sisa tagihan          = total SO − tertutup
+  sisa tagihan          = proforma_terbayar.sisa_pesanan (total SO − tertutup; SO selesai: difaktur − tertutup, BUG-145)
   sudah dibayar         = tertutup − nota kredit   (tertutup = settled faktur + DP belum diterapkan; settled termasuk NK)
   terbayar per proforma = proforma_terbayar.terbayar_proforma (atribusi kanonik, sama dengan detail proforma)
   sisa per faktur       = compute_ar_outstanding
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
+from .proforma_terbayar import ringkasan_pesanan, sisa_pesanan, terbayar_proforma
 
 logger = logging.getLogger(__name__)
 NOL = Decimal("0")
@@ -72,7 +72,7 @@ async def muat_rekap_pesanan(conn, ctx, so_id) -> dict:
     sid = so["id"]
     r = (await ringkasan_pesanan(conn, tid, [sid]))[sid]
     total = _d(so["total_amount"])
-    sisa = total - r["tertutup"]
+    sisa = sisa_pesanan(so["status"], total, r)  # BUG-145: satu pembentuk (SO selesai: dari faktur)
     dibayar = r["tertutup"] - r["credit_note"]
 
     # ── TAGIHAN: proforma (tak-batal; SO batal -> semua tampil "Batal", putusan pemilik #4) + faktur terbit ──

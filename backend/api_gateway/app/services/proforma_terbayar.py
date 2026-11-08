@@ -182,7 +182,14 @@ def belum_ditagih(order_total, r: dict) -> Decimal:
     return max(NOL, _d(order_total) - r["invoiced"])
 
 
-def ringkasan_pembayaran_so(order_total, r: dict) -> dict:
+def sisa_pesanan(status, order_total, r: dict) -> Decimal:
+    """SATU definisi "Sisa" SO (belum dibatasi 0): total − tertutup. BUG-145 (pemilik LANGSUNG 8 Nov "Ya, dari faktur"): SO SELESAI
+    (completed: Tutup pesanan / selesai otomatis) berdasar nilai DIFAKTUR (r["invoiced"], jurnal) -- bagian yang ditutup tanpa faktur bukan sisa
+    (pola PO tutup / NetSuite closed line). Dipakai so_posisi (pill, posisi + kolom Sisa, sort + Σ), payment_summary, Rekap, bundel dokumen."""
+    return (r["invoiced"] if status == "completed" else _d(order_total)) - r["tertutup"]
+
+
+def ringkasan_pembayaran_so(order_total, r: dict, status=None) -> dict:
     """Medan payment_summary GET /api/sales-orders/{id} (Q-011). Murni; float untuk JSON.
     paid_amount      = tertutup SO (SAMA dengan dasar terbayar proforma)
     paid_cash_amount = uang yang benar-benar masuk = invoice_settled − credit_note + dp_unapplied
@@ -202,7 +209,7 @@ def ringkasan_pembayaran_so(order_total, r: dict) -> dict:
         "dp_unapplied_amount": float(r["dp_unapplied"]),
         "paid_amount": float(r["tertutup"]),
         "paid_cash_amount": float(cash),
-        "remaining_amount": float(max(NOL, total - r["tertutup"])),
+        "remaining_amount": float(max(NOL, sisa_pesanan(status, total, r))),
     }
 
 

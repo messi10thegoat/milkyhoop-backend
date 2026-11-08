@@ -15,7 +15,7 @@ Filter tenant EKSPLISIT di tiap kueri (set_config bukan pagar).
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from .proforma_terbayar import ringkasan_pesanan, terbayar_proforma
+from .proforma_terbayar import ringkasan_pesanan, sisa_pesanan, terbayar_proforma
 from .so_fase_lokasi import STATUS_TERTUTUP as _FASE_TUTUP, teks_fase
 from .so_kirim import _AKTIF, belum_dikirim, terkirim_per_baris
 
@@ -237,7 +237,7 @@ async def fakta_dp(conn, tenant_id: str, rows: list) -> dict:
     out = {}
     for sid in semua:
         r = st[sid]
-        sisa = Decimal(str(r["total_amount"] or 0)) - rg[sid]["tertutup"]
+        sisa = sisa_pesanan(r["status"], r["total_amount"] or 0, rg[sid])
         ada_faktur = faktur.get(sid, 0) > 0
         ikut = [p for p in per_so.get(sid, []) if p["status"] == "issued"
                 and not proforma_lunas(p["amount"], terbayar.get(p["id"], {}).get("paid", NOL))
@@ -362,7 +362,7 @@ async def fakta_daftar(conn, tenant_id: str, rows: list, hari: date) -> dict:
     for r in rows:
         sid = r["id"]
         o = rg[sid]
-        sisa = Decimal(str(r["total_amount"] or 0)) - o["tertutup"]
+        sisa = sisa_pesanan(r["status"], r["total_amount"] or 0, o)
         daftar_pf = per_so_pf.get(sid, [])
         belum_bayar = belum_bayar_so(daftar_pf, terbayar)
         n_faktur = faktur.get(sid, 0)
@@ -408,7 +408,7 @@ async def sisa_per_so(conn, tenant_id: str, rows: list) -> dict:
         rg = await ringkasan_pesanan(conn, tenant_id, [r["id"] for r in potong])
         for r in potong:
             nilai[r["id"]] = (None if r["status"] in ("draft", "cancelled")
-                              else max(Decimal(str(r["total_amount"] or 0)) - rg[r["id"]]["tertutup"], NOL))
+                              else max(sisa_pesanan(r["status"], r["total_amount"] or 0, rg[r["id"]]), NOL))
     return nilai
 
 

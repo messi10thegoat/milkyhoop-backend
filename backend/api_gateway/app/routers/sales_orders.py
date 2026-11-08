@@ -585,7 +585,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
 
             # Q-011: angka "Dibayar" dari SERVER, journal-derived (bukan Σ deposits[]/invoices[] di FE).
             ringkas = await ringkasan_pesanan(conn, ctx["tenant_id"], [order["id"]])
-            payment_summary = ringkasan_pembayaran_so(order["total_amount"], ringkas[order["id"]])
+            payment_summary = ringkasan_pembayaran_so(order["total_amount"], ringkas[order["id"]], order["status"])
             penanda = (await penanda_faktur_so(conn, ctx["tenant_id"], [order["id"]]))[str(order["id"])]
             terkirim, tanpa_tautan = await so_kirim.terkirim_per_baris(conn, ctx["tenant_id"], [order["id"]])
 

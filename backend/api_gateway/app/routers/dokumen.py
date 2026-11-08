@@ -257,7 +257,7 @@ def _tgl(v) -> Optional[str]:
 async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False) -> dict:
     """Bundel per skema so-documents. Kelompok hanya yang berisi (Rekap selalu). Angka dari sumber yang sama dengan
     Rekap/Posisi (ringkasan_pesanan, terbayar_proforma, compute_ar_outstanding). Filter tenant eksplisit."""
-    from ..services.proforma_terbayar import ringkasan_pesanan
+    from ..services.proforma_terbayar import ringkasan_pesanan, sisa_pesanan
     from ..services.so_posisi import fakta_daftar
     from ..utils.tanggal_tenant import tanggal_dokumen
     tid = ctx["tenant_id"]
@@ -271,7 +271,7 @@ async def susun_dokumen(conn, ctx: dict, so_id: UUID, sertakan_nk: bool = False)
     r = (await ringkasan_pesanan(conn, tid, [sid]))[sid]
     total = Decimal(str(so["total_amount"] or 0))
     batal = so["status"] == "cancelled"
-    sisa = NOL if batal else max(total - r["tertutup"], NOL)
+    sisa = NOL if batal else max(sisa_pesanan(so["status"], total, r), NOL)  # BUG-145: satu pembentuk
     posisi = (await fakta_daftar(conn, tid, [so], await tanggal_dokumen(conn, tid)))[str(sid)]
     kelompok = [{"key": "rekap", "label": "Rekap", "docs": [{"kind": "rekap", "id": str(sid), "paper": "A4"}]}]
 
