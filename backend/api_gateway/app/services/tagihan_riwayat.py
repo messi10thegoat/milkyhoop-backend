@@ -93,12 +93,13 @@ async def bagian_tagihan(conn, tenant_id: str, k: _Kumpul, bills: list, lihat: d
         vcs = await conn.fetch(
             """SELECT id, credit_number, total_amount, created_at, created_by, posted_at, posted_by, voided_at, voided_by, voided_reason
                FROM vendor_credits WHERE tenant_id = $1 AND original_bill_id = ANY($2::uuid[])""", tenant_id, ids)
-        entitas_audit["debit_note"] = [v["id"] for v in vcs]
+        if vcs:
+            entitas_audit["debit_note"] = [v["id"] for v in vcs]
         for v in vcs:
             cn = v["credit_number"]
-            k.tambah(v["created_at"], "NOTA_DEBIT_DIBUAT", f"Nota debit {cn} {_rp(v[total_amount])} dibuat", v["created_by"], "debit_note", v["id"], cn)
+            k.tambah(v["created_at"], "NOTA_DEBIT_DIBUAT", f"Nota debit {cn} {_rp(v['total_amount'])} dibuat", v["created_by"], "debit_note", v["id"], cn)
             k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {cn} diposting", v["posted_by"], "debit_note", v["id"], cn)
-            al = f": {v[voided_reason]}" if v["voided_reason"] else ""
+            al = f": {v['voided_reason']}" if v["voided_reason"] else ""
             k.tambah(v["voided_at"], "NOTA_DEBIT_DIBATALKAN", f"Nota debit {cn} dibatalkan{al}", v["voided_by"], "debit_note", v["id"], cn)
 
 
