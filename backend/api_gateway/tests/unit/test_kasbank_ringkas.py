@@ -79,7 +79,7 @@ class _C:
         self.panggil.append((sql, a))
         if sql == KR.SQL_RINGKASAN:
             return [_akun("cash", 1000)]
-        if sql == KR.SQL_MUTASI:
+        if sql in (KR.SQL_MUTASI, getattr(KR, "SQL_MUTASI_TANPA_BATAL", None)):
             return [_baris(-500)]
         raise AssertionError(sql)
 
@@ -180,3 +180,35 @@ def test_rute_mutasi_menyampaikan_pihak_lewat_response_model(klien):
     k, _ = klien
     it = k.get("/api/bank-accounts/transactions/recent").json()["data"]["items"][0]
     assert (it["nomor_dokumen"], it["pihak"]["nama"], it["pihak"]["jenis"], it["sumber_teks"]) == ("RCV-2611-0001", "Toko Sinar", "pelanggan", "Terima pembayaran")
+
+
+# ---------------------------------------------------------------- ROW (q) 8 Nov: ?tanpa_batal=true -> saring batal + pembalik SEBELUM LIMIT
+def test_rute_tanpa_batal_memakai_sql_tersaring_tanpa_parameter_perilaku_lama(klien):
+    """FE ui_v3 dulu menyaring SESUDAH limit -> kaos (10 terbaru = 5 dokumen dibatalkan + pembaliknya) daftar kosong."""
+    k, c = klien
+    assert k.get("/api/bank-accounts/transactions/recent?tanpa_batal=true").status_code == 200
+    assert c.panggil[-1] == (KR.SQL_MUTASI_TANPA_BATAL, ("t1", 10))
+    assert k.get("/api/bank-accounts/transactions/recent").status_code == 200 and c.panggil[-1] == (KR.SQL_MUTASI, ("t1", 10))
+    assert k.get("/api/bank-accounts/transactions/recent?tanpa_batal=false&limit=3").status_code == 200
+    assert c.panggil[-1] == (KR.SQL_MUTASI, ("t1", 3))
+
+
+def test_sql_tanpa_batal_saring_di_where_sebelum_limit_cermin_status_mutasi():
+    s = KR.SQL_MUTASI_TANPA_BATAL
+    where, ekor = s.split("WHERE je.tenant_id = $1", 1)[1].split("ORDER BY", 1)
+    # cermin status_mutasi: dibatalkan (reversed_by_id) + pembatalan (reversal_of_id, REVERSAL, *_REVERSAL)
+    for klausa in ("je.reversed_by_id IS NULL", "je.reversal_of_id IS NULL", "COALESCE(je.source_type, '') <> 'REVERSAL'",
+                   "right(COALESCE(je.source_type, ''), 9) <> '_REVERSAL'"):
+        assert klausa in where, klausa
+    assert "LIMIT $2" in ekor
+    assert s.replace(KR.SARING_TANPA_BATAL, "") == KR.SQL_MUTASI  # selain saringan, SQL sama persis dengan jalur lama
+
+
+def test_saringan_menyisakan_tepat_baris_tercatat():
+    """Paritas Python: baris yang lolos saringan SQL == baris berstatus 'tercatat' (pembanding status_mutasi)."""
+    def lolos(b):
+        st = b["source_type"] or ""
+        return not b["reversed_by_id"] and not b["reversal_of_id"] and st != "REVERSAL" and not st.endswith("_REVERSAL")
+    kasus = [dict(source_type=st, reversal_of_id=ro, reversed_by_id=rb) for st in ("BANK_TRANSFER", "EXPENSE_REVERSAL", "REVERSAL", None)
+             for ro in (None, "x") for rb in (None, "y")]
+    assert all(lolos(b) == (KR.status_mutasi(b) == "tercatat") for b in kasus)
