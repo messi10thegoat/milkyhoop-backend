@@ -466,3 +466,20 @@ async def test_ubah_vendor_memakai_penentu_yang_sama(monkeypatch):
 def test_izin_rute_ikut_huruf_tulisnya(jalur, metode, harap):
     from app.middleware.permission_middleware import PermissionMiddleware
     assert PermissionMiddleware(app=None)._find_permission(jalur, metode) == harap
+
+
+# ---------------------------------------------------------------- penjaga hapus lengkap
+# Diukur pg_constraint 9 Nov 2026 (confdeltype = NO ACTION ke customers / vendors) + dokumen ber-vendor_id TANPA FK (purchase_orders,
+# expenses). Tabel yang terlewat dulu: DELETE 500 (FK sales_orders, terbukti di salinan) atau dokumen yatim. Tabel CASCADE (aktivitas,
+# alamat, kontak) memang ikut terhapus.
+FK_PELANGGAN = {"accounts_receivable", "credit_notes", "customer_deposits", "proformas", "quotes", "receive_payments", "sales_invoices",
+                "sales_orders", "sales_receipts"}
+FK_VENDOR = {"asset_maintenance", "bill_payments_v2", "bom_operations", "cheques", "fixed_assets", "goods_receipts",
+             "production_subcontracts", "recurring_bills", "vendor_deposits", "purchase_orders", "expenses", "bills", "vendor_credits"}
+
+
+def test_jejak_hapus_lengkap():
+    assert FK_PELANGGAN <= {x[0] for x in cu.JEJAK_PELANGGAN}
+    assert FK_VENDOR <= {x[0] for x in ve.JEJAK_VENDOR}
+    for x in [*cu.JEJAK_PELANGGAN, *ve.JEJAK_VENDOR]:
+        assert x[2] and x[2].startswith("Tidak bisa menghapus")

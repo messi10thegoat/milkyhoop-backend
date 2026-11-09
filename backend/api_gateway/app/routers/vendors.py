@@ -622,7 +622,8 @@ async def _tulis_anak_pemasok(conn, tenant_id: str, vendor_id, shipping, contact
 
 
 # Jejak transaksi yang menolak hapus vendor -- SATU daftar untuk DELETE (smart_delete) dan aksi detail B2 (cek_jejak)
-JEJAK_VENDOR = [
+JEJAK_VENDOR = [  # lengkap = SEMUA tabel ber-FK NO ACTION ke tabel ini (+ dokumen tanpa FK); diukur pg_constraint 9 Nov 2026 -- yang
+    # terlewat dulu membuat DELETE 500 (FK) atau meninggalkan dokumen yatim. Penjaga: test_kontak_aksi_pratinjau.test_jejak_hapus_lengkap
         (
             "bills",
             "vendor_id",
@@ -642,6 +643,56 @@ JEJAK_VENDOR = [
             "vendor_deposits",
             "vendor_id",
             "Tidak bisa menghapus vendor yang memiliki deposit. Nonaktifkan saja.",
+        ),
+        (
+            "purchase_orders",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki pesanan pembelian. Nonaktifkan saja.",
+        ),
+        (
+            "bill_payments_v2",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki pembayaran keluar. Nonaktifkan saja.",
+        ),
+        (
+            "goods_receipts",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki penerimaan barang. Nonaktifkan saja.",
+        ),
+        (
+            "expenses",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki biaya. Nonaktifkan saja.",
+        ),
+        (
+            "recurring_bills",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki tagihan berulang. Nonaktifkan saja.",
+        ),
+        (
+            "cheques",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki cek/giro. Nonaktifkan saja.",
+        ),
+        (
+            "fixed_assets",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki aset tetap. Nonaktifkan saja.",
+        ),
+        (
+            "asset_maintenance",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki catatan pemeliharaan aset. Nonaktifkan saja.",
+        ),
+        (
+            "production_subcontracts",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki subkontrak produksi. Nonaktifkan saja.",
+        ),
+        (
+            "bom_operations",
+            "vendor_id",
+            "Tidak bisa menghapus vendor yang memiliki operasi BOM. Nonaktifkan saja.",
         ),
     ]
 
