@@ -152,7 +152,7 @@ def spek(tid, kas):
             }},
         "faktur": {
             "sql": "SELECT id, status, invoice_number AS nomor, sales_order_id, total_amount FROM sales_invoices WHERE tenant_id = $1",
-            "detail": lambda i: SI.get_invoice(req(tid, "GET"), U(i)), "kunci": "AKSI_DETAIL_SI",
+            "detail": lambda i: SI.get_invoice(req(tid, "GET"), U(i), **({"aksi_tersedia": 1} if BARU else {})), "kunci": "AKSI_DETAIL_SI",
             "aksi": {
                 "terbit": ("tulis", lambda c, row: SI.post_invoice(r(), row["id"], None, Response()), None),
                 "hapusdraf": ("tulis", lambda c, row: SI.delete_invoice(r(), row["id"], Response()), None),
@@ -361,6 +361,11 @@ async def main():
                     data = dict(h.get("data") or h) if isinstance(h, dict) else {}
                     at = data.pop("aksi_tersedia", None)
                     out["detail"][f"{modul}:{nomor}"] = {"ok": d["ok"], "data": data, "galat": d.get("detail")}
+                    if BARU and modul == "faktur":  # opt-in: tanpa ?aksi_tersedia=1 kunci TIDAK ada, sisanya identik
+                        d0 = await coba(SI.get_invoice(req(tid, "GET"), row["id"]))
+                        dd0 = ((d0.get("hasil") or {}).get("data") or {})
+                        cek(f"O faktur {nomor} tanpa parameter: tanpa aksi_tersedia, data sama", d0["ok"] and "aksi_tersedia" not in dd0
+                            and dd0 == data, sorted(set(dd0) ^ set(data)))
                     hasil = {}
                     for kunci, (mode, f, keadaan) in s["aksi"].items():
                         if mode == "kirim":

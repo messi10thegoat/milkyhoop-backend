@@ -193,3 +193,23 @@ Kode di kurung = isian, diabaikan.
   - pg_locks;
   - p50/p95 per modul;
   - penyimpanan objek TIRUAN.
+
+### Kinerja J1b — putusan MASTER 10 Nov (untuk FE)
+
+Kriteria §5.2 ditafsir ulang (b): **opt-in bila p95 naik >80 ms ATAU (>30% DAN >20 ms)**.
+
+**Selalu ikut** (`data.aksi_tersedia` selalu ada): SO (J1a), Penawaran, Proforma, Surat Jalan, Penerimaan, Uang Muka, Nota Kredit.
+
+**Opt-in:** **Faktur** — `GET /api/sales-invoices/{id}?aksi_tersedia=1`. Tanpa parameter, kunci `aksi_tersedia` TIDAK ada; FE memakai logika lamanya.
+- Biaya murni (terselang off/on, klon sama): p95 +28,2 ms / +66%.
+- Per kunci (p50/p95 ms): bayar 8,9/15,3 · kirim 6,3/16,9 · terbit 0/6,9 · void 2,3/6,8.
+- TIKET terpisah: `compute_ar_outstanding(tenant)` dihitung untuk seluruh tenant lalu disaring per faktur. Ini kinerja penentu pelunasan itu sendiri, penulis juga. BE sedang; butuh ironlaws + uji paritas uang.
+
+**Nota Kredit selalu ikut**, diputus dari data **per kunci**, bukan dari on/off:
+- total p50 ±2,5 ms;
+- p95 per kunci: terbit 4,3 · batal 4,2 · lepas 1,8 · terapkan 1,2 · refund 0,2;
+- on/off +22 ms adalah derau n kecil (run sebelumnya +9,4 ms).
+
+**Belum terukur:** Proforma `koreksi`. Pratinjau memanggil izin PolicyEngine, yang tak ada di kontainer uji. TIKET: PolicyEngine di kontainer uji.
+
+**PUTUSAN 1:** POST /receive-payments/{id}/post memeriksa status draf SEBELUM `_periksa_sisa_draf` (`penjaga_posting_rp`, satu sumber dengan `_post_payment`). Penerimaan non-draf ditolak dengan kalimat status (dulu "Alokasi melebihi sisa"); kelayakan sama.

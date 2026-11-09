@@ -300,7 +300,7 @@ def test_detail_memuat_aksi_tersedia():
     for kelas in (QuoteDetail, ReceivePaymentDetail, CustomerDepositDetail, CreditNoteDetail):
         assert kelas.model_fields["aksi_tersedia"].annotation == AksiTersediaPeta
     for f, nama in ((QT.get_quote_detail, "aksi_tersedia_pn"), (PF.get_proforma_detail, "aksi_tersedia_pf"),
-                    (SI.get_invoice, "aksi_tersedia_si"), (DL.get_delivery_detail, "aksi_tersedia_sj"),
+                    (DL.get_delivery_detail, "aksi_tersedia_sj"),
                     (RP.get_receive_payment, "aksi_tersedia_rp"), (CD.get_customer_deposit, "aksi_tersedia_dp"),
                     (NK.get_credit_note, "aksi_tersedia_nk")):
         assert f"await {nama}(" in inspect.getsource(f), nama
@@ -315,3 +315,11 @@ def test_posting_rp_status_sebelum_sisa_draf():
         RP.penjaga_posting_rp({"status": "posted"})
     assert e.value.detail == RP._kalimat_tak_bisa_posting("posted") and e.value.status_code == 400
     RP.penjaga_posting_rp({"status": "draft"})
+
+
+def test_faktur_aksi_tersedia_opt_in():
+    """PUTUSAN MASTER 10 Nov: Faktur opt-in ?aksi_tersedia=1 (biaya murni p95 +28 ms / +66%); modul lain selalu ikut."""
+    src = inspect.getsource(SI.get_invoice)
+    assert inspect.signature(SI.get_invoice).parameters["aksi_tersedia"].default.default is None
+    assert "_opt_aksi = aksi_tersedia == 1" in src
+    assert '**({"aksi_tersedia": await aksi_tersedia_si(conn, ctx, invoice)} if _opt_aksi else {})' in src

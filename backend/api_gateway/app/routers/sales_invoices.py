@@ -1439,8 +1439,12 @@ async def list_invoices(
 # GET INVOICE DETAIL
 # =============================================================================
 @router.get("/{invoice_id}")
-async def get_invoice(request: Request, invoice_id: UUID):
-    """Get invoice detail with items and payments."""
+async def get_invoice(request: Request, invoice_id: UUID,
+                      aksi_tersedia: Optional[int] = Query(None, description="1 = sertakan data.aksi_tersedia (opt-in, J1b)")):
+    """Get invoice detail with items and payments. aksi_tersedia OPT-IN (?aksi_tersedia=1; putusan MASTER 10 Nov: biaya murni p95 +28 ms /
+    +66% > kriteria (b)) -- tanpa parameter kunci aksi_tersedia TIDAK ada (FE memakai logika lamanya). Panggilan langsung (bawaan = objek
+    Query) = mati."""
+    _opt_aksi = aksi_tersedia == 1
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1614,7 +1618,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 "success": True,
                 "data": {
                     **_kode,
-                    "aksi_tersedia": await aksi_tersedia_si(conn, ctx, invoice),  # gelombang 3 J1b: satu transaksi READ ONLY
+                    **({"aksi_tersedia": await aksi_tersedia_si(conn, ctx, invoice)} if _opt_aksi else {}),  # J1b: opt-in, satu transaksi RO
                     "status": invoice["status"],
                     "id": str(invoice["id"]),
                     "invoice_number": invoice["invoice_number"],
