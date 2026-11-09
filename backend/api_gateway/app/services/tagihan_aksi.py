@@ -416,11 +416,24 @@ async def ref_hapus(conn, bill_id) -> Optional[str]:
 
 
 # ---------------------------------------------------------------- VOID
+def kalimat_tanpa_status_siklus(bill) -> str:
+    """Tagihan lama tanpa status_v2: draf -> hapus (pola hapus draf); selain draf -> data lama perlu dirapikan dulu (tiket data)."""
+    if bill["status"] == "draft":
+        return f"Faktur pembelian {bill['invoice_number']} adalah draf lama; hapus drafnya, bukan dibatalkan."
+    return (f"Faktur pembelian {bill['invoice_number']} belum punya status siklus (data lama), jadi belum bisa dibatalkan. "
+            "Hubungi dukungan untuk merapikan datanya.")
+
+
 async def blok_void(conn, tid: str, bill) -> list:
     """Aturan void_bill. Pembayaran posted (jurnal BP efektif) -> blok sebut nomor + nominal; ND aktif diterapkan -> blok (putusan pemilik);
     ND tertaut original_bill_id bukan draf/void -> blok yang sama (F2)."""
     if bill["status"] == "void" or (bill.get("status_v2") or "") == "void":
         return [blok("SUDAH_BATAL", "Faktur pembelian sudah dibatalkan.")]
+    if bill["status_v2"] is None:
+        # VOID-NULL (10 Nov 2026, putusan MASTER A): baris LAMA tanpa status siklus. Trigger trg_bills_status_v2_validation hanya membolehkan
+        # draft -> void / posted -> void (V460); NULL -> void ditolak DB = 500 dulu. Tolak berkalimat di penentu (penulis + pratinjau +
+        # aksi_tersedia fpbatal), generik untuk tenant mana pun. Draf normal (status_v2 'draft') TETAP boleh dibatalkan (desain DB).
+        return [blok("STATUS_SIKLUS_KOSONG", kalimat_tanpa_status_siklus(bill))]
     bloks = []
     # ATURAN D: penerimaan yang DATANG SESUDAH tagihan (tautan aktif 'tagih_dulu' / 'legacy') -> tagihan tak boleh dibatalkan (void yang
     # LEBIH AKHIR dulu: batalkan penerimaannya). WAJIB sebelum grn_tagih.balik_tautan (yang gagal-keras bila tautan itu masih ada).
