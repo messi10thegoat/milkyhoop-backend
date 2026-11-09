@@ -15,8 +15,9 @@ def test_penolakan_status_so_berkode_stabil():
         if r:
             detail = {k.arg: k.value for k in r[0].exc.keywords}["detail"]
         else:  # blocks.append(_blok("SO_NOT_BILLABLE", 400, {...})) -> jalur tulis mengangkat detail yang SAMA
-            [c] = [x.value for x in n.body if isinstance(x, ast.Expr) and isinstance(x.value, ast.Call)]
-            blok = c.args[0]
+            # blocks.append(_blok(...)) di penentu, ATAU `return _blok(...)` di penjaga bersama blok_so_proforma (J1a 9 Nov)
+            [c] = [x.value for x in n.body if isinstance(x, (ast.Expr, ast.Return)) and isinstance(x.value, ast.Call)]
+            blok = c if ast.unparse(c.func) == "_blok" else c.args[0]
             assert ast.unparse(blok.func) == "_blok" and ast.literal_eval(blok.args[0]) == "SO_NOT_BILLABLE"
             detail = blok.args[2]
         assert isinstance(detail, ast.Dict), ast.unparse(detail)

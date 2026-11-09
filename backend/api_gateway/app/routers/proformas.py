@@ -757,11 +757,11 @@ def _blok_purpose_buat(body) -> Optional[dict]:
 
 def blok_so_proforma(order) -> Optional[dict]:
     """Penjaga STATUS SO untuk buat proforma: _rencana_buat (penulis + pratinjau) DAN aksi_tersedia `proforma` detail SO."""
-    if order["status"] in SO_BILLABLE_STATUSES:
-        return None
-    return _blok("SO_NOT_BILLABLE", 400, {"code": "SO_NOT_BILLABLE", "message": (  # 3 Okt: kode stabil
-        f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
-        f"dengan proforma. Konfirmasi pesanannya dulu.")})
+    if order["status"] not in SO_BILLABLE_STATUSES:
+        return _blok("SO_NOT_BILLABLE", 400, {"code": "SO_NOT_BILLABLE", "message": (  # 3 Okt: kode stabil
+            f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
+            f"dengan proforma. Konfirmasi pesanannya dulu.")})
+    return None
 
 
 async def _rencana_buat(conn, ctx: dict, body, oid, pratinjau: bool = False) -> dict:

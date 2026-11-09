@@ -974,7 +974,7 @@ async def assert_deposit_within_order_total(
             status_code=400,
             detail=(
                 f"Jumlah {tg.rp(amount)} melebihi sisa yang masih dapat "  # PELUNASAN-TEKS: netral DP/pelunasan
-                f"diterima. {rincian_plafon(order_total, already, sisa)}"
+                "diterima. " + rincian_plafon(order_total, already, sisa)
             ),
         )
 
