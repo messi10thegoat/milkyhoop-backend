@@ -2641,9 +2641,9 @@ PENERAPAN_DP_TAK_ADA = "Penerapan uang muka tidak ditemukan."  # /reverse 404 + 
 
 async def blok_status_dp(conn, tid: str, deposit_id, dep, aksi: str) -> Optional[dict]:
     """Penjaga status refund/apply (_rencana_dp DAN aksi_tersedia `refund`/`terapkan` detail DP, gelombang 3 J1b)."""
-    if dep["status"] in ("posted", "partial"):
-        return None
-    return _blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"{await label_deposit(conn, tid, deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}.")
+    if dep["status"] not in ("posted", "partial"):
+        return _blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"{await label_deposit(conn, tid, deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}.")
+    return None
 
 
 async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
@@ -2657,7 +2657,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
             "SELECT * FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
             body.application_id, deposit_id, tid)
         if not app:
-            raise HTTPException(status_code=404, detail=PENERAPAN_DP_TAK_ADA)
+            raise HTTPException(status_code=404, detail="Penerapan uang muka tidak ditemukan.")
         if (app["status"] or "active") == "reversed" or app["reversed_by_id"]:
             blok.append(_blok_dp("APPLICATION_ALREADY_REVERSED", 409, "Penerapan ini sudah dilepas."))
             return blok

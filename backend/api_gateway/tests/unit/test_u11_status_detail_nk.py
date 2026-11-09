@@ -188,6 +188,7 @@ def test_pesan_galat_status_memakai_status_detail_label_layar():
     nkb = " ".join(inspect.getsource(__import__("app.services.nota_kredit_rencana", fromlist=["x"]).rencana_posting_nk).split())
     assert 'tg.tak_bisa_status( "cn", R.status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "diterbitkan")' in nkb
     import app.services.nota_kredit_rencana as NKR
-    nkr = " ".join(inspect.getsource(NKR.rencana_refund_nk).split())
+    assert "blok_refund_nk(conn, tid, cn)" in inspect.getsource(NKR.rencana_refund_nk)  # J1b: penjaga refund diekstrak
+    nkr = " ".join(inspect.getsource(NKR.blok_refund_nk).split())
     assert 'tg.tak_bisa_status( "cn", R.status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya")' in nkr
     assert 'tg.tak_bisa_status("cn", cn["status"]' not in full

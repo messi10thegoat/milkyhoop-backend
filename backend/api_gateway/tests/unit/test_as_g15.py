@@ -18,8 +18,9 @@ def test_ulang_mengembalikan_faktur_yang_masih_ada_dan_menggantung_tetap_400():
     s = inspect.getsource(RQ.convert_to_invoice)
     assert 'converted_to_type") == "invoice"' in s and '"already_converted": True' in s
     assert "if faktur_lama:" in s  # faktur dihapus (menggantung, AS-G15a) -> jatuh ke cek status lama (400), bukan dibuka ulang diam-diam
-    i_ulang, i_status = s.index("if faktur_lama:"), s.index('quote["status"] not in ("sent", "accepted", "viewed")')
+    i_ulang, i_status = s.index("if faktur_lama:"), s.index("penjaga_konversi_penawaran(quote)")  # J1b: penjaga status bersama
     assert i_ulang < i_status
+    assert 'quote["status"] not in ("sent", "accepted", "viewed")' in inspect.getsource(RQ.penjaga_konversi_penawaran)
 
 
 def test_idem_sebelum_kunci_dan_respons_tanpa_kunci_objek_lama():

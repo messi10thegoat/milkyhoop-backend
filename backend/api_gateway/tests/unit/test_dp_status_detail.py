@@ -38,7 +38,8 @@ def test_filter_daftar_dan_summary_memakai_sql_yang_sama():
 
 def test_penjaga_uang_tidak_disentuh():
     from app.services import uang_muka_rencana as UMR  # AS-G7c: penjaga penulis apply/refund pindah ke penentu bersama
-    for f in (UMR.rencana_terapkan, UMR.rencana_kembalikan, CD._rencana_dp):
+    assert "blok_status_dp(conn, tid, deposit_id, dep, aksi)" in inspect.getsource(CD._rencana_dp)  # J1b: penjaga status diekstrak
+    for f in (UMR.rencana_terapkan, UMR.rencana_kembalikan, CD.blok_status_dp):
         s = inspect.getsource(f)
         assert 'not in ("posted", "partial")' in s, f.__name__
         assert "status_detail_dp(" in s  # hanya untuk TEKS pesan

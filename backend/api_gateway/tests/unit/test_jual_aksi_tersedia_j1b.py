@@ -125,9 +125,10 @@ def test_penjaga_penawaran():
     with pytest.raises(HTTPException):
         QT.penjaga_konversi_penawaran({"status": "draft", "quote_number": "Q-1"})
     QT.penjaga_konversi_penawaran({"status": "viewed", "quote_number": "Q-1"})
-    src = inspect.getsource(QT)
-    assert src.count("penjaga_konversi_penawaran(quote)") == 3  # definisi + to-order + to-invoice
-    assert "penjaga_ubah_penawaran(quote[\"status\"])" in inspect.getsource(QT.update_quote)
+    for f in (QT._konversi_penawaran, QT.convert_to_invoice):  # to-order + to-invoice
+        s = inspect.getsource(f)
+        assert "penjaga_konversi_penawaran(quote)" in s and 'not in ("sent", "accepted", "viewed")' not in s
+    assert "penjaga_ubah_penawaran(quote[\"status\"])" in inspect.getsource(QT._ubah_penawaran)
 
 
 @pytest.mark.parametrize("kunci,harap", [(True, 2), (False, 0)])
@@ -162,6 +163,7 @@ def test_blok_status_dp(monkeypatch):
     assert run(CD.blok_status_dp(None, T, ID, dep, "apply"))["code"] == "DEPOSIT_NOT_APPLYABLE"
     assert run(CD.blok_status_dp(None, T, ID, {**dep, "status": "partial"}, "apply")) is None
     assert "blok_status_dp(conn, tid, deposit_id, dep, aksi)" in inspect.getsource(CD._rencana_dp)
+    assert f'detail="{CD.PENERAPAN_DP_TAK_ADA}"' in inspect.getsource(CD._rencana_dp)  # `lepas` tanpa penerapan = kalimat 404 /reverse
 
 
 # ---------------------------------------------------------------- perakitan (penentu dipalsukan)

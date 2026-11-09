@@ -83,7 +83,8 @@ def test_refund_dan_apply_memakai_pagar_sebelum_menghitung_sisa():
     import inspect
     from app.services import nota_kredit_rencana as NKR
     rr = inspect.getsource(NKR.rencana_refund_nk)
-    assert rr.index("tolak_nk_bertaut(conn, tid, cn)") < rr.index("sisa = R.sisa_kredit_nk(")
+    assert rr.index("blok_refund_nk(conn, tid, cn)") < rr.index("sisa = R.sisa_kredit_nk(")  # J1b: status+bertaut diekstrak
+    assert "R.tolak_nk_bertaut(conn, tid, cn)" in inspect.getsource(NKR.blok_refund_nk)
     r = _fungsi("refund_nota_kredit_core")
     assert r.index("NKR.rencana_refund_nk(") < r.index("INSERT INTO journal_entries")
     assert "R.tolak_nk_bertaut(conn, tid, cn)" in inspect.getsource(NKR.rencana_terapkan_nk)
