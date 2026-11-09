@@ -1,5 +1,5 @@
 # Konfig gerbang unit (dibaca scripts/ops/gerbang-unit.sh). Sabotase = bukti unit ini; tiap baris WAJIB membuat tes merah.
-W=/root/mh-ns; CABANG=feat/laporan-neraca-saldo-teks; NAMA_JENDELA=ns-1
+W=/root/mh-ns; CABANG=feat/laporan-neraca-saldo-teks-r2; NAMA_JENDELA=ns-1
 POLA_UNIT='reports|ledger|report_engine|neraca_saldo|trial|tanggal_bisnis|rute'
 HARNESS=scripts/ops/uji-salinan-neraca-saldo.sh
 PENANDA_BERKAS=services/neraca_saldo.py; PENANDA='def kolom_saldo(debit, kredit) -> tuple:'
