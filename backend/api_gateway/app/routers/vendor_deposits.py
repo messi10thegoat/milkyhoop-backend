@@ -1560,6 +1560,9 @@ AKSI_DETAIL_UMP = ("umposting", "umhapus", "umterapkan", "umlepas", "umkembalika
 KEADAAN_SALDO_UMP = ("BELUM_DIPOSTING", "SALDO_TIDAK_CUKUP")
 
 
+_tanggal_dokumen = tanggal_dokumen
+
+
 async def aksi_tersedia_ump(conn, ctx: dict, deposit_id) -> dict:
     """{kunci: {tersedia, alasan}} detail uang muka pembelian (respons tanpa pembungkus data: kunci di objek dokumen). Pemanggil TIDAK di
     dalam transaksi."""
@@ -1567,8 +1570,17 @@ async def aksi_tersedia_ump(conn, ctx: dict, deposit_id) -> dict:
     from ..services import aksi_detail as AD
     tid = ctx["tenant_id"]
 
-    async def vd(c):
-        return await c.fetchrow("SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, tid)
+    _baca = {}
+
+    async def vd(c):  # dibaca SEKALI per permintaan (semua penilai di transaksi RO yang sama)
+        if "vd" not in _baca:
+            _baca["vd"] = await c.fetchrow("SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, tid)
+        return _baca["vd"]
+
+    async def tanggal_dokumen(c, t):  # tanggal bisnis sekali per permintaan
+        if "hari" not in _baca:
+            _baca["hari"] = await _tanggal_dokumen(c, t)
+        return _baca["hari"]
 
     async def umposting(c):
         return AD.alasan_blok((await R.rencana_posting(c, ctx, await vd(c), pratinjau=True))["blocks"], None)

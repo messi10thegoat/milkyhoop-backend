@@ -42,6 +42,8 @@ for m, ww in baru.get("waktu_onoff", {}).items():
 bt = baru.get("belum_terukur", [])
 print(f"BELUM TERUKUR (izin PolicyEngine tak ada di kontainer uji; tak diakali): {len(bt)} -- kunci {sorted({x[2] for x in bt})}")
 print(f"mode kunci transaksi READ ONLY: {baru.get('mode_kunci')}")
+ul = baru.get("ulang_idempoten", [])
+print(f"ULANG IDEMPOTEN (penentu pratinjau memblok 'sudah dibatalkan'; penulis 200 tanpa ubah): {len(ul)} -- {sorted({x[2] for x in ul})}")
 print(f"PUTUSAN 1 (RP /post status sebelum sisa): penerimaan non-draf tolak lama==baru, kalimat saja berubah: {len(kalimat_rp)}")
 for x in kalimat_rp[:20]:
     print("  ", x)

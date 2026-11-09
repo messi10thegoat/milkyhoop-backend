@@ -227,6 +227,8 @@ def ringkas(v):
 
 
 BELUM_TERUKUR = []
+ULANG = []
+ULANG_DIBLOK_PRATINJAU = ("Pembayaran sudah dibatalkan.", "Uang muka ini sudah dibatalkan.")
 
 
 def paritas(modul, nomor, kunci, a, mode, keadaan, v, isian):
@@ -235,6 +237,9 @@ def paritas(modul, nomor, kunci, a, mode, keadaan, v, isian):
         BELUM_TERUKUR.append([modul, nomor, kunci, a["tersedia"], v.get("pesan")])
         return
     if mode == "tulis":
+        if not a["tersedia"] and v["ok"] and a["alasan"] in ULANG_DIBLOK_PRATINJAU:
+            ULANG.append([modul, nomor, kunci, a["alasan"]])  # penentu pratinjau memblok; penulis = ulang idempoten 200 (docstring penentu)
+            return
         if not a["tersedia"]:
             ok = not v["ok"] and (v.get("pesan") == a["alasan"] or a["alasan"] in [b.get("message") for b in blok(v)])
         else:
@@ -399,6 +404,7 @@ async def main():
         out["mode_kunci"] = sorted({k["mode"] for ks in KUNCI for k in ks})
     out["cek"] = CEK
     out["belum_terukur"] = BELUM_TERUKUR
+    out["ulang_idempoten"] = ULANG
     out["waktu_kunci"] = WAKTU_KUNCI
     with open(os.environ["KELUAR"], "w") as fo:
         json.dump(out, fo, default=str)

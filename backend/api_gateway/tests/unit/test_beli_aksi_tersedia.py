@@ -132,7 +132,7 @@ def test_umlepas_penerapan_mana_pun(monkeypatch, apps, blok, harap):
     monkeypatch.setattr(UVR, "rencana_lepas", lepas)
     for n in ("rencana_posting", "rencana_hapus", "rencana_terapkan", "rencana_kembali", "rencana_batal"):
         monkeypatch.setattr(UVR, n, kosong)
-    monkeypatch.setattr(VD, "tanggal_dokumen", hari)
+    monkeypatch.setattr(VD, "_tanggal_dokumen", hari)
     h = run(VD.aksi_tersedia_ump(Kon(baris=apps, row={"id": ID}), {"tenant_id": T}, ID))
     assert h["umlepas"]["alasan"] == {"tak_ada": UVR.PENERAPAN_UM_TAK_ADA, None: None, "dilepas": "dilepas"}[harap]
     assert h["umbatal"]["tersedia"] is True      # VOID_REASON_REQUIRED = isian
