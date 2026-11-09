@@ -141,6 +141,7 @@ PATCH /api/accounts/{account_id}
 PATCH /api/approval-workflows/{workflow_id}
 PATCH /api/audit/retention-policies/{policy_id}
 PATCH /api/bank-accounts/{bank_account_id}
+PATCH /api/bank-accounts/{bank_account_id}/preview
 PATCH /api/bank-transfers/{transfer_id}
 PATCH /api/bills/v2/{bill_id}
 PATCH /api/bills/{bill_id}
@@ -237,8 +238,10 @@ POST /api/auth/signup/verify-code
 POST /api/auth/switch-tenant
 POST /api/auth/validate
 POST /api/bank-accounts
+POST /api/bank-accounts/preview
 POST /api/bank-accounts/{bank_account_id}/adjust
 POST /api/bank-accounts/{bank_account_id}/adjust/preview
+POST /api/bank-accounts/{bank_account_id}/delete/preview
 POST /api/bank-accounts/{bank_account_id}/transactions
 POST /api/bank-accounts/{bank_account_id}/transactions/preview
 POST /api/bank-reconciliation/sessions
