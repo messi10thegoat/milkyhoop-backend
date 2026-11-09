@@ -7,7 +7,8 @@ import ast
 import re
 import sys
 
-KECUALI = ("pg_database", "pg_catalog", "pg_trigger", "pg_proc", "FROM pg_locks", "current_database()", "l.journal_id = je.id")
+KECUALI = ("pg_database", "pg_catalog", "pg_trigger", "pg_proc", "current_database()", "l.journal_id = je.id")
+KATALOG_SAJA = ("pg_locks",)  # boleh tanpa tenant HANYA bila SEMUA sasaran FROM/JOIN = katalog (campur tabel bisnis = tetap tertangkap)
 
 
 def literal(path):
@@ -33,6 +34,9 @@ def main(paths):
             if not re.search(r"\bFROM\s+[\"\w]", t, re.I) or not re.search(r"\bSELECT\b|\bDELETE\b", t, re.I):
                 continue
             if "tenant_id" in t or '"tenantId"' in t or "\\\"tenantId\\\"" in t or any(k in t for k in KECUALI):
+                continue
+            sasaran = re.findall(r"\b(?:FROM|JOIN)\s+([\"\w.]+)", t, re.I)
+            if sasaran and all(x.lower() in KATALOG_SAJA for x in sasaran):
                 continue
             salah.append(f"{p}:{no}: {t[:140]}")
     for s in salah:
