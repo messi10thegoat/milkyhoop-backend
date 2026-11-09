@@ -755,6 +755,15 @@ def _blok_purpose_buat(body) -> Optional[dict]:
     return None
 
 
+def blok_so_proforma(order) -> Optional[dict]:
+    """Penjaga STATUS SO untuk buat proforma: _rencana_buat (penulis + pratinjau) DAN aksi_tersedia `proforma` detail SO."""
+    if order["status"] in SO_BILLABLE_STATUSES:
+        return None
+    return _blok("SO_NOT_BILLABLE", 400, {"code": "SO_NOT_BILLABLE", "message": (  # 3 Okt: kode stabil
+        f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
+        f"dengan proforma. Konfirmasi pesanannya dulu.")})
+
+
 async def _rencana_buat(conn, ctx: dict, body, oid, pratinjau: bool = False) -> dict:
     """Penentu BUAT proforma (PROFORMA-PRATINJAU-BUAT, 2 Nov 2026, disetujui MASTER): SEMUA blok, urutan & kalimat = pemeriksaan
     POST /proformas lama (tujuan -> SO -> persen/nominal -> plafon). Nominal hasil persen dihitung SERVER (nominal_dari_persen,
@@ -765,10 +774,9 @@ async def _rencana_buat(conn, ctx: dict, body, oid, pratinjau: bool = False) -> 
     if b:
         blocks.append(b)
     order = await fetch_order_or_404(conn, tid, oid)
-    if order["status"] not in SO_BILLABLE_STATUSES:
-        blocks.append(_blok("SO_NOT_BILLABLE", 400, {"code": "SO_NOT_BILLABLE", "message": (  # 3 Okt: kode stabil
-            f"Pesanan berstatus {tg.status_id('so', order['status'])} tidak bisa ditagih "
-            f"dengan proforma. Konfirmasi pesanannya dulu.")}))
+    b = blok_so_proforma(order)
+    if b:
+        blocks.append(b)
     order_total = _f(order["total_amount"]) or 0.0
     percent = _f(body.percent_of_order)
     amount = float(rupiah(body.amount)) if body.amount is not None else None  # IDR rupiah penuh (11 Okt)

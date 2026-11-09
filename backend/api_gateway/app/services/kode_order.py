@@ -283,6 +283,20 @@ async def _terbitkan_inti(conn, tenant_id: str, so_id, tanggal: date, s: dict, s
 STATUS_BOLEH_SPK = ("confirmed", "partial_shipped", "shipped", "partial_invoiced", "invoiced")
 
 
+def pesan_spk_nonaktif(s: dict) -> str:
+    return f"{s['label']} belum dinyalakan di Pengaturan."
+
+
+def penjaga_spk(s: dict, so) -> Optional[dict]:
+    """Penjaga status terbitkan_spk (penulis) DAN aksi_tersedia `spk`: {code, message} atau None. SO berkode = lolos (idempoten,
+    pratinjau can_proceed)."""
+    if so["order_code"] or so["status"] in STATUS_BOLEH_SPK:
+        return None
+    from . import teks_galat as tg
+    return {"code": "SPK_STATUS_TIDAK_SAH",
+            "message": f"Pesanan berstatus {tg.status_id('so', so['status'])} tidak bisa diberi {s['label']}."}
+
+
 async def terbitkan_spk(conn, tenant_id: str, so_id, tanggal: date, aktor) -> dict:
     """POST /sales-orders/{id}/kode-order + opsi terbitkan_kode_order di Terima DP. IDEMPOTEN: SO sudah berkode ->
     {status 200, issued False} (bukan 409). Nomor berikutnya dari penghitung yang SAMA (_terbitkan_inti: kunci per-SO
@@ -290,7 +304,7 @@ async def terbitkan_spk(conn, tenant_id: str, so_id, tanggal: date, aktor) -> di
     transaksi. -> {status 200|404|409, order_code?, issued?, code?, message?}"""
     s = await muat_setelan(conn, tenant_id)
     if not s["enabled"]:
-        raise KodeOrderGalat(f"{s['label']} belum dinyalakan di Pengaturan.")
+        raise KodeOrderGalat(pesan_spk_nonaktif(s))
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
     so = await conn.fetchrow(
         "SELECT id, order_number, status, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)
@@ -298,10 +312,9 @@ async def terbitkan_spk(conn, tenant_id: str, so_id, tanggal: date, aktor) -> di
         return {"status": 404}
     if so["order_code"]:
         return {"status": 200, "order_code": so["order_code"], "issued": False, "label": s["label"]}
-    if so["status"] not in STATUS_BOLEH_SPK:
-        from . import teks_galat as tg
-        return {"status": 409, "code": "SPK_STATUS_TIDAK_SAH",
-                "message": f"Pesanan berstatus {tg.status_id('so', so['status'])} tidak bisa diberi {s['label']}."}
+    blok = penjaga_spk(s, so)
+    if blok:
+        return {"status": 409, **blok}
     kode = await _terbitkan_inti(conn, tenant_id, so_id, tanggal, s, "manual", aktor, {"trigger": "terbitkan_spk"})
     return {"status": 200, "order_code": kode, "issued": True, "label": s["label"]}
 
@@ -320,7 +333,7 @@ async def perkiraan_spk(conn, tenant_id: str, so_id, tanggal: date) -> dict:
         return {"order_code": None, "issued": False}
     if so["order_code"]:
         return {"order_code": so["order_code"], "issued": False}
-    if so["status"] not in STATUS_BOLEH_SPK:
+    if penjaga_spk(s, so):
         return {"order_code": None, "issued": False}
     return {"order_code": await _intip_berikutnya(conn, tenant_id, s, tanggal), "issued": True}
 
@@ -331,7 +344,7 @@ async def terbitkan_berikutnya(conn, tenant_id: str, so_id, tanggal: date, aktor
     dan membuka transaksi."""
     s = await muat_setelan(conn, tenant_id)
     if not s["enabled"]:
-        raise KodeOrderGalat(f"{s['label']} belum dinyalakan di Pengaturan.")
+        raise KodeOrderGalat(pesan_spk_nonaktif(s))
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ORDER_CODE_SO:{tenant_id}:{so_id}")
     so = await conn.fetchrow(
         "SELECT id, order_code FROM sales_orders WHERE id = $1 AND tenant_id = $2", so_id, tenant_id)

@@ -604,6 +604,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
             _fakta_det = (await so_aksi.fakta(conn, ctx["tenant_id"], _hari_det, [order["id"]], laporan=True)).get(order["id"], {})
             _aksi_det = list(_fakta_det.get("aksi", []))
             _ktx_det = await SD.muat(conn, ctx["tenant_id"], [i["item_id"] for i in items])  # BUG-095
+            _aksi_tersedia = await aksi_tersedia_so(conn, ctx, order)  # gelombang 3 J1a: satu transaksi READ ONLY
             _dasar_det = {str(i["id"]): SD.qty_dasar_baris(_ktx_det, i["item_id"], i["unit"], i["quantity"]) for i in items}
 
             return SalesOrderDetailResponse(
@@ -612,6 +613,7 @@ async def get_sales_order_detail(request: Request, order_id: str):
                     position_text=_pos["position_text"], ship_text=_pos["ship_text"],
                     kirim_hari=_pos["kirim_hari"], kirim_terbuka=_pos["kirim_terbuka"], kirim_keadaan=_pos["kirim_keadaan"],
                     aksi=so_aksi.aksi_utama(so_aksi.aksi_baris(_aksi_det)), aksi_semua=so_aksi.aksi_baris(_aksi_det),
+                    aksi_tersedia=_aksi_tersedia,
                     **so_aksi.medan_belum_difaktur(_fakta_det),  # BELUM-DIFAKTUR (24 Okt) == baris daftar
                     order_code=order.get("order_code"),
                     order_title=order.get("order_title"),
@@ -1385,10 +1387,7 @@ async def preview_edit_sales_order(request: Request, order_id: str, body: Update
                 so = await _so_untuk_ubah(conn, ctx, oid)
                 if not so:
                     raise HTTPException(status_code=404, detail="Pesanan penjualan tidak ditemukan.")
-                if so["status"] == "draft":
-                    _sut.galat(409, "SO_IS_DRAFT", "Pesanan masih draf: ubah langsung tanpa pratinjau.")
-                if not await _sut.flag_aktif(conn, ctx["tenant_id"]):
-                    _sut.galat(409, "SO_EDIT_NOT_ENABLED", "Ubah pesanan terkonfirmasi belum aktif untuk usaha ini.")
+                await _sut.penjaga_pratinjau(conn, ctx["tenant_id"], so["status"])
                 body.__pydantic_fields_set__.discard("order_title")  # judul = jalur sendiri (PATCH), bukan pratinjau ini
                 raise _BatalkanUbah(await _sut.ubah(conn, ctx, so, body, functools.partial(_hitung_so, so_id=so["id"])))
     except _BatalkanUbah as b:
@@ -1855,17 +1854,19 @@ async def preview_cancel_sales_order(
 SO_BISA_DITUTUP = ("confirmed", "invoiced", "shipped", "partial_invoiced", "partial_shipped")
 
 
-async def _rencana_tutup_so(conn, ctx, order_id: str, reason) -> dict:
+async def _rencana_tutup_so(conn, ctx, order_id: str, reason, kunci: bool = True) -> dict:
     """SATU-SATUNYA definisi aturan tutup SO: dipakai POST /close DAN /close/preview (tanpa tulisan).
     Mengembalikan SEMUA penghalang (tidak berhenti di yang pertama), urut = urutan /close dulu:
     status -> pendapatan tertahan -> belum terfakturkan penuh tanpa alasan.
     Uang muka bersisa BUKAN penghalang (putusan pemilik 28 Sep, pola NetSuite/SAP): ia tetap saldo
     uang muka pelanggan -> `notes` + deposits[].after_close='tetap_saldo'.
     /close menaikkan blocks[0]["detail"] APA ADANYA -> galatnya identik dengan sebelum refaktor.
-    Nol tulisan di sini (lock xact saja)."""
-    await conn.execute(
-        "SELECT pg_advisory_xact_lock(hashtext($1))", f"SO_CLOSE:{order_id}"
-    )
+    Nol tulisan di sini (lock xact saja). kunci=False (aksi_tersedia detail, transaksi READ ONLY): tanpa kunci advisory --
+    penulis & pratinjau tetap kunci=True (jalur lama identik)."""
+    if kunci:
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))", f"SO_CLOSE:{order_id}"
+        )
     order = await conn.fetchrow(
         """
         SELECT id, status, order_number FROM sales_orders WHERE id = $1 AND tenant_id = $2
@@ -2478,6 +2479,20 @@ async def _terkirim_belum_ditagih(conn, tenant_id: str, so_id) -> dict:
     return {k: v for k, v in out.items() if v > 0}
 
 
+SO_TAK_BISA_DITAGIH = ("draft", "cancelled", "invoiced", "completed")
+SQL_BARIS_SISA_TAGIH = "SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced"
+TAK_ADA_TAGIH = "Tidak ada barang yang bisa ditagih."
+
+
+def penjaga_tagih_so(order) -> None:
+    """Penjaga STATUS to-invoice: penulis (_buat_faktur_dari_so) DAN aksi_tersedia `faktur` (gelombang 3)."""
+    if order["status"] in SO_TAK_BISA_DITAGIH:
+        raise HTTPException(
+            status_code=400,
+            detail=tg.tak_bisa_status("so", order["status"], "ditagih"),
+        )
+
+
 async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
     """Inti to-invoice (validasi + kalkulator + INSERT faktur DRAF + qty tertagih SO), di transaksi PEMANGGIL.
     SATU-SATUNYA definisi: dipakai POST /to-invoice DAN /to-invoice/preview (yang selalu ROLLBACK) — pratinjau
@@ -2493,11 +2508,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
     if not order:
         raise HTTPException(status_code=404, detail=SO_TIDAK_ADA)
 
-    if order["status"] in ("draft", "cancelled", "invoiced", "completed"):
-        raise HTTPException(
-            status_code=400,
-            detail=tg.tak_bisa_status("so", order["status"], "ditagih"),
-        )
+    penjaga_tagih_so(order)
 
     catatan_tagih = []   # BUG-109: catatan pratinjau bila bawaan dibatasi qty terkirim
     # Get items to invoice
@@ -2534,12 +2545,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
         # BUG-109 (pola NetSuite "bill fulfilled"): bawaan per baris = qty TERKIRIM lewat Surat Jalan tanpa faktur yang BELUM ditagih
         # (SJ-so terkirim - sudah ditautkan - qty di faktur DRAF pesanan ini; satuan = satuan baris SO), dibatasi sisa belum ditagih.
         # Tanpa SJ belum ditagih -> sisa belum ditagih (alur faktur-dulu + kirim otomatis saat terbit tetap). Decimal (Law 25).
-        all_items = await conn.fetch(
-            """
-            SELECT * FROM sales_order_items WHERE sales_order_id = $1 AND quantity > quantity_invoiced
-        """,
-            _so_uuid_faktur(order_id),
-        )
+        all_items = await conn.fetch(SQL_BARIS_SISA_TAGIH, _so_uuid_faktur(order_id))
         tagih_sj = await _terkirim_belum_ditagih(conn, ctx["tenant_id"], _so_uuid_faktur(order_id))
         items_to_invoice = []
         for i in all_items:
@@ -2554,7 +2560,7 @@ async def _buat_faktur_dari_so(conn, ctx, order_id: str, body) -> dict:
                     "bisa ditagih bila diketik.")})
 
     if not items_to_invoice:
-        raise HTTPException(status_code=400, detail="Tidak ada barang yang bisa ditagih.")
+        raise HTTPException(status_code=400, detail=TAK_ADA_TAGIH)
 
     invoice_number = await conn.fetchval(
         "SELECT generate_sales_invoice_number($1::text, 'INV')",
@@ -2977,3 +2983,95 @@ async def get_sales_order_history(request: Request, order_id: str, limit: int = 
     except Exception as e:
         logger.error(f"Error getting sales order history {order_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal memuat riwayat pesanan")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL SO (gelombang 3 J1a, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6; kunci = KUNCI-aksi-detail-per-modul §1,
+# hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu (penentu baca pratinjau, atau penjaga masuk yang
+# dipanggil penulis juga), di SATU transaksi READ ONLY (services/aksi_detail). Isian wajib bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_SO = ("konfirmasi", "ubahkepala", "batal", "hapus", "faktur", "dp", "kirim", "bayar", "proforma", "tutup",
+                  "terbitfaktur", "fasekirim", "fasetersedia", "faseubah", "spk")
+KEADAAN_KIRIM = ("SO_FULFILL_NO_INVOICE", "SO_FULFILL_NOTHING_TO_SHIP")
+KEADAAN_KIRIM_SJ = ("SJ_SO_STATUS_TIDAK_BOLEH", "SJ_SO_STOK_BELUM_DIDUKUNG", "SJ_SO_TANPA_SISA")
+KEADAAN_BAYAR = ("RP_NO_OPEN_INVOICES", "RP_NOTHING_DUE", "RP_CUSTOMER_MISSING")
+KEADAAN_TUTUP = ("SO_STATUS_NOT_CLOSABLE", "SO_REVENUE_NOT_RECOGNIZED")   # SO_NOT_FULLY_INVOICED = alasan wajib (isian)
+KEADAAN_FASE = ("SO_STATUS_TIDAK_BOLEH",)
+SI_BUKAN_DRAF = "Hanya faktur berstatus Draf yang bisa diterbitkan."   # = penjaga POST /sales-invoices/{id}/post
+
+
+async def aksi_tersedia_so(conn, ctx: dict, order) -> dict:
+    """{kunci: {tersedia, alasan}} untuk detail SO. Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import kode_order as KO
+    from ..services import sj_so as SJ
+    from ..services import so_fase_lokasi as FL
+    from ..services import so_ubah_terkonfirmasi as _sut
+    from ..services.so_pelunasan import SOReceivePaymentPreviewRequest, rencana_pelunasan_so
+    from ..services.so_pengiriman import SOFulfillRequest, rencana_kirim_so
+    from .customer_deposits import penjaga_status_dp, received_total_for_order, rincian_plafon
+    from .proformas import blok_so_proforma
+    tid, oid = ctx["tenant_id"], order["id"]
+
+    async def konfirmasi(c):
+        return await AD.alasan_galat(lambda: rencana_konfirmasi_so(c, ctx, str(oid), kunci=False))
+
+    async def ubahkepala(c):
+        return await AD.alasan_galat(lambda: _sut.penjaga_pratinjau(c, tid, order["status"]))
+
+    async def batal(c):
+        return AD.alasan_blok((await _rencana_batal_so(c, ctx, str(oid), None))["blocks"], None)
+
+    async def hapus(c):
+        return AD.alasan_blok(await rencana_hapus_so(c, ctx, str(oid)), None)
+
+    async def faktur(c):
+        return (await AD.alasan_galat(lambda: penjaga_tagih_so(order))
+                or (None if await c.fetchval(f"SELECT EXISTS({SQL_BARIS_SISA_TAGIH})", oid) else TAK_ADA_TAGIH))
+
+    async def dp(c):
+        a = await AD.alasan_galat(lambda: penjaga_status_dp(order))
+        if a:
+            return a
+        total = float(order["total_amount"] or 0)
+        sudah = await received_total_for_order(c, tid, oid)
+        sisa = round(total - sudah, 2)
+        return None if sisa > 0 else rincian_plafon(total, sudah, sisa)
+
+    async def kirim(c):
+        """Dua penulis: kirim dari faktur (POST …/fulfill) dan Surat Jalan tanpa faktur (flag pengiriman_sebelum_faktur). Tersedia bila
+        SALAH SATU terbuka; alasan = jalur flag bila menyala."""
+        a = AD.alasan_blok((await rencana_kirim_so(c, ctx, oid, SOFulfillRequest()))["blocks"], KEADAAN_KIRIM)
+        if a is None or not await SJ.aktif(c, tid):
+            return a
+        return AD.alasan_blok((await SJ.rencana(c, ctx, oid, SJ.SJSOIn(), kunci=False))["blocks"], KEADAAN_KIRIM_SJ)
+
+    async def bayar(c):
+        return AD.alasan_blok((await rencana_pelunasan_so(c, ctx, oid, SOReceivePaymentPreviewRequest()))["blocks"], KEADAAN_BAYAR)
+
+    async def proforma(c):
+        b = blok_so_proforma(order)
+        return b["message"] if b else None
+
+    async def tutup(c):
+        return AD.alasan_blok((await _rencana_tutup_so(c, ctx, str(oid), None, kunci=False))["blocks"], KEADAAN_TUTUP)
+
+    async def terbitfaktur(c):
+        ada = await c.fetchval("SELECT EXISTS(SELECT 1 FROM sales_invoices WHERE tenant_id = $1 AND sales_order_id = $2 "
+                               "AND status = 'draft')", tid, oid)
+        return None if ada else SI_BUKAN_DRAF
+
+    async def fase(c):
+        return AD.alasan_blok((await FL.rencana(c, ctx, oid, None, None))["blocks"], KEADAAN_FASE)
+
+    async def spk(c):
+        s = await KO.muat_setelan(c, tid)
+        if not s["enabled"]:
+            return KO.pesan_spk_nonaktif(s)
+        b = KO.penjaga_spk(s, order)
+        return b["message"] if b else None
+
+    fn = {"konfirmasi": konfirmasi, "ubahkepala": ubahkepala, "batal": batal, "hapus": hapus, "faktur": faktur, "dp": dp,
+          "kirim": kirim, "bayar": bayar, "proforma": proforma, "tutup": tutup, "terbitfaktur": terbitfaktur,
+          "fasekirim": fase, "fasetersedia": fase, "faseubah": fase, "spk": spk}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_SO])

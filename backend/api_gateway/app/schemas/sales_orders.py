@@ -9,6 +9,8 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # ============================================================================
 # SALES ORDER ITEM SCHEMAS
@@ -394,6 +396,8 @@ class SalesOrderDetail(BaseModel):
     # 21 Okt 2026 (paritas detail == baris): aksi utama + semua kunci, dari so_aksi.fakta YANG SAMA dgn daftar
     aksi: Optional[str] = None
     aksi_semua: List[str] = []
+    # gelombang 3 J1a (9 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (routers/sales_orders.aksi_tersedia_so)
+    aksi_tersedia: AksiTersediaPeta = {}
     # BELUM-DIFAKTUR (24 Okt 2026): so_aksi.angka_belum_difaktur (Q-011 turunan jurnal); BUKAN piutang. 0 untuk SO tak berjalan.
     nilai_belum_difaktur: float = 0
     dp_belum_dipakai: float = 0

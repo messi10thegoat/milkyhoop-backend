@@ -168,6 +168,21 @@ def galat_di_bawah_tertagih(total_baru, batas: dict):
                                                      "uang_muka_di_luar_tagihan", "faktur_terbit")})
 
 
+def penjaga_status(status: str) -> None:
+    """Penjaga status ubah terkonfirmasi: ubah() (PATCH + pratinjau) DAN aksi_tersedia `ubahkepala` lewat penjaga_pratinjau."""
+    if status not in STATUS_BOLEH:
+        galat(409, "SO_NOT_EDITABLE", f"Pesanan berstatus '{status}' tidak bisa diubah.")
+
+
+async def penjaga_pratinjau(conn, tenant_id: str, status: str) -> None:
+    """Penjaga masuk POST /sales-orders/{id}/edit/preview (urutan lama: draf -> flag -> status) DAN aksi_tersedia `ubahkepala`."""
+    if status == "draft":
+        galat(409, "SO_IS_DRAFT", "Pesanan masih draf: ubah langsung tanpa pratinjau.")
+    if not await flag_aktif(conn, tenant_id):
+        galat(409, "SO_EDIT_NOT_ENABLED", "Ubah pesanan terkonfirmasi belum aktif untuk usaha ini.")
+    penjaga_status(status)
+
+
 async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     """Jalur TUNGGAL (PATCH asli DAN pratinjau yang di-rollback). Pemanggil memegang transaksi + FOR UPDATE baris SO.
     `hitung(conn, tenant, src_items, discount, shipping, shipping_code)` -> dokumen terhitung (kalkulator SO yang sama
@@ -175,8 +190,7 @@ async def ubah(conn, ctx: dict, so: dict, body, hitung) -> dict:
     from .default_dokumen import hitung_dp
     from .so_riwayat import catat_riwayat
     tid, so_id = ctx["tenant_id"], so["id"]
-    if so["status"] not in STATUS_BOLEH:
-        galat(409, "SO_NOT_EDITABLE", f"Pesanan berstatus '{so['status']}' tidak bisa diubah.")
+    penjaga_status(so["status"])
     # kunci yang SAMA dengan buat/terbit proforma -> plafon tagihan & ubah SO ter-serialkan (uang muka: FOR UPDATE SO)
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PROFORMA_SO:{tid}:{so_id}")
 

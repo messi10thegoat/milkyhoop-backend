@@ -962,17 +962,7 @@ async def assert_deposit_within_order_total(
     )
     if not order:
         raise HTTPException(status_code=400, detail="Pesanan penjualan tidak ditemukan.")
-    if order["status"] in SO_TAK_TERIMA_DP:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "SO_NOT_ACCEPTING_DEPOSIT",
-                "message": (
-                    f"Pembayaran tidak bisa dicatat untuk pesanan {order['order_number']} berstatus "  # PELUNASAN-TEKS: netral DP/pelunasan
-                    f"{tg.status_id('so', order['status'])}. Konfirmasi pesanannya dulu, atau catat tanpa pesanan."
-                ),
-            },
-        )
+    penjaga_status_dp(order)
 
     order_total = float(order["total_amount"] or 0)
     already = await received_total_for_order(
@@ -984,9 +974,29 @@ async def assert_deposit_within_order_total(
             status_code=400,
             detail=(
                 f"Jumlah {tg.rp(amount)} melebihi sisa yang masih dapat "  # PELUNASAN-TEKS: netral DP/pelunasan
-                f"diterima. Nilai pesanan {tg.rp(order_total)}, sudah diterima "
-                f"{tg.rp(already)}, sisa yang masih dapat diterima {tg.rp(sisa)}."
+                f"diterima. {rincian_plafon(order_total, already, sisa)}"
             ),
+        )
+
+
+def rincian_plafon(order_total, already, sisa) -> str:
+    """Rincian plafon (pagar penulis DAN aksi_tersedia `dp` detail SO)."""
+    return (f"Nilai pesanan {tg.rp(order_total)}, sudah diterima "
+            f"{tg.rp(already)}, sisa yang masih dapat diterima {tg.rp(sisa)}.")
+
+
+def penjaga_status_dp(order) -> None:
+    """Penjaga STATUS uang muka ber-SO: pagar plafon penulis DAN aksi_tersedia `dp` detail SO (gelombang 3)."""
+    if order["status"] in SO_TAK_TERIMA_DP:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "SO_NOT_ACCEPTING_DEPOSIT",
+                "message": (
+                    f"Pembayaran tidak bisa dicatat untuk pesanan {order['order_number']} berstatus "  # PELUNASAN-TEKS: netral DP/pelunasan
+                    f"{tg.status_id('so', order['status'])}. Konfirmasi pesanannya dulu, atau catat tanpa pesanan."
+                ),
+            },
         )
 
 
