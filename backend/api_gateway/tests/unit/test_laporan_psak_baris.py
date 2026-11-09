@@ -125,6 +125,8 @@ def test_rute_pool_ro_tanpa_bocor_dan_tampil_satu_pemformat():
     src = inspect.getsource(PR).split('"""', 2)[2]  # kode sesudah docstring modul (docstring menyebut yang dibuang)
     assert "asyncpg.connect" not in src and "get_db_connection" not in src and "SET LOCAL" not in src
     assert "detail=str(e)" not in src and src.count("conn.transaction(readonly=True)") == 2
+    for n, v in (("balance_sheet", "bs"), ("income_statement", "pl"), ("cash_flow", "cf")):
+        assert f'"{n}": _tampil({v}, presisi)' in src  # tiap laporan lewat SATU pemformat
     lap = {"baris": [{"nilai": "-5000.00"}, {"nilai": None}]}
     PR._tampil(lap, 0)
     assert [b["nilai_tampil"] for b in lap["baris"]] == ["(5.000)", None]
