@@ -11,7 +11,8 @@ def test_kalimat_satu_sumber_tulis_dan_pratinjau():
                                            "bukan dihapus.")
     assert RP._kalimat_tak_bisa_posting("posted") == tg.tak_bisa_status("rp", "posted", "diposting")
     assert "detail=KALIMAT_HAPUS_BUKAN_DRAF" in inspect.getsource(RP.delete_receive_payment)
-    assert 'detail=_kalimat_tak_bisa_posting(payment["status"])' in inspect.getsource(RP._post_payment)
+    assert "penjaga_posting_rp(payment)" in inspect.getsource(RP._post_payment)  # J1b PUTUSAN 1: penjaga satu sumber (juga rute /post)
+    assert 'detail=_kalimat_tak_bisa_posting(payment["status"])' in inspect.getsource(RP.penjaga_posting_rp)
     pv = inspect.getsource(RP._pratinjau_draf_penerimaan)
     assert '"message": KALIMAT_HAPUS_BUKAN_DRAF' in pv and '"message": _kalimat_tak_bisa_posting(p["status"])' in pv
 
