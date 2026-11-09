@@ -1,5 +1,5 @@
 # Konfig gerbang unit (dibaca scripts/ops/gerbang-unit.sh). Sabotase = bukti unit ini; tiap baris WAJIB membuat tes merah.
-W=/root/mh-rek; CABANG=feat/kasbank-kelola-rekening-cw; NAMA_JENDELA=rek-1
+W=/root/mh-rek; CABANG=feat/kasbank-kelola-rekening-cw-r2; NAMA_JENDELA=rek-1
 POLA_UNIT='bank_accounts|kasbank|idem_buat|auto_create_coa|inventaris_rute|izin_rute|pagar_uang_muka|tanggal_bisnis'
 HARNESS=scripts/ops/uji-salinan-kasbank-rekening.sh
 PENANDA_BERKAS=services/kasbank_rekening.py; PENANDA='async def rencana_hapus_rekening(conn, tid: str, ba_id, pratinjau: bool) -> dict:'
