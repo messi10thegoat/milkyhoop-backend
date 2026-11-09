@@ -61,6 +61,13 @@ BULAN_PANJANG = ("Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
                  "Desember")
 
 
+def tanggal_pendek(t) -> str:
+    """date / 'YYYY-MM-DD' -> '12 Okt 2026' (bulan = 3 huruf pertama BULAN_PANJANG; tanpa larik bulan baru)."""
+    from datetime import date as _date
+    d = t if isinstance(t, _date) else _date.fromisoformat(str(t)[:10])
+    return f"{d.day} {BULAN_PANJANG[d.month - 1][:3]} {d.year}"
+
+
 def tanggal_panjang(t) -> str:
     """date / 'YYYY-MM-DD' -> '31 Oktober 2026' (judul periode laporan)."""
     from datetime import date as _date

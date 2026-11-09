@@ -157,3 +157,19 @@ Bukti:
 - unit `tests/unit/test_laporan_psak_baris.py`;
 - salinan `scripts/ops/uji-salinan-laporan-psak.sh`: medan lama lama == baru per sen; paritas tiap baris akun == Σ jurnal akun; Σ akun per seksi == total; hasil == medan lama; laba periode neraca == laba bersih L/R; nilai_tampil == pemformat;
 - sabotase, suite, gate.
+
+## 7. L2 — umur piutang/hutang (cabang `feat/laporan-umur-teks`)
+
+`GET /api/reports/aging-receivable` dan `/aging-payable` memakai SATU pembantu `services/laporan_umur.tambah_tampilan`. Aditif; medan lama identik.
+
+Medan baru:
+- `per_tanggal` + `per_text` ("Per 10 November 2026"), dari tanggal BISNIS tenant (dulu FE memakai tanggal browser).
+- `ember[]` `{kunci, label, total, persen}`. SATU peta label: "Belum jatuh tempo", "1–30 hari", "31–60 hari", "61–90 hari", "> 90 hari" (dulu 3 versi FE berbeda). Persen 1 desimal, HALF_UP, dihitung server.
+- `belum_jatuh_tempo_total`, `jatuh_tempo_total`; `jumlah_pihak`, `jumlah_pihak_text` ("12 pelanggan" / "5 vendor").
+- Per pihak: `jatuh_tempo_total`.
+- Per dokumen: `nomor_text` ("Kredit tanpa dokumen" bila tanpa nomor), `jatuh_tempo_text` ("jatuh tempo 12 Okt 2026"), `telat_text` ("telat 29 hari" / null).
+
+Aturan:
+- Uang = angka medan lama (compute_ar/ap_outstanding); string desimal di medan baru.
+- FE berhenti menjumlah / menghitung persen.
+- `teks_galat.tanggal_pendek` = bulan 3 huruf dari BULAN_PANJANG (tanpa larik bulan baru).

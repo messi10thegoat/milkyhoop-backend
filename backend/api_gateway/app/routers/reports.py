@@ -3573,12 +3573,13 @@ async def get_aging_receivable(request: Request):
                 for bucket, amount in cust["totals"].items():
                     summary[bucket] += amount
 
-            return {
+            from ..services import laporan_umur as LU  # gelombang 4 L2: teks tampil server (aditif)
+            return LU.tambah_tampilan({
                 "success": True,
                 "customers": list(by_customer.values()),
                 "summary": summary,
                 "total_outstanding": sum(summary.values()),
-            }
+            }, "customers", "invoices", "invoice_number", "pelanggan", hari_ini)
     except Exception as e:
         logger.error(f"Error getting AR aging: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get AR aging")
@@ -3726,12 +3727,13 @@ async def get_aging_payable(request: Request):
                 for bucket, amount in vendor["totals"].items():
                     summary[bucket] += amount
 
-            return {
+            from ..services import laporan_umur as LU  # gelombang 4 L2: teks tampil server (aditif)
+            return LU.tambah_tampilan({
                 "success": True,
                 "vendors": list(by_vendor.values()),
                 "summary": summary,
                 "total_outstanding": sum(summary.values()),
-            }
+            }, "vendors", "bills", "bill_number", "vendor", hari_ini)
     except Exception as e:
         logger.error(f"Error getting AP aging: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get AP aging")
