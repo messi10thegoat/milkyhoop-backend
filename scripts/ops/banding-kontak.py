@@ -48,7 +48,24 @@ for tid in (k for k in baru if k != "baru"):
             harap = {a["kunci"]: {"tersedia": a["boleh"], "alasan": None if a["boleh"] else a.get("alasan")} for a in b["aksi"]}
             cek(f"{tid} {k} aksi_tersedia == aksi", peta == harap, f"{peta} vs {harap}")  # urutan: tes unit (JSON harness sort_keys)
             n["A"] += 1
-        elif k[0] in "BCDEF":
+        elif k == "H_pc":  # aditif: data (bentuk vendor) + preview lama identik
+            cek(f"{tid} H_pc preview lama identik", B[k]["preview"] == L[k]["preview"] and set(B[k]) - set(L[k]) == {"data"})
+            d, pl = B[k]["data"], L[k]["preview"]
+            cek(f"{tid} H_pc data == preview lama", d["target"] == pl["target_customer"] and d["sources"] == pl["source_customers"]
+                and d["records_to_move"] == {t: n for t, n in pl["records_to_move"].items() if t != "invoices"}
+                and d["ok"] == (not any(c["blocking"] for c in pl["conflicts"])) and isinstance(d["rencana"]["ringkas"], list))
+        elif k == "H_c":  # aditif: data{source,target,summary}; blok lama 400 -> 409 {code,message} (putusan MASTER K-D)
+            a, b = L[k], B[k]
+            if a["ok"]:
+                hb = dict(b["hasil"]); dd = hb.pop("data", None)
+                cek(f"{tid} H_c tulis identik + data", hb == a["hasil"] and dd["summary"] == a["hasil"]["moved"], f"{a} -> {b}")
+            else:
+                cek(f"{tid} H_c blok 400 -> 409 kalimat sama", not b["ok"] and b["status"] == 409 and b["detail"]["message"] == a["detail"], f"{a} -> {b}")
+        elif k == "H_pv":
+            dl, db = L[k]["data"], dict(B[k]["data"])
+            rc = db.pop("rencana", None)
+            cek(f"{tid} H_pv identik + rencana.ringkas", db == dl and isinstance(rc["ringkas"], list), f"{dl} -> {B[k]['data']}")
+        elif k[0] in "BCDEFH":
             sah = (k.startswith(("E_c:", "E_v:")) and (L[k]["ok"] or L[k].get("status") == 500) and not B[k]["ok"]
                    and B[k].get("status") == 400 and sah_jejak(B[k].get("detail")))
             sah_n["delete"] += sah

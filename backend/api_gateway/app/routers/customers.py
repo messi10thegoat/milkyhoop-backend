@@ -977,8 +977,9 @@ async def _siapkan_ubah_pelanggan(conn, tid: str, customer_id, body: UpdateCusto
                 is_active, contact_person, city, province, postal_code,
                 tax_id, notes, mobile_phone, website, display_name,
                 customer_type, is_pkp, nik, currency, alamat,
-                phone2, community, nitku, jenis_id, negara, nomor_dokumen
-           FROM customers WHERE id = $1 AND tenant_id = $2""",
+                phone2, community, nitku, jenis_id, negara, nomor_dokumen,
+                nomor_member, price_list_id, ar_opening_balance, opening_balance_date, opening_balance_notes
+           FROM customers WHERE id = $1 AND tenant_id = $2""",  # SEMUA kolom yang bisa di-PATCH (perubahan[].lama terisi; tes)
         customer_id,
         tid,
     )
@@ -1014,7 +1015,7 @@ def perubahan_pelanggan(current, update_data: dict) -> list:
     for field, baru in update_data.items():
         kol = UBAH_KOLOM.get(field, field)
         lama = current.get(kol) if current else None
-        if lama != baru:
+        if not KDT.nilai_sama(lama, baru):
             out.append({"field": field, "label": UBAH_LABEL.get(field, UBAH_LABEL.get(kol, field)), "lama": lama, "baru": baru})
     return out
 
@@ -1859,10 +1860,25 @@ MERGE_TABEL = (
 )
 
 
+def _badan_gabung(body) -> dict:
+    """Badan BARU {source_customer_id, target_customer_id} (simetri vendor, K-D 9 Nov 2026) -> bentuk lama {target_id, source_ids};
+    badan lama {target_id, source_ids[]} diterima apa adanya (sheet lama)."""
+    if isinstance(body, dict) and ("source_customer_id" in body or "target_customer_id" in body):
+        return {"target_id": body.get("target_customer_id"),
+                "source_ids": [body["source_customer_id"]] if body.get("source_customer_id") else []}
+    return body if isinstance(body, dict) else {}
+
+
+def _blok_gabung(konflik: list) -> list:
+    """Konflik pemblokir -> blocks bentuk vendor {code, message} (satu sumber dengan `conflicts` lama)."""
+    return [{"code": k["type"].upper(), "message": k["message"]} for k in konflik if k["blocking"]]
+
+
 async def _gabung_pihak(conn, tenant_id: str, body: dict):
     """Validasi penggabungan. Id karangan / bukan uuid / tenant lain -> pesan SAMA."""
     from uuid import UUID as _U
 
+    body = _badan_gabung(body)
     sumber_mentah = body.get("source_ids") or []
     sasaran_mentah = body.get("target_id")
     if not isinstance(sumber_mentah, list) or not sumber_mentah or not sasaran_mentah:
@@ -1922,8 +1938,13 @@ async def preview_customer_merge(request: Request):
         async with pool.acquire() as conn:
             sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)
             cacah, konflik, _ = await _gabung_rincian(conn, ctx["tenant_id"], sasaran, sumber)
+            pihak = {c: {"id": str(c), "name": peta[c]["nama"], "code": peta[c]["nomor_member"]} for c in [sasaran, *sumber]}
+            bloks = _blok_gabung(konflik)
             return {
                 "success": True,
+                # K-D (9 Nov 2026): bentuk vendor (aditif); `preview` lama tetap untuk sheet lama
+                "data": {"ok": not bloks, "source": pihak[sumber[0]], "sources": [pihak[s] for s in sumber], "target": pihak[sasaran],
+                         "records_to_move": cacah, "blocks": bloks, "irreversible": True, "rencana": {"ringkas": KDT.ringkas_pindah(cacah)}},
                 "preview": {
                     "source_customers": [{"id": str(s), "name": peta[s]["nama"], "code": peta[s]["nomor_member"]} for s in sumber],
                     "target_customer": {"id": str(sasaran), "name": peta[sasaran]["nama"], "code": peta[sasaran]["nomor_member"]},
@@ -1945,8 +1966,10 @@ async def preview_customer_merge(request: Request):
 
 
 @router.post("/merge")
-async def merge_customers(request: Request):
-    """Gabungkan pelanggan ke satu pelanggan tujuan. TAK BISA DIBATALKAN (putusan pemilik)."""
+async def merge_customers(request: Request, response: Response = None):
+    """Gabungkan pelanggan ke satu pelanggan tujuan. TAK BISA DIBATALKAN (putusan pemilik).
+    K-D (9 Nov 2026, simetri vendor): badan baru {source_customer_id, target_customer_id} atau lama {target_id, source_ids}; idem
+    CUSTOMER_MERGE (ulang ber-kunci = jawaban pertama); konflik pemblokir -> 409 {code, message}; respons + data{source, target, summary}."""
     try:
         ctx = get_user_context(request)
         if not ctx.get("user_id"):
@@ -1955,14 +1978,20 @@ async def merge_customers(request: Request):
         body = await request.json()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                from ..services import idem_buat
+                kp, sidik, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "CUSTOMER_MERGE",
+                                                             str(_badan_gabung(body).get("target_id")), lambda: body, response)
+                if lama is not None:
+                    return lama
                 sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)
                 # Law 13: kunci SEMUA pelanggan terlibat, terurut (anti-deadlock)
                 for cid in sorted([sasaran, *sumber], key=str):
                     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CUSTOMER_MERGE:{cid}")
                 sasaran, sumber, peta = await _gabung_pihak(conn, ctx["tenant_id"], body)  # ulang di dalam kunci
                 cacah, konflik, kwitansi_beku = await _gabung_rincian(conn, ctx["tenant_id"], sasaran, sumber)
-                if kwitansi_beku:
-                    raise HTTPException(status_code=400, detail=konflik[-1]["message"])
+                if _blok_gabung(konflik):
+                    b = _blok_gabung(konflik)[0]
+                    raise HTTPException(status_code=409, detail={"code": b["code"], "message": b["message"]})
 
                 pindah = {}
                 for tabel, kolom in MERGE_TABEL:
@@ -1994,13 +2023,16 @@ async def merge_customers(request: Request):
                         cid, peta[cid]["nama"], ctx["tenant_id"], str(sasaran), peta[sasaran]["nama"],
                         __import__("json").dumps(pindah), __import__("json").dumps(konflik), str(ctx["user_id"]),
                     )
-            return {
-                "success": True,
-                "message": f"Merged {len(sumber)} customers",
-                "target_id": str(sasaran),
-                "moved": pindah,
-                "conflicts": konflik,
-            }
+                pihak = lambda c: {"id": str(c), "name": peta[c]["nama"], "code": peta[c]["nomor_member"]}  # noqa: E731
+                resp = {
+                    "success": True,
+                    "message": f"Merged {len(sumber)} customers",
+                    "target_id": str(sasaran),
+                    "moved": pindah,
+                    "conflicts": konflik,
+                    "data": {"source": pihak(sumber[0]), "target": pihak(sasaran), "summary": pindah},
+                }
+                return await idem_buat.simpan(conn, ctx, kp, sidik, "CUSTOMER_MERGE", resp, sasaran) if kp else resp
     except HTTPException:
         raise
     except Exception as e:

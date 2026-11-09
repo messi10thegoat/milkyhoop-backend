@@ -133,3 +133,31 @@ def nilai_json(v):
     if isinstance(v, UUID):
         return str(v)
     return v
+
+
+# Ringkasan GABUNG kontak berbahasa Indonesia (teks dari server; FE tak memetakan nama tabel). Kunci = tabel MERGE_TABEL pelanggan /
+# GABUNG_TABEL vendor (+ customer_addresses); None = tabel internal yang tak ditampilkan. Penjaga: tes semua tabel gabung terpetakan.
+PINDAH_TEKS = {
+    "sales_invoices": "faktur penjualan", "receive_payments": "pembayaran masuk", "credit_notes": "nota kredit",
+    "customer_deposits": "uang muka", "accounts_receivable": "catatan piutang", "sales_orders": "pesanan penjualan", "proformas": "proforma",
+    "quotes": "penawaran", "sales_receipts": "kwitansi penjualan", "cheques": "cek/giro", "item_serials": "nomor seri barang",
+    "production_orders": "perintah produksi", "table_reservations": "reservasi meja", "expenses": "biaya", "chat_session_state": None,
+    "customer_addresses": "alamat",
+    "bills": "faktur pembelian", "bill_payments_v2": "pembayaran keluar", "vendor_credits": "nota debit", "vendor_deposits": "uang muka",
+    "purchase_orders": "pesanan pembelian", "goods_receipts": "penerimaan barang", "recurring_bills": "tagihan berulang",
+    "withholding_tax_records": "catatan potongan PPh", "fixed_assets": "aset tetap", "production_subcontracts": "subkontrak produksi",
+    "accounts_payable": "catatan hutang", "asset_maintenance": "catatan pemeliharaan aset", "bom_operations": "operasi BOM",
+}
+
+
+def ringkas_pindah(cacah: dict) -> list:
+    """{tabel: n} -> ["3 faktur penjualan", "1 pembayaran masuk", ...] (urutan tabel penentu; nol dan tabel internal dilewati)."""
+    return [f"{n} {PINDAH_TEKS[t]}" for t, n in cacah.items() if n and PINDAH_TEKS.get(t)]
+
+
+def nilai_sama(lama, baru) -> bool:
+    """Banding nilai kolom vs badan PATCH: UUID kolom == teks badan (price_list_id dsb.); selain itu == biasa (Decimal == int)."""
+    from uuid import UUID
+    if isinstance(lama, UUID) and isinstance(baru, str):
+        return str(lama) == baru.strip().lower()
+    return lama == baru

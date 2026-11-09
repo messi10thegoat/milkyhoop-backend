@@ -1161,8 +1161,9 @@ async def _siapkan_ubah_vendor(conn, tid: str, vendor_id, body: UpdateVendorRequ
               bank_name, bank_account_number, bank_account_holder,
               is_active, nik, account_number, tax_address, tax_city,
               tax_province, tax_postal_code, nitku, negara,
-              default_tax_code, default_pph_type, default_pph_rate
-       FROM vendors WHERE id = $1 AND tenant_id = $2""",
+              default_tax_code, default_pph_type, default_pph_rate,
+              opening_balance, opening_balance_date
+       FROM vendors WHERE id = $1 AND tenant_id = $2""",  # SEMUA kolom yang bisa di-PATCH (perubahan[].lama terisi; tes)
         vendor_id,
         tid,
     )
@@ -1193,7 +1194,7 @@ async def _siapkan_ubah_vendor(conn, tid: str, vendor_id, body: UpdateVendorRequ
 def perubahan_vendor(existing, update_data: dict) -> list:
     """[{field, label, lama, baru}] kolom yang nilainya BERUBAH (aturan banding SAMA dengan riwayat 'X diubah')."""
     return [{"field": f, "label": UBAH_LABEL.get(f, f), "lama": existing.get(f) if existing else None, "baru": v}
-            for f, v in update_data.items() if (existing.get(f) if existing else None) != v]
+            for f, v in update_data.items() if not KDT.nilai_sama(existing.get(f) if existing else None, v)]
 
 
 @router.patch("/{vendor_id}", response_model=VendorResponse)
@@ -2319,7 +2320,8 @@ async def preview_merge_vendors(request: Request, body: MergeVendorRequest):
             r = await _gabung_rencana(conn, ctx["tenant_id"], sumber, tujuan)
         return {"success": True, "data": {
             "ok": not r["blocks"], "source": _pihak(r["peta"][sumber]), "target": _pihak(r["peta"][tujuan]),
-            "records_to_move": r["cacah"], "blocks": r["blocks"], "irreversible": True}}
+            "records_to_move": r["cacah"], "blocks": r["blocks"], "irreversible": True,
+            "rencana": {"ringkas": KDT.ringkas_pindah(r["cacah"])}}}
     except HTTPException:
         raise
     except Exception as e:
