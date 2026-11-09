@@ -76,11 +76,13 @@ def test_pagar_gabungan_patch(jenis, dok, tolak):
 
 
 def test_patch_memanggil_pagar_gabungan_dengan_nilai_db():
-    src = inspect.getsource(cu.update_customer)
+    # K-B (9 Nov 2026): aturan PATCH di penentu bersama tulis + pratinjau ubah
+    assert "_siapkan_ubah_pelanggan(" in inspect.getsource(cu.update_customer)
+    src = inspect.getsource(cu._siapkan_ubah_pelanggan)
     assert "tolak_identitas_pajak_tak_lengkap(" in src
     assert 'current["jenis_id"]' in src and 'current["nomor_dokumen"]' in src
-    # nilai sekarang wajib membaca kolom V420
-    assert re.search(r"phone2, community, nitku, jenis_id, negara, nomor_dokumen\s+FROM customers WHERE id = \$1", src)
+    # nilai sekarang wajib membaca kolom V420 (kini bersaring tenant)
+    assert re.search(r"phone2, community, nitku, jenis_id, negara, nomor_dokumen,.*?FROM customers WHERE id = \$1 AND tenant_id = \$2", src, re.S)
 
 
 def test_insert_create_kolom_placeholder_argumen_sejajar():
