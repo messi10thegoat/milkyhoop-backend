@@ -125,6 +125,7 @@ async def utama():
             # H: gabung (pelanggan ke-6 -> ke-7, vendor ke-4 -> ke-5); badan LAMA pelanggan (dua pohon sama)
             if len(cs) >= 7:
                 bc = {"target_id": str(cs[6]["id"]), "source_ids": [str(cs[5]["id"])]}
+                o["H_sumber"] = [cs[5]["nama"], vs[3]["name"] if len(vs) >= 5 else None]
                 o["H_pc"] = j(await cu.preview_customer_merge(JReq(tid, bc)))
                 o["H_c"] = await coba(cu.merge_customers(JReq(tid, bc)))
             if len(vs) >= 5:

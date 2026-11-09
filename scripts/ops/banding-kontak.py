@@ -89,6 +89,8 @@ for tid in (k for k in baru if k != "baru"):
     for jenis in ("c", "v"):
         for k in [x for x in B if x.startswith(f"E_p{jenis}:")]:
             nama = k[5:]
+            if nama in (B.get("H_sumber") or ()):  # dokumennya sudah pindah oleh gabung H sesudah pratinjau diambil
+                continue
             p, d = B[k], B[f"E_{jenis}:{nama}"]
             sama = p["ok"] == d["ok"] and (d["ok"] or p["blocks"] == [{"code": "HTTP_400", "message": d["detail"]}])
             cek(f"{tid} {k} pratinjau hapus == DELETE", sama, f"{p} vs {d}")

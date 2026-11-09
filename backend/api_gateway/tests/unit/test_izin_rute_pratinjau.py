@@ -53,11 +53,17 @@ KHUSUS = {
     "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
     # daftar harga (ANDROID U3, 4 Nov): ubah baris = PATCH (penentu bersama price_lists.siapkan_baris_harga)
     "POST /api/price-lists/{price_list_id}/items/{line_id}/edit/preview": "PATCH /api/price-lists/{price_list_id}/items/{line_id}",
+    # KONTAK standar SO (9 Nov): ubah = PATCH, hapus = DELETE (penentu bersama _siapkan_ubah_* / smart_delete.cek_jejak)
+    "POST /api/customers/{customer_id}/edit/preview": "PATCH /api/customers/{customer_id}",
+    "POST /api/customers/{customer_id}/delete/preview": "DELETE /api/customers/{customer_id}",
+    "POST /api/vendors/{vendor_id}/edit/preview": "PATCH /api/vendors/{vendor_id}",
+    "POST /api/vendors/{vendor_id}/delete/preview": "DELETE /api/vendors/{vendor_id}",
+    "POST /api/customers/{customer_id}/status/preview": "PATCH /api/customers/{customer_id}/status",
+    "POST /api/vendors/{vendor_id}/status/preview": "PATCH /api/vendors/{vendor_id}/status",
 }
 # pratinjau yang SENGAJA beda izin, dengan sebab tertulis (hanya boleh menyusut)
 BEDA_SENGAJA = {
-    # pra-CW (Q customers merge): CACAH baris per tabel, tak menjalankan penulis -> baca (R) disengaja
-    "POST /api/customers/merge/preview": ("customer", "R"),
+    # (kosong) K-D 9 Nov 2026: /customers/merge/preview kini = izin /merge (C), simetri vendor
 }
 # rute tulis yang menjalankan penulis rute lain -> izinnya wajib sama
 SAMA_IZIN = [
