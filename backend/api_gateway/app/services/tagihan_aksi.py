@@ -424,6 +424,11 @@ def kalimat_tanpa_status_siklus(bill) -> str:
             "Hubungi dukungan untuk merapikan datanya.")
 
 
+def kalimat_jurnal_sudah_dibalik(bill, pembalik: str) -> str:
+    return (f"Jurnal faktur pembelian {bill['invoice_number']} sudah dibalik oleh {pembalik}, jadi faktur ini tidak bisa dibatalkan lagi. "
+            "Hubungi dukungan untuk merapikan datanya.")
+
+
 async def blok_void(conn, tid: str, bill) -> list:
     """Aturan void_bill. Pembayaran posted (jurnal BP efektif) -> blok sebut nomor + nominal; ND aktif diterapkan -> blok (putusan pemilik);
     ND tertaut original_bill_id bukan draf/void -> blok yang sama (F2)."""
@@ -434,6 +439,15 @@ async def blok_void(conn, tid: str, bill) -> list:
         # draft -> void / posted -> void (V460); NULL -> void ditolak DB = 500 dulu. Tolak berkalimat di penentu (penulis + pratinjau +
         # aksi_tersedia fpbatal), generik untuk tenant mana pun. Draf normal (status_v2 'draft') TETAP boleh dibatalkan (desain DB).
         return [blok("STATUS_SIKLUS_KOSONG", kalimat_tanpa_status_siklus(bill))]
+    if bill["journal_id"] is not None:
+        # JURNAL-DIBALIK (10 Nov 2026, putusan MASTER): jurnal tagihan sudah dibalik di luar void (data uji lama 3 Sep lewat pembalikan
+        # jurnal umum; jalur itu ditutup Gate 5, 833ebfb17). Membalik lagi = 500 idx_je_single_reversal -> tolak berkalimat di penentu.
+        pembalik = await conn.fetchval(
+            """SELECT rb.journal_number FROM journal_entries je
+               JOIN journal_entries rb ON rb.id = je.reversed_by_id AND rb.tenant_id = je.tenant_id
+               WHERE je.id = $1 AND je.tenant_id = $2""", bill["journal_id"], tid)
+        if pembalik:
+            return [blok("JURNAL_SUDAH_DIBALIK", kalimat_jurnal_sudah_dibalik(bill, pembalik))]
     bloks = []
     # ATURAN D: penerimaan yang DATANG SESUDAH tagihan (tautan aktif 'tagih_dulu' / 'legacy') -> tagihan tak boleh dibatalkan (void yang
     # LEBIH AKHIR dulu: batalkan penerimaannya). WAJIB sebelum grn_tagih.balik_tautan (yang gagal-keras bila tautan itu masih ada).

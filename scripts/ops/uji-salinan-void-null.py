@@ -1,6 +1,6 @@
 """VOID-NULL -- uji di SALINAN: SATU dump, DUA klon, handler ASLI pohon LAMA (master) dan BARU. Semua tagihan kaos+nyawit:
  POST /bills/{id}/void (penulis, transaksi LUAR di-ROLLBACK), POST /bills/{id}/void/preview (READ ONLY), [baru] aksi_tersedia fpbatal.
-Banding: status_v2 NULL -> lama 500, baru 400 dgn kalimat == blok pratinjau == alasan aksi_tersedia; lainnya lama == baru PERSIS."""
+Banding: status_v2 NULL ATAU jurnal sudah dibalik (bukan void) -> lama 500, baru 400 dgn kalimat == blok pratinjau == alasan aksi_tersedia; lainnya lama == baru PERSIS."""
 import asyncio
 import json
 import os
@@ -66,7 +66,9 @@ async def main():
     out = {}
     async with pool.acquire() as conn:
         for tid in TENANT:
-            rows = await conn.fetch("SELECT id, invoice_number, status, status_v2 FROM bills WHERE tenant_id = $1 ORDER BY invoice_number", tid)
+            rows = await conn.fetch(
+                "SELECT b.id, b.invoice_number, b.status, b.status_v2, (je.reversed_by_id IS NOT NULL) AS dibalik FROM bills b "
+                "LEFT JOIN journal_entries je ON je.id = b.journal_id AND je.tenant_id = b.tenant_id WHERE b.tenant_id = $1 ORDER BY b.invoice_number", tid)
             print(f"[{tid}] tagihan {len(rows)}; status_v2 NULL {sum(1 for r in rows if r['status_v2'] is None)}", flush=True)
             for b in rows:
                 k = f"{tid}:{b['invoice_number']}:{b['status']}:{b['status_v2']}"
@@ -86,7 +88,7 @@ async def main():
                 if hasattr(BL, "aksi_tersedia_fpb"):
                     at = (await BL.aksi_tersedia_fpb(conn, {"tenant_id": tid, "user_id": None}, b["id"]))["fpbatal"]
                 blok = ((pv.get("hasil") or {}).get("data") or {}).get("blocks") if pv["ok"] else None
-                out[k] = {"null": b["status_v2"] is None,
+                out[k] = {"null": b["status_v2"] is None or (b["dibalik"] and (b["status_v2"] or "") != "void"),
                           "tulis": {"ok": tulis["ok"], "status": tulis.get("status"), "detail": tulis.get("detail")} if not tulis["ok"]
                           else {"ok": True}, "pratinjau": blok, "aksi": at}
     with open(os.environ["KELUAR"], "w") as fo:

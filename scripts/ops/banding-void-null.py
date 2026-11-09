@@ -10,7 +10,8 @@ for k, a in lama.items():
         null += 1
         pesan = b["tulis"].get("detail")
         blok = [x.get("message") for x in (b["pratinjau"] or [])]
-        ok = (a["tulis"].get("status") == 500 and b["tulis"].get("status") == 400 and b["aksi"]["tersedia"] is False
+        lama_ok = a["tulis"].get("status") == 500 or a["tulis"] == b["tulis"]  # 500 dulu, atau sudah 400 identik dari unit sebelumnya
+        ok = (lama_ok and b["tulis"].get("status") == 400 and b["aksi"]["tersedia"] is False
               and pesan == b["aksi"]["alasan"] and blok[:1] == [pesan])
         print(f"NULL {k}: lama {a['tulis'].get('status')} -> baru {b['tulis'].get('status')} '{pesan}' | pratinjau {blok[:1]} | aksi {b['aksi']}")
         if not ok:
@@ -21,7 +22,7 @@ for k, a in lama.items():
         if b["aksi"]["tersedia"] != (not b["pratinjau"]):
             gagal.append(f"AKSI {k}: aksi {b['aksi']} vs pratinjau {b['pratinjau']}")
 n = len(lama)
-print(f"tagihan {n}; status_v2 NULL {null}; lainnya identik {n - null - sum(1 for g in gagal if g.startswith('BEDA'))}/{n - null}; "
+print(f"tagihan {n}; diperbaiki (status_v2 NULL / jurnal dibalik) {null}; lainnya identik {n - null - sum(1 for g in gagal if g.startswith('BEDA'))}/{n - null}; "
       f"aksi == pratinjau {n - null - sum(1 for g in gagal if g.startswith('AKSI'))}/{n - null}")
 for g in gagal:
     print("[GAGAL]", g)

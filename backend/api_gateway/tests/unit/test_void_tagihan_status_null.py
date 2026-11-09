@@ -22,7 +22,7 @@ class Kon:
 
 
 def _bill(status, status_v2):
-    return {"id": uuid.uuid4(), "invoice_number": "BILL-2609-0007", "status": status, "status_v2": status_v2}
+    return {"id": uuid.uuid4(), "invoice_number": "BILL-2609-0007", "status": status, "status_v2": status_v2, "journal_id": None}
 
 
 def test_draf_lama_tanpa_status_siklus_ditolak_berkalimat():
