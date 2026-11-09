@@ -13,7 +13,10 @@ DELETE /api/approval-workflows/{workflow_id}/levels/{level_id}
 DELETE /api/auth/sessions/{session_id}
 DELETE /api/bank-accounts/{bank_account_id}
 DELETE /api/bank-reconciliation/sessions/{session_id}/match/{match_id}
+DELETE /api/bank-transactions/{doc_id}/attachments/{attachment_id}
+DELETE /api/bank-transfers/{doc_id}/attachments/{attachment_id}
 DELETE /api/bank-transfers/{transfer_id}
+DELETE /api/bill-payments/{doc_id}/attachments/{attachment_id}
 DELETE /api/bill-payments/{payment_id}
 DELETE /api/bills/{bill_id}
 DELETE /api/bills/{bill_id}/attachments/{attachment_id}
@@ -702,6 +705,10 @@ PUT /api/user/favorites
 PUT /api/user/profile
 # + 1 Okt 2026: 16 rute yang lolos tanpa tercatat (CW pratinjau 26-30 Sep; gate_izin_rute.py S1 merah, tak terpasang di gerbang merge)
 DELETE /api/dashboard/tasks/{key:path}/dismiss
+DELETE /api/employee-advances/{doc_id}/attachments/{attachment_id}
+DELETE /api/receive-payments/{doc_id}/attachments/{attachment_id}
+POST /api/bank-transactions/{doc_id}/attachments
+POST /api/bank-transfers/{doc_id}/attachments
 POST /api/credit-notes/preview
 POST /api/dashboard/tasks/{key:path}/dismiss
 POST /api/employee-advances/preview
@@ -742,12 +749,14 @@ POST /api/bill-payments/bulk/share
 POST /api/bill-payments/bulk/share/preview
 POST /api/bill-payments/bulk/delete
 POST /api/bill-payments/bulk/delete/preview
+POST /api/bill-payments/{doc_id}/attachments
 POST /api/bills/bulk/export
 POST /api/bills/bulk/pdf
 POST /api/bills/bulk/share
 POST /api/bills/bulk/share/preview
 POST /api/bills/bulk/delete
 POST /api/bills/bulk/delete/preview
+POST /api/employee-advances/{doc_id}/attachments
 POST /api/goods-receipts/bulk/export
 POST /api/goods-receipts/bulk/pdf
 POST /api/goods-receipts/bulk/share
@@ -762,6 +771,7 @@ POST /api/purchase-orders/bulk/delete
 POST /api/purchase-orders/bulk/delete/preview
 POST /api/purchase-orders/bulk/cancel
 POST /api/purchase-orders/bulk/cancel/preview
+POST /api/receive-payments/{doc_id}/attachments
 POST /api/vendor-credits/bulk/export
 POST /api/vendor-credits/bulk/pdf
 POST /api/vendor-credits/bulk/share

@@ -53,6 +53,10 @@ class SpecLampiran:
     sumber_audit: Optional[str] = None
     modul_dep: Optional[str] = None                       # modul pemilik get_pool/get_storage_service/simpan_objek_unggahan
     nama_endpoint: dict = field(default_factory=dict)     # {unggah|daftar|unduh|lepas: nama fungsi} (tabel rute / tes lama)
+    # LAMPIRAN Kas&Bank/Kasbon/Bayar (9 Nov 2026): pagar PER DOKUMEN (kasbon: pay-group karyawan) + subset rute (penerimaan/pembayaran
+    # keluar sudah punya GET daftar/unduh lama berbentuk lain -> pabrik hanya unggah banyak + lepas, tanpa rute ganda yang membayangi)
+    pra_cek_dok: Optional[Callable[..., Awaitable]] = None  # async (conn, tenant_id, user_id, doc_id) -> bool; False -> 404 induk
+    rute: tuple = ("unggah", "daftar", "unduh", "lepas")
 
 
 async def get_pool():
@@ -141,10 +145,10 @@ def buat_router(s: SpecLampiran) -> APIRouter:
         if s.pra_cek is not None:
             await s.pra_cek(conn, tenant_id)
 
-    async def _induk(conn, doc_id, tenant_id) -> str:
+    async def _induk(conn, doc_id, tenant_id, user_id=None) -> str:
         await _cek(conn, tenant_id)
         r = await conn.fetchrow(q["induk"], doc_id, tenant_id)
-        if not r:
+        if not r or (s.pra_cek_dok is not None and not await s.pra_cek_dok(conn, tenant_id, user_id, doc_id)):
             raise HTTPException(status_code=404, detail=s.pesan_404 or f"{s.label} tidak ditemukan.")
         return r["nomor"]
 
@@ -178,7 +182,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-                await _induk(conn, doc_id, tenant_id)
+                await _induk(conn, doc_id, tenant_id, ctx["user_id"])
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
                                    kunci_kuota_lampiran(tenant_id, s.entitas, doc_id))
                 terpakai = await hitung_lampiran_tersedia(conn, tenant_id, s.entitas, doc_id)
@@ -221,7 +225,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-                await _induk(conn, doc_id, tenant_id)
+                await _induk(conn, doc_id, tenant_id, ctx["user_id"])
                 rows = await conn.fetch(q["daftar"], doc_id, tenant_id)
         data = [{"id": str(r["id"]), "nama": r["file_name"], "ukuran": r["file_size"], "mime": r["file_type"],
                  "url": url_unduh_lampiran(s.modul_url, doc_id, r["id"]),
@@ -238,6 +242,8 @@ def buat_router(s: SpecLampiran) -> APIRouter:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
                 await _cek(conn, tenant_id)
+                if s.pra_cek_dok is not None:  # pagar per dokumen juga untuk unduh (kasbon: pay-group)
+                    await _induk(conn, doc_id, tenant_id, ctx["user_id"])
                 row = await conn.fetchrow(q["unduh"], attachment_id, doc_id, tenant_id)
         if not row:
             raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
@@ -252,7 +258,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-                nomor = await _induk(conn, doc_id, tenant_id)
+                nomor = await _induk(conn, doc_id, tenant_id, ctx["user_id"])
                 await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))",
                                    kunci_kuota_lampiran(tenant_id, s.entitas, doc_id))
                 if not await conn.fetchval(q["lepas"], attachment_id, doc_id, tenant_id):
@@ -265,6 +271,7 @@ def buat_router(s: SpecLampiran) -> APIRouter:
                 terpakai = await hitung_lampiran_tersedia(conn, tenant_id, s.entitas, doc_id)
         return {"success": True, "kuota": _kuota(terpakai)}
 
+    router.routes = [r for r in router.routes if r.endpoint.__name__ in s.rute]
     for r in router.routes:  # nama endpoint unik per modul (tabel rute / OpenAPI); SO/SJ memakai nama lama
         dasar = r.endpoint.__name__
         r.endpoint.__name__ = s.nama_endpoint.get(dasar, f"{dasar}_lampiran_{s.entitas}")
@@ -292,3 +299,32 @@ SPEC_UANG_MUKA_PEMBELIAN = SpecLampiran("vendor_deposit", "vendor-deposits", "ve
                                         "vendor_deposits")
 router_penerimaan_barang = buat_router(SPEC_PENERIMAAN_BARANG)
 router_uang_muka_pembelian = buat_router(SPEC_UANG_MUKA_PEMBELIAN)
+# LAMPIRAN Kas & Bank + Kasbon + Penerimaan/Pembayaran keluar (9 Nov 2026; kontrak backend/docs/KONTRAK-lampiran-kasbank-kasbon-bayar-
+# 20261109.md). V493 (disetujui LANGSUNG pemilik) menambah bank_transaction, bank_transfer, employee_advance ke chk_da_entity.
+# Mutasi manual tak punya transaction_number -> nomor = nomor jurnalnya (tenant eksplisit). Hitung fisik = baris bank_transactions juga.
+NOMOR_MUTASI_BANK = ("COALESCE(transaction_number, (SELECT je.journal_number FROM journal_entries je "
+                     "WHERE je.id = bank_transactions.journal_id AND je.tenant_id = bank_transactions.tenant_id))")
+
+
+async def _kasbon_dalam_pay_group(conn, tenant_id: str, user_id, doc_id) -> bool:
+    """RULE pay-group: setiap endpoint ber-karyawan (by-id/nested, baca maupun tulis) memeriksa employee_in_scope karyawan kasbon itu."""
+    from ..services.pay_group_access import employee_in_scope
+    emp = await conn.fetchval("SELECT employee_id FROM employee_advances WHERE id = $1 AND tenant_id = $2", doc_id, tenant_id)
+    return bool(emp) and bool(user_id) and await employee_in_scope(conn, tenant_id, user_id, emp)
+
+
+SPEC_MUTASI_BANK = SpecLampiran("bank_transaction", "bank-transactions", "bank_transactions", NOMOR_MUTASI_BANK, "Mutasi kas/bank",
+                                "bank_transactions")
+SPEC_TRANSFER_BANK = SpecLampiran("bank_transfer", "bank-transfers", "bank_transfers", "transfer_number", "Transfer", "bank_transfers")
+SPEC_KASBON = SpecLampiran("employee_advance", "employee-advances", "employee_advances", "advance_number", "Kasbon", "employee_advances",
+                           pra_cek_dok=_kasbon_dalam_pay_group)
+# entity 'payment' DIPAKAI dua tabel: aman karena tiap query pabrik men-JOIN tabel induknya sendiri + id UUID; GET daftar/unduh LAMA tetap
+SPEC_PENERIMAAN = SpecLampiran("payment", "receive-payments", "receive_payments", "payment_number", "Penerimaan pembayaran",
+                               "receive_payments", rute=("unggah", "lepas"))
+SPEC_BAYAR_KELUAR = SpecLampiran("payment", "bill-payments", "bill_payments_v2", "payment_number", "Pembayaran keluar", "bill_payments_v2",
+                                 rute=("unggah", "lepas"))
+router_mutasi_bank = buat_router(SPEC_MUTASI_BANK)
+router_transfer_bank = buat_router(SPEC_TRANSFER_BANK)
+router_kasbon = buat_router(SPEC_KASBON)
+router_penerimaan = buat_router(SPEC_PENERIMAAN)
+router_bayar_keluar = buat_router(SPEC_BAYAR_KELUAR)

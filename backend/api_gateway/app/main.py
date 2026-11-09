@@ -592,6 +592,12 @@ app.include_router(lampiran_induk.router_nota_debit, prefix="/api/vendor-credits
 # LAMPIRAN-PEMBELIAN F2b: lampiran Penerimaan Barang + Uang Muka Pembelian, juga SEBELUM router modulnya
 app.include_router(lampiran_induk.router_penerimaan_barang, prefix="/api/goods-receipts", tags=["goods-receipts"])
 app.include_router(lampiran_induk.router_uang_muka_pembelian, prefix="/api/vendor-deposits", tags=["vendor-deposits"])
+# LAMPIRAN Kas & Bank + Kasbon + Penerimaan/Pembayaran keluar (9 Nov 2026, V493): pabrik yang SAMA
+app.include_router(lampiran_induk.router_mutasi_bank, prefix="/api/bank-transactions", tags=["kas-bank"])
+app.include_router(lampiran_induk.router_transfer_bank, prefix="/api/bank-transfers", tags=["bank-transfers"])
+app.include_router(lampiran_induk.router_kasbon, prefix="/api/employee-advances", tags=["employee-advances"])
+app.include_router(lampiran_induk.router_penerimaan, prefix="/api/receive-payments", tags=["receive-payments"])
+app.include_router(lampiran_induk.router_bayar_keluar, prefix="/api/bill-payments", tags=["bill-payments"])
 app.include_router(bulk_quote_router.router, prefix="/api/quotes", tags=["bulk"])
 from .routers import bulk_proforma as bulk_proforma_router  # noqa: E402  (U1b F4: Proforma BATAL draf massal; terbit massal tak ada)
 

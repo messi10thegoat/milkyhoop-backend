@@ -305,6 +305,21 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bank-transfers/preview$", ["POST"], "kas_bank", "C"),  # B8 pratinjau buat transfer, izin = buat
     (r"^/api/bank-transfers/[^/]+/void$", ["POST"], "kas_bank", "V"),
     (r"^/api/bank-transactions/[^/]+/void$", ["POST"], "kas_bank", "V"),
+    # LAMPIRAN 9 Nov 2026 (pabrik lampiran_induk, V493): unggah = U, baca/unduh = R, lepas = D -- pola lampiran PO/NK
+    (r"^/api/bank-transactions/[^/]+/attachments$", ["POST"], "kas_bank", "U"),
+    (r"^/api/bank-transactions/[^/]+/attachments/[^/]+$", ["DELETE"], "kas_bank", "D"),
+    (r"^/api/bank-transfers/[^/]+/attachments$", ["POST"], "kas_bank", "U"),
+    (r"^/api/bank-transfers/[^/]+/attachments$", ["GET"], "kas_bank", "R"),
+    (r"^/api/bank-transfers/[^/]+/attachments/[^/]+/download$", ["GET"], "kas_bank", "R"),
+    (r"^/api/bank-transfers/[^/]+/attachments/[^/]+$", ["DELETE"], "kas_bank", "D"),
+    (r"^/api/employee-advances/[^/]+/attachments$", ["POST"], "payroll", "U"),
+    (r"^/api/employee-advances/[^/]+/attachments$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/[^/]+/attachments/[^/]+/download$", ["GET"], "payroll", "R"),
+    (r"^/api/employee-advances/[^/]+/attachments/[^/]+$", ["DELETE"], "payroll", "D"),
+    (r"^/api/receive-payments/[^/]+/attachments$", ["POST"], "receive_payment", "U"),
+    (r"^/api/receive-payments/[^/]+/attachments/[^/]+$", ["DELETE"], "receive_payment", "D"),
+    (r"^/api/bill-payments/[^/]+/attachments$", ["POST"], "send_payment", "U"),
+    (r"^/api/bill-payments/[^/]+/attachments/[^/]+$", ["DELETE"], "send_payment", "D"),
     # Kas&Bank standar SO (9 Nov 2026): pratinjau batal = izin batal (V); baca daftar/detail/riwayat/dokumen = R
     (r"^/api/bank-transactions/[^/]+/void/preview$", ["POST"], "kas_bank", "V"),
     (r"^/api/bank-transfers/[^/]+/void/preview$", ["POST"], "kas_bank", "V"),

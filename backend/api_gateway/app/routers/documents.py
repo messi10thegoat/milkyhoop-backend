@@ -599,6 +599,10 @@ _ENTITAS_HUB = {
     "employee": (("employees", "employees"),),
     "asset": (("fixed_assets", "fixed-assets"),),
     "proforma": (("proformas", "proformas"),),
+    # LAMPIRAN 9 Nov 2026 (V493): Kas & Bank + Kasbon
+    "bank_transaction": (("bank_transactions", "bank-transactions"),),
+    "bank_transfer": (("bank_transfers", "bank-transfers"),),
+    "employee_advance": (("employee_advances", "employee-advances"),),
 }
 # Tak didukung (tanpa tabel entitas yang bisa diverifikasi): project, contract,
 # other, delivery -> 422.
