@@ -44,7 +44,7 @@ FUNGSI = {
     "routers/sales_orders.py": ["_buat_faktur_dari_so"],
     "routers/proformas.py": ["create_proforma"],
     "routers/journals.py": ["get_next_journal_number", "reclassify_bill_inventory"],
-    "routers/bank_accounts.py": ["create_bank_account"],
+    "services/kasbank_rekening.py": ["rencana_buat_rekening"],  # buat rekening: tanggal saldo awal kini di rencana bersama (pratinjau + penulis)
     "routers/expenses.py": ["_batal_biaya"],  # Biaya t2: badan void_expense dipindah UTUH ke inti (dipakai /void DAN /void/preview)
     "routers/bank_transfers.py": ["void_bank_transfer"],
 }
@@ -56,7 +56,7 @@ DEFAULT_KLIEN = {
     "routers/sales_orders.py": ["_buat_faktur_dari_so"],
     "routers/proformas.py": ["create_proforma"],
     "routers/journals.py": ["get_next_journal_number", "reclassify_bill_inventory"],
-    "routers/bank_accounts.py": ["create_bank_account"],
+    "services/kasbank_rekening.py": ["rencana_buat_rekening"],  # buat rekening: tanggal saldo awal kini di rencana bersama (pratinjau + penulis)
 }
 
 
