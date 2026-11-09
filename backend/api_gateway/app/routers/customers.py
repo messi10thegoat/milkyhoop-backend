@@ -6,6 +6,7 @@ Integrates with AR module for balance tracking.
 """
 
 from fastapi import APIRouter, HTTPException, Request, Query, Response
+from datetime import date as _date
 from decimal import Decimal
 from typing import Optional, Literal
 from uuid import UUID
@@ -2362,6 +2363,28 @@ async def get_customer_journal_entries(
 
 # CUSTOMER ACTIVITY HISTORY (Read-only - Law 12: Audit Trail Immutability)
 # =============================================================================
+
+
+@router.get("/{customer_id}/mutasi")
+async def get_customer_mutasi(request: Request, customer_id: UUID,
+                          dari: Optional[_date] = Query(None, description="baris sebelum tanggal ini masuk saldo_awal"),
+                          sampai: Optional[_date] = Query(None, description="batas akhir (inklusif); kosong = semua"),
+                          tanpa_batal: bool = Query(True, description="false = jurnal batal + pembaliknya tampil berpasangan"),
+                          skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
+    """Mutasi piutang per pelanggan (buku besar pembantu; kontrak docs/KONTRAK-kontak-mutasi-20261109.md). Baris = komponen penentu
+    saldo yang SAMA (services/kontak_mutasi) -> saldo_akhir tanpa dari/sampai == saldo detail. Baca saja."""
+    from ..services import kontak_mutasi as KM
+    from ..services.dashboard_izin import boleh_baca
+    if dari and sampai and dari > sampai:
+        raise HTTPException(status_code=400, detail="Tanggal awal tidak boleh setelah tanggal akhir.")
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KM.mutasi(conn, ctx["tenant_id"], "customer", customer_id, dari=dari, sampai=sampai, tanpa_batal=tanpa_batal, skip=skip,
+                               limit=limit, boleh=lambda m: boleh_baca(request, m))
+    if data is None:
+        raise HTTPException(status_code=404, detail=KM.JENIS["customer"]["galat"])
+    return {"success": True, "data": data}
 
 
 @router.get("/{customer_id}/history")

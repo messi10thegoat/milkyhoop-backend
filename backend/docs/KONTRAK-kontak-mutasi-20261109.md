@@ -1,6 +1,6 @@
 # KONTRAK — Mutasi piutang/hutang per kontak (9 Nov 2026)
 
-Status: RANCANGAN untuk stub FE (K-A). Putusan MASTER 9 Nov: tampilan baca-saja dari jurnal yang sudah ada, pola Accurate
+Status: DIKODE 9 Nov 2026 (services/kontak_mutasi.py; cabang feat/kontak-mutasi). Semula rancangan untuk stub FE (K-A). Putusan MASTER 9 Nov: tampilan baca-saja dari jurnal yang sudah ada, pola Accurate
 "rincian piutang/hutang per pelanggan/pemasok" (buku besar pembantu). BUKAN aturan uang baru. Kode BE menyusul (celah 3);
 bentuk di bawah ini mengikat. Perubahan bentuk lewat MASTER.
 
@@ -14,7 +14,7 @@ GET /api/vendors/{id}/mutasi?dari=YYYY-MM-DD&sampai=YYYY-MM-DD&tanpa_batal=true&
 | param | bawaan | arti |
 |---|---|---|
 | `dari` | null (sejak awal) | baris sebelum `dari` dijumlah ke `saldo_awal` |
-| `sampai` | tanggal bisnis tenant | batas akhir (inklusif) |
+| `sampai` | null (semua) | batas akhir (inklusif). Bawaan kosong supaya dokumen bertanggal ke depan tetap ikut dan paritas berlaku |
 | `tanpa_batal` | `true` | `true` = jurnal yang dibatalkan DAN pembaliknya disaring dua sisi (sama dengan saldo). `false` = keduanya tampil berpasangan (`batal: true`), netonya nol |
 | `skip`, `limit` | 0, 50 (maks 200) | halaman atas urutan naik |
 
@@ -26,7 +26,7 @@ GET /api/vendors/{id}/mutasi?dari=YYYY-MM-DD&sampai=YYYY-MM-DD&tanpa_batal=true&
   tidak menyimpan pihak, jadi pihak diambil dari dokumen sumber, persis seperti penentu saldo. Jurnal umum manual ke akun
   piutang/hutang tanpa dokumen pihak TIDAK masuk saldo kontak, jadi juga tidak tampil di sini.
 - Saldo berjalan: pelanggan `saldo = saldo_awal + Σ(debit − kredit)`; vendor `saldo = saldo_awal + Σ(kredit − debit)`.
-- **Paritas (dites):** tanpa `dari`, dengan `sampai` = tanggal bisnis → `saldo_akhir` == `saldo` di detail kontak
+- **Paritas (dites, scripts/ops/uji-salinan-mutasi.sh):** tanpa `dari` dan `sampai` → `saldo_akhir` == `saldo` di detail kontak
   (== Σ `outstanding` penentu yang sama, kontak_daftar). Baik `tanpa_batal=true` maupun `false`.
 - Uang muka pelanggan / saldo kredit = akun lain → TIDAK di mutasi (kartu terpisah, celah 4).
 - Urutan: `tanggal` naik, lalu nomor jurnal, lalu urutan komponen. `saldo` tiap baris dihitung atas SELURUH urutan (window di
@@ -52,7 +52,7 @@ GET /api/vendors/{id}/mutasi?dari=YYYY-MM-DD&sampai=YYYY-MM-DD&tanpa_batal=true&
     "limit": 50,
     "baris": [
       {
-        "id": "c5986e45-…:0",
+        "id": "c5986e45-…:1:3b06…",
         "tanggal": "2026-11-03",
         "jurnal": {"id": "c5986e45-…", "nomor": "INV-2611-0004"},
         "dokumen": {"tipe": "sales_invoice", "id": "3b06…", "nomor": "INV-2611-0004"},
@@ -64,7 +64,7 @@ GET /api/vendors/{id}/mutasi?dari=YYYY-MM-DD&sampai=YYYY-MM-DD&tanpa_batal=true&
         "batal": false
       },
       {
-        "id": "5692d7a0-…:0",
+        "id": "5692d7a0-…:2:9a1e…",
         "tanggal": "2026-11-05",
         "jurnal": {"id": "5692d7a0-…", "nomor": "RCV-2611-0002"},
         "dokumen": {"tipe": "receive_payment", "id": "9a1e…", "nomor": "RCV-2611-0002"},
@@ -83,10 +83,14 @@ GET /api/vendors/{id}/mutasi?dari=YYYY-MM-DD&sampai=YYYY-MM-DD&tanpa_batal=true&
 
 Medan:
 - Uang = JSON number (Rupiah bulat → int, bersen → float; `schemas/uang_json`), sama dengan medan uang lain.
-- `dokumen.tipe` ∈ pelanggan: `sales_invoice`, `receive_payment`, `credit_note`, `deposit_application`, `opening_balance`;
+- `dokumen.tipe` ∈ pelanggan: `sales_invoice`, `receive_payment`, `credit_note`, `deposit_application`;
   vendor: `bill`, `bill_payment`, `vendor_credit`, `deposit_application`, `opening_balance`. Rute FE = tipe + id.
+  `deposit_application`: id/nomor = uang muka yang dipakai. Lepas pembayaran = tipe `sales_invoice` (jenis_text "Lepas pembayaran").
+  `opening_balance` vendor: id = vendor, nomor null. Baris batal (tanpa_batal=false): dokumen.nomor null, pakai `jurnal.nomor`;
+  pembalik: jenis_text "Pembatalan …", keterangan "membatalkan <nomor jurnal asal>".
 - `jenis_text` = teks server siap tampil (FE tak memetakan tipe → teks).
 - `batal` hanya bisa `true` bila `tanpa_batal=false`.
+- `id` baris = `<jurnal>:<komponen>:<dokumen>` (unik; satu jurnal pembayaran bisa berbaris per faktur yang dilunasi).
 - `omitted`: pola B4. Tanpa izin BACA modul dokumen → `dokumen.nomor` & `keterangan` = null untuk baris modul itu, angka tetap
   (angka = saldo kontak yang sudah boleh dibaca), `omitted` = [modul].
 

@@ -2146,6 +2146,28 @@ async def get_vendor_journal_entries(
 # =============================================================================
 
 
+@router.get("/{vendor_id}/mutasi")
+async def get_vendor_mutasi(request: Request, vendor_id: UUID,
+                          dari: Optional[date] = Query(None, description="baris sebelum tanggal ini masuk saldo_awal"),
+                          sampai: Optional[date] = Query(None, description="batas akhir (inklusif); kosong = semua"),
+                          tanpa_batal: bool = Query(True, description="false = jurnal batal + pembaliknya tampil berpasangan"),
+                          skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
+    """Mutasi hutang per vendor (buku besar pembantu; kontrak docs/KONTRAK-kontak-mutasi-20261109.md). Baris = komponen penentu
+    saldo yang SAMA (services/kontak_mutasi) -> saldo_akhir tanpa dari/sampai == saldo detail. Baca saja."""
+    from ..services import kontak_mutasi as KM
+    from ..services.dashboard_izin import boleh_baca
+    if dari and sampai and dari > sampai:
+        raise HTTPException(status_code=400, detail="Tanggal awal tidak boleh setelah tanggal akhir.")
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KM.mutasi(conn, ctx["tenant_id"], "vendor", vendor_id, dari=dari, sampai=sampai, tanpa_batal=tanpa_batal, skip=skip,
+                               limit=limit, boleh=lambda m: boleh_baca(request, m))
+    if data is None:
+        raise HTTPException(status_code=404, detail=KM.JENIS["vendor"]["galat"])
+    return {"success": True, "data": data}
+
+
 @router.get("/{vendor_id}/history")
 async def get_vendor_history(request: Request, vendor_id: UUID, limit: int = Query(200, ge=1, le=500)):
     """B4: riwayat bentuk /sales-orders/{id}/history (services/kontak_riwayat, sumber SAMA dengan /activity); dokumen tersaring

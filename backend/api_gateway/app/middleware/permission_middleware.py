@@ -243,6 +243,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/[^/]+/delete/preview$", ["POST"], "supplier", "D"),
     (r"^/api/vendors/[^/]+/status/preview$", ["POST"], "supplier", "U"),  # = PATCH /status
     (r"^/api/vendors/[^/]+/rename\-impact$", ["GET"], "supplier", "R"),
+    (r"^/api/vendors/[^/]+/mutasi$", ["GET"], "supplier", "R"),  # mutasi hutang (buku besar pembantu, 9 Nov 2026)
     (r"^/api/vendors/[^/]+$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+$", ["PATCH", "PUT"], "supplier", "U"),
     (r"^/api/vendors/[^/]+$", ["DELETE"], "supplier", "D"),
@@ -1047,6 +1048,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customers/[^/]+/open\-invoices$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/transactions$", ["GET"], "customer", "R"),
     (r"^/api/customers/[^/]+/rename\-impact$", ["GET"], "customer", "R"),
+    (r"^/api/customers/[^/]+/mutasi$", ["GET"], "customer", "R"),  # mutasi piutang (buku besar pembantu, 9 Nov 2026)
     (r"^/api/deliveries$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/summary$", ["GET"], "sales_invoice", "R"),
     (r"^/api/deliveries/[^/]+$", ["GET"], "sales_invoice", "R"),
