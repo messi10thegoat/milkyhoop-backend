@@ -130,3 +130,28 @@ def test_rute_pool_ro_tanpa_bocor_dan_tampil_satu_pemformat():
     lap = {"baris": [{"nilai": "-5000.00"}, {"nilai": None}]}
     PR._tampil(lap, 0)
     assert [b["nilai_tampil"] for b in lap["baris"]] == ["(5.000)", None]
+
+
+def test_arus_kas_butir_gabungan_nol_disaring_dan_baris_bertanda(monkeypatch):
+    """Gabung per label dalam Decimal: +5000 dan -5000 berlabel sama -> 0 -> tak tampil (dulu float); kas neto berlabel menurut tanda."""
+    async def saldo(conn, tid, filt, end_date=None):
+        return Decimal("100") if end_date < "2026-11-01" else Decimal("90")
+
+    class K:
+        async def fetch(self, sql, *a):
+            return [{"flow_category": "OPERATING", "account_type": "EXPENSE", "psak_sub_category": None, "account_name": None,
+                     "net_flow": Decimal("5000.10")},
+                    {"flow_category": "OPERATING", "account_type": "EXPENSE", "psak_sub_category": None, "account_name": None,
+                     "net_flow": Decimal("-5000.10")},
+                    {"flow_category": "OPERATING", "account_type": "REVENUE", "psak_sub_category": None, "account_name": None,
+                     "net_flow": Decimal("-10")}]
+
+        async def fetchval(self, sql, *a):
+            return Decimal("0")
+    monkeypatch.setattr(CF, "compute_balance", saldo)
+    r = run(CF.generate_cash_flow(K(), "t", "2026-11-01", "2026-11-30"))
+    assert [i["label"] for i in r["operasi"]["items"]] == ["Penerimaan dari pelanggan"]  # beban +/- berlabel sama = 0 -> disaring
+    butir = [b for b in r["baris"] if b["kunci"] == "butir"]
+    assert [(b["label"], b["nilai"]) for b in butir] == [("Penerimaan dari pelanggan", "-10.00")]
+    neto = next(b for b in r["baris"] if b["kunci"] == "kas_neto_operasi")
+    assert neto["label"] == "Kas neto yang digunakan untuk aktivitas operasi" and neto["nilai"] == "-10.00"
