@@ -131,7 +131,7 @@ async def baru_saja(conn, tid, o, bas, trs):
     cek(f"{tid} B1 total_count == tercatat", ring["total_count"] == len(tercatat))
     for x in m_semua:
         d = (await BTX.get_bank_transaction(req(tid), x["id"]))["data"]
-        h = (await BTX.get_bank_transaction_history(req(tid), x["id"]))["data"]
+        h = (await BTX.get_bank_transaction_history(req(tid), x["id"], limit=200))["data"]
         dk = (await BTX.get_bank_transaction_documents(req(tid), x["id"]))["data"]
         cek(f"{tid} B1 detail/riwayat/dokumen {x['nomor']}", list(d["aksi_tersedia"]) == ["batalkan", "ubah"]
             and h["events"] and dk["anchor"]["position_text"] == x["position_text"]
@@ -157,7 +157,7 @@ async def baru_saja(conn, tid, o, bas, trs):
     for t in t_all:
         d = await BT.get_bank_transfer(req(tid), t["id"])
         dd = BT.BankTransferDetailResponse.model_validate(d).model_dump()["data"]
-        h = (await BT.get_bank_transfer_history(req(tid), t["id"]))["data"]
+        h = (await BT.get_bank_transfer_history(req(tid), t["id"], limit=200))["data"]
         dk = (await BT.get_bank_transfer_documents(req(tid), t["id"]))["data"]
         cek(f"{tid} B2 detail/riwayat/dokumen {t['transfer_number']}", list(dd["aksi_tersedia"]) == ["posting", "ubah", "hapus", "batalkan"]
             and dd["position_text"] == t["position_text"] == dk["anchor"]["position_text"] and h["events"]
@@ -179,7 +179,7 @@ async def baru_saja(conn, tid, o, bas, trs):
                                                        BA.BankAccountListResponse.model_validate(ha).model_dump()["items"]))
     for a in a_all:
         dd = BA.BankAccountDetailResponse.model_validate(await BA.get_bank_account(req(tid), a["id"])).model_dump()["data"]
-        h = (await BA.get_bank_account_history(req(tid), a["id"]))["data"]
+        h = (await BA.get_bank_account_history(req(tid), a["id"], limit=200))["data"]
         cek(f"{tid} B3 detail/riwayat {a['account_name']}", len(dd["aksi_tersedia"]) == 8 and dd["position_text"] == a["position_text"]
             and h["events"], dd["aksi_tersedia"])
     # ---- G pratinjau void semua baris: nol tulis
