@@ -7,7 +7,7 @@ import ast
 import re
 import sys
 
-KECUALI = ("pg_database", "pg_catalog", "pg_trigger", "pg_proc", "current_database()", "l.journal_id = je.id")
+KECUALI = ("pg_database", "pg_catalog", "pg_trigger", "pg_proc", "FROM pg_locks", "current_database()", "l.journal_id = je.id")
 
 
 def literal(path):
