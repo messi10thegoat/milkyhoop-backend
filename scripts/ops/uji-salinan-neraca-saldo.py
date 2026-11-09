@@ -6,6 +6,8 @@ kaos + nyawit. Angka SENGAJA berubah (dulu baris VOID/DRAFT/masa depan ikut); ya
  F  baru == /trial-balance/full (closing, periode fiskal yang berakhir pada as_of; PERSIS per sen -- tiket kecil: /full tak lagi int()).
  N  akun nonaktif bersaldo ikut: klon BARU menonaktifkan satu akun bersaldo -> tetap tampil, total tetap seimbang.
  T  as_of dan as_of_date sama-sama dihormati; tanpa keduanya = tanggal bisnis tenant.
+ Z  /trial-balance/full lama vs baru SEL PER SEL (periode terbuka bawaan + periode fiskal terakhir yang lewat): tiap sel uang yang berubah
+    didaftar (akun, kolom, lama, baru); syarat MASTER: |baru − lama| < 1 dan lama == baru dipotong ke nol (persis efek int() lama).
  X  teks: tipe_label/saldo_normal_label = SATU peta; debit/kredit_tampil = angka_laporan; status_text konsisten dengan selisih."""
 import asyncio
 import inspect
@@ -108,6 +110,18 @@ async def periksa_baru(conn, tid, k, h, per, presisi):
     cek(f"X {k} per_tanggal", h["per_tanggal"] == per.isoformat() and h["as_of_date"] == per.isoformat(), h["per_tanggal"])
 
 
+KOLOM_FULL = ("opening_debit", "opening_credit", "period_debit", "period_credit", "closing_debit", "closing_credit")
+
+
+async def sel_full(tid, pid):
+    """Semua sel uang /full (akun bukan kepala + ringkasan) -> {kunci: str(nilai)}; dijalankan di KEDUA pohon."""
+    f = await RP.get_trial_balance_full(req(tid), period_id=pid, show_zero_balance=False, group_by_type=True)
+    f = f["data"] if isinstance(f, dict) else f.data.model_dump()
+    sel = {f"{tid}|{pid}|{a['account_code']}|{k}": str(a[k]) for a in f["accounts"] if not a["is_header"] for k in KOLOM_FULL}
+    sel |= {f"{tid}|{pid}|RINGKASAN|{k}": str(v) for k, v in f["summary"].items() if k.startswith("total_")}
+    return sel
+
+
 async def main():
     from app.services.uang_presisi import presisi_tenant
     pool = await RP.get_pool()
@@ -115,6 +129,8 @@ async def main():
     async with pool.acquire() as conn:
         for tid in TENANT:
             hari, p = await tanggal_uji(conn, tid)
+            for pid in (None, str(p["id"]) if p else None):
+                out.setdefault("full", {}).update(await sel_full(tid, pid))
             presisi = await presisi_tenant(conn, tid)
             daftar = [hari] + ([p["end_date"]] if p else [])
             for per in daftar:

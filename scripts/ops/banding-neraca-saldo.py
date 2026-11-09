@@ -17,6 +17,22 @@ for k, (ld, lk) in lama["total"].items():
     info.append(f"{k}: lama−baru debit {sel_d} kredit {sel_k}; lebih {en} baris (d {ed}), nonaktif {kn} baris (d {kd})")
     if (sel_d, sel_k) != (harap_d.quantize(Decimal("0.01")), harap_k.quantize(Decimal("0.01"))):
         gagal.append(f"S {k} selisih {sel_d}/{sel_k} != harap {harap_d}/{harap_k}")
+# Z: /full sel per sel -- yang berubah HANYA pecahan sen yang dulu dipotong int()
+berubah = 0
+for k, v in lama.get("full", {}).items():
+    nb = baru.get("full", {}).get(k)
+    if nb is None:
+        gagal.append(f"Z {k} tak ada di baru")
+        continue
+    lv, bv = Decimal(v), Decimal(nb)
+    if lv != bv:
+        berubah += 1
+        print(f"[Z] {k}: lama {lv} -> baru {bv}")
+        if not (abs(bv - lv) < 1 and lv == int(bv)):
+            gagal.append(f"Z {k} berubah lebih dari pecahan sen: lama {lv} baru {bv}")
+if set(baru.get("full", {})) - set(lama.get("full", {})):
+    gagal.append(f"Z sel baru tanpa pasangan lama: {sorted(set(baru['full']) - set(lama['full']))[:5]}")
+print(f"[Z] sel /full {len(lama.get('full', {}))}; berubah {berubah} (semua wajib pecahan sen)")
 gagal += [f"cek {c[0]} :: {c[2]}" for c in baru["cek"] if not c[1]]
 for i in info:
     print("[S]", i)
