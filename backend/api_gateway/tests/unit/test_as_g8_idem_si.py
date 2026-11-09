@@ -56,7 +56,9 @@ def test_hapus_race_ditutup_kunci_baris_dan_delete_bersyarat():
     fn = _fn("delete_invoice")
     s = [n for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
     fu = [n.lineno for n in s if "FROM sales_invoices" in n.value and "FOR UPDATE" in n.value]
-    pagar = [n.lineno for n in s if n.value == "Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya."]
+    pagar = [c.lineno for c in _calls(fn, nid="penjaga_hapus_faktur")]  # J1b: pagar diekstrak (penulis + aksi_tersedia hapusdraf)
+    assert any(isinstance(n, ast.Constant) and n.value == "Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya."
+               for n in ast.walk(next(x for x in TREE.body if isinstance(x, ast.FunctionDef) and x.name == "penjaga_hapus_faktur")))
     dele = [n for n in s if n.value.startswith("DELETE FROM sales_invoices")]
     assert fu and pagar and fu[0] < pagar[0]
     assert len(dele) == 1 and "tenant_id = $2" in dele[0].value and "status = 'draft'" in dele[0].value and "RETURNING id" in dele[0].value
@@ -82,7 +84,8 @@ def test_ubah_cek_di_bawah_kunci_baris_if_match_sesudah_idem():
 def test_posting_pracek_di_dalam_transaksi_sesudah_idem():
     fn = _fn("post_invoice")
     m = _calls(fn, attr="mulai_aksi")[0].lineno
-    pracek = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Constant) and n.value == "Hanya faktur berstatus Draf yang bisa diterbitkan."]
+    pracek = [c.lineno for c in _calls(fn, nid="penjaga_terbit_faktur")]  # J1b: pra-cek diekstrak (penulis + aksi_tersedia terbit)
+    assert 'SI_BUKAN_DRAF = "Hanya faktur berstatus Draf yang bisa diterbitkan."' in SRC
     tb = [c.lineno for c in _calls(fn, nid="terbitkan_faktur")]
     assert m < pracek[0] < tb[0]
 
