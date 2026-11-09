@@ -576,6 +576,7 @@ async def get_purchase_order(request: Request, po_id: UUID):
             return {
                 "success": True,
                 "data": {
+                    "aksi_tersedia": await aksi_tersedia_po(conn, ctx, po["id"]),  # gelombang 3 BELI: satu transaksi READ ONLY
                     "id": str(po["id"]),
                     "po_number": po["po_number"],
                     "vendor_id": str(po["vendor_id"]) if po["vendor_id"] else None,
@@ -1658,3 +1659,58 @@ async def list_purchase_orders_by_vendor(
     except Exception as e:
         logger.error(f"Error listing POs for vendor {vendor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal memuat daftar pesanan pembelian vendor.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PESANAN PEMBELIAN (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §9,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_PO = ("pokirim", "pohapus", "poterima", "potagih", "potutup", "pobatal", "poum")
+KEADAAN_TERIMA_PO = ("PO_TAK_BISA_DITERIMA", "PO_TANPA_BARANG", "TAK_ADA_SISA_TERIMA")
+KEADAAN_TAGIH_PO = ("PO_TAK_BISA_DITAGIH", "TAK_ADA_SISA_TAGIH")
+KEADAAN_UM_PO = ("VENDOR_TIDAK_DITEMUKAN", "PO_TIDAK_DITEMUKAN", "PO_BEDA_VENDOR", "PO_DIBATALKAN")
+
+
+async def aksi_tersedia_po(conn, ctx: dict, po_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail PO (petunjuk lama terima_tersedia/tagih_tersedia tetap). Pemanggil TIDAK di dalam transaksi."""
+    from types import SimpleNamespace
+    from ..services import aksi_detail as AD
+    from ..services import uang_muka_po as UPO
+    from ..services import uang_muka_vendor_rencana as UVR
+    tid = ctx["tenant_id"]
+
+    async def po(c):
+        return await c.fetchrow("SELECT * FROM purchase_orders WHERE id = $1 AND tenant_id = $2", po_id, tid)
+
+    async def pokirim(c):
+        return AD.alasan_blok((await PR.rencana_kirim(c, tid, await po(c)))["blocks"], None)
+
+    async def pohapus(c):
+        return AD.alasan_blok(PR.rencana_hapus(await po(c))["blocks"], None)
+
+    async def poterima(c):  # tanggal + baris = isian (bawaan semua sisa)
+        r = await PR.rencana_terima(c, await po(c), None, None, await tanggal_dokumen(c, tid), kunci=False)
+        return AD.alasan_blok(r["blocks"], KEADAAN_TERIMA_PO)
+
+    async def potagih(c):
+        return AD.alasan_blok((await PR.rencana_tagih(c, await po(c), None, kunci=False))["blocks"], KEADAAN_TAGIH_PO)
+
+    async def potutup(c):
+        return AD.alasan_blok((await PR.rencana_tutup(c, await po(c)))["blocks"], None)
+
+    async def pobatal(c):
+        return AD.alasan_blok((await PR.rencana_batal(c, tid, await po(c), None))["blocks"], None, kecuali=("ALASAN_WAJIB",))
+
+    async def poum(c):  # nominal/rekening/tanggal = isian; sisa plafon habis = keadaan
+        p = await po(c)
+        r = await UVR.rencana_buat(c, ctx, SimpleNamespace(vendor_id=p["vendor_id"], purchase_order_id=p["id"], amount=0, bank_account_id=None,
+                                                           simpan_dan_posting=False, deposit_date=None), pratinjau=True)
+        a = AD.alasan_blok(r["blocks"], KEADAAN_UM_PO)
+        if a:
+            return a
+        rinci = await UPO.rincian_po(c, tid, p["id"], kunci=False)
+        return UPO.rincian_lebih(rinci) if rinci and rinci["sisa"] <= UPO.TOLERANSI else None
+
+    fn = {"pokirim": pokirim, "pohapus": pohapus, "poterima": poterima, "potagih": potagih, "potutup": potutup, "pobatal": pobatal, "poum": poum}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_PO])

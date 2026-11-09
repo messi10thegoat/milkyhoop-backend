@@ -188,7 +188,9 @@ async def get_goods_receipt(request: Request, gr_id: UUID):
                WHERE i.goods_receipt_id = $1 ORDER BY i.line_number""", gr_id)
         tagihan = await GD.tagihan_terkait(conn, ctx["tenant_id"], gr_id)
         draf = await GD.draf_tagihan_banyak(conn, ctx["tenant_id"], [gr])
-    return {"success": True, "data": {**_bentuk(gr, items), "bills": tagihan, "draft_bills": draf.get(str(gr["id"]), [])}}
+        aksi_t = await aksi_tersedia_grn(conn, ctx, gr_id)  # gelombang 3 BELI: satu transaksi READ ONLY
+    return {"success": True, "data": {**_bentuk(gr, items), "bills": tagihan, "draft_bills": draf.get(str(gr["id"]), []),
+                                      "aksi_tersedia": aksi_t}}
 
 
 @router.get("/{gr_id}/documents")
@@ -284,3 +286,33 @@ async def void_goods_receipt(request: Request, gr_id: UUID, body: VoidGoodsRecei
             resp = {"success": True, "message": f"Penerimaan barang {gr['receipt_number']} dibatalkan.",
                     "data": {**_bentuk(gr), "already_void": hasil["ulang"]}}
             return await idem_buat.simpan(conn, ctx, kp, sidik, "GRN_VOID", resp, gr_id)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PENERIMAAN BARANG (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §10,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_GRN = ("grntagih", "grnbatal")
+KEADAAN_TAGIH_GRN = ("PO_TAK_BISA_DITAGIH", "TAK_ADA_SISA_TAGIH")
+
+
+async def aksi_tersedia_grn(conn, ctx: dict, gr_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail GRN (petunjuk lama aksi/draft_bills tetap). grntagih = penentu to-bill PO-nya
+    (POST /purchase-orders/{po}/to-bill). Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import po_rencana as PR
+    tid = ctx["tenant_id"]
+
+    async def grntagih(c):
+        po = await c.fetchrow("SELECT p.* FROM purchase_orders p JOIN goods_receipts g ON g.purchase_order_id = p.id AND g.tenant_id = p.tenant_id "
+                              "WHERE g.id = $1 AND g.tenant_id = $2", gr_id, tid)
+        if not po:
+            return "Pesanan pembelian tidak ditemukan."  # = 404 POST /purchase-orders/{po}/to-bill
+        return AD.alasan_blok((await PR.rencana_tagih(c, po, None, kunci=False))["blocks"], KEADAAN_TAGIH_GRN)
+
+    async def grnbatal(c):  # sudah void = ulang idempoten (penulis 200)
+        r = await G.rencana_void(c, tid, gr_id, None, await tanggal_dokumen(c, tid), kunci=False)
+        return AD.alasan_blok(r["blocks"], None, kecuali=("ALASAN_WAJIB",))
+
+    return await AD.nilai(conn, [("grntagih", grntagih), ("grnbatal", grnbatal)])

@@ -264,6 +264,9 @@ async def rencana_terapkan(conn, ctx, vd, body, hari_ini, pratinjau: bool = Fals
 
 
 # ---------------------------------------------------------------- lepas
+PENERAPAN_UM_TAK_ADA = "Penerapan uang muka tidak ditemukan."  # rencana_lepas + aksi_tersedia `umlepas` tanpa penerapan aktif
+
+
 async def rencana_lepas(conn, ctx, vd, application_id, hari_ini, kunci: bool = True, pratinjau: bool = False) -> dict:
     """Pesan & urutan == /unapply. Penerapan sudah dilepas = blok SUDAH_DILEPAS (tulis menjawab 200 idempoten; pratinjau melaporkannya)."""
     tid = ctx["tenant_id"]
@@ -273,7 +276,7 @@ async def rencana_lepas(conn, ctx, vd, application_id, hari_ini, kunci: bool = T
            FROM vendor_deposit_applications a LEFT JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $3
            WHERE a.id = $1 AND a.vendor_deposit_id = $2""" + (" FOR UPDATE OF a" if kunci else ""), application_id, vd["id"], tid)
     if not a:
-        return {"blocks": [blok("PENERAPAN_TIDAK_DITEMUKAN", "Penerapan uang muka tidak ditemukan.", 404)], "before": await keadaan(conn, tid, vd["id"]) if pratinjau else {},
+        return {"blocks": [blok("PENERAPAN_TIDAK_DITEMUKAN", PENERAPAN_UM_TAK_ADA, 404)], "before": await keadaan(conn, tid, vd["id"]) if pratinjau else {},
                 "after": None, "journals": [], "bank_transactions": [], "bills": [], "penerapan": None, "baris_asli": []}
     if a["status"] == "reversed":
         bloks.append(blok("SUDAH_DILEPAS", "Penerapan uang muka sudah dilepas sebelumnya.", 409))

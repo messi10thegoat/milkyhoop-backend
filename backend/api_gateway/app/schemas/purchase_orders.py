@@ -18,6 +18,8 @@ Endpoints support:
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
+
+from .aksi_tersedia import AksiTersediaPeta
 from decimal import Decimal
 from datetime import date
 from uuid import UUID
@@ -267,6 +269,8 @@ class PurchaseOrderListItem(BaseModel):
 
 class PurchaseOrderDetail(BaseModel):
     """Full purchase order detail."""
+    # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     id: str
     po_number: str
     vendor_id: Optional[str] = None

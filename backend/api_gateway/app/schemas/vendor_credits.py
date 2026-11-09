@@ -12,6 +12,8 @@ Flow: draft -> posted -> partial/applied -> void (optional)
 from pydantic import BaseModel, Field, field_validator
 from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal
+
+from .aksi_tersedia import AksiTersediaPeta
 from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; UangMasuk = permintaan Decimal (ND-BUAT)
 from decimal import Decimal
 from datetime import date, datetime
@@ -214,6 +216,8 @@ class VendorCreditListItem(PosisiDariStatus):
 
 class VendorCreditDetail(PosisiDariStatus):
     """Full vendor credit detail."""
+    # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     id: str
     vendor_credit_number: str
     vendor_id: Optional[str] = None

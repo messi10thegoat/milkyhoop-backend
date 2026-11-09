@@ -20,6 +20,8 @@ This mirrors ReceivePayments for the payable side.
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Dict, Optional, List, Literal
+
+from .aksi_tersedia import AksiTersediaPeta
 from .uang_json import UangJson, UangMasuk  # item 7: bulat -> int (JSON sama), ber-sen -> float; U-AP-SEN: masukan sen
 from datetime import date
 
@@ -227,6 +229,8 @@ class BillPaymentListItem(BaseModel):
 
 class BillPaymentDetail(BaseModel):
     """Full bill payment detail."""
+    # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
 
     # PEMBELIAN-SERAGAM (2), 22 Okt 2026: turunan alokasi (services/pembayaran_keluar_daftar)
     dialokasikan: float = 0

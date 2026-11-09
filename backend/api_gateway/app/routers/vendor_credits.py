@@ -450,6 +450,7 @@ async def get_vendor_credit(request: Request, vendor_credit_id: UUID):
             return {
                 "success": True,
                 "data": {
+                    "aksi_tersedia": await aksi_tersedia_nd(conn, ctx, vc["id"]),  # gelombang 3 BELI: satu transaksi READ ONLY
                     "id": str(vc["id"]),
                     "vendor_credit_number": vc["credit_number"],
                     "vendor_id": str(vc["vendor_id"]) if vc["vendor_id"] else None,
@@ -2111,3 +2112,41 @@ async def create_tax_invoice_from_vc(request: Request, vendor_credit_id: str, re
             raise HTTPException(resp.status_code, detail)
         hasil = resp.json()
         return (await _ib.simpan(conn, ctx, _kp, _sd, "VC_TAX_INV", hasil, vendor_credit_id)) if _kp else hasil
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL NOTA DEBIT (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §13,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_ND = ("ndposting", "ndterapkan", "ndkembali", "ndlepas", "ndbatal")
+KEADAAN_TERAPKAN_ND = ("TIDAK_DITEMUKAN", "ND_SUDAH_BERTAUT", "BELUM_DIBUKUKAN", "SUDAH_DIKEMBALIKAN")
+KEADAAN_KEMBALI_ND = ("TIDAK_DITEMUKAN", "STATUS_TAK_SAH", "ND_BERTAUT")
+
+
+async def aksi_tersedia_nd(conn, ctx: dict, vc_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail nota debit. Pemanggil TIDAK di dalam transaksi."""
+    from types import SimpleNamespace
+    from ..services import aksi_detail as AD
+    tid = ctx["tenant_id"]
+
+    async def ndposting(c):
+        vc = await c.fetchrow("SELECT * FROM vendor_credits WHERE id = $1 AND tenant_id = $2", vc_id, tid)
+        return AD.alasan_blok((await NDR.rencana_posting(c, ctx, vc, pratinjau=True))["blocks"], None)
+
+    async def ndterapkan(c):  # tagihan tujuan + nominal = isian
+        return AD.alasan_blok((await NDR.rencana_terapkan(c, tid, vc_id, None, 0, pratinjau=True))["blocks"], KEADAAN_TERAPKAN_ND)
+
+    async def ndkembali(c):  # nominal/rekening/tanggal = isian
+        body = SimpleNamespace(amount=0, bank_account_id=None, account_id=None, refund_date=await tanggal_dokumen(c, tid))
+        return AD.alasan_blok((await NDR.rencana_kembali(c, ctx, vc_id, body, pratinjau=True))["blocks"], KEADAAN_KEMBALI_ND)
+
+    async def ndlepas(c):
+        return AD.alasan_blok((await NDR.rencana_lepas(c, tid, vc_id, None, pratinjau=True))["blocks"], None, kecuali=("ALASAN_WAJIB",))
+
+    async def ndbatal(c):  # draf = dihapus
+        return AD.alasan_blok((await NDR.rencana_batal(c, ctx, vc_id, None, pratinjau=True))["blocks"], None,
+                              kecuali=("VOID_REASON_REQUIRED",))
+
+    fn = {"ndposting": ndposting, "ndterapkan": ndterapkan, "ndkembali": ndkembali, "ndlepas": ndlepas, "ndbatal": ndbatal}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_ND])

@@ -4,6 +4,8 @@ Vendor Deposits (Uang Muka Vendor) Schemas
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Annotated, Optional, List
+
+from .aksi_tersedia import AksiTersediaPeta
 from uuid import UUID
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -93,6 +95,8 @@ class VendorDepositResponse(VendorDepositBase):
 
 
 class VendorDepositDetailResponse(VendorDepositResponse):
+    # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     applications: List["VendorDepositApplicationResponse"] = []
     refunds: List["VendorDepositRefundResponse"] = []
 

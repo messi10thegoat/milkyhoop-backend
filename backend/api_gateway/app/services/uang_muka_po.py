@@ -67,9 +67,14 @@ async def rincian_po(conn, tenant_id: str, po_id, exclude_id=None, kunci: bool =
     return {"po_number": po["po_number"], "total": total, "neto": neto, "draf": draf, "dibayar_dimuka": dibayar, "sisa": total - dibayar}
 
 
+def rincian_lebih(r: dict) -> str:
+    """Rincian plafon (pesan_lebih penulis DAN aksi_tersedia `poum` detail PO bila sisa habis)."""
+    return (f"Nilai pesanan {tg.rp(r['total'])}, sudah dibayar di muka {tg.rp(r['dibayar_dimuka'])}, "
+            f"sisa yang masih dapat dibayar di muka {tg.rp(max(r['sisa'], NOL))}.")
+
+
 def pesan_lebih(jumlah, r: dict) -> str:
-    return (f"Jumlah {tg.rp(jumlah)} melebihi sisa yang masih dapat dibayar di muka. Nilai pesanan {tg.rp(r['total'])}, "
-            f"sudah dibayar di muka {tg.rp(r['dibayar_dimuka'])}, sisa yang masih dapat dibayar di muka {tg.rp(max(r['sisa'], NOL))}.")
+    return f"Jumlah {tg.rp(jumlah)} melebihi sisa yang masih dapat dibayar di muka. " + rincian_lebih(r)
 
 
 async def periksa_plafon(conn, tenant_id: str, po_id, jumlah, exclude_id, kunci: bool) -> Optional[dict]:

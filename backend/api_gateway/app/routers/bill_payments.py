@@ -1055,6 +1055,7 @@ async def get_bill_payment(request: Request, payment_id: str):
                 pph_amount=_uang(payment["pph_amount"]),
             )
 
+            detail.aksi_tersedia = await aksi_tersedia_pk(conn, ctx, payment["id"])  # gelombang 3 BELI: satu transaksi READ ONLY
             return BillPaymentDetailResponse(success=True, data=detail)
     except HTTPException:
         raise
@@ -2223,3 +2224,29 @@ async def download_payment_attachment(
         raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PEMBAYARAN KELUAR (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §12,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_PK = ("pkposting", "pkhapus", "pkbatal")
+
+
+async def aksi_tersedia_pk(conn, ctx: dict, payment_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail pembayaran keluar. Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    tid = ctx["tenant_id"]
+
+    async def pkposting(c):
+        return AD.alasan_blok((await BKR.rencana_posting_draf_bayar(c, tid, payment_id, pratinjau=True))["blocks"], None)
+
+    async def pkhapus(c):
+        return AD.alasan_blok((await BKR.rencana_hapus_draf_bayar(c, tid, payment_id, pratinjau=True))["blocks"], None)
+
+    async def pkbatal(c):  # alasan = isian (penentu tak memeriksanya)
+        return AD.alasan_blok((await BKR.rencana_batal_bayar(c, tid, payment_id, pratinjau=True))["blocks"], None)
+
+    fn = {"pkposting": pkposting, "pkhapus": pkhapus, "pkbatal": pkbatal}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_PK])

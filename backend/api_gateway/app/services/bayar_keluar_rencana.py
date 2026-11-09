@@ -71,6 +71,12 @@ async def _uuid_sah(bl: Blok, nilai, nama: str) -> Optional[UUID]:
         return None
 
 
+def kalimat_tagihan_lunas(nomor) -> str:
+    """aksi_tersedia `fpbayar` detail faktur pembelian bila sisa tagihan (penentu rencana_bayar_tagihan) <= 0 -- cermin SI 'Faktur X sudah lunas.'
+    (penulis tetap menolak nominal positif dengan kalimat_bayar_melebihi_sisa)."""
+    return f"Faktur pembelian {nomor} sudah lunas."
+
+
 def kalimat_bayar_melebihi_sisa(jumlah, sisa) -> str:
     """Cermin SI 'Jumlah bayar melebihi sisa tagihan Rp ...'; tg.rp (dulu format koma Inggris 1,000,000)."""
     from . import teks_galat as tg

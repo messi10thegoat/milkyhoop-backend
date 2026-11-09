@@ -213,3 +213,75 @@ Kriteria §5.2 ditafsir ulang (b): **opt-in bila p95 naik >80 ms ATAU (>30% DAN 
 **Belum terukur:** Proforma `koreksi`. Pratinjau memanggil izin PolicyEngine, yang tak ada di kontainer uji. TIKET: PolicyEngine di kontainer uji.
 
 **PUTUSAN 1:** POST /receive-payments/{id}/post memeriksa status draf SEBELUM `_periksa_sisa_draf` (`penjaga_posting_rp`, satu sumber dengan `_post_payment`). Penerimaan non-draf ditolak dengan kalimat status (dulu "Alokasi melebihi sisa"); kelayakan sama.
+
+## 9. Kelompok BELI (BACKEND 10 Nov, cabang `feat/beli-aksi-tersedia`)
+
+`aksi_tersedia` detail PO, GRN, Faktur Pembelian, Pembayaran Keluar, Nota Debit, UM Pembelian.
+
+- Kunci persis KUNCI §9–§14.
+- SATU transaksi READ ONLY per GET.
+- Penentu = `rencana_*` penulis yang sudah bersama. Semua dipanggil `pratinjau=True` / `kunci=False`.
+- `alasan_blok` kini menerima Blok pengumpul (`.daftar`).
+- **Letak:**
+  - di dalam `data` untuk PO, GRN, FPB, BP, ND;
+  - **UMP tanpa pembungkus `data`**: respons detail = objek dokumen, jadi kunci ada di objek itu.
+
+### Petunjuk lama tetap utuh
+
+- PO: `terima_tersedia`, `tagih_tersedia`, `draft_bills`, `belum_ditagih_sesudah_draf`.
+- GRN: `aksi`, `draft_bills`.
+- FPB: `aksi_tersedia.nota_debit` di level ATAS (alias di dalam `data` = kunci `fpnd`, penentu `nota_debit.aksi_tersedia_tagihan` YANG SAMA).
+
+### Penentu per modul
+
+Kode di kurung = isian, diabaikan.
+
+**PO** (`po_rencana`)
+- `pokirim`: `rencana_kirim`.
+- `pohapus`: `rencana_hapus`.
+- `poterima`: `rencana_terima` dengan bawaan semua sisa (keadaan PO_TAK_BISA_DITERIMA, PO_TANPA_BARANG, TAK_ADA_SISA_TERIMA).
+- `potagih`: `rencana_tagih` (keadaan PO_TAK_BISA_DITAGIH, TAK_ADA_SISA_TAGIH).
+- `potutup`: `rencana_tutup`.
+- `pobatal`: `rencana_batal` (ALASAN_WAJIB).
+- `poum`: `uang_muka_vendor_rencana.rencana_buat` dengan nominal 0 (keadaan VENDOR/PO tak ditemukan, beda vendor, PO dibatalkan). Plafon habis = `uang_muka_po.rincian_lebih` (diekstrak; `pesan_lebih` penulis memakainya, teks identik).
+
+**GRN**
+- `grntagih`: `rencana_tagih` atas PO-nya (purchase_order_id NOT NULL).
+- `grnbatal`: `grn_rencana.rencana_void(kunci=False)` (ALASAN_WAJIB). GRN batal = ulang idempoten (tersedia).
+
+**FPB**
+- `fpbayar`: `bayar_keluar_rencana.rencana_bayar_tagihan` dengan nominal 0 (keadaan TAGIHAN_TIDAK_DITEMUKAN/DIBATALKAN/DRAF). Sisa ≤ 0 → **kalimat BARU** `kalimat_tagihan_lunas` "Faktur pembelian X sudah lunas." (cermin SI; penulis tak berubah, tetap menolak nominal positif dengan kalimat melebihi sisa).
+- `fpposting`: `tagihan_aksi.rencana_posting`.
+- `fphapus`: `blok_hapus` + `ref_hapus` (== pratinjau hapus).
+- `fpbatal`: `tagihan_aksi.rencana_void`.
+- `fpnd`: `aksi_tersedia_tagihan`.
+
+**BP** (`bayar_keluar_rencana`)
+- `pkposting`: `rencana_posting_draf_bayar`.
+- `pkhapus`: `rencana_hapus_draf_bayar`.
+- `pkbatal`: `rencana_batal_bayar` (alasan tak diperiksa penentu).
+
+**ND** (`nota_debit_rencana`)
+- `ndposting`: `rencana_posting`.
+- `ndterapkan`: `rencana_terapkan` tanpa tagihan (keadaan TIDAK_DITEMUKAN, ND_SUDAH_BERTAUT, BELUM_DIBUKUKAN, SUDAH_DIKEMBALIKAN).
+- `ndkembali`: `rencana_kembali` dengan nominal 0 (keadaan STATUS_TAK_SAH, ND_BERTAUT).
+- `ndlepas`: `rencana_lepas` (ALASAN_WAJIB).
+- `ndbatal`: `rencana_batal` (VOID_REASON_REQUIRED).
+
+**UMP** (`uang_muka_vendor_rencana`)
+- `umposting`: `rencana_posting`.
+- `umhapus`: `rencana_hapus`.
+- `umterapkan` / `umkembalikan`: `rencana_terapkan` / `rencana_kembali` dengan nominal 0 (keadaan BELUM_DIPOSTING, SALDO_TIDAK_CUKUP; status `applied` = sisa 0).
+- `umlepas`: `rencana_lepas(kunci=False)` per penerapan aktif; tersedia bila satu bisa dilepas. Tanpa penerapan = `PENERAPAN_UM_TAK_ADA` (diekstrak; kalimat 404 penulis).
+- `umbatal`: `rencana_batal` (VOID_REASON_REQUIRED); draf = DRAF_DIHAPUS (keadaan).
+
+### Beda dengan "tampil bila" FE (server = penulis)
+
+- `poum`: tanpa syarat amount_billed = 0 / status sent..received; penulis hanya menolak PO dibatalkan / beda vendor / plafon habis.
+- `grnbatal`: GRN batal = ulang idempoten.
+- Flag FE (`aksi_pembelian_v1`, `nd_dari_fpb_v1`, `listpage_uang_muka_pembelian_v1`) tak dinilai server.
+
+### Bukti
+
+- Unit `tests/unit/test_beli_aksi_tersedia.py`.
+- Salinan `scripts/ops/uji-salinan-beli-aksi.sh`. Kinerja dinilai dengan kriteria (b), dari biaya murni terselang + data per kunci.

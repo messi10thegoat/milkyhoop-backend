@@ -292,7 +292,8 @@ async def get_vendor_deposit(request: Request, deposit_id: UUID):
         return VendorDepositDetailResponse(
             **{**dict(vd), "sisa": None if _f["sisa"] is None else float(_f["sisa"]), "terpakai": float(_f["terpakai"]),
                "dikembalikan": float(_f["dikembalikan"]), "sisa_keadaan": _f["sisa_keadaan"], "status_text": _f["status_text"],
-               "position_text": _f["position_text"], "aksi": _f["aksi"], "documents": _dok, "doc_count": len(_dok)},
+               "position_text": _f["position_text"], "aksi": _f["aksi"], "documents": _dok, "doc_count": len(_dok),
+               "aksi_tersedia": await aksi_tersedia_ump(conn, ctx, deposit_id)},  # gelombang 3 BELI: satu transaksi RO (tanpa pembungkus data)
             applications=[
                 VendorDepositApplicationResponse(**dict(a)) for a in applications
             ],
@@ -1548,3 +1549,62 @@ async def get_vendor_deposit_history(request: Request, deposit_id: UUID, limit: 
     if data is None:
         raise HTTPException(status_code=404, detail="Uang muka vendor tidak ditemukan.")
     return {"success": True, "data": data}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL UANG MUKA PEMBELIAN (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §14,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_UMP = ("umposting", "umhapus", "umterapkan", "umlepas", "umkembalikan", "umbatal")
+KEADAAN_SALDO_UMP = ("BELUM_DIPOSTING", "SALDO_TIDAK_CUKUP")
+
+
+async def aksi_tersedia_ump(conn, ctx: dict, deposit_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail uang muka pembelian (respons tanpa pembungkus data: kunci di objek dokumen). Pemanggil TIDAK di
+    dalam transaksi."""
+    from types import SimpleNamespace
+    from ..services import aksi_detail as AD
+    tid = ctx["tenant_id"]
+
+    async def vd(c):
+        return await c.fetchrow("SELECT * FROM vendor_deposits WHERE id = $1 AND tenant_id = $2", deposit_id, tid)
+
+    async def umposting(c):
+        return AD.alasan_blok((await R.rencana_posting(c, ctx, await vd(c), pratinjau=True))["blocks"], None)
+
+    async def umhapus(c):
+        return AD.alasan_blok((await R.rencana_hapus(c, ctx, await vd(c), pratinjau=True))["blocks"], None)
+
+    async def umterapkan(c):  # tagihan + nominal + tanggal = isian
+        hari = await tanggal_dokumen(c, tid)
+        r = await R.rencana_terapkan(c, ctx, await vd(c), SimpleNamespace(amount=0, bill_id=None, applied_date=hari), hari, pratinjau=True)
+        return AD.alasan_blok(r["blocks"], KEADAAN_SALDO_UMP)
+
+    async def umlepas(c):
+        """Penerapan aktif mana pun yang bisa dilepas -> tersedia (penentu /applications/{app}/unapply per penerapan)."""
+        v, hari = await vd(c), await tanggal_dokumen(c, tid)
+        apps = await c.fetch("SELECT a.id FROM vendor_deposit_applications a JOIN vendor_deposits d ON d.id = a.vendor_deposit_id "
+                             "AND d.tenant_id = $2 WHERE a.vendor_deposit_id = $1 AND a.status = 'active' ORDER BY a.id", deposit_id, tid)
+        if not apps:
+            return R.PENERAPAN_UM_TAK_ADA
+        alasan = None
+        for a in apps:
+            x = AD.alasan_blok((await R.rencana_lepas(c, ctx, v, a["id"], hari, kunci=False, pratinjau=True))["blocks"], None)
+            if x is None:
+                return None
+            alasan = alasan or x
+        return alasan
+
+    async def umkembalikan(c):  # nominal/rekening/tanggal = isian
+        hari = await tanggal_dokumen(c, tid)
+        body = SimpleNamespace(amount=0, bank_account_id=None, account_id=None, refund_date=hari)
+        return AD.alasan_blok((await R.rencana_kembali(c, ctx, await vd(c), body, pratinjau=True))["blocks"], KEADAAN_SALDO_UMP)
+
+    async def umbatal(c):  # draf = DRAF_DIHAPUS (keadaan)
+        r = await R.rencana_batal(c, ctx, await vd(c), None, await tanggal_dokumen(c, tid), pratinjau=True)
+        return AD.alasan_blok(r["blocks"], None, kecuali=("VOID_REASON_REQUIRED",))
+
+    fn = {"umposting": umposting, "umhapus": umhapus, "umterapkan": umterapkan, "umlepas": umlepas, "umkembalikan": umkembalikan,
+          "umbatal": umbatal}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_UMP])

@@ -823,6 +823,7 @@ async def get_bill_detail(request: Request, bill_id: UUID):
         pool = await get_pool()
         async with pool.acquire() as conn:  # BUG-069 REOPEN: penentu SAMA dengan pratinjau ND dari faktur
             aksi_t = await _ND.aksi_tersedia_tagihan(conn, ctx["tenant_id"], bill_id)
+            bill["aksi_tersedia"] = await aksi_tersedia_fpb(conn, ctx, bill_id)  # gelombang 3 BELI: di DALAM data, satu transaksi RO
         return {"success": True, "data": bill, "aksi_tersedia": aksi_t}
 
     except HTTPException:
@@ -1871,6 +1872,7 @@ async def get_bill_v2(request: Request, bill_id: UUID):
         pool = await get_pool()
         async with pool.acquire() as conn:  # BUG-069 REOPEN: penentu SAMA dengan pratinjau ND dari faktur
             aksi_t = await _ND.aksi_tersedia_tagihan(conn, ctx["tenant_id"], bill_id)
+            bill["aksi_tersedia"] = await aksi_tersedia_fpb(conn, ctx, bill_id)  # gelombang 3 BELI: di DALAM data, satu transaksi RO
         return {"success": True, "data": bill, "aksi_tersedia": aksi_t}
 
     except HTTPException:
@@ -2145,3 +2147,46 @@ async def download_bill_attachment(
         raise HTTPException(status_code=404, detail="Lampiran tidak ditemukan.")
 
     return stream_lampiran(row, get_storage_service())
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL FAKTUR PEMBELIAN (gelombang 3 BELI, kontrak KONTRAK-jualbeli-aksi-standar-so §9; kunci = KUNCI-aksi-detail-per-modul §11,
+# hanya jenis tulis, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail); isian wajib (alasan,
+# nominal, rekening, tagihan tujuan, tanggal) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_FPB = ("fpbayar", "fpposting", "fphapus", "fpbatal", "fpnd")
+KEADAAN_BAYAR_FPB = ("TAGIHAN_TIDAK_DITEMUKAN", "TAGIHAN_DIBATALKAN", "TAGIHAN_DRAF")
+
+
+async def aksi_tersedia_fpb(conn, ctx: dict, bill_id) -> dict:
+    """{kunci: {tersedia, alasan}} di DALAM data detail faktur pembelian (aksi_tersedia.nota_debit level ATAS tetap utuh sampai FE pindah;
+    `fpnd` = penentu YANG SAMA). Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import bayar_keluar_rencana as BKR
+    from ..services import tagihan_aksi as TA
+    tid = ctx["tenant_id"]
+
+    async def fpbayar(c):  # nominal/rekening/tanggal = isian; sisa <= 0 = keadaan
+        r = await BKR.rencana_bayar_tagihan(c, tid, bill_id, {"amount": 0}, pratinjau=True)
+        a = AD.alasan_blok(r["blocks"], KEADAAN_BAYAR_FPB)
+        if a:
+            return a
+        return BKR.kalimat_tagihan_lunas(r["bill"]["invoice_number"]) if r.get("remaining") is not None and r["remaining"] <= 0 else None
+
+    async def fpposting(c):
+        return AD.alasan_blok((await TA.rencana_posting(c, tid, bill_id))["blocks"], None)
+
+    async def fphapus(c):  # == POST /bills/{id}/delete/preview
+        b = await c.fetchrow("SELECT id, amount_paid, status, status_v2, accounting_status, operational_status FROM bills "
+                             "WHERE id = $1 AND tenant_id = $2", bill_id, tid)
+        return AD.alasan_blok(TA.blok_hapus(b, await TA.ref_hapus(c, bill_id)), None)
+
+    async def fpbatal(c):
+        return AD.alasan_blok((await TA.rencana_void(c, tid, bill_id))["blocks"], None)
+
+    async def fpnd(c):
+        x = (await _ND.aksi_tersedia_tagihan(c, tid, bill_id))["nota_debit"]
+        return None if x["tersedia"] else x["alasan"]
+
+    fn = {"fpbayar": fpbayar, "fpposting": fpposting, "fphapus": fphapus, "fpbatal": fpbatal, "fpnd": fpnd}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_FPB])

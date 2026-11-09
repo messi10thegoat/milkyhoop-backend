@@ -31,7 +31,7 @@ def alasan_blok(blocks: Iterable[dict], kode_keadaan: Optional[Iterable[str]], k
     keadaan kecuali kode isian di `kecuali` (mis. alasan wajib)."""
     kode = None if kode_keadaan is None else set(kode_keadaan)
     isian = set(kecuali)
-    for b in blocks:
+    for b in getattr(blocks, "daftar", blocks):  # Blok pengumpul (bayar_keluar_rencana / nota_debit_rencana) atau list
         if b.get("code") in isian:
             continue
         if kode is None or b.get("code") in kode:
