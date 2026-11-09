@@ -26,6 +26,11 @@ NEGASI = {"pendapatan": True, "hpp": False, "beban_usaha": False, "lain": True, 
           "liabilitas_jp": True, "liabilitas_jpp": True, "ekuitas": True}
 
 
+TOTAL_SEKSI = {"pendapatan": "total_pendapatan", "hpp": "total_hpp", "beban_usaha": "total_beban_usaha", "lain": "total_lain",
+               "aset_lancar": "total_aset_lancar", "aset_tidak_lancar": "total_aset_tidak_lancar", "liabilitas_jp": "total_liabilitas_jp",
+               "liabilitas_jpp": "total_liabilitas_jpp", "ekuitas": "total_ekuitas"}
+
+
 def cek(nama, ok, info=""):
     CEK.append([nama, bool(ok), "" if ok else str(info)[:500]])
 
@@ -71,7 +76,7 @@ async def paritas(conn, tid, nama, lap, mulai, akhir, presisi):
                 {"baris": b, "jurnal": str(s), "seksi": seksi})
         if b["jenis"] == "akun":
             jumlah[seksi] = jumlah.get(seksi, Decimal("0")) + Decimal(b["nilai"])
-        elif b["jenis"] == "total" and seksi in NEGASI:
+        elif b["jenis"] == "total" and seksi in NEGASI and b["kunci"] == TOTAL_SEKSI.get(seksi):  # "Total Liabilitas" bukan total seksi
             total[seksi] = Decimal(b["nilai"])
     for s, t in total.items():
         cek(f"P {nama} Σ akun seksi {s} == total", jumlah.get(s, Decimal("0")) == t, {"jumlah": str(jumlah.get(s)), "total": str(t)})

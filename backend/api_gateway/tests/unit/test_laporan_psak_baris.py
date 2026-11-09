@@ -122,8 +122,8 @@ def test_detail_ledger_membawa_account_id():
 
 # ---------------------------------------------------------------- rute
 def test_rute_pool_ro_tanpa_bocor_dan_tampil_satu_pemformat():
-    src = inspect.getsource(PR)
-    assert "asyncpg.connect" not in src and "get_db_connection" not in src and "SET LOCAL" not in src.split('"""', 2)[2]
+    src = inspect.getsource(PR).split('"""', 2)[2]  # kode sesudah docstring modul (docstring menyebut yang dibuang)
+    assert "asyncpg.connect" not in src and "get_db_connection" not in src and "SET LOCAL" not in src
     assert "detail=str(e)" not in src and src.count("conn.transaction(readonly=True)") == 2
     lap = {"baris": [{"nilai": "-5000.00"}, {"nilai": None}]}
     PR._tampil(lap, 0)
