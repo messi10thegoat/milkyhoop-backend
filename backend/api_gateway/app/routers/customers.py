@@ -1070,12 +1070,10 @@ async def update_customer(
                 if {"address", "city", "province", "postal_code"} & set(update_data):
                     await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], customer_id, ctx.get("user_id"))
 
-                change_parts = [f"{x['label']}: {x['lama'] if x['lama'] is not None else '-'} -> "
-                                f"{x['baru'] if x['baru'] is not None else '-'}" for x in perubahan_pelanggan(current, update_data)]
-
-                # Log activity if there were changes
-                if change_parts:
-                    details = "\n".join(change_parts)
+                # Temuan C (TESTER 9 Nov): satu baris riwayat per medan, kalimat penentu bersama KDT.teks_ubah (seragam vendor);
+                # nilai lama/baru di old_value/new_value (dulu satu baris "Pelanggan diperbarui" + details "Label: a -> b" mentah).
+                perubahan = perubahan_pelanggan(current, update_data)
+                if perubahan:
                     user_id = (
                         request.state.user.get("user_id")
                         if hasattr(request.state, "user")
@@ -1088,18 +1086,22 @@ async def update_customer(
                         else None
                     )
 
-                    await conn.execute(
-                        """
-                        INSERT INTO customer_activities
-                        (customer_id, tenant_id, type, description, details, actor_id, actor_name)
-                        VALUES ($1, $2, 'updated', 'Pelanggan diperbarui', $3, $4, $5)
-                    """,
-                        customer_id,
-                        ctx["tenant_id"],
-                        details,
-                        user_id,
-                        user_name,
-                    )
+                    for x in perubahan:
+                        await conn.execute(
+                            """
+                            INSERT INTO customer_activities
+                            (customer_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
+                            VALUES ($1, $2, 'updated', $3, $4, $5, $6, $7, $8)
+                        """,
+                            customer_id,
+                            ctx["tenant_id"],
+                            KDT.teks_ubah(x["field"], x["label"], x["baru"]),
+                            x["field"],
+                            str(x["lama"]) if x["lama"] is not None else "-",
+                            str(x["baru"]) if x["baru"] is not None else "-",
+                            user_id,
+                            user_name,
+                        )
 
                 logger.info(f"Customer updated: {customer_id}")
 
@@ -2011,11 +2013,14 @@ async def merge_customers(request: Request, response: Response = None):
                     sumber, ctx["tenant_id"], str(ctx["user_id"]),
                 )
                 for cid in sumber:
-                    await conn.execute(
-                        """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
-                        VALUES ($1, $2, 'merge', $3, $4)""",
-                        ctx["tenant_id"], sasaran, f"Merged customer {peta[cid]['nama']} ({cid}) into this customer", ctx["user_id"],
-                    )
+                    # Temuan C: kalimat seragam vendor (dulu Inggris + UUID); sumber juga mencatat ke mana ia digabung
+                    for pid, teks in ((sasaran, f"Pelanggan {peta[cid]['nama']} digabung ke pelanggan ini"),
+                                      (cid, f"Digabung ke pelanggan {peta[sasaran]['nama']}")):
+                        await conn.execute(
+                            """INSERT INTO customer_activities (tenant_id, customer_id, type, description, actor_id)
+                            VALUES ($1, $2, 'merge', $3, $4)""",
+                            ctx["tenant_id"], pid, teks, ctx["user_id"],
+                        )
                     await conn.execute(
                         """INSERT INTO audit_logs (id, "eventType", entity_type, entity_id, entity_number, tenant_id, source, metadata, success, "createdAt")
                            VALUES (gen_random_uuid()::text, 'CUSTOMER_MERGED', 'customer', $1, $2, $3, 'api:customers.merge',

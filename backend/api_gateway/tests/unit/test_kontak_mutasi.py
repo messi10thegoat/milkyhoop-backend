@@ -92,6 +92,8 @@ class Conn:
 
     async def fetch(self, sql, *a):
         self.log.append((sql, a))
+        if "FROM journal_entries WHERE tenant_id = $1 AND id = ANY" in sql:  # temuan B: waktu buat jurnal (urutan dalam tanggal)
+            return []
         return self.baris
 
 

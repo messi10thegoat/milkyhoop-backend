@@ -421,7 +421,7 @@ async def list_vendors(
                 total, sum_sisa = h["total"], h.get("sum_sisa")
                 pos = {str(i): n for n, i in enumerate(h["ids"])}
                 rows = sorted(await conn.fetch(
-                    """SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
+                    """SELECT id, code, name, company_name, display_name, contact_person, phone, mobile_phone, email, city,
                               payment_terms_days, is_active, created_at, is_pkp, default_tax_code FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])""",
                     ctx["tenant_id"], h["ids"]), key=lambda r: pos[str(r["id"])])
             else:
@@ -432,7 +432,7 @@ async def list_vendors(
                 # Get items - handle ap_balance sorting with subquery
                 if use_ap_balance_sort:
                     query = f"""
-                        SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.email, v.city,
+                        SELECT v.id, v.code, v.name, v.company_name, v.display_name, v.contact_person, v.phone, v.mobile_phone, v.email, v.city,
                                v.payment_terms_days, v.is_active, v.created_at, v.is_pkp, v.default_tax_code,
                                COALESCE(ap.ap_balance, 0) as ap_balance
                         FROM vendors v
@@ -448,7 +448,7 @@ async def list_vendors(
                     """
                 else:
                     query = f"""
-                        SELECT id, code, name, company_name, display_name, contact_person, phone, email, city,
+                        SELECT id, code, name, company_name, display_name, contact_person, phone, mobile_phone, email, city,
                                payment_terms_days, is_active, created_at, is_pkp, default_tax_code
                         FROM vendors v
                         WHERE {where_clause}
@@ -1268,7 +1268,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                     """,
                         vendor_id,
                         ctx["tenant_id"],
-                        f"{x['label']} diubah",
+                        KDT.teks_ubah(x["field"], x["label"], x["baru"]),
                         x["field"],
                         old_display,
                         new_display,

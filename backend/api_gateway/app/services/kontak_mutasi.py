@@ -201,10 +201,18 @@ def keterangan(urut: int, ket: Optional[str]) -> Optional[str]:
     return f"membatalkan {ket}" if urut == 10 else f"untuk {ket}"
 
 
+
+
+def _waktu(r) -> tuple:
+    """Kunci waktu buat: jurnal tanpa created_at (data lama) paling awal dalam tanggalnya; tak membandingkan None dengan waktu."""
+    return (r.get("dibuat") is not None, r.get("dibuat") or 0)
+
 def susun(baris: list, jenis: str, dari, skip: int, limit: int) -> dict:
-    """Urutkan (tanggal, nomor jurnal, urut komponen), saldo berjalan atas SELURUH urutan, saldo_awal = baris sebelum `dari`."""
+    """Urutkan (tanggal, WAKTU BUAT jurnal, urut komponen, nomor), saldo berjalan atas SELURUH urutan, saldo_awal = baris sebelum `dari`.
+    Temuan B (TESTER nyawit 9 Nov): dulu nomor jurnal sebelum waktu -> "BP-0013" (11:37) tampil sebelum "BILL-0016" (10:43) di hari
+    yang sama dan saldo berjalan sempat negatif. `dibuat` = journal_entries.created_at (kronologis); saldo akhir tak berubah."""
     tanda = JENIS[jenis]["tanda"]
-    baris = sorted(baris, key=lambda r: (r["tgl"], r["jno"] or "", r["urut"], r["dno"] or ""))
+    baris = sorted(baris, key=lambda r: (r["tgl"], _waktu(r), r["urut"], r["jno"] or "", r["dno"] or ""))
     saldo, awal, isi, td, tk = NOL, NOL, [], NOL, NOL
     for r in baris:
         d, k = Decimal(str(r["debit"] or 0)), Decimal(str(r["kredit"] or 0))
@@ -229,6 +237,11 @@ async def mutasi(conn, tid: str, jenis: str, pihak_id, *, dari=None, sampai=None
         return None
     sql = j["sql"] if tanpa_batal else f"{j['sql']}\nUNION ALL\n{j['batal']}"
     baris = [dict(r) for r in await conn.fetch(f"SELECT {KOLOM} FROM ({sql}) m", tid, pihak_id)]
+    jids = list({r["jid"] for r in baris})
+    dibuat = {r["id"]: r["created_at"] for r in await conn.fetch(
+        "SELECT id, created_at FROM journal_entries WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, jids)} if jids else {}
+    for r in baris:
+        r["dibuat"] = dibuat.get(r["jid"])
     if sampai is not None:
         baris = [r for r in baris if r["tgl"] <= sampai]
     hasil = susun(baris, jenis, dari, skip, limit)

@@ -14,7 +14,7 @@ JENIS = {
     "customer": {"tabel": "customers", "fungsi": "compute_ar_outstanding", "pihak": "customer_id", "dok": "invoice_id",
                  "aksi": ("lewat_jatuh_tempo", "punya_piutang"), "nama": "nama", "telepon": "telepon", "kota": "city"},
     "vendor": {"tabel": "vendors", "fungsi": "compute_ap_outstanding", "pihak": "vendor_id", "dok": "bill_id",
-               "aksi": ("lewat_jatuh_tempo", "punya_hutang"), "nama": "name", "telepon": "phone", "kota": "city"},
+               "aksi": ("lewat_jatuh_tempo", "punya_hutang"), "nama": "name", "telepon": ("mobile_phone", "phone"), "kota": "city"},  # temuan A 9 Nov: No. HP form vendor = mobile_phone
 }
 
 
@@ -76,6 +76,15 @@ def kontak_teks(telepon, kota) -> Optional[str]:
     return " · ".join(bagian) or None
 
 
+def telepon_baris(row, kolom) -> Optional[str]:
+    """Kolom telepon kontak: nama kolom atau tuple prioritas (vendor: mobile_phone ?? phone) -- nilai tak kosong PERTAMA."""
+    for k in (kolom if isinstance(kolom, tuple) else (kolom,)):
+        v = row.get(k)
+        if v is not None and str(v).strip():
+            return v
+    return None
+
+
 def status_text(is_active) -> str:
     return "Aktif" if is_active else "Nonaktif"
 
@@ -88,7 +97,7 @@ def medan_baris(jenis: str, row, fakta: dict) -> dict:
     berlaku = aksi_baris(jenis, {"saldo": f["saldo"], "lewat_jumlah": f["lewat_tempo_jumlah"]})
     # kontrak AKSI-SEMUA (pembaca FE pillAksi.medanAksiBaris): aksi = kunci PERTAMA (urut desak) atau null; aksi_semua = yang BERLAKU
     return {"saldo": uang(f["saldo"]), "lewat_tempo_nilai": uang(f["lewat_tempo_nilai"]), "lewat_tempo_jumlah": f["lewat_tempo_jumlah"],
-            "kontak_teks": kontak_teks(row.get(j["telepon"]), row.get(j["kota"])), "status_text": status_text(row["is_active"]),
+            "kontak_teks": kontak_teks(telepon_baris(row, j["telepon"]), row.get(j["kota"])), "status_text": status_text(row["is_active"]),
             "aksi": berlaku[0] if berlaku else None, "aksi_semua": berlaku}
 
 

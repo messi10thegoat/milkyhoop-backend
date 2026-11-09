@@ -155,6 +155,14 @@ def ringkas_pindah(cacah: dict) -> list:
     return [f"{n} {PINDAH_TEKS[t]}" for t, n in cacah.items() if n and PINDAH_TEKS.get(t)]
 
 
+def teks_ubah(field: Optional[str], label: Optional[str], baru) -> str:
+    """SATU kalimat riwayat per medan untuk Vendor DAN Pelanggan (temuan C TESTER 9 Nov): status aktif -> "Dinonaktifkan"/"Diaktifkan",
+    medan lain -> "<Label> diubah". Nilai lama/baru tetap di kolom old_value/new_value, tidak ditempel ke kalimat."""
+    if field == "is_active":
+        return "Diaktifkan" if str(baru).strip().lower() in ("true", "1", "aktif", "active") else "Dinonaktifkan"
+    return f"{label or field} diubah"
+
+
 def nilai_sama(lama, baru) -> bool:
     """Banding nilai kolom vs badan PATCH: UUID kolom == teks badan (price_list_id dsb.); selain itu == biasa (Decimal == int)."""
     from uuid import UUID

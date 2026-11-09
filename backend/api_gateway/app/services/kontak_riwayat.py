@@ -5,6 +5,7 @@ Sumber (dipindah apa adanya dari router /activity): *_activities + dokumen (fakt
 non-draf non-batal. Dokumen terkait disaring per izin BACA pemanggil (pola so_riwayat); modul tersaring -> `omitted`.
 Tenant eksplisit di setiap kueri. Waktu = zona tenant; nominal = Rupiah baku (teks_galat.rp).
 """
+import re
 from typing import Awaitable, Callable, Optional
 
 MAKS = 2000  # batas kejadian yang dibaca sebelum saring izin
@@ -65,9 +66,35 @@ async def baris(conn, jenis: str, pihak_id, tid: str, limit: int, offset: int) -
     return await conn.fetch(q["baris"], pihak_id, tid, limit, offset), await conn.fetchval(q["hitung"], pihak_id, tid)
 
 
+_GABUNG_LAMA = re.compile(r"^Merged customer (.+) \([0-9a-fA-F-]{36}\) into this customer$")
+
+
+def teks_lama(r) -> Optional[str]:
+    """Temuan C: baris riwayat yang SUDAH tertulis dengan bentuk lama -> kalimat penentu bersama (KDT.teks_ubah), tanpa nilai mentah.
+    "Pelanggan diperbarui" + details "Label: a -> b" per baris · gabung Inggris + UUID · baris medan is_active ("Status aktif diubah")."""
+    from .kontak_detail import teks_ubah
+    d = r["description"] or ""
+    m = _GABUNG_LAMA.match(d)
+    if m:
+        return f"Pelanggan {m.group(1)} digabung ke pelanggan ini"
+    if d == "Pelanggan diperbarui" and r.get("details"):
+        bagian = []
+        for b in str(r["details"]).split("\n"):
+            label, _, nilai = b.partition(": ")
+            baru = nilai.rsplit(" -> ", 1)[-1] if " -> " in nilai else None
+            bagian.append(teks_ubah("is_active" if label == "Status aktif" else None, label, baru))
+        return ", ".join(bagian)
+    if r.get("field_name") == "is_active":
+        return teks_ubah("is_active", None, r.get("new_value"))
+    return None
+
+
 def ringkas(r) -> str:
-    """Teks siap tampil: deskripsi + Rupiah baku (dulu 'Total: <numeric mentah>')."""
+    """Teks siap tampil: deskripsi + Rupiah baku (dulu 'Total: <numeric mentah>'); baris lama -> teks_lama."""
     from . import teks_galat as tg
+    lama = teks_lama(r)
+    if lama:
+        return lama
     if r["total"] is not None:
         return f"{r['description']} · {tg.rp(r['total'])}"
     return r["description"] if not r.get("details") else f"{r['description']} · {r['details']}"
