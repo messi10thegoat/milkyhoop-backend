@@ -12,7 +12,7 @@ APP = Path(KD.__file__).resolve().parents[1]
 def test_vendor_lengkap_hp_dulu():
     v = {"code": "V0003", "mobile_phone": "081243065632", "phone": "0431 862100", "city": "Manado", "payment_terms_days": 30}
     assert KD.identitas_text("vendor", v) == "V0003 · 0812 4306 5632 · Manado · Termin 30 hari"
-    assert KD.identitas_text("vendor", {**v, "mobile_phone": None}) == "V0003 · 0431 862100 · Manado · Termin 30 hari"
+    assert KD.identitas_text("vendor", {**v, "mobile_phone": None}) == "V0003 · 0431 8621 00 · Manado · Termin 30 hari"  # pemformat bersama telepon_teks (== kontak_teks)
 
 
 def test_bagian_kosong_dilewati_dan_tunai():
