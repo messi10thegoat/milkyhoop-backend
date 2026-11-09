@@ -68,9 +68,11 @@ def test_kueri_hanya_posted_sampai_tanggal_dan_akun_nonaktif_ikut():
 
 def test_rute_hitung_sendiri_as_of_alias_dan_tanggal_bisnis():
     src = inspect.getsource(RP.get_trial_balance)
-    assert "get_facade(" not in src and "get_trial_balance(" not in src.split("def get_trial_balance", 1)[1] and "NS.neraca_saldo(" in src and "conn.transaction(readonly=True)" in src
-    assert "as_of_date: Optional[date]" in src and "as_of or as_of_date or await tanggal_dokumen(conn, tenant_id)" in src
-    assert "str(e)" not in inspect.getsource(RP.get_trial_balance_full)
+    kode = src.split('"""', 2)[2]  # kode sesudah docstring (docstring menyebut fungsi DB yang dibuang)
+    assert "get_facade(" not in kode and "get_trial_balance(" not in kode and "NS.neraca_saldo(" in kode and "conn.transaction(readonly=True)" in kode
+    assert "as_of_date: Optional[date]" in src and "as_of or as_of_date or await tanggal_dokumen(conn, tenant_id)" in kode
+    full = inspect.getsource(RP.get_trial_balance_full)  # 500 tanpa str(e) di BALASAN (log boleh)
+    assert "report: {str(e)}" not in full and 'detail="Failed to generate trial balance report"' in full
 
 
 def test_satu_peta_tipe_dan_saldo_normal():
