@@ -152,20 +152,22 @@ async def compute_balance_detail(
     conditions, params = _build_where(tenant_id, account_filter, start_date, end_date)
 
     sql = f"""
-        SELECT coa.account_code,
+        SELECT coa.id AS account_id,
+               coa.account_code,
                coa.name AS account_name,
                COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) AS balance
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_id
         JOIN chart_of_accounts coa ON coa.id = jl.account_id
         WHERE {' AND '.join(conditions)}
-        GROUP BY coa.account_code, coa.name
+        GROUP BY coa.id, coa.account_code, coa.name
         HAVING ABS(COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)) > 0.001
         ORDER BY coa.account_code
     """
     rows = await conn.fetch(sql, *params)
     return [
         {
+            "account_id": r["account_id"],  # gelombang 4 L1: drill-down baris laporan (aditif)
             "account_code": r["account_code"],
             "account_name": r["account_name"],
             "balance": Decimal(str(r["balance"])),

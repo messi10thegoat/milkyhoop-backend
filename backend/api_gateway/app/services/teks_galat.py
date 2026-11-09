@@ -36,6 +36,38 @@ def rp(x) -> str:
     return f"Rp {tanda}{teks}"
 
 
+# ---------------------------------------------------------------- angka LAPORAN keuangan (gelombang 4 L1, 10 Nov 2026)
+# SATU pemformat tampilan angka laporan. GAYA diputus belakangan (putusan MASTER: ikut tampilan Accurate yang diukur TESTER); sampai itu
+# "akuntansi" = gaya tabel laporan hari ini (FE fmtPSAK): tanpa "Rp", ribuan titik, negatif dalam kurung. Presisi = tenant (0 bawaan,
+# 2 bila uang_bersen; services/uang_presisi). Nilai MENTAH (string desimal + tanda) tetap dikirim server di samping teks ini.
+GAYA_ANGKA_LAPORAN = "akuntansi"  # "akuntansi" | "rp"
+
+
+def angka_laporan(x, presisi: int = 0, gaya: str | None = None) -> str:
+    """'1.250.000' / '(5.000)' (akuntansi) atau 'Rp 1.250.000' / 'Rp -5.000' (rp); presisi 2 -> ',50' hanya bila sen != 0. Decimal."""
+    gaya = gaya or GAYA_ANGKA_LAPORAN
+    d = _desimal(x).quantize(Decimal(1) if presisi == 0 else _SEN, rounding=ROUND_HALF_UP)
+    negatif = d < 0
+    d = abs(d)
+    bulat = int(d)
+    sen = int((d - bulat) * 100)
+    teks = _ribuan(bulat) + (f",{sen:02d}" if sen else "")
+    if gaya == "rp":
+        return f"Rp {'-' if negatif else ''}{teks}"
+    return f"({teks})" if negatif else teks
+
+
+BULAN_PANJANG = ("Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November",
+                 "Desember")
+
+
+def tanggal_panjang(t) -> str:
+    """date / 'YYYY-MM-DD' -> '31 Oktober 2026' (judul periode laporan)."""
+    from datetime import date as _date
+    d = t if isinstance(t, _date) else _date.fromisoformat(str(t)[:10])
+    return f"{d.day} {BULAN_PANJANG[d.month - 1]} {d.year}"
+
+
 def penerapan_melebihi_sisa(jumlah, sisa, label: str = "uang muka") -> str:
     """Satu pola DP Penjualan + Uang Muka Vendor (U-kode, 2 Nov 2026). label Penjualan = label_deposit (uang muka/pelunasan)."""
     return f"Nilai penerapan {rp(jumlah)} melebihi sisa {label} {rp(sisa)}."

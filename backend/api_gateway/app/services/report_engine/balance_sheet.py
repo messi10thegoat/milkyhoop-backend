@@ -10,10 +10,15 @@ Sign convention:
 
 IMPORTANT: RECEIVABLE and PAYABLE are separate account_types in MilkyHoop,
 not subsets of ASSET/LIABILITY. Must query both for totals.
+
+Gelombang 4 L1 (10 Nov 2026): hitungan Decimal penuh (Law 9/25) -- dulu total liabilitas jangka pendek = penjumlahan FLOAT dua seksi dan
+laba periode berjalan = Decimal(str(float laba_bersih)); kini dari model Decimal Laba Rugi (hitung_laba_rugi). Medan lama float tetap,
+dibentuk di batas keluaran. + baris[] tampil server (report_engine.baris).
 """
 from decimal import Decimal
+from . import baris as B
 from .ledger import compute_balance, compute_balance_detail
-from .income_statement import generate_income_statement
+from .income_statement import hitung_laba_rugi
 
 
 # Debit-normal types that contribute to total assets
@@ -144,8 +149,8 @@ async def generate_balance_sheet(
     current_other_sec = _section(current_liab_other_raw, current_liab_other_detail, negate=True)
     noncurrent_sec = _section(noncurrent_liab_raw, noncurrent_liab_detail, negate=True)
 
-    total_jp = utang_usaha_sec["total"] + current_other_sec["total"]
-    total_jpp = noncurrent_sec["total"]
+    total_jp = -utang_usaha_raw - current_liab_other_raw   # Decimal (dulu float + float)
+    total_jpp = -noncurrent_liab_raw
 
     # ===== EKUITAS (credit-normal → raw negative → negate for display) =====
 
@@ -160,8 +165,7 @@ async def generate_balance_sheet(
     saldo_laba = -saldo_laba_raw
 
     # Laba periode berjalan (derived from P&L)
-    pl = await generate_income_statement(conn, tenant_id, period_start, as_of, basis=basis)
-    laba_periode = Decimal(str(pl["laba_bersih"]))
+    laba_periode = (await hitung_laba_rugi(conn, tenant_id, period_start, as_of, basis=basis))["net"]  # Decimal (dulu lewat float)
 
     # Total equity from ledger (EQUITY type only)
     total_ekuitas_raw = await b({"account_type": "EQUITY"})
@@ -181,6 +185,27 @@ async def generate_balance_sheet(
     ekuitas_lain = total_ekuitas_ledger - modal - saldo_laba
 
     total_le = total_liab + total_ekuitas
+
+    # ---- baris tampil (urutan == layar Neraca desktop sebelum L1)
+    r = [B.judul("aset"), B.judul("aset_lancar", 1)]
+    r += [B.akun(d, 2) for d in kas_detail + piutang_detail + persediaan_detail + aset_lancar_lain_detail]
+    r.append(B.angka("total", "total_aset_lancar", total_aset_lancar, 1))
+    r.append(B.judul("aset_tidak_lancar", 1))
+    r += [B.akun(d, 2) for d in aset_tetap_gross_detail + akum_penyusutan_detail]  # akumulasi penyusutan: saldo kredit = negatif
+    r.append(B.angka("total", "total_aset_tidak_lancar", aset_tetap_neto, 1))
+    r.append(B.angka("hasil", "total_aset", total_aset_raw))
+    r += [B.judul("liabilitas_ekuitas"), B.judul("liabilitas_jp", 1)]
+    r += [B.akun(d, 2, negasi=True) for d in utang_usaha_detail + current_liab_other_detail]
+    r.append(B.angka("total", "total_liabilitas_jp", total_jp, 1))
+    r.append(B.judul("liabilitas_jpp", 1))
+    r += [B.akun(d, 2, negasi=True) for d in noncurrent_liab_detail]
+    r.append(B.angka("total", "total_liabilitas_jpp", total_jpp, 1))
+    r.append(B.angka("total", "total_liabilitas", total_liab))
+    r.append(B.judul("ekuitas", 1))
+    r += [B.akun(d, 2, negasi=True) for d in modal_detail + saldo_laba_detail + ekuitas_lain_detail]
+    r.append(B.angka("akun", "laba_periode", laba_periode, 2))   # baris maya: laba berjalan (belum ditutup ke saldo laba)
+    r.append(B.angka("total", "total_ekuitas", total_ekuitas, 1))
+    r.append(B.angka("hasil", "total_liabilitas_ekuitas", total_le))
 
     return {
         "as_of": as_of,
@@ -221,4 +246,10 @@ async def generate_balance_sheet(
         "total_liabilitas_ekuitas": float(total_le),
         "_balanced": abs(total_aset_raw - total_le) < Decimal("0.01"),
         "basis_applied": basis,
+        # gelombang 4 L1: tampilan server (aditif)
+        "judul": B.JUDUL["neraca"],
+        "periode_text": B.per_tanggal(as_of),
+        "basis_text": B.BASIS_TEXT.get(basis, basis),
+        "satuan_text": B.SATUAN_TEXT,
+        "baris": r,
     }

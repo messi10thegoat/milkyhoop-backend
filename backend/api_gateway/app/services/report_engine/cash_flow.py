@@ -6,9 +6,13 @@ Logic:
 1. Net cash per journal (avoids N:M double-counting)
 2. Proportional distribution across counterpart classifications
 3. Label mapping from counterpart account type + psak_sub_category
+
+Gelombang 4 L1 (10 Nov 2026): butir digabung per label dalam Decimal (dulu penjumlahan FLOAT; Law 9/25), float hanya di batas keluaran
+lama; + baris[] tampil server (report_engine.baris; label kas neto mengikuti TANDA: "diperoleh dari" / "digunakan untuk").
 """
 from decimal import Decimal
 from datetime import date as date_type, datetime, timedelta
+from . import baris as B
 from .ledger import compute_balance, _to_date
 
 
@@ -122,7 +126,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         amount = Decimal(str(r["net_flow"]))
         label = _get_label(r["account_type"], r["psak_sub_category"], r["account_name"])
 
-        item = {"label": label, "amount": float(amount)}
+        item = {"label": label, "amount": amount}  # Decimal; float hanya di keluaran lama
 
         if category == "OPERATING" or category == "NONE":
             operating_items.append(item)
@@ -138,7 +142,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
             operating_items.append(item)
             operating_total += amount
 
-    # Merge items with same label
+    # Merge items with same label (Decimal)
     def merge_items(items):
         merged = {}
         for item in items:
@@ -147,7 +151,10 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
                 merged[key]["amount"] += item["amount"]
             else:
                 merged[key] = {"label": key, "amount": item["amount"]}
-        return [v for v in merged.values() if abs(v["amount"]) > 0.01]
+        return [v for v in merged.values() if abs(v["amount"]) > Decimal("0.01")]
+
+    def keluar(items):  # bentuk lama: amount float
+        return [{"label": v["label"], "amount": float(v["amount"])} for v in items]
 
     operating_items = merge_items(operating_items)
     investing_items = merge_items(investing_items)
@@ -167,23 +174,39 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         tenant_id, _to_date(start), _to_date(end), SUMBER_SALDO_AWAL) or 0))
     cash_end = await compute_balance(conn, tenant_id, {"is_cash": True}, end_date=end)
 
+    # ---- baris tampil (urutan == layar Arus Kas desktop sebelum L1)
+    r = []
+    for kunci, items, total in (("operasi", operating_items, operating_total), ("investasi", investing_items, investing_total),
+                                ("pendanaan", financing_items, financing_total)):
+        r.append(B.judul(kunci))
+        r += [B.angka("akun", "butir", v["amount"], 1, label=v["label"]) for v in items]
+        r.append(B.angka("total", "kas_neto_" + kunci, total, label=B.kas_neto_label(kunci, total)))
+    r.append(B.angka("hasil", "kenaikan_kas", net_change))
+    r.append(B.angka("info", "kas_awal", cash_start))
+    r.append(B.angka("hasil", "kas_akhir", cash_end))
+
     return {
         "period": {"start": start, "end": end},
         "operasi": {
             "total": float(operating_total),
-            "items": operating_items,
+            "items": keluar(operating_items),
         },
         "investasi": {
             "total": float(investing_total),
-            "items": investing_items,
+            "items": keluar(investing_items),
         },
         "pendanaan": {
             "total": float(financing_total),
-            "items": financing_items,
+            "items": keluar(financing_items),
         },
         "kenaikan_kas_bersih": float(net_change),
         "kas_awal": float(cash_start),
         "kas_akhir": float(cash_end),
         "_reconciled": abs(cash_start + net_change - cash_end) < Decimal("0.01"),
         "basis_applied": "cash",
+        # gelombang 4 L1: tampilan server (aditif)
+        "judul": B.JUDUL["arus_kas"],
+        "periode_text": B.periode_berakhir(end),
+        "satuan_text": B.SATUAN_TEXT,
+        "baris": r,
     }
