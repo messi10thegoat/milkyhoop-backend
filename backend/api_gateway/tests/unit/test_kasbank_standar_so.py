@@ -285,7 +285,9 @@ def test_hapus_rekening_satu_penentu():
     assert KD.alasan_hapus_rekening(True, 3) is None and KD.alasan_hapus_rekening(False, 0) is None
     assert KD.alasan_hapus_rekening(False, 3).startswith("Rekening ini sudah nonaktif")
     src = (APP / "routers/bank_accounts.py").read_text()
-    assert "KD.alasan_hapus_rekening(" in src and "KD.jumlah_mutasi_nyata(" in src and "Bank account already inactive" not in src
+    assert "KR2.rencana_hapus_rekening(" in src and "Bank account already inactive" not in src  # penulis memanggil rencana bersama
+    rek = (APP / "services/kasbank_rekening.py").read_text()
+    assert "KD.alasan_hapus_rekening(" in rek and "KD.jumlah_mutasi_nyata(" in rek and "KD.coa_terbukukan(" in rek
 
 
 # ---------------------------------------------------------------- aksi_tersedia (penentu tulis)

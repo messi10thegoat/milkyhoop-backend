@@ -193,17 +193,36 @@ async def jumlah_mutasi_nyata(conn, tid: str, ba_id) -> int:
                                "AND transaction_type != 'opening'", ba_id, tid)
 
 
-def alasan_hapus_rekening(is_active: bool, jumlah_mutasi: int) -> Optional[str]:
-    """None = boleh (permanen bila tanpa mutasi, nonaktifkan bila bermutasi). Sama dengan galat delete_bank_account."""
+async def coa_terbukukan(conn, tid: str, ba) -> bool:
+    """CoA rekening dipakai baris jurnal yang TAK BISA dihapus jalur hapus permanen (semua kecuali jurnal 'OPENING' non-POSTED milik
+    rekening ini): saldo awal BANK_OPENING_BALANCE / jurnal POSTED. Dulu hapus permanen lalu gagal FK journal_lines /
+    trg_prevent_posted_journal_delete -> 500 + rollback (putusan A MASTER 10 Nov: kini 400 berkalimat, hasil DB identik)."""
+    coa = ba.get("coa_id")
+    if not coa:
+        return False
+    return await conn.fetchval(
+        """SELECT EXISTS (SELECT 1 FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                          WHERE jl.account_id = $1 AND je.tenant_id = $2
+                            AND NOT (je.source_type = 'OPENING' AND je.source_id = $3 AND je.status <> 'POSTED'))""",
+        coa, tid, ba["id"]) is True
+
+
+def alasan_hapus_rekening(is_active: bool, jumlah_mutasi: int, terbukukan: bool = False) -> Optional[str]:
+    """None = boleh (permanen bila tanpa mutasi, nonaktifkan bila bermutasi). Sama dengan galat delete_bank_account.
+    terbukukan (hanya berarti bila tanpa mutasi) = CoA dipakai jurnal saldo awal/POSTED -> permanen tak mungkin."""
     if jumlah_mutasi > 0 and not is_active:
         return "Rekening ini sudah nonaktif dan punya mutasi, jadi tidak bisa dihapus permanen."
+    if jumlah_mutasi == 0 and terbukukan:
+        return ("Rekening ini sudah nonaktif dan punya saldo awal yang sudah dibukukan, jadi tidak bisa dihapus permanen." if not is_active
+                else "Rekening punya saldo awal yang sudah dibukukan, jadi tidak bisa dihapus permanen. Nonaktifkan saja.")
     return None
 
 
 async def aksi_tersedia_rekening(conn, tid: str, ba) -> dict:
     aktif = bool(ba["is_active"])
     mati = "Rekening ini nonaktif."  # == blok REKENING_NONAKTIF penentu B8
-    hapus = alasan_hapus_rekening(aktif, await jumlah_mutasi_nyata(conn, tid, ba["id"]))
+    n = await jumlah_mutasi_nyata(conn, tid, ba["id"])
+    hapus = alasan_hapus_rekening(aktif, n, n == 0 and await coa_terbukukan(conn, tid, ba))  # == delete_bank_account
     return {
         "uang_masuk": aksi(aktif, mati), "uang_keluar": aksi(aktif, mati), "transfer": aksi(aktif, mati),
         "hitung_fisik": aksi(aktif, "Rekening nonaktif tidak bisa disesuaikan."),
