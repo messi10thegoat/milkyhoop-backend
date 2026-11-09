@@ -35,7 +35,7 @@ Tiap rute dasar punya empat bentuk:
 
 **Kasbon:** setiap rute (unggah/daftar/unduh/lepas) memeriksa pay-group karyawan kasbon (`employee_in_scope`); di luar lingkup → 404.
 
-**Hub `_ENTITAS_HUB` / `_ENTITAS_BACA`:** + `bank_transaction`, `bank_transfer`, `employee_advance` (tautan dari hub dan unduh by-id ikut pagar yang sama). Izin hub = rute PATCH modul. Mutasi bank dan kasbon tidak punya PATCH, jadi hub fail-closed: hanya OWNER. Peran lain memakai rute pabrik di atas.
+**Hub `_ENTITAS_HUB`: TIDAK ditambah** (keputusan gerbang 9 Nov, preseden V466 goods_receipt/vendor_deposit). Hub wajib berpasangan dengan trigger lepas-tautan V308 (penjaga `test_lampiran_yatim`), dan menambah trigger = migrasi kedua di luar persetujuan pemilik. Pabrik menyaring lewat JOIN induk, sehingga tautan yatim (mis. transfer draf yang dihapus) tak pernah tampil. Lampiran modul ini HANYA lewat rute pabrik.
 
 ## 2. Migrasi (DISETUJUI pemilik LANGSUNG 9 Nov)
 

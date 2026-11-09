@@ -429,7 +429,7 @@ def test_lampiran_sj_entitas_delivery_flag_di_tiap_handler_dan_tanpa_jejak_so():
     assert "pastikan_aktif" in inspect.getsource(DL._pra_cek)
     from app.routers import lampiran_induk as LI
     pabrik = inspect.getsource(LI.buat_router)
-    assert pabrik.count("await _cek(conn, tenant_id)") >= 2 and "await _induk(conn, doc_id, tenant_id)" in pabrik  # flag tiap rute
+    assert pabrik.count("await _cek(conn, tenant_id)") >= 2 and "await _induk(conn, doc_id, tenant_id" in pabrik  # 9 Nov 2026: _induk kini juga menerima user_id (pagar per dokumen kasbon)  # flag tiap rute
     assert sp.event_lepas == "SJ_LAMPIRAN_DILEPAS" and "catat_riwayat" in pabrik  # lepas tautan = audit
 
 

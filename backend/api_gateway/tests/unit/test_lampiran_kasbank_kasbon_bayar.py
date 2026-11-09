@@ -154,9 +154,11 @@ def test_kasbon_pay_group_juga_unduh(monkeypatch):
 
 
 # ---------------------------------------------------------------- hub, izin, migrasi
-def test_hub_memuat_tiga_entitas_baru():
-    for e, tabel in (("bank_transaction", "bank_transactions"), ("bank_transfer", "bank_transfers"), ("employee_advance", "employee_advances")):
-        assert DOC._ENTITAS_HUB[e][0][0] == tabel and e in DOC._ENTITAS_BACA
+def test_entitas_baru_pabrik_saja_bukan_hub():
+    """Preseden V466 (goods_receipt, vendor_deposit): entitas lampiran pabrik TIDAK masuk hub -- hub wajib berpasangan dengan trigger
+    lepas-tautan V308 (test_lampiran_yatim); pabrik menyaring lewat JOIN induk sehingga tautan yatim tak pernah tampil."""
+    for e in ("bank_transaction", "bank_transfer", "employee_advance", "goods_receipt", "vendor_deposit"):
+        assert e not in DOC._ENTITAS_HUB and e not in DOC._ENTITAS_BACA
 
 
 @pytest.mark.parametrize("jalur,metode,harap", [
