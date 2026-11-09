@@ -28,6 +28,7 @@ from ..services import kasbank_daftar as KD
 from ..services import kasbank_ringkas as KR
 from ..services import kasbank_riwayat as KRW
 from ..services import kasbank_tulis as KT
+from ..services import kasbank_rekening as KR2
 from ..services import idem_buat
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.bank_accounts import (
@@ -42,7 +43,6 @@ from ..schemas.bank_accounts import (
     BankAccountBalanceResponse,
     MutasiTerakhirResponse,
 )
-from ..services.resolve_account import resolve_account_id
 from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
@@ -53,127 +53,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Connection pool
-
-# Account codes
-OPENING_BALANCE_EQUITY = "3-50000"  # Modal Saldo Awal
-
-# Parent CoA codes for auto-creation
-BANK_PARENT_CODE = "1-10200"  # Aset - Bank (for bank, cash, petty_cash, e_wallet)
-CREDIT_CARD_PARENT_CODE = "2-10600"  # Liabilitas - Hutang Kartu Kredit
-
-
-async def get_next_coa_code(conn, tenant_id: str, prefix: str) -> str:
-    """
-    Generate next available CoA code for a bank account.
-
-    Pattern: 1-10201, 1-10202, ..., 1-10299
-             2-10601, 2-10602, ..., 2-10699
-
-    Args:
-        conn: Database connection
-        tenant_id: Tenant ID
-        prefix: Code prefix (e.g., "1-102" for bank, "2-106" for credit card)
-
-    Returns:
-        Next available CoA code (e.g., "1-10203")
-    """
-    # Find the last used code with this prefix (7 character codes like 1-10201)
-    last_code = await conn.fetchval(
-        """
-        SELECT account_code FROM chart_of_accounts
-        WHERE tenant_id = $1
-        AND account_code LIKE $2
-        AND LENGTH(account_code) = 7
-        ORDER BY account_code DESC
-        LIMIT 1
-    """,
-        tenant_id,
-        f"{prefix}%",
-    )
-
-    if last_code:
-        # Extract last 2 digits and increment
-        next_num = int(last_code[-2:]) + 1
-    else:
-        # Start from 01
-        next_num = 1
-
-    if next_num > 99:
-        raise ValueError(f"Maximum CoA codes reached for prefix {prefix}")
-
-    return f"{prefix}{next_num:02d}"
-
-
-async def auto_create_coa_for_bank_account(
-    conn, tenant_id: str, account_name: str, account_type: str, user_id
-) -> dict:
-    """
-    Auto-create a Chart of Accounts entry for a bank account.
-
-    Args:
-        conn: Database connection
-        tenant_id: Tenant ID
-        account_name: Bank account name (used for CoA name)
-        account_type: Bank account type (bank, cash, credit_card, etc.)
-        user_id: User creating the account
-
-    Returns:
-        Dict with coa_id and coa_code
-    """
-    # Determine CoA category based on account type
-    if account_type == "credit_card":
-        parent_code = CREDIT_CARD_PARENT_CODE
-        code_prefix = "2-106"
-        coa_type = "LIABILITY"
-        normal_balance = "CREDIT"
-    else:
-        # bank, cash, petty_cash, e_wallet are all assets
-        parent_code = BANK_PARENT_CODE
-        code_prefix = "1-102"
-        coa_type = "ASSET"
-        normal_balance = "DEBIT"
-
-    # Get parent CoA
-    parent_coa = await conn.fetchrow(
-        """
-        SELECT id, account_code, name FROM chart_of_accounts
-        WHERE account_code = $1 AND tenant_id = $2
-    """,
-        parent_code,
-        tenant_id,
-    )
-
-    if not parent_coa:
-        raise ValueError(
-            f"Parent CoA {parent_code} not found for tenant {tenant_id}. "
-            "Run migration V075 to add credit card parent or check chart_of_accounts setup."
-        )
-
-    # Generate next available code
-    next_code = await get_next_coa_code(conn, tenant_id, code_prefix)
-
-    # Create CoA entry
-    coa_id = uuid_module.uuid4()
-    await conn.execute(
-        """
-        INSERT INTO chart_of_accounts (
-            id, tenant_id, account_code, name, description,
-            is_cash,
-            account_type, normal_balance, parent_code,
-            is_header, is_active
-        ) VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, false, true)
-    """,
-        coa_id,
-        tenant_id,
-        next_code,
-        account_name,
-        f"Auto-created for bank account: {account_name}",
-        coa_type,
-        normal_balance,
-        parent_code,
-    )
-
-    return {"coa_id": coa_id, "coa_code": next_code, "coa_type": coa_type}
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -527,14 +406,22 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
 # =============================================================================
 
 
+@router.post("/preview")
+async def preview_create_bank_account(request: Request, body: CreateBankAccountRequest):
+    """Pratinjau BUAT rekening: penentu SAMA dengan POST "" (KR2.rencana_buat_rekening), READ ONLY (nol tulisan; CoA otomatis direncanakan)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KR2.pratinjau(await get_pool(), tid, lambda c: KR2.rencana_buat_rekening(c, tid, body, True), body.model_dump(mode="json"))
+
+
 @router.post("", response_model=BankAccountResponse, status_code=201)
-async def create_bank_account(request: Request, body: CreateBankAccountRequest):
+async def create_bank_account(request: Request, body: CreateBankAccountRequest, response: Response = None):
     """
-    Create a new bank account.
+    Create a new bank account. Penentu BERSAMA dengan /preview (services/kasbank_rekening.rencana_buat_rekening).
 
     CoA handling:
     - If coa_id is provided: Use existing CoA (validated for correct type)
-    - If coa_id is NOT provided: Auto-create CoA under appropriate parent:
+    - If coa_id is NOT provided: Auto-create CoA under appropriate parent (rencana yang sama dengan pratinjau):
       - bank/cash/petty_cash/e_wallet → 1-10200 Bank (ASSET)
       - credit_card → 2-10600 Hutang Kartu Kredit (LIABILITY)
 
@@ -551,102 +438,22 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Law 14: X-Idempotency-Key opsional (tap kedua = rekening yang SAMA, bukan rekening kedua; lock != dedup)
+                _kp, _sd, _lama = await idem_buat.mulai(conn, ctx, idem_buat.kunci_dari(request), "BANK_CREATE", body,
+                                                        "bank_accounts", "bank_account", response)
+                if _lama is not None:
+                    return _lama
+
                 # Law 13: Advisory lock for bank account creation
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_CREATE:{ctx['tenant_id']}:{body.account_name}",
                 )
 
-                coa_id = None
-                coa_code = None
-                coa_type = None
-
-                if body.coa_id:
-                    # Validate provided CoA exists and has correct type
-                    coa = await conn.fetchrow(
-                        """
-                        SELECT id, account_code, name, account_type
-                        FROM chart_of_accounts
-                        WHERE id = $1 AND tenant_id = $2
-                    """,
-                        UUID(body.coa_id),
-                        ctx["tenant_id"],
-                    )
-
-                    if not coa:
-                        raise HTTPException(
-                            status_code=400, detail="Chart of Accounts entry not found"
-                        )
-
-                    # 7 Okt 2026 (putusan pemilik): akun Uang Muka Pelanggan (LIABILITY) tak boleh jadi kartu kredit/bank
-                    from ..services.pagar_uang_muka import tolak_rekening_bank
-                    await tolak_rekening_bank(conn, ctx["tenant_id"], coa["id"])
-
-                    # Validate CoA type matches account type
-                    if body.account_type == "credit_card":
-                        if coa["account_type"] != "LIABILITY":
-                            raise HTTPException(
-                                status_code=400,
-                                detail="Credit card account must be linked to a LIABILITY type CoA",
-                            )
-                    else:
-                        if coa["account_type"] != "ASSET":
-                            raise HTTPException(
-                                status_code=400,
-                                detail="Bank account must be linked to an ASSET type CoA (e.g., Kas or Bank)",
-                            )
-
-                    coa_id = UUID(body.coa_id)
-                    coa_code = coa["account_code"]
-                    coa_type = coa["account_type"]
-                else:
-                    # Auto-create CoA for bank account
-                    coa_result = await auto_create_coa_for_bank_account(
-                        conn,
-                        ctx["tenant_id"],
-                        body.account_name,
-                        body.account_type,
-                        ctx["user_id"],
-                    )
-                    coa_id = coa_result["coa_id"]
-                    coa_code = coa_result["coa_code"]
-                    coa_type = coa_result["coa_type"]
-                    logger.info(
-                        f"Auto-created CoA {coa_code} for bank account {body.account_name}"
-                    )
-
-                # Check name uniqueness
-                existing = await conn.fetchval(
-                    """
-                    SELECT id FROM bank_accounts
-                    WHERE tenant_id = $1 AND account_name = $2
-                """,
-                    ctx["tenant_id"],
-                    body.account_name,
-                )
-
-                if existing:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Bank account with name '{body.account_name}' already exists",
-                    )
-
-                # Check CoA not already linked (only for existing CoAs, auto-created ones are unique)
-                if body.coa_id:
-                    existing_coa = await conn.fetchval(
-                        """
-                        SELECT id FROM bank_accounts
-                        WHERE tenant_id = $1 AND coa_id = $2
-                    """,
-                        ctx["tenant_id"],
-                        coa_id,
-                    )
-
-                    if existing_coa:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="This CoA is already linked to another bank account",
-                        )
+                _r = await KR2.rencana_buat_rekening(conn, ctx["tenant_id"], body, pratinjau=False)
+                coa = _r["coa"]
+                coa_id = coa["id"] or await KR2.tulis_coa(conn, ctx["tenant_id"], coa)
+                coa_code = coa["account_code"]
 
                 # Handle is_default - only one default allowed
                 if body.is_default:
@@ -680,7 +487,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     body.bank_branch,
                     body.bank_address,
                     body.swift_code,
-                    coa_id,  # Use resolved coa_id (either from body or auto-created)
+                    coa_id,
                     body.opening_balance,
                     body.account_type,
                     body.currency,
@@ -692,23 +499,11 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
 
                 journal_id = None
 
-                # Create opening balance entry if > 0
-                if body.opening_balance > 0:
+                # Saldo awal > 0: baris jurnal = rencana (pratinjau menampilkan baris yang sama)
+                if _r["baris"]:
                     journal_id = uuid_module.uuid4()
                     trace_id = uuid_module.uuid4()
-                    opening_date = body.opening_date or await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-
-                    # Law 27: Use resolve_account_id helper
-                    equity_account_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], OPENING_BALANCE_EQUITY
-                    )
-                    if not equity_account_id:
-                        raise HTTPException(
-                            status_code=500,
-                            detail="Opening Balance Equity account not found in CoA",
-                        )
-
-                    # Create journal entry
+                    opening_date = _r["tanggal"]  # t10-tanggal-bisnis (rencana: opening_date atau tanggal bisnis tenant)
                     journal_number = f"OB-BA-{str(bank_account_id)[:8]}"
 
                     await conn.execute(
@@ -730,60 +525,10 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         ctx["user_id"],
                     )
 
-                    # Journal entries depend on account type
-                    # ASSET (bank, cash): Dr. Bank, Cr. Equity
-                    # LIABILITY (credit_card): Dr. Equity, Cr. Credit Card
-                    if coa_type == "LIABILITY":
-                        # Credit card: Dr. Equity, Cr. Credit Card (increase liability)
+                    for _n, (_akun, _debit, _kredit, _memo) in enumerate(_r["baris"], 1):
                         await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            equity_account_id,
-                            int(body.opening_balance),
-                            f"Modal Saldo Awal - {body.account_name}",
-                        )
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            coa_id,
-                            int(body.opening_balance),
-                            f"Saldo Awal Hutang - {body.account_name}",
-                        )
-                    else:
-                        # Asset (bank, cash, etc): Dr. Bank, Cr. Equity
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, 1, $3, $4, 0, $5)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            coa_id,
-                            int(body.opening_balance),
-                            f"Saldo Awal - {body.account_name}",
-                        )
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, 2, $3, 0, $4, $5)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            equity_account_id,
-                            int(body.opening_balance),
-                            f"Modal Saldo Awal - {body.account_name}",
+                            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                            uuid_module.uuid4(), journal_id, _n, coa_id if _akun == "COA_BARU" else _akun, _debit, _kredit, _memo,
                         )
 
                     # Law 20: DRAFT→POSTED for hash chain
@@ -818,7 +563,7 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                     f"Bank account created: {bank_account_id}, coa_code={coa_code}"
                 )
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_CREATE", {
                     "success": True,
                     "message": "Bank account created successfully",
                     "data": {
@@ -830,21 +575,27 @@ async def create_bank_account(request: Request, body: CreateBankAccountRequest):
                         "opening_balance": body.opening_balance,
                         "journal_id": str(journal_id) if journal_id else None,
                     },
-                }
+                }, bank_account_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error creating bank account: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Gagal membuat akun kas/bank: {str(e)[:300]}",
-        )
+        raise HTTPException(status_code=400, detail="Gagal membuat akun kas/bank.")
 
 
 # =============================================================================
 # UPDATE BANK ACCOUNT
 # =============================================================================
+
+
+@router.patch("/{bank_account_id}/preview")
+async def preview_update_bank_account(request: Request, bank_account_id: UUID, body: UpdateBankAccountRequest):
+    """Pratinjau UBAH / nonaktifkan / aktifkan rekening: penentu SAMA dengan PATCH; READ ONLY. catatan perubahan + peringatan (bukan blok)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KR2.pratinjau(await get_pool(), tid, lambda c: KR2.rencana_ubah_rekening(c, tid, bank_account_id, body, True),
+                               body.model_dump(mode="json", exclude_unset=True))
 
 
 @router.patch("/{bank_account_id}", response_model=BankAccountResponse)
@@ -867,20 +618,9 @@ async def update_bank_account(
                     f"BANK_DELETE:{bank_account_id}",
                 )
 
-                # Get existing account
-                ba = await conn.fetchrow(
-                    """
-                    SELECT * FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    bank_account_id,
-                    ctx["tenant_id"],
-                )
-
-                if not ba:
-                    raise HTTPException(
-                        status_code=404, detail="Bank account not found"
-                    )
+                # Penentu BERSAMA dengan PATCH /{id}/preview: 404, nama kosong 422, nama dipakai, tipe ke/dari kartu kredit, CoA tak konsisten
+                _r = await KR2.rencana_ubah_rekening(conn, ctx["tenant_id"], bank_account_id, body, pratinjau=False)
+                ba = _r["ba"]
 
                 # Build update
                 updates = []
@@ -907,28 +647,7 @@ async def update_bank_account(
                         _v = _v.strip() or None
                     return _v
 
-                if "account_name" in _dikirim and not (body.account_name or "").strip():
-                    raise HTTPException(
-                        status_code=422,
-                        detail="account_name tidak boleh kosong",
-                    )
-
-                if body.account_name is not None:
-                    # Check uniqueness
-                    existing = await conn.fetchval(
-                        """
-                        SELECT id FROM bank_accounts
-                        WHERE tenant_id = $1 AND account_name = $2 AND id != $3
-                    """,
-                        ctx["tenant_id"],
-                        body.account_name,
-                        bank_account_id,
-                    )
-                    if existing:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Bank account with name '{body.account_name}' already exists",
-                        )
+                if body.account_name is not None:  # kosong (422) / dipakai (400) sudah ditolak penentu
                     updates.append(f"account_name = ${param_idx}")
                     params.append(body.account_name)
                     param_idx += 1
@@ -965,27 +684,9 @@ async def update_bank_account(
                 # account_type: LABEL-only (tak sentuh jurnal/CoA). Larang transisi ke/dari
                 # credit_card -> butuh ganti tipe CoA LIABILITY<->ASSET yang Law 18 blokir bila
                 # sudah ada jurnal. Selain itu (cash/petty_cash/bank/e_wallet) semuanya ASSET.
-                if "account_type" in _dikirim and body.account_type is not None:
-                    _new_t = body.account_type
-                    _old_t = ba["account_type"]
-                    if (_new_t == "credit_card") != (_old_t == "credit_card"):
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Ubah tipe ke/dari kartu kredit tidak didukung — buat akun baru",
-                        )
-                    _coa = await conn.fetchrow(
-                        "SELECT account_type FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2",
-                        ba["coa_id"],
-                        ctx["tenant_id"],
-                    )
-                    _need = "LIABILITY" if _new_t == "credit_card" else "ASSET"
-                    if not _coa or _coa["account_type"] != _need:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Tipe akun tidak konsisten dengan CoA tertaut (butuh {_need})",
-                        )
+                if "account_type" in _dikirim and body.account_type is not None:  # ke/dari kartu kredit & CoA: ditolak penentu
                     updates.append(f"account_type = ${param_idx}")
-                    params.append(_new_t)
+                    params.append(body.account_type)
                     param_idx += 1
 
                 if body.is_active is not None:
@@ -1053,6 +754,14 @@ async def update_bank_account(
 # =============================================================================
 
 
+@router.post("/{bank_account_id}/delete/preview")
+async def preview_delete_bank_account(request: Request, bank_account_id: UUID):
+    """Pratinjau HAPUS rekening: akibat permanen | nonaktifkan, kalimat jujur; penentu SAMA dengan DELETE dan aksi_tersedia.hapus; READ ONLY."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KR2.pratinjau(await get_pool(), tid, lambda c: KR2.rencana_hapus_rekening(c, tid, bank_account_id, True), {})
+
+
 @router.delete("/{bank_account_id}", response_model=BankAccountResponse)
 async def delete_bank_account(request: Request, bank_account_id: UUID):
     """
@@ -1067,26 +776,12 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Get existing account
-                ba = await conn.fetchrow(
-                    """
-                    SELECT * FROM bank_accounts
-                    WHERE id = $1 AND tenant_id = $2
-                """,
-                    bank_account_id,
-                    ctx["tenant_id"],
-                )
+                # Penentu BERSAMA dengan /delete/preview dan aksi_tersedia.hapus (KR2.rencana_hapus_rekening -> KD.alasan_hapus_rekening):
+                # 404; nonaktif+bermutasi 400; CoA dipakai jurnal saldo awal/POSTED -> 400 REKENING_BERSALDO_AWAL (dulu 500 + rollback; putusan A)
+                _r = await KR2.rencana_hapus_rekening(conn, ctx["tenant_id"], bank_account_id, pratinjau=False)
+                ba = _r["ba"]
 
-                if not ba:
-                    raise HTTPException(
-                        status_code=404, detail="Bank account not found"
-                    )
-
-                # REAL transactions (exclude opening balance) -- penentu SAMA dgn aksi_tersedia.hapus (services/kasbank_daftar)
-                tx_count = await KD.jumlah_mutasi_nyata(conn, ctx["tenant_id"], bank_account_id)
-                alasan = KD.alasan_hapus_rekening(ba["is_active"], tx_count)
-                if alasan:
-                    raise HTTPException(status_code=400, detail=alasan)
+                tx_count = _r["mutasi"]
 
                 if tx_count > 0:
                     # Soft delete only - account has transaction history
