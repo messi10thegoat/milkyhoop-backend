@@ -109,12 +109,13 @@ def test_buat_ubah_pulihkan_pelanggan_lewat_pemeriksa():
     src = inspect.getsource(CU._siapkan_buat_pelanggan)  # AS-G14 (24 Okt): penentu bersama buat + pratinjau
     assert "tolak_nama_dipakai(conn, tenant_id, body.name)" in src
     assert "tolak_nomor_dipakai(conn, tenant_id, body.code)" in src
+    # K-B / 2b (9 Nov 2026): aturan di penentu bersama tulis + pratinjau, dipanggil SEBELUM UPDATE
     src = inspect.getsource(CU.update_customer)
-    assert "tolak_nomor_dipakai(conn, ctx[\"tenant_id\"], body.code, kecuali_id=customer_id)" in src
-    assert src.index("tolak_nomor_dipakai(") < src.index("UPDATE customers")
+    assert src.index("_siapkan_ubah_pelanggan(") < src.index("UPDATE customers")
+    assert "tolak_nomor_dipakai(conn, tid, body.code, kecuali_id=customer_id)" in inspect.getsource(CU._siapkan_ubah_pelanggan)
     src = inspect.getsource(CU.reactivate_customer)
-    assert "tolak_nomor_dipakai(conn, ctx[\"tenant_id\"], existing[\"nomor_member\"], kecuali_id=customer_id)" in src
-    assert src.index("tolak_nomor_dipakai(") < src.index("UPDATE customers")
+    assert src.index("_cek_aktifkan_pelanggan(") < src.index("UPDATE customers")
+    assert "tolak_nomor_dipakai(conn, tid, existing[\"nomor_member\"], kecuali_id=customer_id)" in inspect.getsource(CU._cek_aktifkan_pelanggan)
 
 
 # ---- B3 ----

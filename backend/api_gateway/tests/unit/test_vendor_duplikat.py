@@ -208,11 +208,15 @@ def test_patch_vendor_cek_nama_dan_kode_yang_berubah():
     pohon = ast.parse(src)
     fn = next(n for n in ast.walk(pohon) if isinstance(n, ast.AsyncFunctionDef) and n.name == "update_vendor")
     teks = ast.get_source_segment(src, fn)
-    assert 'VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name, kecuali_id=vendor_id)' in teks
-    assert 'VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code, kecuali_id=vendor_id)' in teks
-    buat = next(n for n in ast.walk(pohon) if isinstance(n, ast.AsyncFunctionDef) and n.name == "create_vendor")
-    tb = ast.get_source_segment(src, buat)
-    assert 'VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)' in tb and 'VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code)' in tb
+    # K-B / 2a (9 Nov 2026): aturan pindah ke penentu bersama tulis + pratinjau (_siapkan_ubah_vendor / _siapkan_buat_vendor)
+    assert '_siapkan_ubah_vendor(conn, ctx["tenant_id"], vendor_id, body)' in teks
+    seg = lambda nama: ast.get_source_segment(src, next(n for n in ast.walk(pohon) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama))
+    su = seg("_siapkan_ubah_vendor")
+    assert "VU.tolak_nama_dipakai(conn, tid, body.name, kecuali_id=vendor_id)" in su
+    assert "VU.tolak_kode_dipakai(conn, tid, body.code, kecuali_id=vendor_id)" in su
+    assert '_siapkan_buat_vendor(conn, ctx["tenant_id"], body)' in seg("create_vendor")
+    sb = seg("_siapkan_buat_vendor")
+    assert "VU.tolak_nama_dipakai(conn, tid, body.name)" in sb and "VU.tolak_kode_dipakai(conn, tid, body.code)" in sb
 
 
 # ---- pemindai ----

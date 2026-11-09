@@ -106,7 +106,9 @@ def test_buat_pelanggan_menyimpan_price_list_id_dan_memeriksanya():
     src = inspect.getsource(CU.tulis_pelanggan_baru)
     assert "await pastikan_daftar_harga(conn, ctx[\"tenant_id\"], body.price_list_id)" in src
     assert "nomor_dokumen, price_list_id" in src and "body.price_list_id,  # $34" in src
-    assert "await pastikan_daftar_harga(" in inspect.getsource(CU.update_customer)  # satu pemeriksa buat + ubah
+    # K-B (9 Nov 2026): PATCH lewat penentu bersama tulis + pratinjau ubah
+    assert "_siapkan_ubah_pelanggan(" in inspect.getsource(CU.update_customer)
+    assert "await pastikan_daftar_harga(" in inspect.getsource(CU._siapkan_ubah_pelanggan)  # satu pemeriksa buat + ubah
 
 
 class _ConnDaftar:

@@ -15,7 +15,8 @@ from app.schemas.vendors import CreateVendorRequest
 A, B = "6a263caa-0ea6-47e1-aa78-fc6575e38ff0", "0e5d7795-3a39-47bf-8e31-689766ffb05d"
 TULIS = [
     # VENDOR-DUPLIKAT (1 Nov 2026, retarget OK MASTER): cek nama ganda pindah ke vendor_unik (predikat sama); urutan tetap
-    (V.create_vendor, "VENDOR_CREATE", "idem_buat.mulai(", "VENDOR_NAMA:", 'VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)'),
+    # K 2a (9 Nov 2026): cek ganda pindah ke penentu bersama _siapkan_buat_vendor (POST + pratinjau); urutan tetap idem -> kunci -> cek
+    (V.create_vendor, "VENDOR_CREATE", "idem_buat.mulai(", "VENDOR_NAMA:", '_siapkan_buat_vendor(conn, ctx["tenant_id"], body)'),
     (V.toggle_vendor_status, "VENDOR_STATUS", "idem_buat.mulai_aksi(", "_kunci_vendor(", "FOR UPDATE"),
     (V.delete_vendor, "VENDOR_DELETE", "idem_buat.mulai_aksi(", "_kunci_vendor(", "smart_delete("),
 ]
