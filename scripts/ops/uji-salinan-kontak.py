@@ -4,7 +4,8 @@ LAMA dan BARU. Tulis HANYA di salinan (dihapus trap). JSON per pohon -> banding-
  C PATCH pelanggan/vendor: baris + aktivitas sesudahnya (identik); BARU: edit/preview sebelum PATCH, perubahan == aktivitas
  D nonaktifkan lalu aktifkan (pohon lama: PATCH is_active + /reactivate; baru: alias /status) -> baris identik; BARU: pratinjau status
  E pratinjau hapus == hasil DELETE                            F pratinjau buat vendor == hasil POST
- G sidik tabel kontak sebelum/sesudah semua pratinjau (nol tulis)"""
+ G sidik tabel kontak sebelum/sesudah semua pratinjau (nol tulis)
+ H gabung pelanggan (badan lama) + vendor: pratinjau + tulis identik lama vs baru (selain medan aditif); BARU: data == preview lama"""
 import asyncio
 import json
 import os
@@ -25,6 +26,17 @@ def req(tid, method="GET"):
     r = Request({"type": "http", "method": method, "path": "/", "headers": []})
     r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan-kontak"}
     return r
+
+
+class JReq(Request):
+    """Request ber-badan JSON (rute gabung pelanggan membaca request.json())."""
+    def __init__(self, tid, badan):
+        super().__init__({"type": "http", "method": "POST", "path": "/", "headers": []})
+        self.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan-kontak"}
+        self._badan = badan
+
+    async def json(self):
+        return self._badan
 
 
 def j(v):
@@ -110,6 +122,15 @@ async def utama():
                     o[f"D_c2:{k}"] = await coba(cu.reactivate_customer(req(tid, "PATCH"), str(c["id"])))
                 o[f"D_cr:{k}"] = j(dict(await conn.fetchrow(
                     "SELECT is_active, deleted_at IS NULL AS hidup FROM customers WHERE id = $1 AND tenant_id = $2", c["id"], tid)))
+            # H: gabung (pelanggan ke-6 -> ke-7, vendor ke-4 -> ke-5); badan LAMA pelanggan (dua pohon sama)
+            if len(cs) >= 7:
+                bc = {"target_id": str(cs[6]["id"]), "source_ids": [str(cs[5]["id"])]}
+                o["H_pc"] = j(await cu.preview_customer_merge(JReq(tid, bc)))
+                o["H_c"] = await coba(cu.merge_customers(JReq(tid, bc)))
+            if len(vs) >= 5:
+                bv = ve.MergeVendorRequest(source_vendor_id=str(vs[3]["id"]), target_vendor_id=str(vs[4]["id"]))
+                o["H_pv"] = j(await ve.preview_merge_vendors(req(tid, "POST"), bv))
+                o["H_v"] = await coba(ve.merge_vendors(req(tid, "POST"), bv))
             # F: buat vendor (sebelum hapus: nama ganda = vendor pertama yang masih ada)
             o["F_baru"] = await coba(ve.create_vendor(req(tid, "POST"), ve.CreateVendorRequest(name="UJI Salinan Vendor K")))
             if vs:

@@ -483,3 +483,117 @@ def test_jejak_hapus_lengkap():
     assert FK_VENDOR <= {x[0] for x in ve.JEJAK_VENDOR}
     for x in [*cu.JEJAK_PELANGGAN, *ve.JEJAK_VENDOR]:
         assert x[2] and x[2].startswith("Tidak bisa menghapus")
+
+
+# ---------------------------------------------------------------- perubahan[].lama untuk SEMUA medan PATCH (temuan WORKSPACE)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mod", [cu, ve])
+async def test_baris_sekarang_memuat_semua_kolom_patch(mod, monkeypatch):
+    conn = Conn(pihak={"id": ID, "nama": "A", "name": "A", "code": "V-1", "vendor_type": "BADAN", "jenis_id": None, "nomor_dokumen": None})
+    if mod is cu:
+        _tolak_lolos(monkeypatch, cu)
+        await cu._siapkan_ubah_pelanggan(conn, TENANT, ID, cu.UpdateCustomerRequest())
+        medan, kolom = cu.UpdateCustomerRequest.model_fields, lambda f: cu.UBAH_KOLOM.get(f, f)
+    else:
+        await ve._siapkan_ubah_vendor(conn, TENANT, ID, ve.UpdateVendorRequest(), kunci=False)
+        medan, kolom = {f: 0 for f in ve.UpdateVendorRequest.model_fields if f not in ("shipping_address", "contacts", "contacts_replace")}, \
+            lambda f: f
+    sql = [x[1] for x in conn.log if x[0] == "fetchrow"][0]
+    pilih = {c.strip() for c in sql.split("SELECT", 1)[1].split("FROM", 1)[0].split(",")}
+    assert {kolom(f) for f in medan} <= pilih, {kolom(f) for f in medan} - pilih
+
+
+def test_uuid_kolom_sama_dengan_teks_badan():
+    u = uuid.UUID("33333333-3333-3333-3333-333333333333")
+    assert cu.perubahan_pelanggan({"price_list_id": u}, {"price_list_id": str(u)}) == []
+    assert cu.perubahan_pelanggan({"nomor_member": "C1"}, {"code": "C9"})[0]["lama"] == "C1"
+    assert ve.perubahan_vendor({"bank_name": "BCA"}, {"bank_name": "BRI"})[0]["lama"] == "BCA"
+
+
+# ---------------------------------------------------------------- K-D gabung pelanggan simetri vendor
+
+def test_badan_gabung_baru_dan_lama():
+    a, b = str(ID), "22222222-2222-2222-2222-222222222222"
+    assert cu._badan_gabung({"source_customer_id": b, "target_customer_id": a}) == {"target_id": a, "source_ids": [b]}
+    lama = {"target_id": a, "source_ids": [b]}
+    assert cu._badan_gabung(lama) is lama
+
+
+def test_ringkas_pindah_semua_tabel_gabung_terpetakan():
+    tabel = {t for t, _ in cu.MERGE_TABEL} | {t for t, *_ in ve.GABUNG_TABEL} | {"customer_addresses"}
+    assert tabel <= set(KDT.PINDAH_TEKS)
+    assert KDT.ringkas_pindah({"sales_invoices": 3, "receive_payments": 1, "quotes": 0, "chat_session_state": 2}) == [
+        "3 faktur penjualan", "1 pembayaran masuk"]
+
+
+class _ReqJson(SimpleNamespace):
+    async def json(self):
+        return self.badan
+
+
+def req_json(badan):
+    return _ReqJson(badan=badan, headers={}, state=SimpleNamespace(user={"tenant_id": TENANT, "user_id": "22222222-2222-2222-2222-222222222222"}))
+
+
+KONFLIK = [{"type": "sales_receipt_locked", "count": 1, "blocking": True, "message": "1 kwitansi penjualan sudah selesai/dibatalkan."}]
+
+
+def _gabung_palsu(monkeypatch, konflik):
+    S = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    peta = {ID: {"nama": "Tujuan", "nomor_member": "C-1"}, S: {"nama": "Sumber", "nomor_member": "C-2"}}
+
+    async def _pihak(conn, tid, body):
+        assert cu._badan_gabung(body)["source_ids"] == [str(S)]
+        return ID, [S], peta
+
+    async def _rinci(conn, tid, sasaran, sumber):
+        return {"sales_invoices": 2, "customer_addresses": 1}, konflik, len(konflik)
+    monkeypatch.setattr(cu, "_gabung_pihak", _pihak)
+    monkeypatch.setattr(cu, "_gabung_rincian", _rinci)
+    return S
+
+
+@pytest.mark.asyncio
+async def test_pratinjau_gabung_pelanggan_bentuk_vendor_aditif(monkeypatch):
+    S = _gabung_palsu(monkeypatch, KONFLIK)
+    pasang(monkeypatch, cu, Conn())
+    r = await cu.preview_customer_merge(req_json({"source_customer_id": str(S), "target_customer_id": str(ID)}))
+    d = r["data"]
+    assert d["ok"] is False and d["blocks"] == [{"code": "SALES_RECEIPT_LOCKED", "message": KONFLIK[0]["message"]}]
+    assert d["source"] == {"id": str(S), "name": "Sumber", "code": "C-2"} and d["target"]["name"] == "Tujuan"
+    assert d["records_to_move"] == {"sales_invoices": 2, "customer_addresses": 1} and d["irreversible"] is True
+    assert d["rencana"]["ringkas"] == ["2 faktur penjualan", "1 alamat"]
+    assert r["preview"]["conflicts"] == KONFLIK and r["preview"]["records_to_move"]["invoices"] == 2  # bentuk lama tetap
+
+
+@pytest.mark.asyncio
+async def test_gabung_pelanggan_blok_409_dan_idem(monkeypatch):
+    S = _gabung_palsu(monkeypatch, KONFLIK)
+    pasang(monkeypatch, cu, Conn())
+    with pytest.raises(HTTPException) as e:
+        await cu.merge_customers(req_json({"target_id": str(ID), "source_ids": [str(S)]}))
+    assert e.value.status_code == 409 and e.value.detail == {"code": "SALES_RECEIPT_LOCKED", "message": KONFLIK[0]["message"]}
+
+    from app.services import idem_buat
+    panggil = []
+
+    async def _mulai(conn, ctx, kunci, prefix, doc, isi, response=None):
+        panggil.append((prefix, doc))
+        return "k", "s", {"replay": True}
+    monkeypatch.setattr(idem_buat, "mulai_aksi", _mulai)
+    r = await cu.merge_customers(req_json({"source_customer_id": str(S), "target_customer_id": str(ID)}))
+    assert r == {"replay": True} and panggil == [("CUSTOMER_MERGE", str(ID))]
+
+
+@pytest.mark.asyncio
+async def test_pratinjau_gabung_vendor_ringkas(monkeypatch):
+    S = uuid.UUID("22222222-2222-2222-2222-222222222222")
+
+    async def _rencana(conn, tid, sumber, tujuan):
+        return {"peta": {S: {"id": S, "name": "A", "code": "V-1"}, ID: {"id": ID, "name": "B", "code": "V-2"}},
+                "cacah": {"bills": 4, "bill_payments_v2": 0, "purchase_orders": 1}, "blocks": []}
+    monkeypatch.setattr(ve, "_gabung_rencana", _rencana)
+    pasang(monkeypatch, ve, Conn())
+    d = (await ve.preview_merge_vendors(req(), ve.MergeVendorRequest(source_vendor_id=str(S), target_vendor_id=str(ID))))["data"]
+    assert d["rencana"]["ringkas"] == ["4 faktur pembelian", "1 pesanan pembelian"] and d["ok"] is True
