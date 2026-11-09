@@ -208,8 +208,8 @@ def _keadaan(k, v):
     keadaan = {"tutup": SO.KEADAAN_TUTUP, "spk": ("SPK_STATUS_TIDAK_SAH", "SPK_NONAKTIF"),
                "ubahkepala": ("SO_IS_DRAFT", "SO_EDIT_NOT_ENABLED", "SO_NOT_EDITABLE"),
                "batal": ("SO_STATUS_NOT_CANCELLABLE", "SO_HAS_SHIPMENTS_OR_INVOICES", "SO_DEPOSIT_DRAFT")}.get(k)
-    if keadaan is not None and kode is not None:
-        return kode in keadaan
+    if keadaan is not None:
+        return kode in keadaan  # penjaga berkode: galat teks polos (mis. kalkulator non-PKP di ubah) = isian/data, ditinjau di daftar isian
     return True  # galat teks polos (konfirmasi/hapus/faktur): tersedia=true tapi ditolak = tak sah, ditinjau manusia
 
 
@@ -227,8 +227,8 @@ async def kunci_ro(conn, penilai):
 
 
 async def main():
-    from app.services import aksi_detail as AD
     if BARU:
+        from app.services import aksi_detail as AD
         AD._nilai_asli = AD.nilai
         AD.nilai = kunci_ro
     pool = await ASLI[(SO, "get_pool")]()  # pool aplikasi (DB_NAME = klon)
