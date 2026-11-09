@@ -78,3 +78,22 @@ def periode_berakhir(akhir) -> str:
 
 def per_tanggal(t) -> str:
     return f"Per Tanggal {tg.tanggal_panjang(t)}"
+
+
+# ---- SATU peta tipe akun + saldo normal (L3: Neraca Saldo, Buku Besar; dulu FE: "Kewajiban", saldo normal dari TIPE)
+TIPE_AKUN = {
+    "ASSET": "Aset", "RECEIVABLE": "Piutang", "LIABILITY": "Liabilitas", "PAYABLE": "Utang", "EQUITY": "Ekuitas",
+    "REVENUE": "Pendapatan", "INCOME": "Pendapatan", "COGS": "Harga Pokok Penjualan", "EXPENSE": "Beban",
+    "OTHER_INCOME": "Pendapatan Lain-lain", "OTHER_EXPENSE": "Beban Lain-lain",
+}
+SALDO_NORMAL = {"DEBIT": "Debit", "CREDIT": "Kredit"}
+
+
+def tipe_label(tipe) -> str:
+    """Kode tipe CoA (huruf besar/kecil) -> label; tipe tak dikenal tampil apa adanya (tak pernah kosong diam)."""
+    return TIPE_AKUN.get(str(tipe or "").upper(), str(tipe or ""))
+
+
+def saldo_normal_label(normal) -> str:
+    """Saldo normal dari CoA (bukan diturunkan dari tipe: akun kontra mis. akumulasi penyusutan = ASSET/CREDIT)."""
+    return SALDO_NORMAL.get(str(normal or "").upper(), "")

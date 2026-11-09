@@ -173,3 +173,42 @@ Aturan:
 - Uang = angka medan lama (compute_ar/ap_outstanding); string desimal di medan baru.
 - FE berhenti menjumlah / menghitung persen.
 - `teks_galat.tanggal_pendek` = bulan 3 huruf dari BULAN_PANJANG (tanpa larik bulan baru).
+
+## 8. L3 — Neraca Saldo + Buku Besar (RANCANGAN 10 Nov 05:40; PUTUSAN MASTER: kerjakan, pemilik diberi tahu)
+
+### Hasil ukur (read-only @3529e8dd6; prod RO kaos/nyawit; grapgrap TIDAK dibaca)
+- `GET /api/reports/trial-balance` (Laporan → Neraca Saldo) → `facade.get_trial_balance` (definisi KEDUA menang) → fungsi DB `get_trial_balance()`.
+  Saringan `journal_entries` (POSTED, tanggal ≤ as_of, periode) ada di ON LEFT JOIN, `journal_lines` di-join tanpa syarat → baris jurnal VOID/DRAFT/masa depan IKUT dijumlah; as_of praktis tak berefek.
+  Ukur kaos: fungsi Σ debit 1.069.966.777,76 vs benar 1.069.901.559,76 → lebih Rp 65.218 = 32 baris jurnal VOID. Debit & kredit sama-sama lebih → tetap "Seimbang". nyawit: sama (0 VOID hari ini).
+  Fungsi juga membuang akun NONAKTIF bersaldo (BL-07 belum diterapkan) → selisih semu bila ada.
+- FE mengirim `?as_of_date=`, rute membaca `?as_of=` → tanggal diabaikan; bawaan `date.today()` (UTC), bukan tanggal bisnis.
+- FE merakit: kolom Debit/Kredit dari balance + normal_balance; "Neraca Seimbang/Tidak Seimbang" (judul salah); "Per dd/mm/yyyy" tanggal browser.
+- Buku Besar FE: label tipe sendiri ("Kewajiban" ≠ L1 "Liabilitas"); saldo normal diturunkan dari TIPE, padahal CoA punya akun kontra (ASSET/CREDIT 2, COGS/CREDIT 4, EQUITY/DEBIT 2, REVENUE/DEBIT 4 di kaos+nyawit).
+- `/trial-balance/full` (halaman Dashboard): kueri BENAR (CASE menyaring non-POSTED). `/api/ledger/{id}`: saldo berjalan server, benar.
+
+### Bentuk
+Rute `/trial-balance`: hitung sendiri lewat SATU kueri di `services/neraca_saldo.py` (fungsi DB lama dibiarkan, tak dipanggil; hapus = migrasi → tanya pemilik, tiket).
+- Sumber: `journal_lines` JOIN `journal_entries` (INNER) `status='POSTED'`, `journal_date ≤ as_of`, tenant. POSTED SAJA (tanpa is_effective), sama dengan `/full` dan `/api/ledger`; pasangan pembalik bersih nol per akun, kolom bruto jujur.
+- Akun: aktif ATAU nonaktif bersaldo (BL-07). Baris nol disaring seperti dulu.
+- Tanggal: `as_of` ATAU `as_of_date` (alias; dua-duanya dihormati); bawaan `tanggal_dokumen` tenant.
+- Decimal penuh; medan lama tetap (float, nama sama).
+
+Medan baru (aditif):
+- `judul` "NERACA SALDO", `per_tanggal`, `per_text` ("Per Tanggal 10 November 2026", sama dengan Neraca L1 `baris.per_tanggal`).
+- `status_text`: "Seimbang" / "Tidak seimbang — selisih {angka_laporan}"; `selisih` (string desimal).
+- per akun: `tipe_label` (SATU peta di report_engine/baris), `saldo_normal_label` ("Debit"/"Kredit" dari CoA `normal_balance`, bukan tipe), `debit_saldo`/`kredit_saldo` (string; kolom sajian dihitung server), `debit_tampil`/`kredit_tampil` (angka_laporan; "" bila nol).
+- `total_debit_saldo`/`total_kredit_saldo` + tampil.
+
+Buku besar (`/api/ledger`, `/api/ledger/{id}`) + `/trial-balance/full`: tambah `tipe_label` + `saldo_normal_label` dari CoA (aditif).
+
+Peta tipe (SATU, `baris.TIPE_AKUN`): ASSET Aset · RECEIVABLE Piutang · LIABILITY Liabilitas · PAYABLE Utang · EQUITY Ekuitas · REVENUE Pendapatan · COGS Harga Pokok Penjualan · EXPENSE Beban · OTHER_INCOME Pendapatan Lain-lain · OTHER_EXPENSE Beban Lain-lain.
+
+### Bukti (syarat MASTER)
+- Per tenant: selisih lama − baru == Σ baris VOID/DRAFT/masa depan PERSIS (kaos Rp 65.218 / 32 baris).
+- Baru == `/trial-balance/full` (closing, periode memuat as_of) == Σ ledger per akun.
+- Akun nonaktif bersaldo ikut (salinan: nonaktifkan satu akun bersaldo → tetap tampil, total tetap seimbang).
+- `as_of` dan `as_of_date` sama-sama dihormati (tanggal lampau mengubah angka sesuai jurnal ≤ tanggal); bawaan = tanggal bisnis tenant.
+- Unit + sabotase + suite + gate SESUDAH jam kerja.
+
+Temuan sampingan L3 (tiket, bukan unit ini): `/trial-balance/full` memotong sen dengan `int()` di semua kolom uang (medan lama; ubah tipe = unit tersendiri). `str(e)` di 500 `/full` DIHAPUS di L3.
+Skema: `tipe_label`/`saldo_normal_label` = `@computed_field` (pydantic 2.11) di TrialBalanceAccountRow, TrialBalanceAccountEnhanced (+ medan `normal_balance` dari CoA), AccountInfoResponse, LedgerAccountSummary → semua tempat pembentuk ikut tanpa disentuh.

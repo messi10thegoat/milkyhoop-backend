@@ -4,7 +4,9 @@ Pydantic schemas for General Ledger module.
 Response models for /api/ledger endpoints (read-only).
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
+
+from ..services.report_engine import baris as B  # L3: SATU peta tipe/saldo normal
 from typing import Optional, List, Dict
 from datetime import date
 from decimal import Decimal
@@ -37,6 +39,16 @@ class AccountInfoResponse(BaseModel):
     name: str
     account_type: str
     normal_balance: str
+
+    @computed_field
+    @property
+    def tipe_label(self) -> str:
+        return B.tipe_label(self.account_type)
+
+    @computed_field
+    @property
+    def saldo_normal_label(self) -> str:
+        return B.saldo_normal_label(self.normal_balance)
 
 
 class AccountLedgerResponse(BaseModel):
@@ -93,6 +105,16 @@ class LedgerAccountSummary(BaseModel):
     credit_balance: Decimal
     net_balance: Decimal
     transaction_count: int = 0
+
+    @computed_field
+    @property
+    def tipe_label(self) -> str:
+        return B.tipe_label(self.account_type)
+
+    @computed_field
+    @property
+    def saldo_normal_label(self) -> str:
+        return B.saldo_normal_label(self.normal_balance)
 
 
 class LedgerListResponse(BaseModel):

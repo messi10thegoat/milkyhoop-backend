@@ -9,7 +9,7 @@ from ..services.fitur_parkir import fitur_belum_tersedia
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..utils.periode import periode_laporan
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import Optional, List, Literal
 import logging
 import asyncpg
@@ -26,6 +26,7 @@ from ..services.resolve_account import (
     resolve_account_id_or_none,
 )  # LAW16_PENDAPATAN_FIX
 from decimal import Decimal, ROUND_HALF_UP  # LAW16_PENDAPATAN_FIX
+from ..services.report_engine import baris as _B  # L3: SATU peta tipe/saldo normal
 
 # Import accounting settings schemas
 from ..schemas.accounting_settings import (
@@ -1071,6 +1072,21 @@ class TrialBalanceAccountRow(BaseModel):
     total_debit: float
     total_credit: float
     balance: float
+    # L3 (aditif): kolom sajian server + teks; label dari SATU peta
+    debit_saldo: Optional[str] = None
+    kredit_saldo: Optional[str] = None
+    debit_tampil: Optional[str] = None
+    kredit_tampil: Optional[str] = None
+
+    @computed_field
+    @property
+    def tipe_label(self) -> str:
+        return _B.tipe_label(self.account_type)
+
+    @computed_field
+    @property
+    def saldo_normal_label(self) -> str:
+        return _B.saldo_normal_label(self.normal_balance)
 
 
 class TrialBalanceResponse(BaseModel):
@@ -1084,6 +1100,16 @@ class TrialBalanceResponse(BaseModel):
     is_balanced: bool
     account_count: int
     accounts: List[TrialBalanceAccountRow]
+    # L3 (aditif)
+    judul: Optional[str] = None
+    per_tanggal: Optional[str] = None
+    per_text: Optional[str] = None
+    total_debit_saldo: Optional[str] = None
+    total_kredit_saldo: Optional[str] = None
+    total_debit_tampil: Optional[str] = None
+    total_kredit_tampil: Optional[str] = None
+    selisih: Optional[str] = None
+    status_text: Optional[str] = None
 
 
 class TrialBalanceSummaryByType(BaseModel):
@@ -1109,23 +1135,13 @@ class TrialBalanceSummaryResponse(BaseModel):
 @router.get("/trial-balance", response_model=TrialBalanceResponse)
 async def get_trial_balance(
     request: Request,
-    as_of: Optional[date] = Query(
-        default=None, description="As of date (default: today)"
-    ),
+    as_of: Optional[date] = Query(default=None, description="Per tanggal (bawaan: tanggal bisnis tenant)"),
+    as_of_date: Optional[date] = Query(default=None, description="Alias as_of (yang dikirim FE)"),
 ):
-    """
-    Get Trial Balance report using the Accounting Kernel.
+    """Neraca Saldo per tanggal dari jurnal POSTED (gelombang 4 L3; services/neraca_saldo).
 
-    Trial balance shows all accounts with their debit/credit totals
-    from journal_entries (proper double-entry bookkeeping data).
-
-    This endpoint uses AccountingFacade.get_trial_balance() which:
-    - Reads from journal_entries and journal_lines tables
-    - Calculates proper debit/credit balances per account
-    - Verifies that total_debit == total_credit (balanced)
-
-    Query Parameters:
-    - as_of: Date for balance calculation (default: today)
+    Dulu lewat facade -> fungsi DB get_trial_balance() yang ikut menjumlah baris jurnal VOID/DRAFT/masa depan dan mengabaikan
+    as_of_date dari FE. Medan lama tetap; teks tampil server aditif. Pool + transaksi READ ONLY; 500 tanpa str(e).
     """
     try:
         if not hasattr(request.state, "user") or not request.state.user:
@@ -1135,35 +1151,19 @@ async def get_trial_balance(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
-        # Use AccountingFacade for proper double-entry data
-        facade = await get_facade()
+        from ..services import neraca_saldo as NS
+        from ..services.uang_presisi import presisi_tenant
 
-        # Get trial balance from journal_entries
-        result = await facade.get_trial_balance(tenant_id=tenant_id, as_of_date=as_of)
-
-        logger.info(
-            f"Trial Balance generated: tenant={tenant_id}, "
-            f"as_of={result['as_of_date']}, "
-            f"debit={result['total_debit']}, "
-            f"credit={result['total_credit']}, "
-            f"balanced={result['is_balanced']}"
-        )
-
-        return TrialBalanceResponse(
-            tenant_id=result["tenant_id"],
-            as_of_date=result["as_of_date"],
-            period_id=result.get("period_id"),
-            total_debit=result["total_debit"],
-            total_credit=result["total_credit"],
-            is_balanced=result["is_balanced"],
-            account_count=result["account_count"],
-            accounts=[TrialBalanceAccountRow(**acc) for acc in result["accounts"]],
-        )
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction(readonly=True):
+                per = as_of or as_of_date or await tanggal_dokumen(conn, tenant_id)
+                return await NS.neraca_saldo(conn, tenant_id, per, await presisi_tenant(conn, tenant_id))
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get trial balance error: {str(e)}", exc_info=True)
+        logger.error(f"Get trial balance error: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail="Failed to generate trial balance report"
         )
@@ -1234,6 +1234,7 @@ class TrialBalanceAccountEnhanced(BaseModel):
     level: int = 2
     is_header: bool = False
     parent_id: Optional[str] = None
+    normal_balance: Optional[str] = None  # L3: saldo normal dari CoA
 
     # Opening balances (start of period)
     opening_debit: float = 0
@@ -1249,6 +1250,16 @@ class TrialBalanceAccountEnhanced(BaseModel):
 
     # Display
     indent_level: int = 0
+
+    @computed_field
+    @property
+    def tipe_label(self) -> str:
+        return _B.tipe_label(self.account_type)
+
+    @computed_field
+    @property
+    def saldo_normal_label(self) -> str:
+        return _B.saldo_normal_label(self.normal_balance)
 
 
 class TrialBalanceByTypeTotal(BaseModel):
@@ -1471,6 +1482,7 @@ async def get_trial_balance_full(
                     "level": row["level"] or 2,
                     "is_header": row["is_header"] or False,
                     "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                    "normal_balance": row["normal_balance"],
                     "opening_debit": opening_d,
                     "opening_credit": opening_c,
                     "period_debit": period_d,
@@ -1547,7 +1559,7 @@ async def get_trial_balance_full(
     except Exception as e:
         logger.error(f"Get trial balance full error: {str(e)}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to generate trial balance report: {str(e)}"
+            status_code=500, detail="Failed to generate trial balance report"
         )
 
 
