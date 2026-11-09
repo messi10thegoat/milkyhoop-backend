@@ -10,6 +10,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # ============================================================================
 # REQUEST MODELS
@@ -88,6 +90,12 @@ class WarehouseData(BaseModel):
     branch_code: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # standar SO (9 Nov 2026): services/gudang_daftar
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    nilai_stok: Optional[int] = None
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 class WarehouseStockItem(BaseModel):
@@ -168,6 +176,7 @@ class WarehouseListResponse(BaseModel):
     success: bool = True
     data: List[WarehouseData]
     total: int
+    sum_nilai: Optional[int] = None  # with_totals: Σ nilai stok gudang terfilter (services/gudang_daftar)
 
 
 class WarehouseDetailResponse(BaseModel):

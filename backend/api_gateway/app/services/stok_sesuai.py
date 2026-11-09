@@ -1,0 +1,364 @@
+"""PENYESUAIAN STOK standar SO (gelombang 2, kontrak backend/docs/KONTRAK-persediaan-standar-so-20261109.md): SATU penentu untuk pratinjau DAN
+tulis (buat, ubah, posting, batal) + kunci ?aksi= / teks posisi / dokumen / riwayat. Pratinjau = penentu yang sama di transaksi READ ONLY.
+
+Putusan pemilik LANGSUNG 9 Nov 2026 (sesi BACKEND):
+1. Nilai baris = harga pokok (WAC) saat DRAF dibuat, dibekukan (perilaku lama); pratinjau posting memberi ISYARAT bila WAC kini berbeda.
+2. Gudang: penyesuaian memakai `warehouse_id` yang dipilih; bawaan = gudang UTAMA (is_default, cadangan gudang tertua). Stok sebelum dan
+   hitung ulang dihitung PER gudang itu (dulu stok semua gudang + selalu gudang tertua).
+3. Batal: periode TANGGAL penyesuaian juga harus terbuka (dulu hanya hari ini), seragam dengan batal modul lain.
+Selain itu angka, akun, arah jurnal, dan gerak inventory_ledger PERSIS seperti posting/void lama (milkyhoop-inventory Rule 1/3/9; Law 2/5/13/20).
+Periode: penentu lama modul ini dipertahankan -- tanpa baris fiscal_periods = DITOLAK (beda dari modul lain; diakui di kontrak U6)."""
+from decimal import Decimal
+from typing import Optional
+from uuid import UUID
+
+from . import teks_galat as tg
+from .bayar_keluar_rencana import Blok
+from .role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
+
+JENIS_TEXT = {"increase": "Penambahan", "decrease": "Pengurangan", "recount": "Hitung ulang", "damaged": "Rusak", "expired": "Kedaluwarsa"}
+AKSI = ("draf",)            # pill (hitung), desak 1 -- putusan MASTER 9 Nov
+KARTU = ("bulan_ini",)      # kartu ringkasan
+SEMUA_KUNCI = AKSI + KARTU
+NOL = Decimal(0)
+
+
+def _d(x) -> Decimal:
+    return Decimal(str(x or 0))
+
+
+def rp(x) -> str:
+    return str(_d(x).quantize(Decimal("0.01")))
+
+
+# ---------------------------------------------------------------- daftar
+def sql_aksi(kunci: str, p_hari: str, a: str = "stock_adjustments") -> str:
+    return {
+        "draf": f"{a}.status = 'draft'",
+        "bulan_ini": f"({a}.status <> 'void' AND date_trunc('month', {a}.adjustment_date) = date_trunc('month', {p_hari}::date))",
+    }[kunci]
+
+
+def aksi_semua(status: Optional[str]) -> list:
+    return ["draf"] if status == "draft" else []
+
+
+def jenis_text(tipe: Optional[str]) -> Optional[str]:
+    return JENIS_TEXT.get(tipe or "", tipe)
+
+
+def position_text(status: Optional[str], tipe: Optional[str]) -> str:
+    if status == "draft":
+        return "Draf · belum diposting"
+    if status == "void":
+        return "Dibatalkan"
+    return f"Diposting · {jenis_text(tipe)}"
+
+
+def documents_baris(status: Optional[str], journal_id) -> list:
+    """penyesuaian · jurnal (+pembalik bila batal)."""
+    if not journal_id:
+        return [{"type": "stock_adjustment"}]
+    return [{"type": "stock_adjustment"}, {"type": "journal"}] + ([{"type": "journal"}] if status == "void" else [])
+
+
+# ---------------------------------------------------------------- gudang + stok + periode
+async def gudang(conn, tid: str, warehouse_id, bl: Blok):
+    """Gudang penyesuaian (putusan 2): yang dipilih (milik tenant, aktif) atau bawaan UTAMA, cadangan gudang tertua."""
+    if warehouse_id:
+        try:
+            wid = UUID(str(warehouse_id))
+        except (ValueError, TypeError):
+            wid = None
+        g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", wid, tid) if wid else None
+        if not g:
+            bl.galat("GUDANG_TIDAK_DITEMUKAN", 400, "Gudang tidak ditemukan di usaha ini.")
+            return None
+        if not g["is_active"]:
+            bl.galat("GUDANG_NONAKTIF", 400, f"Gudang {g['name']} nonaktif.")
+        return g
+    g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active "
+                            "ORDER BY is_default DESC, created_at LIMIT 1", tid)
+    if not g:
+        bl.galat("GUDANG_TIDAK_ADA", 400, "Belum ada gudang aktif. Buat gudang dulu.")
+    return g
+
+
+async def stok_gudang(conn, tid: str, product_id, warehouse_id) -> Decimal:
+    """Stok barang di SATU gudang = Σ masuk − Σ keluar inventory_ledger (Law 16; bukan cache warehouse_stock yang dibatasi 0)."""
+    return _d(await conn.fetchval(
+        "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger "
+        "WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $3", tid, product_id, warehouse_id))
+
+
+async def harga_pokok(conn, tid: str, product_id) -> Decimal:
+    """Harga pokok SAAT INI dengan penentu yang SAMA dengan nilai baris draf (router get_product_info: WAC terakhir, cadangan harga beli)."""
+    from ..routers.stock_adjustments import get_product_info
+    p = await get_product_info(conn, tid, product_id)
+    return Decimal(int(p["unit_cost"] or 0)) if p else NOL
+
+
+async def periode(conn, tid: str, tgl, bl: Blok) -> None:
+    """== check_period_is_open lama modul ini (status 400): tanpa periode -> tolak; status bukan OPEN -> tolak."""
+    p = await conn.fetchrow("SELECT id, period_name, status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
+                            tid, tgl)
+    if not p:
+        bl.galat("PERIODE_TIDAK_ADA", 400, "Tidak ada periode akuntansi untuk tanggal ini")
+    elif p["status"] != "OPEN":
+        bl.galat("PERIODE_TERTUTUP", 400, tg.periode_tertutup(p["period_name"], p["status"]))
+
+
+# ---------------------------------------------------------------- buat / ubah (baris draf)
+async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok) -> list:
+    """Baris draf: stok sebelum PER gudang, selisih (hitung ulang: fisik − sistem), nilai = |selisih| × harga pokok saat ini (dibekukan)."""
+    from ..routers.stock_adjustments import get_product_info
+    hasil = []
+    for idx, item in enumerate(items or [], 1):
+        try:
+            pid = UUID(str(item.product_id))
+        except (ValueError, TypeError):
+            pid = None
+        p = await get_product_info(conn, tid, pid) if pid else None
+        if not p:
+            bl.galat("BARANG_TIDAK_DITEMUKAN", 400, f"Barang baris {idx} tidak ditemukan.")
+            continue
+        sebelum = await stok_gudang(conn, tid, pid, gudang_id) if gudang_id else NOL
+        ubah = _d(item.quantity_adjustment)
+        sistem = fisik = None
+        if tipe == "recount" and item.physical_quantity is not None:
+            fisik, sistem = _d(item.physical_quantity), sebelum
+            ubah = fisik - sistem
+        harga = Decimal(int(p["unit_cost"] or 0))
+        hasil.append({"product_id": pid, "product_code": p["code"], "product_name": p["name"], "unit": p["unit"],
+                      "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
+                      "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
+                      "reason_detail": item.reason_detail, "system_quantity": sistem, "physical_quantity": fisik, "line_number": idx})
+    return hasil
+
+
+async def rencana_buat(conn, tid: str, body, bl: Blok) -> dict:
+    g = await gudang(conn, tid, getattr(body, "warehouse_id", None), bl)
+    baris = await susun_baris(conn, tid, body.items, body.adjustment_type, g["id"] if g else None, bl)
+    return {"blocks": bl.daftar, "gudang": g, "baris_draf": baris, "baris": [], "saldo": []}
+
+
+async def muat(conn, tid: str, sa_id, kunci: bool = False):
+    return await conn.fetchrow("SELECT * FROM stock_adjustments WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""),
+                               sa_id, tid)
+
+
+async def rencana_ubah(conn, tid: str, sa_id, body, bl: Blok) -> dict:
+    hasil = {"blocks": bl.daftar, "sa": None, "gudang": None, "baris_draf": None, "baris": [], "saldo": []}
+    sa = await muat(conn, tid, sa_id)
+    if not sa:
+        bl.galat("PENYESUAIAN_TIDAK_DITEMUKAN", 404, "Penyesuaian stok tidak ditemukan.")
+        return hasil
+    hasil["sa"] = sa
+    if sa["status"] != "draft":
+        bl.galat("PENYESUAIAN_BUKAN_DRAF", 400, "Hanya penyesuaian draf yang bisa diubah.")
+        return hasil
+    wid = body.warehouse_id if getattr(body, "warehouse_id", None) is not None else sa["warehouse_id"]
+    g = hasil["gudang"] = await gudang(conn, tid, wid, bl)
+    if body.items is not None:
+        hasil["baris_draf"] = await susun_baris(conn, tid, body.items, body.adjustment_type or sa["adjustment_type"], g["id"] if g else None, bl)
+    return hasil
+
+
+async def rencana_hapus(conn, tid: str, sa_id, bl: Blok) -> dict:
+    sa = await muat(conn, tid, sa_id)
+    if not sa:
+        bl.galat("PENYESUAIAN_TIDAK_DITEMUKAN", 404, "Penyesuaian stok tidak ditemukan.")
+    elif sa["status"] != "draft":
+        bl.galat("PENYESUAIAN_BUKAN_DRAF", 400, "Hanya penyesuaian draf yang bisa dihapus; batalkan yang sudah diposting.")
+    return {"blocks": bl.daftar, "sa": sa, "baris": [], "saldo": [], "catatan": "Draf akan dihapus." if sa and not bl.daftar else None}
+
+
+# ---------------------------------------------------------------- posting
+async def _akun(conn, tid: str, bl: Blok):
+    try:
+        return (await resolve_account_id_by_role(conn, tid, AccountRole.INVENTORY_MERCHANDISE),
+                await resolve_account_id_by_role(conn, tid, AccountRole.INVENTORY_ADJUSTMENT_EXPENSE))
+    except AccountRoleUnmappedError:
+        bl.galat("AKUN_BELUM_DIATUR", 400, "Akun persediaan / penyesuaian persediaan belum diatur untuk usaha ini.")
+        return None, None
+
+
+async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False) -> dict:
+    """Jurnal (Dr/Cr == posting lama) + gerak stok per barang di gudang penyesuaian + isyarat (stok minus, WAC berubah)."""
+    hasil = {"blocks": bl.daftar, "sa": None, "items": [], "gudang": None, "baris": [], "gerak": [], "isyarat": [], "saldo": [],
+             "akun": (None, None), "total": NOL}
+    sa = await muat(conn, tid, sa_id, kunci)
+    if not sa:
+        bl.galat("PENYESUAIAN_TIDAK_DITEMUKAN", 404, "Penyesuaian stok tidak ditemukan.")
+        return hasil
+    hasil["sa"] = sa
+    if sa["status"] != "draft":
+        bl.galat("PENYESUAIAN_BUKAN_DRAF", 400, f"Penyesuaian berstatus '{sa['status']}' tidak bisa diposting.")
+        return hasil
+    await periode(conn, tid, sa["adjustment_date"], bl)
+    items = hasil["items"] = await conn.fetch(
+        "SELECT i.* FROM stock_adjustment_items i JOIN stock_adjustments s ON s.id = i.stock_adjustment_id AND s.tenant_id = $2 "
+        "WHERE i.stock_adjustment_id = $1 ORDER BY i.line_number", sa_id, tid)
+    if not items:
+        bl.galat("TANPA_BARIS", 400, "Tidak ada barang untuk diposting.")
+        return hasil
+    g = hasil["gudang"] = await gudang(conn, tid, sa["warehouse_id"], bl)
+    persediaan, penyesuaian = hasil["akun"] = await _akun(conn, tid, bl)
+    naik = sum((_d(i["total_value"]) for i in items if _d(i["quantity_adjustment"]) > 0), NOL)
+    turun = sum((_d(i["total_value"]) for i in items if _d(i["quantity_adjustment"]) <= 0), NOL)
+    hasil["total"] = naik + turun
+    n = sa["adjustment_number"]
+    if naik > 0:
+        hasil["baris"] += [(persediaan, naik, NOL, f"Penambahan Persediaan - {n}"), (penyesuaian, NOL, naik, f"Koreksi Persediaan - {n}")]
+    if turun > 0:
+        hasil["baris"] += [(penyesuaian, turun, NOL, f"Penyesuaian Persediaan - {n}"), (persediaan, NOL, turun, f"Pengurangan Persediaan - {n}")]
+    if not g:
+        return hasil
+    for i in items:
+        p = await conn.fetchrow("SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", i["product_id"], tid)
+        if not (p and p["item_type"] == "goods" and (p["track_inventory"] if p["track_inventory"] is not None else True)):
+            continue
+        q = _d(i["quantity_adjustment"])
+        sebelum = await stok_gudang(conn, tid, i["product_id"], g["id"])
+        hasil["gerak"].append({"product_id": i["product_id"], "product_code": i["product_code"], "product_name": i["product_name"],
+                               "masuk": q if q > 0 else NOL, "keluar": -q if q < 0 else NOL, "unit_cost": _d(i["unit_cost"]),
+                               "stok_sebelum": sebelum, "stok_sesudah": sebelum + q})
+        if q < 0 and sebelum + q < 0:
+            hasil["isyarat"].append(f"Stok {i['product_name']} di {g['name']} akan minus ({sebelum + q}).")
+        kini = await harga_pokok(conn, tid, i["product_id"])
+        if q != 0 and kini != _d(i["unit_cost"]):
+            hasil["isyarat"].append(f"Harga pokok {i['product_name']} berubah sejak draf dibuat ({tg.rp(i['unit_cost'])} → {tg.rp(kini)}); "
+                                    "nilai memakai harga draf.")
+    return hasil
+
+
+# ---------------------------------------------------------------- batal
+async def rencana_batal(conn, tid: str, sa_id, alasan, bl: Blok, kunci: bool = False) -> dict:
+    """Jurnal pembalik (== void lama) + cermin gerak stok + isyarat stok minus. Draf -> dihapus (perilaku lama). Putusan 3: periode tanggal
+    penyesuaian DAN hari ini (jurnal pembalik) harus terbuka."""
+    from ..utils.tanggal_tenant import tanggal_dokumen
+    hasil = {"blocks": bl.daftar, "sa": None, "baris": [], "gerak": [], "isyarat": [], "saldo": [], "hapus_draf": False, "hari_ini": None}
+    sa = await muat(conn, tid, sa_id, kunci)
+    if not sa:
+        bl.galat("PENYESUAIAN_TIDAK_DITEMUKAN", 404, "Penyesuaian stok tidak ditemukan.")
+        return hasil
+    hasil["sa"] = sa
+    if sa["status"] == "void":
+        bl.galat("PENYESUAIAN_SUDAH_DIBATALKAN", 400, "Penyesuaian stok ini sudah dibatalkan.")
+        return hasil
+    if sa["status"] == "draft":
+        hasil["hapus_draf"], hasil["catatan"] = True, "Draf akan dihapus (belum berjurnal)."
+        return hasil
+    await periode(conn, tid, sa["adjustment_date"], bl)
+    hari_ini = hasil["hari_ini"] = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis: jurnal pembalik bertanggal hari ini
+    await periode(conn, tid, hari_ini, bl)
+    if sa["journal_id"]:
+        lines = await conn.fetch("SELECT l.* FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_id AND e.tenant_id = $2 "
+                                 "WHERE l.journal_id = $1 ORDER BY l.line_number", sa["journal_id"], tid)
+        hasil["baris"] = [(x["account_id"], _d(x["credit"]), _d(x["debit"]), f"Reversal - {x['memo'] or ''}") for x in lines]
+        for r in await conn.fetch(
+                "SELECT product_id, product_name, warehouse_id, SUM(quantity_in) AS masuk, SUM(quantity_out) AS keluar FROM inventory_ledger "
+                "WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 GROUP BY 1, 2, 3 ORDER BY 2, 1", tid, sa_id):
+            sebelum = await stok_gudang(conn, tid, r["product_id"], r["warehouse_id"])
+            sesudah = sebelum - _d(r["masuk"]) + _d(r["keluar"])
+            hasil["gerak"].append({"product_id": r["product_id"], "product_name": r["product_name"], "warehouse_id": r["warehouse_id"],
+                                   "masuk": _d(r["keluar"]), "keluar": _d(r["masuk"]), "stok_sebelum": sebelum, "stok_sesudah": sesudah})
+            if sesudah < 0:
+                hasil["isyarat"].append(f"Stok {r['product_name']} akan minus ({sesudah}) sesudah pembatalan.")
+    return hasil
+
+
+# ---------------------------------------------------------------- aksi_tersedia + keluaran pratinjau
+async def aksi_tersedia(conn, tid: str, sa) -> dict:
+    from ..schemas.aksi_tersedia import aksi
+    draf = sa["status"] == "draft"
+    post = (await rencana_posting(conn, tid, sa["id"], Blok(True)))["blocks"] if draf else [{"message": "Hanya penyesuaian draf yang bisa diposting."}]
+    batal = (await rencana_batal(conn, tid, sa["id"], None, Blok(True)))["blocks"]
+    return {
+        "posting": aksi(not post, post[0]["message"] if post else None),
+        "ubah": aksi(draf, "Penyesuaian yang sudah diposting tidak bisa diubah; batalkan lalu buat baru."),
+        "hapus": aksi(draf, "Penyesuaian yang sudah diposting tidak bisa dihapus; batalkan saja."),
+        "batalkan": aksi(not draf and not batal, "Draf dihapus, bukan dibatalkan." if draf else (batal[0]["message"] if batal else None)),
+    }
+
+
+def _gerak_json(g: dict) -> dict:
+    return {"product_id": str(g["product_id"]), "product_name": g["product_name"], "masuk": str(g["masuk"]), "keluar": str(g["keluar"]),
+            "stok_sebelum": str(g["stok_sebelum"]), "stok_sesudah": str(g["stok_sesudah"]), "minus": g["stok_sesudah"] < 0}
+
+
+def _draf_json(b: dict) -> dict:
+    return {"product_id": str(b["product_id"]), "product_name": b["product_name"], "unit": b["unit"],
+            "quantity_before": str(b["quantity_before"]), "quantity_adjustment": str(b["quantity_adjustment"]),
+            "quantity_after": str(b["quantity_after"]), "unit_cost": rp(b["unit_cost"]), "total_value": rp(b["total_value"])}
+
+
+async def pratinjau(pool, tid: str, rencana, payload) -> dict:
+    """Bentuk B8 (kasbank_tulis.keluaran) + gerak[] / baris_draf[] / isyarat[] / gudang; transaksi READ ONLY (nol tulisan)."""
+    from .kasbank_tulis import keluaran
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            r = await rencana(conn)
+            d = await keluaran(conn, tid, r, payload)
+            d.pop("saldo", None)
+            d["gudang"] = {"id": str(r["gudang"]["id"]), "name": r["gudang"]["name"]} if r.get("gudang") else None
+            d["gerak"] = [_gerak_json(g) for g in r.get("gerak", [])]
+            d["isyarat"] = list(r.get("isyarat", []))
+            if r.get("baris_draf") is not None:
+                d["baris_draf"] = [_draf_json(b) for b in r["baris_draf"]]
+            return {"success": True, "data": d}
+
+
+
+# ---------------------------------------------------------------- riwayat + dokumen (bentuk biaya_riwayat / so_riwayat)
+async def dokumen(conn, tid: str, sa_id) -> Optional[dict]:
+    """{anchor, default, groups}: penyesuaian · jurnal (+pembalik) · gerak stok (STOCK_ADJUSTMENT / _VOID). None = tak ada (404)."""
+    from .biaya_riwayat import _dok, _tgl
+    sa = await muat(conn, tid, sa_id)
+    if not sa:
+        return None
+    batal = sa["status"] == "void"
+    kel = [{"key": "penyesuaian", "label": "Penyesuaian stok", "docs": [
+        _dok("stock_adjustment", sa["id"], sa["adjustment_number"], sa["adjustment_date"], rp(sa["total_value"]), sa["status"], batal)]}]
+    jurnal = []
+    if sa["journal_id"]:
+        j = await conn.fetchrow("SELECT id, journal_number, journal_date, total_debit, reversed_by_id FROM journal_entries "
+                                "WHERE id = $1 AND tenant_id = $2", sa["journal_id"], tid)
+        if j:
+            jurnal.append(_dok("journal", j["id"], j["journal_number"], j["journal_date"], rp(j["total_debit"]), "diposting", batal))
+            r = await conn.fetchrow("SELECT id, journal_number, journal_date, total_debit FROM journal_entries WHERE id = $1 AND tenant_id = $2",
+                                    j["reversed_by_id"], tid) if j["reversed_by_id"] else None
+            if r:
+                jurnal.append(_dok("journal", r["id"], r["journal_number"], r["journal_date"], rp(r["total_debit"]), "pembalik"))
+    if jurnal:
+        kel.append({"key": "jurnal", "label": "Jurnal", "docs": jurnal})
+    gerak = await conn.fetch(
+        "SELECT id, source_type, product_name, movement_date, quantity_in, quantity_out FROM inventory_ledger WHERE tenant_id = $1 "
+        "AND source_id = $2 AND source_type IN ('STOCK_ADJUSTMENT', 'STOCK_ADJUSTMENT_VOID') ORDER BY created_at, id", tid, sa_id)
+    if gerak:
+        kel.append({"key": "gerak", "label": "Gerak stok", "docs": [
+            _dok("inventory_movement", g["id"], g["product_name"], g["movement_date"], None,
+                 "pembalik" if g["source_type"].endswith("_VOID") else ("dibatalkan" if batal else "tercatat"),
+                 batal and not g["source_type"].endswith("_VOID")) for g in gerak]})
+    return {"anchor": {"kind": "stock_adjustment", "id": str(sa["id"]), "number": sa["adjustment_number"], "date": _tgl(sa["adjustment_date"]),
+                       "position_text": position_text(sa["status"], sa["adjustment_type"]), "total": rp(sa["total_value"]),
+                       "jenis_text": jenis_text(sa["adjustment_type"])},
+            "default": {"group": "penyesuaian", "index": 0}, "groups": kel}
+
+
+async def riwayat(conn, tid: str, sa_id, limit: int = 200) -> Optional[dict]:
+    """dibuat · diposting · dibatalkan (kolom beraktor stock_adjustments). Ubah/hapus draf tak tercatat (Law 34: tak diklaim lengkap)."""
+    from .so_riwayat import _Kumpul, _rp, _selesaikan
+    sa = await muat(conn, tid, sa_id)
+    if not sa:
+        return None
+    n, k = sa["adjustment_number"], _Kumpul()
+    k.tambah(sa["created_at"], "PENYESUAIAN_DIBUAT", f"Penyesuaian stok {n} ({jenis_text(sa['adjustment_type']).lower()}) dibuat",
+             sa["created_by"], "stock_adjustment", sa["id"], n)
+    k.tambah(sa["posted_at"], "PENYESUAIAN_DIPOSTING", f"Penyesuaian stok {n} {_rp(sa['total_value'])} diposting", sa["posted_by"],
+             "stock_adjustment", sa["id"], n)
+    alasan = f": {sa['voided_reason']}" if sa["voided_reason"] else ""
+    k.tambah(sa["voided_at"], "PENYESUAIAN_DIBATALKAN", f"Penyesuaian stok {n} dibatalkan (void){alasan}", sa["voided_by"],
+             "stock_adjustment", sa["id"], n)
+    keluar, total = await _selesaikan(conn, tid, k, {}, {}, limit)
+    return {"adjustment_id": str(sa["id"]), "adjustment_number": n, "events": keluar, "total": total, "omitted": []}

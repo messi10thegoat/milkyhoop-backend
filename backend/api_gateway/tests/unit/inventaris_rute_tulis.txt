@@ -574,8 +574,13 @@ POST /api/settings/order-codes/preview
 POST /api/settings/order-codes/import
 POST /api/setup/chat
 POST /api/stock-adjustments
+POST /api/stock-adjustments/preview
+POST /api/stock-adjustments/{adjustment_id}/delete/preview
+POST /api/stock-adjustments/{adjustment_id}/edit/preview
 POST /api/stock-adjustments/{adjustment_id}/post
+POST /api/stock-adjustments/{adjustment_id}/post/preview
 POST /api/stock-adjustments/{adjustment_id}/void
+POST /api/stock-adjustments/{adjustment_id}/void/preview
 POST /api/stock-transfers
 POST /api/stock-transfers/create-and-complete
 POST /api/stock-transfers/preview

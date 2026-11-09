@@ -58,6 +58,9 @@ KHUSUS = {
     "POST /api/customers/{customer_id}/delete/preview": "DELETE /api/customers/{customer_id}",
     "POST /api/vendors/{vendor_id}/edit/preview": "PATCH /api/vendors/{vendor_id}",
     "POST /api/vendors/{vendor_id}/delete/preview": "DELETE /api/vendors/{vendor_id}",
+    # Penyesuaian stok standar SO (9 Nov): ubah draf = PATCH, hapus draf = DELETE (penentu bersama services/stok_sesuai)
+    "POST /api/stock-adjustments/{adjustment_id}/edit/preview": "PATCH /api/stock-adjustments/{adjustment_id}",
+    "POST /api/stock-adjustments/{adjustment_id}/delete/preview": "DELETE /api/stock-adjustments/{adjustment_id}",
     "POST /api/customers/{customer_id}/status/preview": "PATCH /api/customers/{customer_id}/status",
     "POST /api/vendors/{vendor_id}/status/preview": "PATCH /api/vendors/{vendor_id}/status",
 }

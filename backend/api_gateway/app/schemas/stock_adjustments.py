@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Any, Literal
 from decimal import Decimal
 from datetime import date
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # =============================================================================
 # REQUEST MODELS - Items
@@ -51,6 +53,7 @@ class CreateStockAdjustmentRequest(BaseModel):
     adjustment_date: date
     adjustment_type: Literal["increase", "decrease", "recount", "damaged", "expired"]
     storage_location_id: Optional[str] = Field(None, description="Storage location UUID")
+    warehouse_id: Optional[str] = Field(None, description="Gudang penyesuaian; kosong = gudang UTAMA (putusan pemilik 9 Nov)")
     reference_no: Optional[str] = Field(None, max_length=100)
     notes: Optional[str] = None
     items: List[StockAdjustmentItemCreate] = Field(..., min_length=1)
@@ -61,6 +64,7 @@ class UpdateStockAdjustmentRequest(BaseModel):
     adjustment_date: Optional[date] = None
     adjustment_type: Optional[Literal["increase", "decrease", "recount", "damaged", "expired"]] = None
     storage_location_id: Optional[str] = None
+    warehouse_id: Optional[str] = None  # gudang penyesuaian (putusan pemilik 9 Nov); None = tetap
     reference_no: Optional[str] = None
     notes: Optional[str] = None
     items: Optional[List[StockAdjustmentItemUpdate]] = None
@@ -109,6 +113,13 @@ class StockAdjustmentListItem(BaseModel):
     status: str
     reference_no: Optional[str] = None
     created_at: str
+    # standar SO (9 Nov 2026): services/stok_sesuai
+    jenis_text: Optional[str] = None
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 class StockAdjustmentDetail(BaseModel):
@@ -134,6 +145,12 @@ class StockAdjustmentDetail(BaseModel):
     created_at: str
     updated_at: str
     created_by: Optional[str] = None
+    # standar SO (9 Nov 2026): gudang penyesuaian + teks + aksi dari penentu tulis (services/stok_sesuai)
+    warehouse_id: Optional[str] = None
+    warehouse_name: Optional[str] = None
+    jenis_text: Optional[str] = None
+    position_text: Optional[str] = None
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 # =============================================================================
@@ -158,6 +175,7 @@ class StockAdjustmentListResponse(BaseModel):
     items: List[StockAdjustmentListItem]
     total: int
     has_more: bool
+    sum_total: Optional[str] = None  # with_totals: Σ total_value tanpa void
 
 
 class StockAdjustmentSummaryResponse(BaseModel):

@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services import gudang_daftar as GD
 from ..schemas.warehouses import (
     CreateWarehouseRequest,
     CreateWarehouseResponse,
@@ -27,9 +28,9 @@ router = APIRouter()
 
 # BUG-077: nilai stok per gudang = qty gudang x WAC BARANG (WAC MH per barang, bukan per gudang; fungsi yang sama dengan
 # jalur COGS). Rupiah dibulatkan 0 dp di titik lahir per baris, dihitung dari WAC 2 dp (bukan dari unit_cost yang
-# sudah dibulatkan). Satu ekspresi untuk /stock dan /stock-value ($2 = tenant_id di kedua query).
-WAC_GUDANG = "CROSS JOIN LATERAL (SELECT get_weighted_average_cost($2, ws.item_id) AS wac) w"
-NILAI_GUDANG = "ROUND(ws.quantity * w.wac, 0)"
+# sudah dibulatkan). Satu ekspresi untuk /stock dan /stock-value ($2 = tenant_id di kedua query) -- kini di services/gudang_daftar
+# (dipakai juga nilai_stok daftar standar SO).
+WAC_GUDANG, NILAI_GUDANG = GD.WAC_GUDANG, GD.NILAI_GUDANG
 
 # Connection pool
 
@@ -63,8 +64,10 @@ async def list_warehouses(
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
     is_branch: Optional[bool] = None,
+    aksi: Optional[str] = Query(None, pattern="^stok_minus$", description="Kunci standar SO (services/gudang_daftar)"),
+    with_totals: bool = Query(False, description="sum_nilai = Σ nilai stok gudang terfilter"),
 ):
-    """List all warehouses"""
+    """List all warehouses (+ ?aksi=stok_minus, with_totals, position_text/aksi/nilai_stok per baris)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -94,6 +97,9 @@ async def list_warehouses(
             params.append(is_branch)
             param_idx += 1
 
+        if aksi in GD.AKSI:
+            where_clauses.append(GD.sql_aksi(aksi))
+
         where_sql = " AND ".join(where_clauses)
 
         # Count total
@@ -101,10 +107,14 @@ async def list_warehouses(
             f"SELECT COUNT(*) FROM warehouses WHERE {where_sql}", *params
         )
 
+        sum_nilai = None
+        if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
+            sum_nilai = int(await conn.fetchval(f"SELECT COALESCE(SUM({GD.sql_nilai()}), 0) FROM warehouses WHERE {where_sql}", *params))
+
         # Fetch warehouses
         rows = await conn.fetch(
             f"""
-            SELECT * FROM warehouses
+            SELECT *, {GD.sql_stok_minus()} AS stok_minus, {GD.sql_nilai()} AS nilai_stok FROM warehouses
             WHERE {where_sql}
             ORDER BY is_default DESC, name ASC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -114,9 +124,24 @@ async def list_warehouses(
             skip,
         )
 
-        data = [WarehouseData(**dict(row)) for row in rows]
+        data = [WarehouseData(**dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+                              aksi=(GD.aksi_semua(row["stok_minus"]) or [None])[0], aksi_semua=GD.aksi_semua(row["stok_minus"]))
+                for row in rows]
 
-        return WarehouseListResponse(data=data, total=total)
+        return WarehouseListResponse(data=data, total=total, sum_nilai=sum_nilai)
+
+
+# Standar SO: WAJIB di atas /{warehouse_id} (rute terdaftar duluan menang)
+@router.get("/summary")
+async def warehouses_summary(request: Request):
+    """{stok_minus_count, nonaktif_count, total_count} -- predikat SAMA dgn ?aksi= / is_active daftar (services/gudang_daftar)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(f"SELECT COUNT(*) FILTER (WHERE {GD.sql_stok_minus()}) AS stok_minus_count, "
+                                f"COUNT(*) FILTER (WHERE NOT is_active) AS nonaktif_count, COUNT(*) AS total_count "
+                                f"FROM warehouses WHERE tenant_id = $1", ctx["tenant_id"])
+    return {"success": True, "data": {k: int(r[k]) for k in ("stok_minus_count", "nonaktif_count", "total_count")}}
 
 
 @router.get("/low-stock", response_model=LowStockResponse)
@@ -184,7 +209,9 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
         if not row:
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
-        return WarehouseDetailResponse(data=WarehouseData(**dict(row)))
+        return WarehouseDetailResponse(data=WarehouseData(
+            **dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+            aksi_tersedia=await GD.aksi_tersedia(conn, ctx["tenant_id"], row)))
 
 
 @router.post("", response_model=CreateWarehouseResponse)
@@ -209,13 +236,14 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
                 status_code=400, detail=f"Warehouse code '{body.code}' already exists"
             )
 
-        row = await conn.fetchrow(
+        async with conn.transaction():
+            row = await conn.fetchrow(
             """
             INSERT INTO warehouses (
                 tenant_id, code, name, address, city, province, postal_code, country,
                 phone, email, manager_name, is_default, is_active, is_branch, branch_code,
                 created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, $12, $13, $14, $15)
             RETURNING *
             """,
             ctx["tenant_id"],
@@ -229,12 +257,14 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
             body.phone,
             body.email,
             body.manager_name,
-            body.is_default,
             body.is_active,
             body.is_branch,
             body.branch_code,
             ctx.get("user_id"),
-        )
+            )
+            if body.is_default:  # U8: penulis tunggal is_default (tepat satu gudang utama)
+                await GD.jadikan_utama(conn, ctx["tenant_id"], row["id"])
+                row = await conn.fetchrow("SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", row["id"], ctx["tenant_id"])
 
         return CreateWarehouseResponse(data=WarehouseData(**dict(row)))
 
@@ -294,7 +324,6 @@ async def update_warehouse(
             "phone",
             "email",
             "manager_name",
-            "is_default",
             "is_active",
             "is_branch",
             "branch_code",
@@ -305,19 +334,30 @@ async def update_warehouse(
                 params.append(value)
                 param_idx += 1
 
-        if not updates:
+        if body.is_active is False and existing["is_active"]:  # nonaktif lewat PATCH = penentu SAMA dengan DELETE (U9)
+            alasan = GD.alasan_nonaktif(True, await GD.jumlah_berstok(conn, ctx["tenant_id"], warehouse_id))
+            if alasan:
+                raise HTTPException(status_code=400, detail=alasan)
+
+        if not updates and body.is_default is None:
             return UpdateWarehouseResponse(data=WarehouseData(**dict(existing)))
 
-        params.extend([warehouse_id, ctx["tenant_id"]])
-
-        row = await conn.fetchrow(
-            f"""
-            UPDATE warehouses SET {', '.join(updates)}, updated_at = NOW()
-            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            RETURNING *
-            """,
-            *params,
-        )
+        async with conn.transaction():
+            if updates:
+                params.extend([warehouse_id, ctx["tenant_id"]])
+                await conn.execute(
+                    f"""
+                    UPDATE warehouses SET {', '.join(updates)}, updated_at = NOW()
+                    WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+                    """,
+                    *params,
+                )
+            if body.is_default is True:  # U8: penulis tunggal is_default
+                await GD.jadikan_utama(conn, ctx["tenant_id"], warehouse_id)
+            elif body.is_default is False:
+                await conn.execute("UPDATE warehouses SET is_default = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+                                   warehouse_id, ctx["tenant_id"])
+            row = await conn.fetchrow("SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"])
 
         return UpdateWarehouseResponse(data=WarehouseData(**dict(row)))
 
@@ -342,20 +382,15 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
-        # Check for stock
-        stock_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM warehouse_stock WHERE warehouse_id = $1 AND quantity > 0",
-            warehouse_id,
-        )
-        if stock_count > 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete warehouse with existing stock. Transfer stock first.",
-            )
+        # U9: stok dari LEDGER per gudang, bersaring tenant (dulu cache warehouse_stock floor-0 tanpa tenant) -- penentu SAMA dgn
+        # aksi_tersedia.nonaktifkan (services/gudang_daftar)
+        alasan = GD.alasan_nonaktif(existing["is_active"], await GD.jumlah_berstok(conn, ctx["tenant_id"], warehouse_id))
+        if alasan:
+            raise HTTPException(status_code=400, detail=alasan)
 
         await conn.execute(
-            "UPDATE warehouses SET is_active = false, updated_at = NOW() WHERE id = $1",
-            warehouse_id,
+            "UPDATE warehouses SET is_active = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+            warehouse_id, ctx["tenant_id"],
         )
 
         return DeleteWarehouseResponse()
@@ -492,9 +527,11 @@ async def set_default_warehouse(request: Request, warehouse_id: UUID):
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
+        alasan = GD.alasan_utama(existing["is_active"], False)  # sudah utama = idempoten (tetap sukses)
+        if alasan:
+            raise HTTPException(status_code=400, detail=alasan)
 
-        await conn.execute(
-            "UPDATE warehouses SET is_default = true WHERE id = $1", warehouse_id
-        )
+        async with conn.transaction():  # U8: tepat satu gudang utama (dulu gudang utama lama tak dicabut)
+            await GD.jadikan_utama(conn, ctx["tenant_id"], warehouse_id)
 
         return {"success": True, "message": "Warehouse set as default"}

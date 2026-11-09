@@ -628,6 +628,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/units/[^/]+", ["PATCH", "PUT"], "unit", "U"),
     (r"^/api/units/[^/]+", ["DELETE"], "unit", "D"),
     # Stock Adjustments
+    # standar SO (9 Nov 2026): pratinjau ubah/hapus draf = huruf tulisnya (PATCH item U / DELETE item D, baris di bawah); WAJIB di atas
+    # pola POST generik ^/api/stock-adjustments (C). Pratinjau buat/posting/batal ikut C seperti tulisnya.
+    (r"^/api/stock-adjustments/[^/]+/edit/preview$", ["POST"], "item", "U"),
+    (r"^/api/stock-adjustments/[^/]+/delete/preview$", ["POST"], "item", "D"),
     (r"^/api/stock-adjustments", ["GET"], "stock_adjust", "R"),
     (r"^/api/stock-adjustments", ["POST"], "stock_adjust", "C"),
     (r"^/api/stock-adjustments/[^/]+", ["GET"], "stock_adjust", "R"),
