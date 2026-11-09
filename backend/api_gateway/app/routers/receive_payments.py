@@ -2276,6 +2276,16 @@ def _kalimat_tak_bisa_posting(status) -> str:
     return tg.tak_bisa_status("rp", status, "diposting")
 
 
+def penjaga_posting_rp(payment) -> None:
+    """Penjaga status posting penerimaan: _post_payment DAN rute /post SEBELUM _periksa_sisa_draf (putusan MASTER 10 Nov: penerimaan
+    non-draf ditolak dengan kalimat status, bukan "Alokasi melebihi sisa"; kelayakan sama)."""
+    if payment["status"] != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=_kalimat_tak_bisa_posting(payment["status"]),
+        )
+
+
 # ---- U-P4b-1 (2 Nov 2026): baris jurnal penerimaan dari fungsi MURNI, dipakai _post_payment DAN pratinjau READ ONLY.
 # Teks SQL dipertahankan PERSIS seperti sebelum ekstraksi (bukti setara: urutan SQL + argumen identik dasar vs cabang).
 _SQL_BARIS_DEBIT = """
@@ -2344,11 +2354,7 @@ async def _post_payment(conn, ctx: dict, payment_id: UUID) -> dict:
     if not payment:
         raise HTTPException(status_code=404, detail="Penerimaan pembayaran tidak ditemukan.")
 
-    if payment["status"] != "draft":
-        raise HTTPException(
-            status_code=400,
-            detail=_kalimat_tak_bisa_posting(payment["status"]),
-        )
+    penjaga_posting_rp(payment)
 
     # Get account IDs
     # Law 27: resolve accounts via resolve_account_id
@@ -2652,13 +2658,16 @@ async def post_receive_payment(request: Request, payment_id: UUID):
                 )
 
                 # Law 5: Check if accounting period is open
-                payment_date = await conn.fetchval(
-                    "SELECT payment_date FROM receive_payments WHERE id = $1 AND tenant_id = $2",
+                _rp = await conn.fetchrow(
+                    "SELECT payment_date, status FROM receive_payments WHERE id = $1 AND tenant_id = $2",
                     payment_id,
                     ctx["tenant_id"],
                 )
+                payment_date = _rp["payment_date"] if _rp else None
                 if payment_date:
                     await check_period_is_open(conn, ctx["tenant_id"], payment_date)
+                if _rp:  # urutan == pratinjau (_pratinjau_draf_penerimaan): periode -> status -> sisa draf
+                    penjaga_posting_rp(_rp)
 
                 # DRAF-CEK-SISA (putusan pemilik 2 Nov): alokasi draf diperiksa ULANG terhadap sisa faktur sekarang
                 _blok_sisa = await _periksa_sisa_draf(conn, ctx["tenant_id"], payment_id, kunci=True)

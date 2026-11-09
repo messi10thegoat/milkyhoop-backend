@@ -10,13 +10,18 @@ def p(xs, q):
 
 
 lama, baru = (json.load(open(f)) for f in sys.argv[1:3])
-gagal = []
+gagal, kalimat_rp = [], []
 for k, v in lama["detail"].items():
     if baru["detail"].get(k) != v:
         gagal.append(f"detail beda {k}")
 for k, v in lama["tulis"].items():
     for a, h in v.items():
-        if baru["tulis"].get(k, {}).get(a) != h:
+        b = baru["tulis"].get(k, {}).get(a)
+        if b != h and k.startswith("penerimaan:") and a == "rpposting" and not k.endswith(":draft") and not h["ok"] and b and \
+                not b["ok"] and h["status"] == b["status"] and "tidak bisa diposting" in str(b["detail"]):
+            kalimat_rp.append(f"{k}: {h['detail']} -> {b['detail']}")  # PUTUSAN 1 MASTER 10 Nov: tolak sama, kalimat status
+            continue
+        if b != h:
             gagal.append(f"tulis beda {k} {a}: lama={json.dumps(h)[:300]} baru={json.dumps(baru['tulis'].get(k, {}).get(a))[:300]}")
 gagal += [f"cek {c[0]} :: {c[2]}" for c in baru["cek"] if not c[1]]
 n = len(lama["detail"])
@@ -37,6 +42,12 @@ for m, ww in baru.get("waktu_onoff", {}).items():
 bt = baru.get("belum_terukur", [])
 print(f"BELUM TERUKUR (izin PolicyEngine tak ada di kontainer uji; tak diakali): {len(bt)} -- kunci {sorted({x[2] for x in bt})}")
 print(f"mode kunci transaksi READ ONLY: {baru.get('mode_kunci')}")
+print(f"PUTUSAN 1 (RP /post status sebelum sisa): penerimaan non-draf tolak lama==baru, kalimat saja berubah: {len(kalimat_rp)}")
+for x in kalimat_rp[:20]:
+    print("  ", x)
+print("waktu per kunci (pohon baru, dalam transaksi RO) p50/p95/maks ms:")
+for k, xs in sorted(baru.get("waktu_kunci", {}).items()):
+    print(f"  {k:26s} n={len(xs):3d} p50 {p(xs, .5):6.1f} p95 {p(xs, .95):6.1f} maks {max(xs):6.1f}")
 print(f"tersedia tapi penulis/pratinjau menolak (isian/data/lingkungan, ditinjau): {len(baru['isian'])}")
 for x in baru["isian"][:80]:
     print("  ", x)

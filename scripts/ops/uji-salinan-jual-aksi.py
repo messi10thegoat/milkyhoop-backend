@@ -288,6 +288,20 @@ def paritas(modul, nomor, kunci, a, mode, keadaan, v, isian):
     cek(nama, ok, {"aksi": a, "hasil": ringkas(v)})
 
 
+MODUL_KINI = [None]
+WAKTU_KUNCI = {}
+
+
+def berwaktu(kunci, fn):
+    async def f(c):
+        t0 = time.perf_counter()
+        try:
+            return await fn(c)
+        finally:
+            WAKTU_KUNCI.setdefault(f"{MODUL_KINI[0]}.{kunci}", []).append((time.perf_counter() - t0) * 1000)
+    return f
+
+
 async def kunci_ro(conn, penilai):
     async def intip(c):
         KUNCI.append([dict(r) for r in await c.fetch(
@@ -295,7 +309,7 @@ async def kunci_ro(conn, penilai):
             "WHERE pid = pg_backend_pid() AND locktype NOT IN ('virtualxid', 'transactionid')")])
         return None
     from app.services import aksi_detail as AD
-    h = await AD._nilai_asli(conn, penilai + [("__kunci", intip)])
+    h = await AD._nilai_asli(conn, [(k, berwaktu(k, f)) for k, f in penilai] + [("__kunci", intip)])
     h.pop("__kunci")
     return h
 
@@ -339,6 +353,7 @@ async def main():
                     f"SELECT * FROM (SELECT x.*, row_number() OVER (PARTITION BY status ORDER BY nomor DESC) AS n FROM ({s['sql']}) x) y "
                     "WHERE n <= $2 ORDER BY status, nomor", tid, SAMPEL)
                 print(f"[{tid}] {modul} sampel {len(rows)}", flush=True)
+                MODUL_KINI[0] = modul
                 for row in rows:
                     nomor = f"{tid}:{row['nomor']}:{row['status']}"
                     d = await coba(s["detail"](row["id"]))
@@ -396,6 +411,7 @@ async def main():
         out["mode_kunci"] = sorted({k["mode"] for ks in KUNCI for k in ks})
     out["cek"] = CEK
     out["belum_terukur"] = BELUM_TERUKUR
+    out["waktu_kunci"] = WAKTU_KUNCI
     with open(os.environ["KELUAR"], "w") as fo:
         json.dump(out, fo, default=str)
     gagal = [c for c in CEK if not c[1]]

@@ -304,3 +304,14 @@ def test_detail_memuat_aksi_tersedia():
                     (RP.get_receive_payment, "aksi_tersedia_rp"), (CD.get_customer_deposit, "aksi_tersedia_dp"),
                     (NK.get_credit_note, "aksi_tersedia_nk")):
         assert f"await {nama}(" in inspect.getsource(f), nama
+
+
+# ---------------------------------------------------------------- PUTUSAN 1 MASTER 10 Nov: posting penerimaan status SEBELUM sisa draf
+def test_posting_rp_status_sebelum_sisa_draf():
+    s = inspect.getsource(RP.post_receive_payment)
+    assert s.index("check_period_is_open(") < s.index("penjaga_posting_rp(_rp)") < s.index("_periksa_sisa_draf(")
+    assert "penjaga_posting_rp(payment)" in inspect.getsource(RP._post_payment)
+    with pytest.raises(HTTPException) as e:
+        RP.penjaga_posting_rp({"status": "posted"})
+    assert e.value.detail == RP._kalimat_tak_bisa_posting("posted") and e.value.status_code == 400
+    RP.penjaga_posting_rp({"status": "draft"})
