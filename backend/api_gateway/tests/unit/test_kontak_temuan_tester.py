@@ -45,6 +45,13 @@ def test_urut_dalam_tanggal_kronologis_saldo_tak_negatif():
     assert all(x["saldo"] >= 0 for x in r["baris"]) and r["saldo_akhir"] == 0
 
 
+def test_waktu_sama_dokumen_sumber_dulu():
+    # faktur + penerapan uang muka dalam SATU transaksi DB -> created_at identik; nomor jurnal DEP < INV (dulu DEP duluan, saldo -200.000)
+    dep, inv = _b(4, "DEP-2611-0003", (9, 5), kredit=200000), _b(1, "INV-2611-0014", (9, 5), debit=648000)
+    r = KM.susun([dep, inv], "customer", None, 0, 50)
+    assert [x["jno"] for x in r["baris"]] == ["INV-2611-0014", "DEP-2611-0003"] and min(x["saldo"] for x in r["baris"]) >= 0
+
+
 def test_urut_waktu_kosong_aman_dan_saldo_akhir_tetap():
     a, b, c = _b(1, "Z", None, debit=100), _b(2, "A", (9, 0), kredit=40), _b(1, "M", (8, 0), debit=5)
     r1 = KM.susun([a, b, c], "customer", None, 0, 50)

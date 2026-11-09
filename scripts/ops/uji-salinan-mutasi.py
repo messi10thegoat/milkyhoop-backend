@@ -3,6 +3,8 @@
  P2 batal berpasangan neto nol: Σ baris batal == 0; baris hidup tanpa_batal=false == baris tanpa_batal=true
  P3 saldo berjalan: baris terakhir.saldo == saldo_akhir; saldo_awal + Σ tanda*(debit-kredit) == saldo_akhir (dengan `dari` tengah)
  P4 halaman: gabungan halaman limit 7 == satu halaman limit 200
+ P5 (temuan B TESTER 9 Nov) urutan dalam tanggal kronologis: contoh nyawit -- dokumen sumber SEBELUM pelunasannya dan saldo berjalan
+    kontak itu tidak pernah negatif (PASANGAN; nomor = awalan + akhiran angka). Semua pasangan wajib ditemukan.
 Baca saja (salinan dihapus trap)."""
 import asyncio
 import json
@@ -19,6 +21,13 @@ from app.utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
 
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
 hasil, n = [], {"kontak": 0, "baris": 0, "batal": 0}
+PASANGAN = {"pt-kita-nyawit-bersama": [(("BILL", "0003"), ("BP", "0003")), (("BILL", "0016"), ("BP", "0013")),
+                                        (("INV", "0005"), ("CN", "0001")), (("INV", "0014"), ("DEP", "0003"))]}
+temu = []
+
+
+def cocok(nomor, kunci):
+    return bool(nomor) and nomor.startswith(kunci[0]) and nomor.endswith("-" + kunci[1])
 
 
 def req(tid):
@@ -36,7 +45,13 @@ def cek(nama, ok, info=""):
 D = lambda v: Decimal(str(v))  # noqa: E731
 
 
+async def _boleh(*a, **k):
+    return True
+
+
 async def utama():
+    import app.services.dashboard_izin as DI
+    DI.boleh_baca = _boleh  # P5 membaca nomor dokumen: PolicyEngine tak hidup di kontainer harness (nomor = null bila tak boleh); angka tak terpengaruh
     pool = await cu.get_pool()
     async with pool.acquire() as conn:
         db = await conn.fetchval("SELECT current_database()")
@@ -63,6 +78,15 @@ async def utama():
                     cek(f"{nm} P2 batal neto nol", bt == 0, str(bt))
                     cek(f"{nm} P2 hidup sama", [x for x in b["baris"] if not x["batal"]] == [x | {"saldo": x["saldo"]} for x in a["baris"]]
                         or [x["id"] for x in b["baris"] if not x["batal"]] == [x["id"] for x in a["baris"]], "")
+                    nomor = [x["dokumen"]["nomor"] for x in a["baris"]]
+                    for sumber, lunas in PASANGAN.get(tid, []):
+                        i = next((k for k, x in enumerate(nomor) if cocok(x, sumber)), None)
+                        j = next((k for k, x in enumerate(nomor) if cocok(x, lunas)), None)
+                        if i is not None and j is not None:
+                            temu.append((sumber, lunas))
+                            cek(f"{nm} P5 {sumber} sebelum {lunas}", i < j, f"{i} vs {j}: {nomor}")
+                            cek(f"{nm} P5 saldo berjalan tak negatif", min(D(x["saldo"]) for x in a["baris"]) >= 0,
+                                [(x["dokumen"]["nomor"], x["saldo"]) for x in a["baris"]])
                     if a["baris"]:
                         cek(f"{nm} P3 baris akhir == saldo_akhir", D(a["baris"][-1]["saldo"]) == D(a["saldo_akhir"]))
                         tgl = sorted({x["tanggal"] for x in a["baris"]})
@@ -79,7 +103,10 @@ async def utama():
                             if k >= h["total"]:
                                 break
                         cek(f"{nm} P4 halaman", hal == a["baris"], f"{len(hal)} vs {len(a['baris'])}")
-    print(f"[info] {n}", flush=True)
+    for tid, ps in PASANGAN.items():
+        if tid in TENANT:
+            cek(f"{tid} P5 semua pasangan ditemukan", all(p in temu for p in ps), f"temu {temu}")
+    print(f"[info] {n} P5 pasangan {len(temu)}", flush=True)
     print(f"{sum(hasil)}/{len(hasil)} lulus", flush=True)
     sys.exit(0 if all(hasil) else 1)
 
