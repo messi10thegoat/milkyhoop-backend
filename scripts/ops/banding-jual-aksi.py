@@ -28,6 +28,14 @@ for m in lama["waktu"]:
     lewat = p95b - p95l > 80 or (p95l and p95b / p95l - 1 > 0.30)
     print(f"GET detail {m:12s} ms: lama p50 {p50l:6.1f} p95 {p95l:6.1f} | baru p50 {p50b:6.1f} p95 {p95b:6.1f} | p95 {p95b - p95l:+6.1f} ms "
           f"({(p95b / p95l - 1) * 100 if p95l else 0:+.0f}%){'  << AMBANG TERLAMPAUI' if lewat else ''}")
+print("biaya aksi_tersedia MURNI (pohon baru, klon sama, terselang off/on, 5 putaran):")
+for m, ww in baru.get("waktu_onoff", {}).items():
+    p95o, p95n, p50o, p50n = p(ww["off"], .95), p(ww["on"], .95), p(ww["off"], .5), p(ww["on"], .5)
+    lewat = p95n - p95o > 80 or (p95o and p95n / p95o - 1 > 0.30)
+    print(f"  {m:12s} off p50 {p50o:6.1f} p95 {p95o:6.1f} | on p50 {p50n:6.1f} p95 {p95n:6.1f} | p95 {p95n - p95o:+6.1f} ms "
+          f"({(p95n / p95o - 1) * 100 if p95o else 0:+.0f}%){'  << AMBANG TERLAMPAUI' if lewat else ''}")
+bt = baru.get("belum_terukur", [])
+print(f"BELUM TERUKUR (izin PolicyEngine tak ada di kontainer uji; tak diakali): {len(bt)} -- kunci {sorted({x[2] for x in bt})}")
 print(f"mode kunci transaksi READ ONLY: {baru.get('mode_kunci')}")
 print(f"tersedia tapi penulis/pratinjau menolak (isian/data/lingkungan, ditinjau): {len(baru['isian'])}")
 for x in baru["isian"][:80]:

@@ -236,8 +236,14 @@ def ringkas(v):
     return v
 
 
+BELUM_TERUKUR = []
+
+
 def paritas(modul, nomor, kunci, a, mode, keadaan, v, isian):
     nama = f"P {modul} {nomor} {kunci} tersedia={a['tersedia']}"
+    if isinstance(v, dict) and v.get("status") == 403 and "izin" in (v.get("pesan") or ""):
+        BELUM_TERUKUR.append([modul, nomor, kunci, a["tersedia"], v.get("pesan")])
+        return
     if mode == "tulis":
         if not a["tersedia"]:
             ok = not v["ok"] and (v.get("pesan") == a["alasan"] or a["alasan"] in [b.get("message") for b in blok(v)])
@@ -252,7 +258,7 @@ def paritas(modul, nomor, kunci, a, mode, keadaan, v, isian):
         else:
             kd = [b for b in bk if b.get("code") in keadaan]
         if not a["tersedia"]:
-            ok = any(b.get("message") == a["alasan"] or a["alasan"] in (b.get("message") or "") for b in kd) or \
+            ok = any(b.get("message") == a["alasan"] or a["alasan"] in (b.get("message") or "") for b in bk) or \
                 (not v["ok"] and v.get("pesan") == a["alasan"])
         else:
             ok = not kd
@@ -358,6 +364,25 @@ async def main():
                         if d["ok"] and at:
                             for kunci, (mode, f, keadaan) in s["aksi"].items():
                                 paritas(modul, nomor, kunci, at[kunci], mode, keadaan, hasil[kunci], out["isian"])
+                if BARU:
+                    m_aksi = {"AKSI_DETAIL_PN": (QT, "aksi_tersedia_pn"), "AKSI_DETAIL_PF": (PF, "aksi_tersedia_pf"),
+                              "AKSI_DETAIL_SI": (SI, "aksi_tersedia_si"), "AKSI_DETAIL_SJ": (DL, "aksi_tersedia_sj"),
+                              "AKSI_DETAIL_RP": (RP, "aksi_tersedia_rp"), "AKSI_DETAIL_DP": (CD, "aksi_tersedia_dp"),
+                              "AKSI_DETAIL_NK": (NK, "aksi_tersedia_nk")}[s["kunci"]]
+                    asli_fn = getattr(*m_aksi)
+
+                    async def mati(*a, **k):
+                        return {}
+                    ww = out.setdefault("waktu_onoff", {}).setdefault(modul, {"off": [], "on": []})
+                    for putaran in range(6):
+                        for row in rows:
+                            for keadaan_ in (("off", mati), ("on", asli_fn)):
+                                setattr(m_aksi[0], m_aksi[1], keadaan_[1])
+                                t0 = time.perf_counter()
+                                await coba(s["detail"](row["id"]))
+                                if putaran:
+                                    ww[keadaan_[0]].append((time.perf_counter() - t0) * 1000)
+                    setattr(m_aksi[0], m_aksi[1], asli_fn)
                 w = out["waktu"].setdefault(modul, [])
                 for putaran in range(3):
                     for row in rows:
@@ -370,6 +395,7 @@ async def main():
         cek(f"K kunci transaksi READ ONLY aksi_tersedia ({len(KUNCI)} GET): nol advisory/RowShare/RowExclusive", KUNCI and not buruk, buruk[:5])
         out["mode_kunci"] = sorted({k["mode"] for ks in KUNCI for k in ks})
     out["cek"] = CEK
+    out["belum_terukur"] = BELUM_TERUKUR
     with open(os.environ["KELUAR"], "w") as fo:
         json.dump(out, fo, default=str)
     gagal = [c for c in CEK if not c[1]]
