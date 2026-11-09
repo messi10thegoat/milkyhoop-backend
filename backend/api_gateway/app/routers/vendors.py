@@ -834,6 +834,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "uang_muka": _uang_muka,
                     "jumlah_dokumen": _beli["jumlah_tagihan"],
                     "kontak_teks": _medan["kontak_teks"],
+                    "identitas_text": KD.identitas_text("vendor", row),  # MASTER 9 Nov: satu baris identitas detail
                     "status_text": _medan["status_text"],
                     "tipe_text": KDT.tipe_text(row["vendor_type"]),
                     "termin_text": KDT.termin_text(row["payment_terms_days"]),

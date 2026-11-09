@@ -12,9 +12,11 @@ NOL = Decimal("0")
 
 JENIS = {
     "customer": {"tabel": "customers", "fungsi": "compute_ar_outstanding", "pihak": "customer_id", "dok": "invoice_id",
-                 "aksi": ("lewat_jatuh_tempo", "punya_piutang"), "nama": "nama", "telepon": "telepon", "kota": "city"},
+                 "aksi": ("lewat_jatuh_tempo", "punya_piutang"), "nama": "nama", "telepon": "telepon", "kota": "city",
+                 "kode": "nomor_member"},
     "vendor": {"tabel": "vendors", "fungsi": "compute_ap_outstanding", "pihak": "vendor_id", "dok": "bill_id",
-               "aksi": ("lewat_jatuh_tempo", "punya_hutang"), "nama": "name", "telepon": ("mobile_phone", "phone"), "kota": "city"},  # temuan A 9 Nov: No. HP form vendor = mobile_phone
+               "aksi": ("lewat_jatuh_tempo", "punya_hutang"), "nama": "name", "telepon": ("mobile_phone", "phone"), "kota": "city",  # temuan A 9 Nov: No. HP form vendor = mobile_phone
+               "kode": "code"},
 }
 
 
@@ -83,6 +85,17 @@ def telepon_baris(row, kolom) -> Optional[str]:
         if v is not None and str(v).strip():
             return v
     return None
+
+
+def identitas_text(jenis: str, row) -> Optional[str]:
+    """Satu baris identitas detail kontak (MASTER 9 Nov, pemilik setuju): "<kode> · <HP> · <kota> · <termin>", bagian kosong dilewati.
+    HP = penentu SAMA dengan kontak_teks (telepon_baris; vendor mobile_phone ?? phone); termin = kontak_detail.termin_text ("Tunai" / "Termin n hari")."""
+    from .kontak_detail import termin_text
+    j = JENIS[jenis]
+    t = termin_text(row.get("payment_terms_days"))
+    bagian = [(str(row.get(j["kode"]) or "").strip() or None), telepon_teks(telepon_baris(row, j["telepon"])),
+              (row.get(j["kota"]) or "").strip() or None, t if t == "Tunai" else f"Termin {t}"]
+    return " · ".join(b for b in bagian if b) or None
 
 
 def status_text(is_active) -> str:

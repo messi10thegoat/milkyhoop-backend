@@ -607,6 +607,7 @@ async def get_customer(request: Request, customer_id: str):
                     "lewat_tempo_jumlah": _medan["lewat_tempo_jumlah"],
                     "uang_muka": KD.uang_json(_uang_muka),
                     "kontak_teks": _medan["kontak_teks"],
+                    "identitas_text": KD.identitas_text("customer", row),  # MASTER 9 Nov: satu baris identitas detail
                     "status_text": _medan["status_text"],
                     "tipe_text": KDT.tipe_text(row["customer_type"]),
                     "termin_text": KDT.termin_text(row["payment_terms_days"]),

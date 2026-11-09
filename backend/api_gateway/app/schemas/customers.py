@@ -308,6 +308,7 @@ class CustomerDetail(PosisiDariStatus):
     lewat_tempo_jumlah: int = 0
     uang_muka: Optional[UangJson] = 0
     kontak_teks: Optional[str] = None
+    identitas_text: Optional[str] = None  # "<kode> · <HP> · <kota> · <termin>" (kontak_daftar.identitas_text)
     status_text: Optional[str] = None
     tipe_text: Optional[str] = None
     termin_text: Optional[str] = None

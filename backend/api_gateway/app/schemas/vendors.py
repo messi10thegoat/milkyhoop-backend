@@ -420,6 +420,7 @@ class VendorDetail(PosisiDariStatus):
     jumlah_dokumen: Optional[int] = 0
     omitted: List[str] = []  # K2b: modul dokumen yang agregatnya disaring izin (pola riwayat B4)
     kontak_teks: Optional[str] = None
+    identitas_text: Optional[str] = None  # "<kode> · <HP> · <kota> · <termin>" (kontak_daftar.identitas_text)
     status_text: Optional[str] = None
     tipe_text: Optional[str] = None
     termin_text: Optional[str] = None
