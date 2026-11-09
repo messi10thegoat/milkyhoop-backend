@@ -1,10 +1,11 @@
 """GUDANG standar SO (gelombang 2, kontrak backend/docs/KONTRAK-persediaan-standar-so-20261109.md; MASTER 9 Nov 2026): kunci ?aksi=, teks
-posisi, nilai stok per gudang, aksi_tersedia, dan dua perbaikan integritas -- SATU penentu untuk daftar, detail, dan tulis.
+posisi, nilai stok per gudang, aksi_tersedia, dan satu perbaikan integritas (U9) -- SATU penentu untuk daftar, detail, dan tulis.
 
 - stok_minus (pill): ada barang dengan saldo inventory_ledger < 0 di gudang itu. Cache warehouse_stock dibatasi 0 (trigger GREATEST),
   jadi stok minus tak terlihat di sana (milkyhoop-inventory Rule 7). nonaktif = filter is_active, bukan pill (putusan MASTER).
 - Nilai stok = ekspresi YANG SAMA dengan GET /{id}/stock-value (WAC_GUDANG/NILAI_GUDANG dipindah ke sini).
-- U8: jadikan_utama = SATU penulis is_default (set-default, buat, ubah) -- tepat satu gudang utama per tenant, di bawah kunci tenant.
+- Satu gudang utama per tenant DIJAGA DB: trigger trg_single_default_warehouse (BEFORE INSERT/UPDATE WHEN is_default; diukur pg_trigger
+  9 Nov, ENABLED) -- klaim U8 kontrak ("set-default tak mencabut yang lama") GUGUR di uji salinan; tak ada penulis tambahan di kode.
 - U9: nonaktifkan ditolak bila saldo LEDGER gudang itu ≠ 0 untuk barang mana pun, bersaring tenant (dulu cache floor-0 tanpa tenant)."""
 from typing import Optional
 
@@ -60,13 +61,6 @@ def alasan_utama(is_active: bool, is_default: bool) -> Optional[str]:
     if not is_active:
         return "Gudang nonaktif tidak bisa jadi gudang utama."
     return None
-
-
-async def jadikan_utama(conn, tid: str, warehouse_id) -> None:
-    """U8: SATU penulis is_default -- tepat satu gudang utama per tenant. Pemanggil di dalam transaksi."""
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"WAREHOUSE_DEFAULT:{tid}")
-    await conn.execute("UPDATE warehouses SET is_default = (id = $1), updated_at = NOW() WHERE tenant_id = $2 "
-                       "AND (is_default OR id = $1)", warehouse_id, tid)
 
 
 async def aksi_tersedia(conn, tid: str, w) -> dict:

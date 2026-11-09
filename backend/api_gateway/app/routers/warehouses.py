@@ -236,14 +236,13 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
                 status_code=400, detail=f"Warehouse code '{body.code}' already exists"
             )
 
-        async with conn.transaction():
-            row = await conn.fetchrow(
+        row = await conn.fetchrow(
             """
             INSERT INTO warehouses (
                 tenant_id, code, name, address, city, province, postal_code, country,
                 phone, email, manager_name, is_default, is_active, is_branch, branch_code,
                 created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, $12, $13, $14, $15)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
             """,
             ctx["tenant_id"],
@@ -257,14 +256,12 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest):
             body.phone,
             body.email,
             body.manager_name,
+            body.is_default,
             body.is_active,
             body.is_branch,
             body.branch_code,
             ctx.get("user_id"),
-            )
-            if body.is_default:  # U8: penulis tunggal is_default (tepat satu gudang utama)
-                await GD.jadikan_utama(conn, ctx["tenant_id"], row["id"])
-                row = await conn.fetchrow("SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", row["id"], ctx["tenant_id"])
+        )
 
         return CreateWarehouseResponse(data=WarehouseData(**dict(row)))
 
@@ -324,6 +321,7 @@ async def update_warehouse(
             "phone",
             "email",
             "manager_name",
+            "is_default",
             "is_active",
             "is_branch",
             "branch_code",
@@ -339,25 +337,19 @@ async def update_warehouse(
             if alasan:
                 raise HTTPException(status_code=400, detail=alasan)
 
-        if not updates and body.is_default is None:
+        if not updates:
             return UpdateWarehouseResponse(data=WarehouseData(**dict(existing)))
 
-        async with conn.transaction():
-            if updates:
-                params.extend([warehouse_id, ctx["tenant_id"]])
-                await conn.execute(
-                    f"""
-                    UPDATE warehouses SET {', '.join(updates)}, updated_at = NOW()
-                    WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-                    """,
-                    *params,
-                )
-            if body.is_default is True:  # U8: penulis tunggal is_default
-                await GD.jadikan_utama(conn, ctx["tenant_id"], warehouse_id)
-            elif body.is_default is False:
-                await conn.execute("UPDATE warehouses SET is_default = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
-                                   warehouse_id, ctx["tenant_id"])
-            row = await conn.fetchrow("SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"])
+        params.extend([warehouse_id, ctx["tenant_id"]])
+
+        row = await conn.fetchrow(
+            f"""
+            UPDATE warehouses SET {', '.join(updates)}, updated_at = NOW()
+            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
+            RETURNING *
+            """,
+            *params,
+        )
 
         return UpdateWarehouseResponse(data=WarehouseData(**dict(row)))
 
@@ -527,11 +519,13 @@ async def set_default_warehouse(request: Request, warehouse_id: UUID):
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
-        alasan = GD.alasan_utama(existing["is_active"], False)  # sudah utama = idempoten (tetap sukses)
+        alasan = GD.alasan_utama(existing["is_active"], False)  # penentu SAMA dgn aksi_tersedia.jadikan_utama; sudah utama = idempoten
         if alasan:
             raise HTTPException(status_code=400, detail=alasan)
 
-        async with conn.transaction():  # U8: tepat satu gudang utama (dulu gudang utama lama tak dicabut)
-            await GD.jadikan_utama(conn, ctx["tenant_id"], warehouse_id)
+        # gudang utama lama dicabut trigger DB trg_single_default_warehouse (diukur 9 Nov)
+        await conn.execute(
+            "UPDATE warehouses SET is_default = true WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"]
+        )
 
         return {"success": True, "message": "Warehouse set as default"}

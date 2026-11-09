@@ -320,14 +320,13 @@ def test_gudang_teks_alasan_dan_predikat():
     assert "il.tenant_id = w.tenant_id" in s and "< 0" in s and GD.aksi_semua(True) == ["stok_minus"]
 
 
-def test_jadikan_utama_satu_penulis_tepat_satu():
-    k = Kon()
-    jalan(GD.jadikan_utama(k, T, G_LAIN))
-    kunci, ubah = k.exe
-    assert kunci[1] == (f"WAREHOUSE_DEFAULT:{T}",)
-    assert "SET is_default = (id = $1)" in ubah[0] and "tenant_id = $2" in ubah[0] and ubah[1] == (G_LAIN, T)
+def test_jadikan_utama_penentu_sama_dan_bersaring_tenant():
+    """Satu gudang utama dijaga trigger DB trg_single_default_warehouse (klaim U8 gugur di uji salinan 9 Nov); set-default memakai penentu
+    yang SAMA dengan aksi_tersedia.jadikan_utama (gudang nonaktif ditolak) dan UPDATE bersaring tenant."""
+    assert GD.alasan_utama(False, False) == "Gudang nonaktif tidak bisa jadi gudang utama."
     src = (APP / "routers/warehouses.py").read_text()
-    assert src.count("GD.jadikan_utama(") == 3 and "SET is_default = true WHERE id = $1\"" not in src  # set-default, buat, ubah
+    assert 'GD.alasan_utama(existing["is_active"], False)' in src
+    assert '"UPDATE warehouses SET is_default = true WHERE id = $1 AND tenant_id = $2"' in src and not hasattr(GD, "jadikan_utama")
 
 
 def test_nonaktif_gudang_dari_ledger_bersaring_tenant():
