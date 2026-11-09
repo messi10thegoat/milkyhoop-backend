@@ -13,6 +13,7 @@ os.environ.setdefault("OPENAI_API_KEY", "sk-boneka-unit-test-tanpa-jaringan")
 from starlette.requests import Request  # noqa: E402
 
 from app.routers import bank_transfers as BT  # noqa: E402
+from app.services import kasbank_tulis as KT  # noqa: E402
 from app.schemas.bank_transfers import VoidBankTransferRequest  # noqa: E402
 
 T = "kaos-biru-konveksi"
@@ -86,7 +87,9 @@ def _void(monkeypatch):
     async def hari(*a):
         return date(2026, 11, 7)
     monkeypatch.setattr(BT, "get_pool", pool)
-    monkeypatch.setattr(BT, "tolak_void_bila_terekonsiliasi", lolos)
+    # Kas&Bank standar SO (9 Nov): penjaga rekonsiliasi + periode hari ini pindah ke penentu bersama KT.rencana_void_transfer
+    monkeypatch.setattr(KT, "tolak_void_bila_terekonsiliasi", lolos)
+    monkeypatch.setattr(KT, "tanggal_dokumen", hari)
     monkeypatch.setattr(BT, "tanggal_dokumen", hari)
     r = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
     r.state.user = {"tenant_id": T, "user_id": str(uuid.uuid4())}

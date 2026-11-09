@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # =============================================================================
 # REQUEST MODELS - Bank Account
@@ -154,6 +156,11 @@ class BankAccountListItem(BaseModel):
     is_active: bool
     is_default: bool
     created_at: str
+    # Kas&Bank standar SO (9 Nov 2026): saldo jurnal string + services/kasbank_daftar
+    saldo: Optional[str] = None
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
 
 
 class BankAccountDetail(BaseModel):
@@ -193,6 +200,10 @@ class BankAccountDetail(BaseModel):
     created_at: str
     updated_at: str
     created_by: Optional[str] = None
+
+    # Kas&Bank standar SO (9 Nov 2026): teks + aksi dari penentu tulis (services/kasbank_daftar)
+    position_text: Optional[str] = None
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 
 class BankTransactionListItem(BaseModel):
@@ -265,6 +276,8 @@ class BankAccountListResponse(BaseModel):
     items: List[BankAccountListItem]
     total: int
     has_more: bool = False
+    sum_saldo: Optional[str] = None             # with_totals: Σ saldo jurnal rekening non-kartu terfilter
+    sum_kewajiban_kartu: Optional[str] = None   # with_totals: Σ terutang kartu kredit terfilter (positif)
 
 
 class BankTransactionListResponse(BaseModel):

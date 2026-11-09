@@ -87,9 +87,11 @@ def test_pemindai_status_mentah_bisa_merah(tmp_path):
 
 
 def test_situs_periode_teks_memakai_penentu():
-    harap = {"routers/vendor_deposits.py": 4, "routers/bank_transfers.py": 2, "routers/production.py": 2, "routers/journals.py": 4,
+    harap = {"routers/vendor_deposits.py": 4, "routers/production.py": 2, "routers/journals.py": 4,
              "services/uang_muka_vendor_rencana.py": 2, "services/nota_debit_rencana.py": 1, "services/reklas_kelas_beban.py": 2,
              "services/kernel_document_executor.py": 1}
+    # Kas&Bank standar SO (9 Nov 2026): routers/bank_transfers.py keluar -- void transfer memeriksa periode lewat penentu bersama
+    # KT.rencana_void_transfer -> bayar_keluar_rencana.periode_terbuka (teks = tg.periode_tertutup, satu penentu).
     for rel, n in harap.items():
         assert (APP / rel).read_text().count("tg.periode_tertutup(") >= n, rel
 

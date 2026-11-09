@@ -24,7 +24,9 @@ from datetime import date
 import uuid as uuid_module
 
 from ..services import teks_galat as tg
+from ..services import kasbank_daftar as KD
 from ..services import kasbank_ringkas as KR
+from ..services import kasbank_riwayat as KRW
 from ..services import kasbank_tulis as KT
 from ..services import idem_buat
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -215,8 +217,11 @@ async def list_bank_accounts(
         "account_name"
     ),
     sort_order: Literal["asc", "desc"] = Query("asc"),
+    aksi: Optional[Literal["saldo_minus", "nonaktif"]] = Query(None, description="Kunci standar SO (services/kasbank_daftar)"),
+    with_totals: bool = Query(False, description="sum_saldo (non-kartu) + sum_kewajiban_kartu baris terfilter"),
 ):
-    """List bank accounts with filters and pagination."""
+    """List bank accounts with filters and pagination (+ ?aksi=, with_totals, saldo/position_text/aksi per baris).
+    Bawaan = SEMUA rekening (aktif + nonaktif); halaman baru kirim ?is_active=true (kontrak §8)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -255,6 +260,9 @@ async def list_bank_accounts(
                         param_idx += 1
                     conditions.append(f"({' AND '.join(word_conds)})")
 
+            if aksi in KD.SEMUA_KUNCI_REKENING:
+                conditions.append(KD.sql_aksi_rekening(aksi))
+
             where_clause = " AND ".join(conditions)
 
             # Sort
@@ -269,6 +277,13 @@ async def list_bank_accounts(
             # Count total
             count_query = f"SELECT COUNT(*) FROM bank_accounts ba WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
+                r = await conn.fetchrow(
+                    f"SELECT COALESCE(SUM(x.saldo) FILTER (WHERE x.account_type <> '{KD.TIPE_KARTU}'), 0) AS s, "
+                    f"COALESCE(-SUM(x.saldo) FILTER (WHERE x.account_type = '{KD.TIPE_KARTU}'), 0) AS k "
+                    f"FROM (SELECT ba.account_type, {KD.sql_saldo('ba')} AS saldo FROM bank_accounts ba WHERE {where_clause}) x", *params)
+                jumlah = {"sum_saldo": KD.rp(r["s"]), "sum_kewajiban_kartu": KD.rp(r["k"])}
 
             # Get items with CoA info
             query = f"""
@@ -315,11 +330,15 @@ async def list_bank_accounts(
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
                     "created_at": row["created_at"].isoformat(),
+                    "saldo": KD.rp(row["ledger_balance"]),
+                    "position_text": KD.position_text_rekening(row["is_active"], row["account_type"], row["ledger_balance"], row["is_default"]),
+                    "aksi": (KD.aksi_semua_rekening(row["is_active"], row["account_type"], row["ledger_balance"]) or [None])[0],
+                    "aksi_semua": KD.aksi_semua_rekening(row["is_active"], row["account_type"], row["ledger_balance"]),
                 }
                 for row in rows
             ]
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
@@ -391,12 +410,17 @@ async def get_bank_accounts_dropdown(request: Request):
 # Kas & Bank ringkas (ui-pusat U6 fase 1, BACA saja). WAJIB di atas /{bank_account_id}: rute terdaftar duluan menang.
 @router.get("/summary")
 async def ringkasan_kas_bank(request: Request):
-    """B1: saldo per akun dari jurnal (Law 1/16) + total; services/kasbank_ringkas."""
+    """B1: saldo per akun dari jurnal (Law 1/16) + total; services/kasbank_ringkas. + {k}_count standar SO = predikat SAMA dgn ?aksi=
+    daftar rekening (services/kasbank_daftar)."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         baris = await conn.fetch(KR.SQL_RINGKASAN, ctx["tenant_id"])
-        return {"success": True, "data": KR.ringkasan(baris, await tanggal_dokumen(conn, ctx["tenant_id"]))}
+        k = await conn.fetchrow("SELECT " + ", ".join(f"COUNT(*) FILTER (WHERE {KD.sql_aksi_rekening(x)}) AS {x}_count"
+                                                       for x in KD.SEMUA_KUNCI_REKENING)
+                                + " FROM bank_accounts ba WHERE ba.tenant_id = $1", ctx["tenant_id"])
+        data = KR.ringkasan(baris, await tanggal_dokumen(conn, ctx["tenant_id"]))
+        return {"success": True, "data": {**data, **{f"{x}_count": int(k[f"{x}_count"]) for x in KD.SEMUA_KUNCI_REKENING}}}
 
 
 @router.get("/transactions/recent", response_model=MutasiTerakhirResponse)
@@ -483,6 +507,9 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     "updated_at": row["updated_at"].isoformat(),
                     "created_by": str(row["created_by"]) if row["created_by"] else None,
                     "transaction_count": transaction_count,
+                    "position_text": KD.position_text_rekening(row["is_active"], row["account_type"], row["ledger_balance"],
+                                                               row["is_default"]),
+                    "aksi_tersedia": await KD.aksi_tersedia_rekening(conn, ctx["tenant_id"], row),
                 },
             }
 
@@ -1055,23 +1082,14 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
                         status_code=404, detail="Bank account not found"
                     )
 
-                # Check if has REAL transactions (exclude opening balance - that's just initialization)
-                tx_count = await conn.fetchval(
-                    """
-                    SELECT COUNT(*) FROM bank_transactions
-                    WHERE bank_account_id = $1 AND tenant_id = $2
-                    AND transaction_type != 'opening'
-                """,
-                    bank_account_id,
-                    ctx["tenant_id"],
-                )
+                # REAL transactions (exclude opening balance) -- penentu SAMA dgn aksi_tersedia.hapus (services/kasbank_daftar)
+                tx_count = await KD.jumlah_mutasi_nyata(conn, ctx["tenant_id"], bank_account_id)
+                alasan = KD.alasan_hapus_rekening(ba["is_active"], tx_count)
+                if alasan:
+                    raise HTTPException(status_code=400, detail=alasan)
 
                 if tx_count > 0:
                     # Soft delete only - account has transaction history
-                    if not ba["is_active"]:
-                        raise HTTPException(
-                            status_code=400, detail="Bank account already inactive"
-                        )
 
                     await conn.execute(
                         """
@@ -1380,6 +1398,19 @@ async def get_bank_transactions(
 # =============================================================================
 # GET BALANCE INFO
 # =============================================================================
+
+
+@router.get("/{bank_account_id}/history")
+async def get_bank_account_history(request: Request, bank_account_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Kas&Bank standar SO: riwayat rekening (dibuat · saldo awal · penyesuaian), bentuk SAMA dgn modul lain (services/kasbank_riwayat).
+    Perubahan data rekening tidak diaudit hari ini -> tidak tampil."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KRW.riwayat_rekening(conn, ctx["tenant_id"], bank_account_id, limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Rekening tidak ditemukan.")
+    return {"success": True, "data": data}
 
 
 @router.get("/{bank_account_id}/balance", response_model=BankAccountBalanceResponse)

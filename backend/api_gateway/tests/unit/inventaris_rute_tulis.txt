@@ -248,11 +248,13 @@ POST /api/bank-reconciliation/sessions/{session_id}/import
 POST /api/bank-reconciliation/sessions/{session_id}/match
 POST /api/bank-reconciliation/sessions/{session_id}/transactions
 POST /api/bank-transactions/{transaction_id}/void
+POST /api/bank-transactions/{transaction_id}/void/preview
 POST /api/bank-transfers
 POST /api/bank-transfers/preview
 POST /api/bank-transfers/{transfer_id}/post
 POST /api/bank-transfers/{transfer_id}/post/preview
 POST /api/bank-transfers/{transfer_id}/void
+POST /api/bank-transfers/{transfer_id}/void/preview
 POST /api/bill-payments
 POST /api/bill-payments/preview
 POST /api/bill-payments/preview-journal

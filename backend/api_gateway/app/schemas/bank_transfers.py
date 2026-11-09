@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # =============================================================================
 # REQUEST MODELS
@@ -91,6 +93,12 @@ class BankTransferListItem(BaseModel):
     status: str
     ref_no: Optional[str] = None
     created_at: str
+    # Kas&Bank standar SO (9 Nov 2026): services/kasbank_daftar
+    position_text: Optional[str] = None
+    aksi: Optional[str] = None
+    aksi_semua: List[str] = []
+    documents: List[Dict[str, Any]] = []
+    doc_count: int = 0
 
 
 class BankTransferDetail(BaseModel):
@@ -137,6 +145,10 @@ class BankTransferDetail(BaseModel):
     updated_at: str
     created_by: Optional[str] = None
 
+    # Kas&Bank standar SO (9 Nov 2026): teks + aksi dari penentu tulis (services/kasbank_daftar)
+    position_text: Optional[str] = None
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
+
 
 # =============================================================================
 # RESPONSE MODELS - Generic
@@ -160,6 +172,8 @@ class BankTransferListResponse(BaseModel):
     items: List[BankTransferListItem]
     total: int
     has_more: bool = False
+    sum_total: Optional[str] = None   # with_totals: Σ amount tanpa void
+    sum_biaya: Optional[str] = None   # with_totals: Σ fee_amount tanpa void
 
 
 class BankTransferSummaryResponse(BaseModel):

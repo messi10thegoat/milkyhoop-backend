@@ -83,6 +83,10 @@ class _C:
             return [_baris(-500)]
         raise AssertionError(sql)
 
+    async def fetchrow(self, sql, *a):  # Kas&Bank standar SO (9 Nov): kartu {k}_count rekening di /summary
+        assert "saldo_minus_count" in sql and "nonaktif_count" in sql and a == ("t1",), sql
+        return {"saldo_minus_count": 0, "nonaktif_count": 1}
+
 
 class _Acq:
     def __init__(self, c):
@@ -133,6 +137,7 @@ def test_rute_summary_bukan_bank_account_id(klien):
     d = r.json()["data"]
     assert (d["total_saldo"], d["akun"][0]["saldo"], d["as_of"]) == ("1000.00", "1000.00", "2026-11-06")
     assert c.panggil == [(KR.SQL_RINGKASAN, ("t1",))]
+    assert (d["saldo_minus_count"], d["nonaktif_count"]) == (0, 1)
 
 
 def test_rute_mutasi_terakhir_limit(klien):

@@ -27,9 +27,10 @@ import asyncpg
 from datetime import date
 import uuid as uuid_module
 
-from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
-from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
+from ..services.bayar_keluar_rencana import Blok
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import kasbank_daftar as KD
+from ..services import kasbank_riwayat as KRW
 from ..services import kasbank_tulis as KT
 from ..services import nomor_jurnal as NJ
 from ..services import idem_buat
@@ -123,8 +124,10 @@ async def list_bank_transfers(
         "transfer_date", "transfer_number", "amount", "created_at"
     ] = Query("created_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    aksi: Optional[Literal["draf", "bulan_ini"]] = Query(None, description="Kunci standar SO (services/kasbank_daftar)"),
+    with_totals: bool = Query(False, description="sum_total/sum_biaya baris terfilter tanpa void"),
 ):
-    """List bank transfers with filters and pagination."""
+    """List bank transfers with filters and pagination (+ ?aksi=, with_totals, position_text/aksi/documents per baris)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -175,6 +178,11 @@ async def list_bank_transfers(
                 params.append(date_to)
                 param_idx += 1
 
+            if aksi in KD.SEMUA_KUNCI_TRANSFER:
+                conditions.append(KD.sql_aksi_transfer(aksi, f"${param_idx}"))
+                params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
+                param_idx += 1
+
             where_clause = " AND ".join(conditions)
 
             # Sort
@@ -190,12 +198,17 @@ async def list_bank_transfers(
             # Count total
             count_query = f"SELECT COUNT(*) FROM bank_transfers bt WHERE {where_clause}"
             total = await conn.fetchval(count_query, *params)
+            jumlah = {}
+            if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
+                r = await conn.fetchrow(f"SELECT COALESCE(SUM(bt.amount), 0) AS s, COALESCE(SUM(bt.fee_amount), 0) AS f "
+                                        f"FROM bank_transfers bt WHERE {where_clause} AND bt.status <> 'void'", *params)
+                jumlah = {"sum_total": KD.rp(r["s"]), "sum_biaya": KD.rp(r["f"])}
 
             # Get items with bank info
             query = f"""
                 SELECT bt.id, bt.transfer_number, bt.from_bank_id, bt.to_bank_id,
                        bt.amount, bt.fee_amount, bt.total_amount,
-                       bt.transfer_date, bt.status, bt.ref_no, bt.created_at,
+                       bt.transfer_date, bt.status, bt.ref_no, bt.created_at, bt.journal_id,
                        fb.account_name as from_bank_name,
                        tb.account_name as to_bank_name
                 FROM bank_transfers bt
@@ -224,11 +237,16 @@ async def list_bank_transfers(
                     "status": row["status"],
                     "ref_no": row["ref_no"],
                     "created_at": row["created_at"].isoformat(),
+                    "position_text": KD.position_text_transfer(row["status"], row["from_bank_name"], row["to_bank_name"]),
+                    "aksi": (KD.aksi_semua_transfer(row["status"]) or [None])[0],
+                    "aksi_semua": KD.aksi_semua_transfer(row["status"]),
+                    "documents": KD.documents_baris_transfer(row["status"], row["journal_id"]),
+                    "doc_count": len(KD.documents_baris_transfer(row["status"], row["journal_id"])),
                 }
                 for row in rows
             ]
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
 
     except HTTPException:
         raise
@@ -243,8 +261,8 @@ async def list_bank_transfers(
 
 
 @router.get("/summary", response_model=BankTransferSummaryResponse)
-async def get_bank_transfers_summary(request: Request):
-    """Get summary statistics for bank transfers."""
+async def get_bank_transfers_summary(request: Request, search: Optional[str] = Query(None)):
+    """Get summary statistics for bank transfers. + {k}_count/_value standar SO = predikat SAMA dgn ?aksi= daftar (kasbank_daftar)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -262,6 +280,18 @@ async def get_bank_transfers_summary(request: Request):
                 WHERE tenant_id = $1
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
+            cari, par_cari = "", []
+            if isinstance(search, str) and search.strip():
+                for n, kata in enumerate(search.strip().split(), 3):  # predikat cari SAMA dgn daftar (nomor transfer)
+                    cari += f" AND bt.transfer_number ILIKE ${n}"
+                    par_cari.append(f"%{kata}%")
+            k_aksi = await conn.fetchrow(
+                "SELECT " + ", ".join(
+                    f"COUNT(*) FILTER (WHERE {KD.sql_aksi_transfer(k, '$2')}) AS {k}_count, "
+                    f"COALESCE(SUM(bt.amount) FILTER (WHERE {KD.sql_aksi_transfer(k, '$2')}), 0) AS {k}_value"
+                    for k in KD.SEMUA_KUNCI_TRANSFER)
+                + f" FROM bank_transfers bt WHERE bt.tenant_id = $1{cari}",
+                ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), *par_cari)
 
             return {
                 "success": True,
@@ -272,6 +302,8 @@ async def get_bank_transfers_summary(request: Request):
                     "void_count": row["void_count"] or 0,
                     "total_transferred": int(row["total_transferred"] or 0),
                     "total_fees": int(row["total_fees"] or 0),
+                    **{f"{k}_count": int(k_aksi[f"{k}_count"]) for k in KD.SEMUA_KUNCI_TRANSFER},
+                    **{f"{k}_value": KD.rp(k_aksi[f"{k}_value"]) for k in KD.SEMUA_KUNCI_TRANSFER},
                 },
             }
 
@@ -300,10 +332,10 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
                 SELECT bt.*,
                        fb.account_name as from_account_name, fb.account_number as from_account_number,
                        fb.bank_name as from_bank_name,
-                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
+                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED' AND je.tenant_id=bt.tenant_id) as from_balance,
                        tb.account_name as to_account_name, tb.account_number as to_account_number,
                        tb.bank_name as to_bank_name,
-                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=tb.coa_id AND je.status='POSTED') as to_balance,
+                       (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=tb.coa_id AND je.status='POSTED' AND je.tenant_id=bt.tenant_id) as to_balance,
                        fa.account_code as fee_account_code, fa.name as fee_account_name,
                        je.journal_number
                 FROM bank_transfers bt
@@ -368,6 +400,8 @@ async def get_bank_transfer(request: Request, transfer_id: UUID):
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                     "created_by": str(row["created_by"]) if row["created_by"] else None,
+                    "position_text": KD.position_text_transfer(row["status"], row["from_account_name"], row["to_account_name"]),
+                    "aksi_tersedia": await KD.aksi_tersedia_transfer(conn, ctx["tenant_id"], row),
                 },
             }
 
@@ -891,14 +925,26 @@ async def post_bank_transfer(request: Request, transfer_id: UUID, response: Resp
 # =============================================================================
 
 
+@router.post("/{transfer_id}/void/preview")
+async def preview_void_bank_transfer(request: Request, transfer_id: UUID, body: VoidBankTransferRequest):
+    """Kas&Bank standar SO: pratinjau batal transfer -- penentu SAMA dengan /{id}/void (KT.rencana_void_transfer), READ ONLY.
+    Draf -> catatan "akan dihapus"; posted -> jurnal pembalik + saldo asal/tujuan (minus = isyarat K3, bukan blok)."""
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    return await KT.pratinjau(await get_pool(), tid, lambda c: KT.rencana_void_transfer(c, tid, transfer_id, body.reason, Blok(True)),
+                              body.model_dump(mode="json"))
+
+
 @router.post("/{transfer_id}/void", response_model=BankTransferResponse)
 async def void_bank_transfer(
-    request: Request, transfer_id: UUID, body: VoidBankTransferRequest
+    request: Request, transfer_id: UUID, body: VoidBankTransferRequest, response: Response = None
 ):
     """
-    Void a posted bank transfer.
+    Void a posted bank transfer (draf -> dihapus).
 
-    Creates reversal journal entry and reversal bank transactions.
+    Penentu BERSAMA dengan /{id}/void/preview (KT.rencana_void_transfer): rekonsiliasi, sudah batal, periode tanggal transfer +
+    hari ini (403 PERIODE_TERTUTUP seperti jalur lain; dulu 400), saldo dibaca bersaring tenant; galat BERKODE.
+    Creates reversal journal entry and reversal bank transactions. X-Idempotency-Key opsional (BANK_TRANSFER_VOID).
     """
     try:
         ctx = get_user_context(request)
@@ -914,82 +960,28 @@ async def void_bank_transfer(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_TRANSFER_VOID:{transfer_id}",
                 )
-                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], transfer_id)  # rekon bank: 409 sebelum tulisan
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TRANSFER_VOID", transfer_id,
+                                                             {"reason": body.reason}, response)
+                if _lama is not None:
+                    return _lama
+                r = await KT.rencana_void_transfer(conn, ctx["tenant_id"], transfer_id, body.reason, Blok(False), kunci=True)
+                bt = r["t"]
 
-                # Get transfer
-                bt = await conn.fetchrow(
-                    """
-                    SELECT bt.*,
-                           fb.account_name as from_name, fb.coa_id as from_coa_id,
-                           (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=fb.coa_id AND je.status='POSTED') as from_balance,
-                           tb.account_name as to_name, tb.coa_id as to_coa_id,
-                           (SELECT COALESCE(SUM(jl.debit)-SUM(jl.credit),0) FROM journal_lines jl JOIN journal_entries je ON je.id=jl.journal_id WHERE jl.account_id=tb.coa_id AND je.status='POSTED') as to_balance
-                    FROM bank_transfers bt
-                    LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
-                    LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id
-                    WHERE bt.id = $1 AND bt.tenant_id = $2
-                """,
-                    transfer_id,
-                    ctx["tenant_id"],
-                )
-
-                if not bt:
-                    raise HTTPException(
-                        status_code=404, detail="Bank transfer not found"
-                    )
-
-                if bt["status"] == "void":
-                    raise HTTPException(
-                        status_code=400, detail="Transfer already voided"
-                    )
-
-                if bt["status"] == "draft":
+                if r["hapus_draf"]:
                     # Just delete draft
                     await conn.execute(
-                        "DELETE FROM bank_transfers WHERE id = $1", transfer_id
+                        "DELETE FROM bank_transfers WHERE id = $1 AND tenant_id = $2", transfer_id, ctx["tenant_id"]
                     )
-                    return {
+                    return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TRANSFER_VOID", {
                         "success": True,
                         "message": "Draft transfer deleted",
                         "data": {"id": str(transfer_id)},
-                    }
-
-                # Law 5: Period lock check
-                period_row = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    bt["transfer_date"],
-                )
-                if period_row and period_row["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=tg.periode_tertutup(None, period_row["status"]),  # PERIODE-TEKS
-                    )
+                    }, transfer_id)
 
                 # Create reversal journal
                 reversal_journal_id = uuid_module.uuid4()
                 reversal_number = f"RV-{bt['transfer_number']}"
-
-                # Get original journal lines
-                original_lines = await conn.fetch(
-                    """
-                    SELECT * FROM journal_lines WHERE journal_id = $1
-                """,
-                    bt["journal_id"],
-                )
-
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                # Periode jurnal pembalik (HARI INI) juga harus terbuka -> galat rapi, bukan 500 trigger
-                period_hari_ini = await conn.fetchrow(
-                    "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2",
-                    ctx["tenant_id"],
-                    hari_ini,
-                )
-                if period_hari_ini and period_hari_ini["status"] != "OPEN":
-                    raise HTTPException(
-                        status_code=400,
-                        detail=tg.periode_tertutup(None, period_hari_ini["status"]),  # PERIODE-TEKS
-                    )
                 await conn.execute(
                     """
                     INSERT INTO journal_entries (
@@ -1009,21 +1001,15 @@ async def void_bank_transfer(
                     hari_ini,  # t10-tanggal-bisnis
                 )
 
-                # Create reversed lines (swap debit/credit)
-                for idx, line in enumerate(original_lines, 1):
+                # Baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
+                for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (
                             id, journal_id, line_number, account_id, debit, credit, memo
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
-                        uuid_module.uuid4(),
-                        reversal_journal_id,
-                        idx,
-                        line["account_id"],
-                        line["credit"],  # Swap
-                        line["debit"],  # Swap
-                        f"Reversal - {line['memo'] or ''}",
+                        uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
                     )
 
                 # Law 20: DRAFT->POSTED for hash chain
@@ -1043,9 +1029,9 @@ async def void_bank_transfer(
                     reversal_journal_id,
                 )
 
-                # Create reversal bank transactions
+                # Create reversal bank transactions (saldo sesudah == pratinjau r["saldo"]: asal, tujuan; dibaca bersaring tenant)
+                saldo_asal, saldo_tujuan = r["saldo"]
                 # Reverse source bank (get money back)
-                from_new_balance = bt["from_balance"] + bt["total_amount"]
                 await conn.execute(
                     """
                     INSERT INTO bank_transactions (
@@ -1058,7 +1044,7 @@ async def void_bank_transfer(
                     ctx["tenant_id"],
                     bt["from_bank_id"],
                     bt["total_amount"],  # Positive (money back)
-                    from_new_balance,
+                    saldo_asal["sesudah"],
                     transfer_id,
                     f"VOID-{bt['transfer_number']}",
                     f"Void transfer - {body.reason}",
@@ -1068,7 +1054,6 @@ async def void_bank_transfer(
                 )
 
                 # Reverse destination bank (money out)
-                to_new_balance = bt["to_balance"] - bt["amount"]
                 await conn.execute(
                     """
                     INSERT INTO bank_transactions (
@@ -1081,7 +1066,7 @@ async def void_bank_transfer(
                     ctx["tenant_id"],
                     bt["to_bank_id"],
                     -bt["amount"],  # Negative (money out)
-                    to_new_balance,
+                    saldo_tujuan["sesudah"],
                     transfer_id,
                     f"VOID-{bt['transfer_number']}",
                     f"Void transfer - {body.reason}",
@@ -1099,16 +1084,17 @@ async def void_bank_transfer(
                     UPDATE bank_transfers
                     SET status = 'void', voided_at = NOW(), voided_by = $2,
                         voided_reason = $3, updated_at = NOW()
-                    WHERE id = $1
+                    WHERE id = $1 AND tenant_id = $4
                 """,
                     transfer_id,
                     ctx["user_id"],
                     body.reason,
+                    ctx["tenant_id"],
                 )
 
                 logger.info(f"Bank transfer voided: {transfer_id}")
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TRANSFER_VOID", {
                     "success": True,
                     "message": "Bank transfer voided successfully",
                     "data": {
@@ -1116,13 +1102,37 @@ async def void_bank_transfer(
                         "status": "void",
                         "reversal_journal_id": str(reversal_journal_id),
                     },
-                }
+                }, transfer_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error voiding bank transfer {transfer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void bank transfer")
+
+
+@router.get("/{transfer_id}/history")
+async def get_bank_transfer_history(request: Request, transfer_id: UUID, limit: int = Query(200, ge=1, le=500)):
+    """Kas&Bank standar SO: riwayat satu transfer, bentuk SAMA dgn /sales-orders/{id}/history (services/kasbank_riwayat)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KRW.riwayat_transfer(conn, ctx["tenant_id"], transfer_id, limit)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Transfer tidak ditemukan.")
+    return {"success": True, "data": data}
+
+
+@router.get("/{transfer_id}/documents")
+async def get_bank_transfer_documents(request: Request, transfer_id: UUID):
+    """Kas&Bank standar SO: bundel dokumen {anchor, default, groups} -- transfer · jurnal (+pembalik) · mutasi bank."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KRW.dokumen_transfer(conn, ctx["tenant_id"], transfer_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Transfer tidak ditemukan.")
+    return {"success": True, "data": data}
 
 
 @router.get("/{transfer_id}/journal-entries")

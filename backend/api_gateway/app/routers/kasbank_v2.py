@@ -22,7 +22,7 @@ Endpoints:
 - POST   /bank-transfers/{id}/void                 - Void a posted transfer
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional, Literal
 from pydantic import BaseModel
 from uuid import UUID
@@ -31,9 +31,9 @@ import logging
 import asyncpg
 import uuid as uuid_module
 
+from ..services import idem_buat
 from ..services import kasbank_tulis as KT
-from ..services import teks_galat as tg
-from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
+from ..services.bayar_keluar_rencana import Blok
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.kasbank_v2 import (
     CreateManualTransactionRequest,
@@ -79,24 +79,6 @@ def get_user_context(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
 
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
-
-
-async def check_period_is_open(conn, tenant_id: str, transaction_date) -> None:
-    """Check if the accounting period for the transaction date is open."""
-    period = await conn.fetchrow(
-        """
-        SELECT id, period_name, status FROM fiscal_periods
-        WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
-        ORDER BY start_date DESC LIMIT 1
-        """,
-        tenant_id,
-        transaction_date,
-    )
-    if period and period["status"] in ("CLOSED", "LOCKED"):
-        raise HTTPException(
-            status_code=403,
-            detail=tg.periode_tertutup(period['period_name'], period['status']),
-        )
 
 
 async def generate_transaction_number(conn, tenant_id: str) -> str:
@@ -235,24 +217,18 @@ async def void_transaction(
     request: Request,
     transaction_id: UUID,
     body: VoidTransactionRequest,
+    response: Response = None,
 ):
     """
     Void SATU transaksi bank MANUAL ("Uang Masuk/Keluar").
 
-    Hanya transaksi yang asalnya sah sebagai transaksi manual yang boleh
-    di-void di sini (daftar-PUTIH, diperiksa di dalam lock + FOR UPDATE):
-      origin_type = 'MANUAL', reference_type/reference_id NULL, dan jurnalnya
-      milik transaksi ini sendiri (source_type='BANK_TRANSACTION', source_id=id).
-    Transaksi milik modul lain (DP, beban, faktur, tagihan, transfer, ...) DITOLAK
-    400: membatalkannya di sini membalik jurnal tapi meninggalkan dokumen asalnya.
+    Penentu BERSAMA dengan POST /api/bank-transactions/{id}/void/preview: KT.rencana_void_manual (Kas&Bank standar SO, 9 Nov 2026)
+    -- asal sah (KT.ASAL_MANUAL, predikat SAMA dengan daftar /api/bank-transactions), rekonsiliasi, sudah batal, saldo awal,
+    periode tanggal mutasi + hari ini, jurnal sudah dibalik; galat BERKODE. Transaksi milik modul lain DITOLAK 400.
 
-    Membuat jurnal pembalik RV-<nomor jurnal asli> (DRAFT -> baris -> POSTED).
-    Jurnal ASLI TETAP POSTED (Law 2), ditandai reversed_by_id + reversed_at.
-    Mirror bank_transaction (Rule 3), lalu transaksi ditandai VOIDED + pelaku + alasan.
-
-    Cabang DRAFT di bawah TIDAK TERJANGKAU: penyaring asal mewajibkan jurnal
-    milik transaksi ini, dan draf tak punya jurnal -> selalu ditolak lebih dulu.
-    Dibiarkan (di luar lingkup unit 13 Sep 2026), diakui sebagai kode mati.
+    Membuat jurnal pembalik RV-<nomor jurnal asli> (DRAFT -> baris -> POSTED). Jurnal ASLI TETAP POSTED (Law 2), ditandai
+    reversed_by_id + reversed_at. Mirror bank_transaction (Rule 3), lalu transaksi ditandai VOIDED + pelaku + alasan.
+    X-Idempotency-Key opsional (BANK_TX_VOID): ulang = jawaban tersimpan.
     """
     try:
         ctx = get_user_context(request)
@@ -268,114 +244,14 @@ async def void_transaction(
                     "SELECT pg_advisory_xact_lock(hashtext($1))",
                     f"BANK_TX_VOID:{transaction_id}",
                 )
-                await tolak_void_bila_terekonsiliasi(conn, ctx["tenant_id"], transaction_id)  # rekon bank: 409 sebelum tulisan
-                # Lock the transaction
-                tx = await conn.fetchrow(
-                    """
-                    SELECT bt.*, ba.coa_id as bank_coa_id
-                    FROM bank_transactions bt
-                    JOIN bank_accounts ba ON bt.bank_account_id = ba.id
-                    WHERE bt.id = $1 AND bt.tenant_id = $2
-                    FOR UPDATE OF bt
-                    """,
-                    transaction_id,
-                    ctx["tenant_id"],
-                )
-                if not tx:
-                    raise HTTPException(status_code=404, detail="Transaction not found")
-
-                # Penyaring ASAL (daftar-putih), di dalam lock + FOR UPDATE, sebelum
-                # cabang apa pun. Terukur 13 Sep 2026: memisahkan 1 dari 201 baris.
-                orig_je = None
-                if tx["journal_id"]:
-                    orig_je = await conn.fetchrow(
-                        """
-                        SELECT id, journal_number, source_type, source_id, reversed_by_id
-                        FROM journal_entries
-                        WHERE id = $1 AND tenant_id = $2
-                        FOR UPDATE
-                        """,
-                        tx["journal_id"],
-                        ctx["tenant_id"],
-                    )
-                asal_sah = (
-                    tx["origin_type"] == "MANUAL"
-                    and tx["reference_type"] is None
-                    and tx["reference_id"] is None
-                    and orig_je is not None
-                    and orig_je["source_type"] == "BANK_TRANSACTION"
-                    and str(orig_je["source_id"]) == str(tx["id"])
-                )
-                if not asal_sah:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Transaksi ini dibuat oleh modul lain. Batalkan dari dokumen asalnya.",
-                    )
-
-                if tx["status"] == "VOIDED":
-                    raise HTTPException(
-                        status_code=400, detail="Transaction already voided"
-                    )
-
-                # Guard: Opening balance transactions cannot be voided
-                if tx["transaction_type"] == "opening":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Saldo awal tidak bisa di-void. Gunakan Edit Akun untuk mengubah saldo awal.",
-                    )
-
-                if tx["status"] == "DRAFT":
-                    # Just delete the draft (no journal to reverse, balance wasn't affected)
-                    # But we need to reverse the trigger's balance impact first
-                    # Actually during create we already reversed it. So just delete.
-                    await conn.execute(
-                        "DELETE FROM bank_transactions WHERE id = $1",
-                        transaction_id,
-                    )
-                    return {
-                        "success": True,
-                        "message": "Draft transaction deleted",
-                        "data": {"id": str(transaction_id), "status": "DELETED"},
-                    }
-
-                # POSTED transaction - need reversal journal
-                if tx["reconciliation_status"] == "RECONCILED":
-                    raise HTTPException(
-                        status_code=400, detail="Cannot void a reconciled transaction"
-                    )
-
-                # Check period
-                await check_period_is_open(
-                    conn, ctx["tenant_id"], tx["transaction_date"]
-                )
-
-                # Jurnal pembalik bertanggal HARI INI (tanggal bisnis tenant): periodenya
-                # juga harus terbuka -> galat rapi, bukan 500 dari trigger periode.
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TX_VOID", transaction_id,
+                                                             {"reason": body.reason}, response)
+                if _lama is not None:
+                    return _lama
+                r = await KT.rencana_void_manual(conn, ctx["tenant_id"], transaction_id, body.reason, Blok(False), kunci=True)
+                tx, orig_je = r["tx"], r["je"]
                 hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await check_period_is_open(conn, ctx["tenant_id"], hari_ini)
 
-                # Sudah dibalik lewat pintu lain (mis. pembalikan generik) -> 409,
-                # bukan 500 dari indeks satu-pembalikan (Law 26).
-                if orig_je["reversed_by_id"]:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Jurnal transaksi ini sudah dibalik",
-                    )
-
-                # Get original journal lines
-                original_lines = await conn.fetch(
-                    "SELECT * FROM journal_lines WHERE journal_id = $1 ORDER BY line_number",
-                    tx["journal_id"],
-                )
-
-                if not original_lines:
-                    raise HTTPException(
-                        status_code=500, detail="Original journal lines not found"
-                    )
-
-                abs_amount = sum(line["debit"] or 0 for line in original_lines)
-
-                # Create reversal journal
                 reversal_journal_id = uuid_module.uuid4()
                 # BUKAN transaction_number: NULL untuk transaksi manual -> "RV-None",
                 # dan void manual kedua melanggar uq_je_tenant_number (500).
@@ -396,29 +272,20 @@ async def void_transaction(
                     f"Void {orig_je['journal_number']} - {body.reason}",
                     transaction_id,
                     tx["journal_id"],
-                    abs_amount,
+                    r["jumlah"],
                     ctx["user_id"],
                     hari_ini,  # t10-tanggal-bisnis
                 )
 
-                # Swap debit/credit for each line
-                for idx, line in enumerate(original_lines, 1):
+                # Baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
+                for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
                     await conn.execute(
                         """
                         INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
-                        uuid_module.uuid4(),
-                        reversal_journal_id,
-                        idx,
-                        line["account_id"],
-                        (line["credit"] or 0),  # Swap
-                        (line["debit"] or 0),  # Swap
-                        f"Reversal - {line['memo'] or ''}",
+                        uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
                     )
-
-                # Link original journal to its reversal (keep POSTED so journal-derived
-                # balance nets to zero: original + reversal = 0)
 
                 # Post the journal (triggers hash chain: Law 20)
                 await conn.execute(
@@ -469,18 +336,18 @@ async def void_transaction(
                 await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], body.reason, tx_id=transaction_id)
 
                 row = await conn.fetchrow(
-                    "SELECT * FROM bank_transactions WHERE id = $1", transaction_id
+                    "SELECT * FROM bank_transactions WHERE id = $1 AND tenant_id = $2", transaction_id, ctx["tenant_id"]
                 )
 
                 logger.info(
                     f"Transaction voided: {transaction_id}, reversal={reversal_journal_id}"
                 )
 
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "BANK_TX_VOID", {
                     "success": True,
                     "message": "Transaction voided successfully",
                     "data": _serialize_tx(row),
-                }
+                }, transaction_id)
 
     except HTTPException:
         raise

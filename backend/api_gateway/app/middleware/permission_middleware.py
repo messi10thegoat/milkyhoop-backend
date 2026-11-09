@@ -305,6 +305,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bank-transfers/preview$", ["POST"], "kas_bank", "C"),  # B8 pratinjau buat transfer, izin = buat
     (r"^/api/bank-transfers/[^/]+/void$", ["POST"], "kas_bank", "V"),
     (r"^/api/bank-transactions/[^/]+/void$", ["POST"], "kas_bank", "V"),
+    # Kas&Bank standar SO (9 Nov 2026): pratinjau batal = izin batal (V); baca daftar/detail/riwayat/dokumen = R
+    (r"^/api/bank-transactions/[^/]+/void/preview$", ["POST"], "kas_bank", "V"),
+    (r"^/api/bank-transfers/[^/]+/void/preview$", ["POST"], "kas_bank", "V"),
+    (r"^/api/bank-transactions", ["GET"], "kas_bank", "R"),
+    (r"^/api/bank-transfers/[^/]+/(history|documents)$", ["GET"], "kas_bank", "R"),
     (r"^/api/sales-receipts/[^/]+/void$", ["POST"], "receive_payment", "V"),
     (r"^/api/customers/[^/]+/opening-balance/reverse$", ["POST"], "customer", "V"),
     (r"^/api/payroll-payments$", ["POST"], "payroll", "C"),

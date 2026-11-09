@@ -154,6 +154,28 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         assert not any(isinstance(n, ast.Constant) and isinstance(n.value, str) and tulis_pen.search(n.value)
                        for n in ast.walk(pen) if n is not pen.body[0].value), "penentu tak boleh menulis"
         return
+    if berkas in ("kasbank_v2", "bank_transfers"):
+        # Kas&Bank standar SO (9 Nov 2026): pola AS-GP3 -- pemeriksaan di penentu bersama services/kasbank_tulis.rencana_void_manual /
+        # rencana_void_transfer (dipakai /void DAN /void/preview baca saja). Rute void mengambil lock SEBELUM penentu; di penentu,
+        # cek rekon (_coba_rekon) = langkah PERTAMA sebelum baca baris; penentu tak menulis apa pun.
+        nama_pen = "rencana_void_manual" if berkas == "kasbank_v2" else "rencana_void_transfer"
+        kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == nama_pen]
+        assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
+        ssrc = open(os.path.join(APP, "services", "kasbank_tulis.py")).read()
+        sp = ast.parse(ssrc)
+        pen = next(n for n in ast.walk(sp) if isinstance(n, ast.AsyncFunctionDef) and n.name == nama_pen)
+        coba = next(n for n in ast.walk(sp) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_coba_rekon")
+        rek = [n for n in ast.walk(coba) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "tolak_void_bila_terekonsiliasi"]
+        assert len(rek) == 1 and [ast.get_source_segment(ssrc, x) for x in rek[0].args] == ["conn", "tid", "source_id"]
+        langkah = [n for n in pen.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+        i_rek = next(i for i, n in enumerate(langkah) if "_coba_rekon(" in ast.get_source_segment(ssrc, n))
+        i_baca = next(i for i, n in enumerate(langkah) if "conn.fetchrow(" in ast.get_source_segment(ssrc, n))
+        assert i_rek < i_baca and "conn, tid, " + var.replace("transaction_id", "tx_id") in ast.get_source_segment(ssrc, langkah[i_rek])
+        tulis_pen = re.compile(r"\b(UPDATE\s+\w+\s+SET|INSERT\s+INTO|DELETE\s+FROM)\b", re.I)  # FOR UPDATE (kunci) boleh
+        assert not any(isinstance(n, ast.Constant) and isinstance(n.value, str) and tulis_pen.search(n.value)
+                       for n in ast.walk(pen)), "penentu tak boleh menulis"
+        return
     panggil = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
                and getattr(n.func, "id", "") == "tolak_void_bila_terekonsiliasi"]
     assert len(panggil) == 1, berkas

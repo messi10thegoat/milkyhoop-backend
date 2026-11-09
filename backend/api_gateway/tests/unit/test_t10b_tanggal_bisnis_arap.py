@@ -260,6 +260,14 @@ def test_void_memeriksa_periode_tanggal_pembalik(berkas, nama):
         assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "periode_terbuka"
                    and any(isinstance(a, ast.Name) and a.id == "hari_ini" for a in n.args) for n in ast.walk(f)), "penentu tak memeriksa hari_ini"
         return
+    if nama == "void_bank_transfer":
+        # Kas&Bank standar SO (9 Nov 2026): sama dengan AS-GP3 -- cek di penentu bersama KT.rencana_void_transfer (/void DAN /void/preview).
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "rencana_void_transfer" for n in ast.walk(f))
+        p = ast.parse((APP / "services/kasbank_tulis.py").read_text())
+        f = next(n for n in ast.walk(p) if isinstance(n, ast.AsyncFunctionDef) and n.name == "rencana_void_transfer")
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "periode_terbuka"
+                   and any(isinstance(a, ast.Name) and a.id == "hari_ini" for a in n.args) for n in ast.walk(f)), "penentu tak memeriksa hari_ini"
+        return
     ada = False
     for n in ast.walk(f):
         if isinstance(n, ast.Call) and any(isinstance(a, ast.Name) and a.id == "hari_ini" for a in n.args):

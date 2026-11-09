@@ -885,6 +885,11 @@ app.include_router(kasbank.router, prefix="/api/kasbank", tags=["kasbank"])
 # diam-diam memakai yang terdaftar duluan. Sepuluh rute lainnya TIDAK dipasang.
 from .routers import kasbank_v2 as _kasbank_v2  # noqa: E402
 
+# Uang masuk/keluar manual standar SO (Kas&Bank gelombang 1, 9 Nov 2026): daftar, ringkasan, detail, riwayat, dokumen, pratinjau void.
+# Rute void tetap fungsi kasbank_v2 di bawah (penentu bersama KT.rencana_void_manual); router ini tak punya rute /void.
+from .routers import bank_transactions as _bank_transactions  # noqa: E402
+
+app.include_router(_bank_transactions.router, prefix="/api/bank-transactions", tags=["kas-bank"])
 app.add_api_route(
     "/api/bank-transactions/{transaction_id}/void",
     _kasbank_v2.void_transaction,
