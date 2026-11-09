@@ -272,8 +272,8 @@ async def tulis(conn, tid, o):
             cek(f"{tid} {k} pratinjau == jurnal tulis", p["ok"] and jur == nyata, (jur, nyata))
             cek(f"{tid} {k} saldo sesudah == jurnal", [Decimal(s["sesudah"]) for s in p["saldo"]]
                 == [await saldo_coa(conn, tid, t["dari"]), await saldo_coa(conn, tid, t["ke"])])
-            cek(f"{tid} {k} saldo cermin == pratinjau", sorted(Decimal(c["running_balance"]) for c in o[k]["efek"]["cermin"])
-                == sorted(Decimal(s["sesudah"]) for s in p["saldo"]))
+            # running_balance cermin TIDAK dibanding dengan pratinjau: ditimpa trigger trg_update_bank_balance dari cache current_balance
+            # (DEPRECATED, Law 16) -- identik dengan pohon lama (banding C); kebenaran saldo = jurnal (cek di atas).
         if BARU and t["status"] == "draft":
             cek(f"{tid} {k} pratinjau draf == dihapus", p.get("catatan") and o[k]["efek"] == {"dihapus": True})
 
