@@ -516,6 +516,7 @@ async def get_delivery_detail(delivery_id: str, request: Request):
         _kel = await _pg.kelompok_untuk(_c, ctx["tenant_id"], [{"id": row["id"], "invoice_id": row["invoice_id"], "sales_order_id": row["sales_order_id"]}])
         detail["documents"] = _pg.documents_baris(_kel.get(row["id"], []))
         detail["doc_count"] = len(detail["documents"])
+        detail["aksi_tersedia"] = await aksi_tersedia_sj(_c, ctx, row["id"])  # gelombang 3 J1b: satu transaksi READ ONLY
     return detail
 
 
@@ -790,3 +791,27 @@ async def get_delivery_pdf(
             "Cache-Control": "private, max-age=300",
         },
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL SURAT JALAN (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §5, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_SJ = ("sjbatal",)
+
+
+async def aksi_tersedia_sj(conn, ctx: dict, fid) -> dict:
+    """{kunci: {tersedia, alasan}} detail Surat Jalan: penentu void (sj_so.rencana_void, asal SO maupun faktur). Pemanggil TIDAK di dalam
+    transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import sj_so as S
+
+    async def sjbatal(c):
+        try:
+            r = await S.rencana_void(c, ctx["tenant_id"], fid, None, kunci=False)
+        except HTTPException as e:  # asal SO tanpa flag pengiriman_sebelum_faktur -> SJ_SO_NONAKTIF
+            return AD.pesan_galat(e)
+        return AD.alasan_blok(r["blocks"], None, kecuali=("SJ_ALASAN_WAJIB",))
+
+    return await AD.nilai(conn, [("sjbatal", sjbatal)])

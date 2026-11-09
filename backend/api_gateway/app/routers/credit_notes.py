@@ -801,6 +801,7 @@ async def get_credit_note(request: Request, credit_note_id: UUID):
                 "success": True,
                 "data": {
                     **_kode,
+                    "aksi_tersedia": await aksi_tersedia_nk(conn, ctx, cn),  # gelombang 3 J1b: satu transaksi READ ONLY
                     "sales_order_id": str(_so["sales_order_id"]) if _so and _so["sales_order_id"] else None,
                     "sales_order_number": _so["order_number"] if _so else None,
                     "id": str(cn["id"]),
@@ -3415,3 +3416,41 @@ async def preview_refund_credit_note(request: Request, credit_note_id: UUID, bod
     if not ctx["user_id"]:
         raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
     return {"success": True, "data": await _pratinjau_nk_aksi(ctx, credit_note_id, "refund", body)}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL NOTA KREDIT (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §8, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_NK = ("terbit", "batal", "terapkan", "lepas", "refund")
+KEADAAN_TERAPKAN_NK = ("CN_SUDAH_TERKAIT", "CN_BELUM_TERBIT", "CN_SUDAH_DIKEMBALIKAN")
+
+
+async def aksi_tersedia_nk(conn, ctx: dict, cn) -> dict:
+    """{kunci: {tersedia, alasan}} detail NK. Pemanggil TIDAK di dalam transaksi."""
+    from types import SimpleNamespace
+    from ..services import aksi_detail as AD
+    tid, cid = ctx["tenant_id"], cn["id"]
+
+    async def terbit(c):
+        return AD.alasan_blok((await NKR.rencana_posting_nk(c, ctx, cid, pratinjau=True))["blocks"].daftar, None)
+
+    async def batal(c):  # draf = dihapus (bukan blok)
+        return AD.alasan_blok((await NKR.rencana_batal_nk(c, ctx, cid, None, pratinjau=True))["blocks"].daftar, None,
+                              kecuali=("VOID_REASON_REQUIRED",))
+
+    async def terapkan(c):  # faktur tujuan + nominal = isian
+        r = await NKR.rencana_terapkan_nk(c, tid, cid, SimpleNamespace(applications=[]), pratinjau=True)
+        return AD.alasan_blok(r["blocks"].daftar, KEADAAN_TERAPKAN_NK)
+
+    async def lepas(c):
+        return AD.alasan_blok((await NKR.rencana_lepas_nk(c, tid, cid, None, pratinjau=True))["blocks"].daftar, None,
+                              kecuali=("CN_ALASAN_WAJIB",))
+
+    async def refund(c):  # nominal/rekening/tanggal = isian
+        b = await NKR.blok_refund_nk(c, tid, cn)
+        return AD.pesan_galat(HTTPException(*b)) if b else None
+
+    fn = {"terbit": terbit, "batal": batal, "terapkan": terapkan, "lepas": lepas, "refund": refund}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_NK])

@@ -26,11 +26,14 @@ def pesan_galat(e: HTTPException) -> str:
     return str(d)
 
 
-def alasan_blok(blocks: Iterable[dict], kode_keadaan: Optional[Iterable[str]]) -> Optional[str]:
+def alasan_blok(blocks: Iterable[dict], kode_keadaan: Optional[Iterable[str]], kecuali: Iterable[str] = ()) -> Optional[str]:
     """Blok KEADAAN pertama (urutan penentu) -> kalimatnya; blok isian (kode di luar daftar) diabaikan. kode_keadaan None = semua blok
-    keadaan (penentu tanpa isian, mis. hapus draf)."""
+    keadaan kecuali kode isian di `kecuali` (mis. alasan wajib)."""
     kode = None if kode_keadaan is None else set(kode_keadaan)
+    isian = set(kecuali)
     for b in blocks:
+        if b.get("code") in isian:
+            continue
         if kode is None or b.get("code") in kode:
             return b.get("message") or pesan_galat(HTTPException(400, b.get("detail") or b.get("code")))
     return None

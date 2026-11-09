@@ -675,6 +675,7 @@ async def get_proforma_detail(request: Request, proforma_id: str):
 
             from ..services.kode_order import tempel_kode as _tempel_kode
             await _tempel_kode(conn, ctx["tenant_id"], "proforma", [data])
+            data["aksi_tersedia"] = await aksi_tersedia_pf(conn, ctx, pid)  # gelombang 3 J1b: satu transaksi READ ONLY
             return {"success": True, "data": data}
 
     except HTTPException:
@@ -1698,3 +1699,38 @@ async def get_proforma_pdf(
     except Exception as e:
         logger.error(f"Error generating PDF for proforma {proforma_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat PDF.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PROFORMA (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §3, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_PF = ("terbit", "ubah", "batal", "koreksi")
+
+
+async def aksi_tersedia_pf(conn, ctx: dict, pid) -> dict:
+    """{kunci: {tersedia, alasan}} detail proforma. Penentu = _rencana_* penulis (tanpa _kunci_proforma: baca saja).
+    Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    tid = ctx["tenant_id"]
+
+    async def cur(c):
+        return await c.fetchrow("SELECT * FROM proformas WHERE id = $1 AND tenant_id = $2", pid, tid)
+
+    async def terbit(c):
+        return AD.alasan_blok((await _rencana_terbit(c, ctx, await cur(c)))["blocks"], None)
+
+    async def ubah(c):  # isi = isian
+        return AD.alasan_blok((await _rencana_ubah(c, ctx, await cur(c), UpdateProformaRequest()))["blocks"], ("PROFORMA_NOT_DRAFT",))
+
+    async def batal(c):
+        return AD.alasan_blok((await _rencana_batal(c, ctx, await cur(c), None))["blocks"], None, kecuali=("CANCEL_REASON_REQUIRED",))
+
+    async def koreksi(c):  # nominal + alasan = isian
+        p = await cur(c)
+        r = await _rencana_koreksi(c, ctx, p, KoreksiNominalRequest(amount=p["amount"] or 0))
+        return AD.alasan_blok(r["blocks"], ("PROFORMA_NOT_ISSUED",))
+
+    fn = {"terbit": terbit, "ubah": ubah, "batal": batal, "koreksi": koreksi}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_PF])

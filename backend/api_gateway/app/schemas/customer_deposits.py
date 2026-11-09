@@ -23,6 +23,8 @@ Journal Entry on REFUND:
 from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
+
+from .aksi_tersedia import AksiTersediaPeta
 from datetime import date
 
 
@@ -193,6 +195,8 @@ class CustomerDepositListItem(BaseModel):
 
 class CustomerDepositDetail(BaseModel):
     """Full customer deposit detail."""
+    # gelombang 3 J1b (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     order_code: Optional[str] = None  # kode order SO induk (3 Okt)
     order_title: Optional[str] = None
     order_code_label: Optional[str] = None

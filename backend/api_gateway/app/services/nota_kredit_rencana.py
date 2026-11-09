@@ -8,6 +8,7 @@ SATU definisi blok per aksi, dipakai DUA jalur:
 Tahap A: terapkan (apply) / lepas (unapply) / kembalikan dana (refund). Tahap B (post/void) menyusul.
 Pembantu NK (tolak_nk_bertaut, sisa_kredit_nk, resolusi_akun_refund) tinggal di routers/credit_notes -> impor malas (hindari siklus)."""
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -123,6 +124,19 @@ def baris_refund_nk(ar_account_id, akun_kredit, jumlah, nomor: str) -> list:
     return [(ar_account_id, jumlah, 0, f"Refund Piutang - {nomor}"), (akun_kredit, 0, jumlah, f"Pembayaran Refund - {nomor}")]
 
 
+async def blok_refund_nk(conn, tid: str, cn) -> Optional[tuple]:
+    """Penjaga status + bertaut refund (rencana_refund_nk DAN aksi_tersedia `refund` detail NK): (status, detail) atau None."""
+    R = _nk()
+    if cn["status"] not in ("posted", "partial"):
+        return 400, tg.tak_bisa_status(
+            "cn", R.status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya")
+    try:
+        await R.tolak_nk_bertaut(conn, tid, cn)
+    except HTTPException as e:
+        return e.status_code, e.detail
+    return None
+
+
 async def rencana_refund_nk(conn, tid: str, cn_id, body, pratinjau: bool = False) -> dict:
     """URUTAN == refund_nota_kredit_core lama: ada (404) · status terbit/sebagian · bertaut (409 dict) · <= sisa · akun/rekening ·
     bulat bila rekening bank · periode tanggal refund. Status/bertaut gagal -> berhenti (sisa & akun tak bermakna)."""
@@ -130,14 +144,9 @@ async def rencana_refund_nk(conn, tid: str, cn_id, body, pratinjau: bool = False
     bl = Blok(pratinjau)
     cn = await _baca_nk(conn, tid, cn_id, bl)
     hasil = {"blocks": bl, "cn": cn, "akun": None, "rekening": None, "cermin": None}
-    if cn["status"] not in ("posted", "partial"):
-        bl.galat("CN_TAK_BISA_REFUND", 400, tg.tak_bisa_status(
-            "cn", R.status_detail_nk(cn["status"], cn["amount_applied"], cn["amount_refunded"]), "dikembalikan dananya"))
-        return hasil
-    try:
-        await R.tolak_nk_bertaut(conn, tid, cn)
-    except HTTPException as e:
-        bl.galat("CN_TAK_BISA_REFUND", e.status_code, e.detail)
+    b = await blok_refund_nk(conn, tid, cn)
+    if b:
+        bl.galat("CN_TAK_BISA_REFUND", *b)
         return hasil
     sisa = R.sisa_kredit_nk(cn["status"], cn["total_amount"], cn["amount_applied"], cn["amount_refunded"], cn["original_invoice_id"])
     if body.amount > sisa:

@@ -5,6 +5,8 @@ NO journal entries - accounting impact happens on conversion.
 """
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Literal, Dict, Any, Union
+
+from .aksi_tersedia import AksiTersediaPeta
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -308,6 +310,8 @@ class QuoteListItem(BaseModel):
 
 class QuoteDetail(BaseModel):
     """Full detail schema for single quote."""
+    # gelombang 3 J1b (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     id: str
     quote_number: str
     quote_date: str

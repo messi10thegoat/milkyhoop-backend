@@ -765,6 +765,7 @@ async def get_customer_deposit(request: Request, deposit_id: UUID):
                 "success": True,
                 "data": {
                     **_kode,
+                    "aksi_tersedia": await aksi_tersedia_dp(conn, ctx, dep),  # gelombang 3 J1b: satu transaksi READ ONLY
                     "sales_order_id": str(_so["id"]) if _so else None,
                     "sales_order_number": _so["order_number"] if _so else None,
                     "id": str(dep["id"]),
@@ -2635,6 +2636,16 @@ async def _periode_tutup(conn, tid: str, tanggal):
     return r["status"] if r and r["status"] != "OPEN" else None
 
 
+PENERAPAN_DP_TAK_ADA = "Penerapan uang muka tidak ditemukan."  # /reverse 404 + aksi_tersedia `lepas` tanpa penerapan aktif
+
+
+async def blok_status_dp(conn, tid: str, deposit_id, dep, aksi: str) -> Optional[dict]:
+    """Penjaga status refund/apply (_rencana_dp DAN aksi_tersedia `refund`/`terapkan` detail DP, gelombang 3 J1b)."""
+    if dep["status"] in ("posted", "partial"):
+        return None
+    return _blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"{await label_deposit(conn, tid, deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}.")
+
+
 async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
     tid = ctx["tenant_id"]
     blok = []
@@ -2646,7 +2657,7 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
             "SELECT * FROM customer_deposit_applications WHERE id = $1 AND deposit_id = $2 AND tenant_id = $3",
             body.application_id, deposit_id, tid)
         if not app:
-            raise HTTPException(status_code=404, detail="Penerapan uang muka tidak ditemukan.")
+            raise HTTPException(status_code=404, detail=PENERAPAN_DP_TAK_ADA)
         if (app["status"] or "active") == "reversed" or app["reversed_by_id"]:
             blok.append(_blok_dp("APPLICATION_ALREADY_REVERSED", 409, "Penerapan ini sudah dilepas."))
             return blok
@@ -2684,9 +2695,9 @@ async def _rencana_dp(conn, ctx: dict, deposit_id, aksi: str, body) -> list:
             if tutup:
                 blok.append(_blok_dp("PERIOD_CLOSED", 400, tg.periode_tertutup(None, tutup)))
         return blok
-    if dep["status"] not in ("posted", "partial"):
-        kata = "refund" if aksi == "refund" else "apply"
-        blok.append(_blok_dp(f"DEPOSIT_NOT_{aksi.upper()}ABLE", 400, f"{await label_deposit(conn, tid, deposit_id)} berstatus {_status_dp(status_detail_dp(dep['status'], dep['amount_applied'], dep['amount_refunded']))} tidak bisa {'dikembalikan' if aksi == 'refund' else 'diterapkan'}."))
+    b = await blok_status_dp(conn, tid, deposit_id, dep, aksi)
+    if b:
+        blok.append(b)
     sisa = await compute_deposit_remaining(conn, tid, deposit_id)
     if aksi == "refund":
         if body.amount > sisa:
@@ -3756,3 +3767,56 @@ async def delete_deposit_attachment(
             )
 
     return {"success": True, "message": "Lampiran dihapus"}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL UANG MUKA PELANGGAN (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §7, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_DP = ("terapkan", "lepas", "refund", "batal", "pindah")
+KEADAAN_PINDAH_DP = ("DP_TIDAK_BISA_DIPINDAH", "DP_TANPA_PESANAN")
+
+
+async def aksi_tersedia_dp(conn, ctx: dict, dep) -> dict:
+    """{kunci: {tersedia, alasan}} detail uang muka pelanggan. Pemanggil TIDAK di dalam transaksi."""
+    from types import SimpleNamespace
+    from ..services import aksi_detail as AD
+    tid, did = ctx["tenant_id"], dep["id"]
+
+    async def status(c, aksi):
+        b = await blok_status_dp(c, tid, did, dep, aksi)
+        return b["message"] if b else None
+
+    async def terapkan(c):  # faktur + nominal = isian
+        return await status(c, "apply")
+
+    async def refund(c):  # nominal/rekening/tanggal = isian
+        return await status(c, "refund")
+
+    async def lepas(c):
+        """Penerapan aktif mana pun yang bisa dilepas -> tersedia (penentu /reverse per penerapan)."""
+        apps = await c.fetch(
+            """SELECT id FROM customer_deposit_applications
+               WHERE deposit_id = $1 AND tenant_id = $2 AND COALESCE(status, 'active') <> 'reversed' AND reversed_by_id IS NULL
+               ORDER BY id""", did, tid)
+        if not apps:
+            return PENERAPAN_DP_TAK_ADA
+        alasan = None
+        for a in apps:
+            x = AD.alasan_blok(await _rencana_dp(c, ctx, did, "reverse", SimpleNamespace(application_id=a["id"])), None)
+            if x is None:
+                return None
+            alasan = alasan or x
+        return alasan
+
+    async def batal(c):  # draf = dihapus
+        return AD.alasan_blok(await _rencana_dp(c, ctx, did, "void", SimpleNamespace(reason=None)), None,
+                              kecuali=("VOID_REASON_REQUIRED",))
+
+    async def pindah(c):  # proforma tujuan = isian
+        r = await _rencana_pindah(c, tid, did, SimpleNamespace(target_proforma_id=None), kunci=False)
+        return AD.alasan_blok(r["blocks"], KEADAAN_PINDAH_DP)
+
+    fn = {"terapkan": terapkan, "lepas": lepas, "refund": refund, "batal": batal, "pindah": pindah}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_DP])

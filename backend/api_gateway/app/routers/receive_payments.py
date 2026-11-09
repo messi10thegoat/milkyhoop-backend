@@ -1179,6 +1179,7 @@ async def get_receive_payment(request: Request, payment_id: UUID):
                 "data": {
                     **_kode,
                     **_paritas,
+                    "aksi_tersedia": await aksi_tersedia_rp(conn, ctx, payment["id"]),  # gelombang 3 J1b: satu transaksi READ ONLY
                     "id": str(payment["id"]),
                     "payment_number": payment["payment_number"],
                     "customer_id": str(payment["customer_id"])
@@ -3863,3 +3864,28 @@ async def get_receive_payment_pdf(
     except Exception as e:
         logger.error(f"Error generating receive payment receipt PDF: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat PDF kwitansi.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PENERIMAAN PEMBAYARAN (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §6, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_RP = ("rpposting", "rphapus", "batal")
+
+
+async def aksi_tersedia_rp(conn, ctx: dict, payment_id) -> dict:
+    """{kunci: {tersedia, alasan}} detail penerimaan. Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+
+    async def rpposting(c):
+        return AD.alasan_blok((await _pratinjau_draf_penerimaan(c, ctx, payment_id, "post"))["blocks"], None)
+
+    async def rphapus(c):
+        return AD.alasan_blok((await _pratinjau_draf_penerimaan(c, ctx, payment_id, "delete"))["blocks"], None)
+
+    async def batal(c):  # alasan = isian (wajib_alasan=False)
+        return AD.alasan_blok((await _rencana_void_pembayaran(c, ctx, payment_id, None, kunci=False))["blocks"], None)
+
+    fn = {"rpposting": rpposting, "rphapus": rphapus, "batal": batal}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_RP])

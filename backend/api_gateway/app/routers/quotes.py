@@ -624,6 +624,7 @@ async def get_quote_detail(request: Request, quote_id: str):
             return QuoteDetailResponse(
                 success=True,
                 data=QuoteDetail(
+                    aksi_tersedia=await aksi_tersedia_pn(conn, ctx, quote),  # gelombang 3 J1b: satu transaksi READ ONLY
                     id=str(quote["id"]),
                     quote_number=quote["quote_number"],
                     quote_date=quote["quote_date"].isoformat(),
@@ -1088,12 +1089,7 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
 
     # 13 Okt 2026 (MASTER, pola estimate Xero/Zoho/NetSuite): penawaran yang BELUM DIJAWAB boleh diubah, termasuk
     # yang sudah dikirim/dilihat/kedaluwarsa; status TETAP. Terjawab/jadi dokumen/batal = terkunci -> Duplikat.
-    if quote["status"] not in STATUS_BOLEH_UBAH:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Penawaran berstatus {tg.status_id('quote', quote['status'])} tidak bisa diubah. "
-                   "Duplikat untuk membuat penawaran baru.",
-        )
+    penjaga_ubah_penawaran(quote["status"])
     _sesudah_kirim = quote["status"] != "draft"
     if _sesudah_kirim:
         await _tolak_bila_sudah_jadi_dokumen(conn, ctx["tenant_id"], quote["id"])
@@ -1359,6 +1355,27 @@ _KEPALA_DIFF = ("quote_date", "expiry_date", "customer_id", "customer_name", "cu
 _TOTAL_DIFF = ("subtotal", "discount_amount", "tax_amount", "total_amount")
 _BARIS_DIFF = ("item_id", "description", "quantity", "unit", "unit_price", "discount_percent", "tax_id", "tax_rate",
                "line_total", "group_name", "jumlah_baris")
+
+
+def penjaga_ubah_penawaran(status: str) -> None:
+    """Penjaga status PATCH penawaran (penulis DAN aksi_tersedia `perpanjang` detail penawaran: PATCH {expiry_date} lolos untuk draf
+    lewat jalur ubah penuh dan sent/viewed lewat _perpanjang_penawaran; status lain ditolak di sini)."""
+    if status not in STATUS_BOLEH_UBAH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Penawaran berstatus {tg.status_id('quote', status)} tidak bisa diubah. "
+                   "Duplikat untuk membuat penawaran baru.",
+        )
+
+
+def penjaga_konversi_penawaran(quote) -> None:
+    """Penjaga status to-order / to-invoice (kedua penulis) DAN aksi_tersedia `pesanan` detail penawaran. Penawaran yang sudah jadi
+    pesanan dijawab penulis lebih dulu sebagai already_converted (idempoten), sebelum penjaga ini."""
+    if quote["status"] not in ("sent", "accepted", "viewed"):
+        raise HTTPException(
+            status_code=400,
+            detail=tg.tak_bisa_status("quote", quote["status"], "dijadikan pesanan", quote["quote_number"]),
+        )
 
 
 async def _tolak_bila_sudah_jadi_dokumen(conn, tenant_id: str, qid) -> None:
@@ -1926,16 +1943,17 @@ async def _rencana_void_penawaran(conn, tenant_id: str, quote, reason) -> list:
     return blok
 
 
-async def _ambil_penawaran_void(conn, tenant_id: str, quote_id: str):
-    """Kunci QUOTE + FOR UPDATE (2 Okt 2026) lalu baca; semua pemeriksaan sesudahnya DI DALAM lock."""
-    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{tenant_id}:{quote_id}")
+async def _ambil_penawaran_void(conn, tenant_id: str, quote_id: str, kunci: bool = True):
+    """Kunci QUOTE + FOR UPDATE (2 Okt 2026) lalu baca; semua pemeriksaan sesudahnya DI DALAM lock. kunci=False (aksi_tersedia detail,
+    transaksi READ ONLY): baca saja -- penulis & pratinjau tetap kunci=True."""
+    if kunci:
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"QUOTE:{tenant_id}:{quote_id}")
     quote = await conn.fetchrow(
         """
         SELECT id, status, quote_number, total_amount, customer_name, converted_to_type, converted_to_id
         FROM quotes
         WHERE id = $1 AND tenant_id = $2
-        FOR UPDATE
-    """,
+    """ + ("FOR UPDATE" if kunci else ""),
         uuid_module.UUID(quote_id),
         tenant_id,
     )
@@ -2262,11 +2280,7 @@ async def convert_to_invoice(
                         )
                         return await idem_buat.simpan(conn, ctx, _kp, _sd, "QUOTE_TO_INVOICE", _hasil, quote_id) if _kp else _hasil
 
-                if quote["status"] not in ("sent", "accepted", "viewed"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=tg.tak_bisa_status("quote", quote["status"], "dijadikan pesanan", quote["quote_number"]),
-                    )
+                penjaga_konversi_penawaran(quote)
 
                 # Get items
                 items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
@@ -2457,11 +2471,7 @@ async def _konversi_penawaran(conn, ctx: dict, quote_id: str, body) -> QuoteResp
                       "order_number": so_lama["order_number"], "already_converted": True},
             )
 
-    if quote["status"] not in ("sent", "accepted", "viewed"):
-        raise HTTPException(
-            status_code=400,
-            detail=tg.tak_bisa_status("quote", quote["status"], "dijadikan pesanan", quote["quote_number"]),
-        )
+    penjaga_konversi_penawaran(quote)
 
     # Get items
     items_query = "SELECT * FROM quote_items WHERE quote_id = $1"
@@ -2909,3 +2919,52 @@ async def get_quote_pdf(
     except Exception as e:
         logger.error(f"Error generating PDF for quote {quote_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat PDF.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL PENAWARAN (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §2, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_PN = ("kirim", "kirimdok", "terima", "pesanan", "tolak", "perpanjang", "batal", "hapus")
+
+
+async def aksi_tersedia_pn(conn, ctx: dict, quote) -> dict:
+    """{kunci: {tersedia, alasan}} detail penawaran. Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import penawaran_bagikan as PB
+    from ..utils import tanggal_tenant as TT
+    tid, qid = ctx["tenant_id"], str(quote["id"])
+
+    async def kirim(c):  # tandai terkirim (kilat)
+        return await AD.alasan_galat(lambda: rencana_kirim_penawaran(c, ctx, qid, kunci=False))
+
+    async def kirimdok(c):  # penentu share (rencana_bagikan quotation)
+        p = PB.penentu(quote["status"], quote["quote_number"], quote["expiry_date"], await TT.tanggal_dokumen(c, tid))
+        return None if p["boleh"] else p["message"]
+
+    async def terima(c):
+        return await AD.alasan_galat(lambda: rencana_terima_tolak(c, ctx, qid, "diterima", kunci=False))
+
+    async def tolak(c):  # alasan = isian
+        return await AD.alasan_galat(lambda: rencana_terima_tolak(c, ctx, qid, "ditolak", kunci=False))
+
+    async def pesanan(c):  # sudah jadi pesanan = idempoten penulis (already_converted), sebelum penjaga status
+        if quote["status"] == "converted" and quote["converted_to_type"] == "sales_order" and quote["converted_to_id"] and \
+                await c.fetchval("SELECT 1 FROM sales_orders WHERE id = $1 AND tenant_id = $2", quote["converted_to_id"], tid):
+            return None
+        return await AD.alasan_galat(lambda: penjaga_konversi_penawaran(quote))
+
+    async def perpanjang(c):  # tanggal = isian
+        return await AD.alasan_galat(lambda: penjaga_ubah_penawaran(quote["status"]))
+
+    async def batal(c):
+        q = await _ambil_penawaran_void(c, tid, qid, kunci=False)
+        return AD.alasan_blok(await _rencana_void_penawaran(c, tid, q, None), None, kecuali=("ALASAN_WAJIB",))
+
+    async def hapus(c):
+        return AD.alasan_blok(await rencana_hapus_penawaran(c, ctx, qid), None)
+
+    fn = {"kirim": kirim, "kirimdok": kirimdok, "terima": terima, "pesanan": pesanan, "tolak": tolak, "perpanjang": perpanjang,
+          "batal": batal, "hapus": hapus}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_PN])

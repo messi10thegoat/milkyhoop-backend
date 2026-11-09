@@ -117,3 +117,79 @@ Semuanya penentu tulis yang sama, tanpa salinan aturan.
   - paritas tersedia ⇔ penulis;
   - kunci yang dipegang transaksi READ ONLY;
   - p50/p95.
+
+## 8. J1b — 7 modul jual (BACKEND 10 Nov, cabang `feat/jual-aksi-tersedia-j1b`)
+
+`data.aksi_tersedia` di detail: Penawaran, Proforma, Faktur, Surat Jalan, Penerimaan, Uang Muka, Nota Kredit.
+
+- Kunci persis KUNCI §2–§8.
+- SATU transaksi READ ONLY per GET.
+- Penilai sama dengan J1a (`services/aksi_detail`; `alasan_blok(..., kecuali=)` untuk kode isian).
+
+### Penentu per modul
+
+Kode di kurung = isian, diabaikan.
+
+**Penawaran**
+- `kirim`: `rencana_kirim_penawaran(kunci=False)`.
+- `kirimdok`: `penawaran_bagikan.penentu` (sama dengan share).
+- `terima` / `tolak`: `rencana_terima_tolak(kunci=False)`. Alasan tolak = isian.
+- `pesanan`: SO hasil konversi ada → tersedia (penulis idempoten already_converted); selain itu `penjaga_konversi_penawaran` (diekstrak; dipakai to-order DAN to-invoice).
+- `perpanjang`: `penjaga_ubah_penawaran` (diekstrak dari PATCH; STATUS_BOLEH_UBAH).
+- `batal`: `_rencana_void_penawaran` atas baris `_ambil_penawaran_void(kunci=False)` (saklar baru; bawaan True = jalur lama) (ALASAN_WAJIB).
+- `hapus`: `rencana_hapus_penawaran`.
+
+**Proforma** (baris dibaca tanpa `_kunci_proforma`)
+- `terbit`: `_rencana_terbit`.
+- `ubah`: `_rencana_ubah` dengan badan kosong (keadaan PROFORMA_NOT_DRAFT).
+- `batal`: `_rencana_batal` (CANCEL_REASON_REQUIRED).
+- `koreksi`: `_rencana_koreksi` dengan nominal sama (keadaan PROFORMA_NOT_ISSUED). Flag `koreksi_dp_proforma` = FE; penulis tak memeriksanya.
+
+**Faktur**
+- `terbit`: `penjaga_terbit_faktur` (diekstrak dari POST /post). Draf → + `faktur_terbit_rencana.rencana_terbit_ro` (penentu berat hanya untuk draf).
+- `hapusdraf`: `penjaga_hapus_faktur` (diekstrak dari DELETE).
+- `bayar`: `rencana_pelunasan_faktur` lapis 1 (keadaan RP_INVOICE_DRAFT/VOID, RP_NOTHING_DUE, RP_CUSTOMER_MISSING).
+- `kirim`:
+  - ber-SO = `alasan_kirim_so` (penentu `kirim` SO yang SAMA, FE menavigasi ke SO);
+  - tanpa SO = `penjaga_kirim_faktur` (diekstrak dari POST /fulfill).
+- `nk`: `pihak_helpers.penjaga_faktur_nk` (diekstrak dari `pastikan_cn_muat_faktur`). Sisa yang bisa dinotakan = nominal (isian).
+- `void`: `_rencana_void_faktur` (penentu baca; pratinjau void tetap penulis+rollback, tak dipakai).
+
+**Surat Jalan**
+- `sjbatal`: `sj_so.rencana_void(kunci=False)`, asal SO maupun faktur (SJ_ALASAN_WAJIB). Asal SO tanpa flag → kalimat SJ_SO_NONAKTIF.
+
+**Penerimaan**
+- `rpposting` / `rphapus`: `_pratinjau_draf_penerimaan(post|delete)`.
+- `batal`: `_rencana_void_pembayaran(kunci=False)`; alasan = isian.
+
+**Uang Muka**
+- `terapkan` / `refund`: `blok_status_dp` (diekstrak dari `_rencana_dp`). Faktur/nominal/rekening = isian.
+- `lepas`: `_rencana_dp(reverse)` per penerapan aktif; tersedia bila SATU bisa dilepas. Tanpa penerapan aktif = kalimat 404 penulis (`PENERAPAN_DP_TAK_ADA`).
+- `batal`: `_rencana_dp(void)` (VOID_REASON_REQUIRED).
+- `pindah`: `_rencana_pindah(kunci=False)` (keadaan DP_TIDAK_BISA_DIPINDAH, DP_TANPA_PESANAN).
+
+**Nota Kredit** (semua `pratinjau=True`)
+- `terbit`: `rencana_posting_nk`.
+- `batal`: `rencana_batal_nk` (VOID_REASON_REQUIRED); draf = dihapus.
+- `terapkan`: `rencana_terapkan_nk` dengan aplikasi kosong (keadaan CN_SUDAH_TERKAIT, CN_BELUM_TERBIT, CN_SUDAH_DIKEMBALIKAN).
+- `lepas`: `rencana_lepas_nk` (CN_ALASAN_WAJIB).
+- `refund`: `blok_refund_nk` (diekstrak).
+
+### Beda dengan "tampil bila" FE (dilaporkan, server = penulis)
+
+- Penawaran `pesanan`: tersedia pada penawaran yang sudah jadi SO (idempoten).
+- SJ `sjbatal`: SJ asal SO yang sudah batal = ulang idempoten (tersedia).
+- DP / NK `terapkan`: tanpa syarat "ada customer_id".
+- Faktur `nk`: tanpa syarat sisa > 0 (nominal).
+- Proforma `koreksi` / DP `pindah`: flag FE tak dinilai server.
+
+### Bukti
+
+- Unit `tests/unit/test_jual_aksi_tersedia_j1b.py`.
+- Salinan `scripts/ops/uji-salinan-jual-aksi.sh`:
+  - 7 modul, detail lama == baru;
+  - penulis/pratinjau lama == baru;
+  - paritas;
+  - pg_locks;
+  - p50/p95 per modul;
+  - penyimpanan objek TIRUAN.

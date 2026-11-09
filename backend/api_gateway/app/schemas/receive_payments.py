@@ -23,6 +23,8 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from .posisi import PosisiTerima  # position_text Pembayaran Masuk (standar SO v3)
 from typing import Optional, List, Literal, Dict
+
+from .aksi_tersedia import AksiTersediaPeta
 from datetime import date
 
 
@@ -205,6 +207,8 @@ class ReceivePaymentListItem(PosisiTerima):
 
 class ReceivePaymentDetail(PosisiTerima):
     """Full receive payment detail."""
+    # gelombang 3 J1b (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
+    aksi_tersedia: AksiTersediaPeta = {}
     order_codes: List[Dict[str, Optional[str]]] = []  # kode order SO induk, bisa >1 SO (3 Okt)
     sales_orders: List[Dict[str, Optional[str]]] = []  # SEMUA SO yang dibayar {id, number, order_code, order_title} (5 Okt)
     order_code_label: Optional[str] = None

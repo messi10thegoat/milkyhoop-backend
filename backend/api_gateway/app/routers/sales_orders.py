@@ -3000,15 +3000,25 @@ KEADAAN_FASE = ("SO_STATUS_TIDAK_BOLEH",)
 SI_BUKAN_DRAF = "Hanya faktur berstatus Draf yang bisa diterbitkan."   # = penjaga POST /sales-invoices/{id}/post
 
 
+async def alasan_kirim_so(c, ctx: dict, oid) -> Optional[str]:
+    """`kirim` SO (juga `kirim` detail faktur ber-SO = navigasi ke kirim SO). Dua penulis: kirim dari faktur (POST …/fulfill) dan Surat
+    Jalan tanpa faktur (flag pengiriman_sebelum_faktur). Tersedia bila SALAH SATU terbuka; alasan = jalur flag bila menyala."""
+    from ..services import aksi_detail as AD
+    from ..services import sj_so as SJ
+    from ..services.so_pengiriman import SOFulfillRequest, rencana_kirim_so
+    a = AD.alasan_blok((await rencana_kirim_so(c, ctx, oid, SOFulfillRequest()))["blocks"], KEADAAN_KIRIM)
+    if a is None or not await SJ.aktif(c, ctx["tenant_id"]):
+        return a
+    return AD.alasan_blok((await SJ.rencana(c, ctx, oid, SJ.SJSOIn(), kunci=False))["blocks"], KEADAAN_KIRIM_SJ)
+
+
 async def aksi_tersedia_so(conn, ctx: dict, order) -> dict:
     """{kunci: {tersedia, alasan}} untuk detail SO. Pemanggil TIDAK di dalam transaksi."""
     from ..services import aksi_detail as AD
     from ..services import kode_order as KO
-    from ..services import sj_so as SJ
     from ..services import so_fase_lokasi as FL
     from ..services import so_ubah_terkonfirmasi as _sut
     from ..services.so_pelunasan import SOReceivePaymentPreviewRequest, rencana_pelunasan_so
-    from ..services.so_pengiriman import SOFulfillRequest, rencana_kirim_so
     from .customer_deposits import penjaga_status_dp, received_total_for_order, rincian_plafon
     from .proformas import blok_so_proforma
     tid, oid = ctx["tenant_id"], order["id"]
@@ -3039,12 +3049,7 @@ async def aksi_tersedia_so(conn, ctx: dict, order) -> dict:
         return None if sisa > 0 else rincian_plafon(total, sudah, sisa)
 
     async def kirim(c):
-        """Dua penulis: kirim dari faktur (POST …/fulfill) dan Surat Jalan tanpa faktur (flag pengiriman_sebelum_faktur). Tersedia bila
-        SALAH SATU terbuka; alasan = jalur flag bila menyala."""
-        a = AD.alasan_blok((await rencana_kirim_so(c, ctx, oid, SOFulfillRequest()))["blocks"], KEADAAN_KIRIM)
-        if a is None or not await SJ.aktif(c, tid):
-            return a
-        return AD.alasan_blok((await SJ.rencana(c, ctx, oid, SJ.SJSOIn(), kunci=False))["blocks"], KEADAAN_KIRIM_SJ)
+        return await alasan_kirim_so(c, ctx, oid)
 
     async def bayar(c):
         return AD.alasan_blok((await rencana_pelunasan_so(c, ctx, oid, SOReceivePaymentPreviewRequest()))["blocks"], KEADAAN_BAYAR)

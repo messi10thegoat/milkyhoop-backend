@@ -103,6 +103,12 @@ async def faktur_tenant_untuk_pelanggan(conn, tenant_id: str, invoice_id, pelang
     return row
 
 
+def penjaga_faktur_nk(faktur) -> None:
+    """Faktur yang bisa dinotakan: sudah dibukukan & belum batal (pastikan_cn_muat_faktur DAN aksi_tersedia `nk` detail SI)."""
+    if faktur["status"] in ("draft", "void") or faktur["journal_id"] is None:
+        raise HTTPException(status_code=400, detail="Faktur belum dibukukan atau sudah dibatalkan.")
+
+
 async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn, kecuali_cn=None) -> None:
     """Faktur harus sudah dibukukan & belum batal, dan nilai nota kredit <= NILAI FAKTUR dikurangi nota kredit lain
     yang tak-void atas faktur itu (draf ikut; NK ini sendiri dikecualikan).
@@ -111,8 +117,7 @@ async def pastikan_cn_muat_faktur(conn, tenant_id: str, faktur, total_cn, kecual
     lain; kelebihan jadi saldo kredit pelanggan". Dulu batasnya SISA TAGIHAN (compute_ar_outstanding) -> retur atas
     faktur LUNAS selalu ditolak (uji nyata WORKSPACE INV-2609-0140). Bagian di atas sisa tagihan dibukukan saat posting
     ke Uang Muka Pelanggan (posting_nota_kredit), bukan piutang negatif."""
-    if faktur["status"] in ("draft", "void") or faktur["journal_id"] is None:
-        raise HTTPException(status_code=400, detail="Faktur belum dibukukan atau sudah dibatalkan.")
+    penjaga_faktur_nk(faktur)
     nilai = await conn.fetchval(
         "SELECT total_amount FROM sales_invoices WHERE id = $1 AND tenant_id = $2", faktur["id"], tenant_id)
     lain = await conn.fetchval(

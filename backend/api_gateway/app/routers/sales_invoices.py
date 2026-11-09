@@ -1614,6 +1614,7 @@ async def get_invoice(request: Request, invoice_id: UUID):
                 "success": True,
                 "data": {
                     **_kode,
+                    "aksi_tersedia": await aksi_tersedia_si(conn, ctx, invoice),  # gelombang 3 J1b: satu transaksi READ ONLY
                     "status": invoice["status"],
                     "id": str(invoice["id"]),
                     "invoice_number": invoice["invoice_number"],
@@ -4341,6 +4342,15 @@ async def terbitkan_faktur(conn, ctx, invoice_id, invoice_number, total_amount, 
     return post_result
 
 
+SI_BUKAN_DRAF = "Hanya faktur berstatus Draf yang bisa diterbitkan."
+
+
+def penjaga_terbit_faktur(invoice) -> None:
+    """Penjaga status POST /{id}/post (penulis DAN aksi_tersedia `terbit` detail SI; teks = blok SI_BUKAN_DRAF rencana_terbit_ro)."""
+    if invoice["status"] != "draft":
+        raise HTTPException(status_code=400, detail=SI_BUKAN_DRAF)
+
+
 @router.post("/{invoice_id}/post", response_model=InvoiceResponse)
 async def post_invoice(
     request: Request, invoice_id: UUID, body: PostInvoiceRequest = None, response: _Response = None
@@ -4381,10 +4391,7 @@ async def post_invoice(
                 if not invoice:
                     raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
-                if invoice["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Hanya faktur berstatus Draf yang bisa diterbitkan."
-                    )
+                penjaga_terbit_faktur(invoice)
 
                 post_result = await terbitkan_faktur(
                     conn, ctx, invoice_id, invoice["invoice_number"], invoice["total_amount"],
@@ -5817,6 +5824,20 @@ async def get_applicable_deposits(request: Request, invoice_id: UUID):
 # =============================================================================
 # DELETE INVOICE (Draft only)
 # =============================================================================
+def penjaga_hapus_faktur(invoice) -> None:
+    """Penjaga status DELETE faktur (penulis DAN aksi_tersedia `hapusdraf` detail SI, gelombang 3 J1b)."""
+    if invoice["status"] == "void":
+        raise HTTPException(
+            status_code=400,
+            detail="Faktur berstatus Batal tidak bisa dihapus.",
+        )
+    if invoice["status"] != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail="Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya.",
+        )
+
+
 @router.delete("/{invoice_id}", response_model=InvoiceResponse)
 async def delete_invoice(request: Request, invoice_id: UUID, response: _Response = None):
     """Delete a draft invoice.
@@ -5856,19 +5877,7 @@ async def delete_invoice(request: Request, invoice_id: UUID, response: _Response
                 if not invoice:
                     raise HTTPException(status_code=404, detail="Faktur tidak ditemukan.")
 
-                # Guard: Cannot delete voided invoices
-                if invoice["status"] == "void":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Faktur berstatus Batal tidak bisa dihapus.",
-                    )
-
-                # Guard: Cannot delete non-draft invoices
-                if invoice["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Faktur yang sudah diterbitkan tidak bisa dihapus. Batalkan fakturnya.",
-                    )
+                penjaga_hapus_faktur(invoice)
 
                 await conn.execute(
                     "SELECT set_config('app.user_id', $1, true)",
@@ -7146,6 +7155,17 @@ async def recognize_non_stock_revenue(request: Request, invoice_id: UUID):
         raise HTTPException(500, "Gagal mengakui pendapatan")
 
 
+def penjaga_kirim_faktur(invoice) -> None:
+    """Penjaga status POST /{id}/fulfill (penulis DAN aksi_tersedia `kirim` detail SI tanpa SO, gelombang 3 J1b)."""
+    if invoice["status"] not in _so_kirim.FAKTUR_TERBIT_KIRIM:
+        raise HTTPException(400, "Hanya faktur terbit (belum lunas, sebagian, atau lunas) yang bisa dikirim.")
+    if invoice["fulfillment_status"] not in _so_kirim.KIRIM_TERBUKA:
+        raise HTTPException(
+            400,
+            f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
+        )
+
+
 @router.post("/{invoice_id}/fulfill")
 async def fulfill_invoice(request: Request, invoice_id: UUID):
     """
@@ -7257,13 +7277,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 # 26 Sep 2026: faktur yang sudah dibayar sebagian/lunas (DP/pelunasan -> partial/paid) TETAP harus
                 # bisa dikirim — pembayaran tak mengubah kewajiban menyerahkan barang (PSAK 72: pendapatan diakui saat
                 # serah terima). Dulu hanya 'posted' -> faktur ber-DP tak pernah bisa dikirim.
-                if invoice["status"] not in _so_kirim.FAKTUR_TERBIT_KIRIM:
-                    raise HTTPException(400, "Hanya faktur terbit (belum lunas, sebagian, atau lunas) yang bisa dikirim.")
-                if invoice["fulfillment_status"] not in _so_kirim.KIRIM_TERBUKA:
-                    raise HTTPException(
-                        400,
-                        f"Status pengiriman: {invoice['fulfillment_status']}, tidak bisa dikirim lagi",
-                    )
+                penjaga_kirim_faktur(invoice)
 
                 # Period check
                 await check_period_is_open(conn, ctx["tenant_id"], fulfillment_date)
@@ -7435,3 +7449,50 @@ async def get_invoice_fulfillments(request: Request, invoice_id: UUID):
     except Exception as e:
         logger.error(f"Error getting fulfillments for {invoice_id}: {e}", exc_info=True)
         raise HTTPException(500, "Gagal memuat pengiriman.")
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# aksi_tersedia DETAIL FAKTUR PENJUALAN (gelombang 3 J1b, kontrak KONTRAK-jualbeli-aksi-standar-so §2/§5/§6/§8; kunci = KUNCI-aksi-detail-per-modul
+# §4, hanya jenis tulis/tulis·kilat, nama persis). Tiap kunci = penentu tulis aksi itu, SATU transaksi READ ONLY (services/aksi_detail);
+# isian wajib (alasan, nominal, rekening, tujuan) bukan "tak tersedia": hanya blok KEADAAN.
+# ═════════════════════════════════════════════════════════════════════════
+AKSI_DETAIL_SI = ("terbit", "hapusdraf", "bayar", "kirim", "nk", "void")
+KEADAAN_BAYAR_SI = ("RP_INVOICE_DRAFT", "RP_INVOICE_VOID", "RP_NOTHING_DUE", "RP_CUSTOMER_MISSING")
+
+
+async def aksi_tersedia_si(conn, ctx: dict, invoice) -> dict:
+    """{kunci: {tersedia, alasan}} detail faktur. `kirim` ber-SO = penentu kirim SO (FE menavigasi ke kirim SO).
+    Pemanggil TIDAK di dalam transaksi."""
+    from ..services import aksi_detail as AD
+    from ..services import faktur_terbit_rencana as _ftr
+    from ..services.pihak_helpers import penjaga_faktur_nk
+    from ..services.so_pelunasan import rencana_pelunasan_faktur
+    iid = invoice["id"]
+
+    async def terbit(c):  # draf saja menjalankan penentu terbit penuh (bukan draf = penjaga status penulis)
+        a = await AD.alasan_galat(lambda: penjaga_terbit_faktur(invoice))
+        if a:
+            return a
+        r = await _ftr.rencana_terbit_ro(c, ctx, iid, [])
+        return AD.alasan_blok(r["blocks"], None) if r else None
+
+    async def hapusdraf(c):
+        return await AD.alasan_galat(lambda: penjaga_hapus_faktur(invoice))
+
+    async def bayar(c):  # rekening/nominal/tanggal = isian
+        return AD.alasan_blok((await rencana_pelunasan_faktur(c, ctx, iid, SIReceivePaymentPreviewRequest()))["blocks"], KEADAAN_BAYAR_SI)
+
+    async def kirim(c):
+        if invoice["sales_order_id"]:
+            from .sales_orders import alasan_kirim_so
+            return await alasan_kirim_so(c, ctx, invoice["sales_order_id"])
+        return await AD.alasan_galat(lambda: penjaga_kirim_faktur(invoice))
+
+    async def nk(c):  # barang/nominal/alasan = isian
+        return await AD.alasan_galat(lambda: penjaga_faktur_nk(invoice))
+
+    async def void(c):
+        return AD.alasan_blok((await _rencana_void_faktur(c, ctx, iid))["blocks"], None)
+
+    fn = {"terbit": terbit, "hapusdraf": hapusdraf, "bayar": bayar, "kirim": kirim, "nk": nk, "void": void}
+    return await AD.nilai(conn, [(k, fn[k]) for k in AKSI_DETAIL_SI])
