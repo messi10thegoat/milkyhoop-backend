@@ -72,7 +72,7 @@ def test_rencana_grn_tanpa_grn_melebihi_terima_dan_kontrak_inbound_diblok():
 
 
 def test_void_diblok_penerimaan_sesudah_tagihan_lebih_dulu():
-    bill = {"id": uuid4(), "status": "posted", "status_v2": "posted", "invoice_number": "BILL-9"}
+    bill = {"id": uuid4(), "status": "posted", "status_v2": "posted", "invoice_number": "BILL-9", "journal_id": None}  # journal_id = baris nyata void_bill/rencana_void; None = aturan jurnal-dibalik tak diuji di sini (test_void_tagihan_jurnal_dibalik)
     k = _KonnD(links=[{"receipt_number": "GRN-2610-0003"}])
     b = asyncio.run(TA.blok_void(k, "t", bill))
     assert b[0]["code"] == "TAGIHAN_TERCOCOK_GRN" and "GRN-2610-0003" in b[0]["message"]

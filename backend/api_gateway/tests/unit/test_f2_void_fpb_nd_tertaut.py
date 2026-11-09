@@ -9,7 +9,7 @@ import pytest
 
 from app.services import tagihan_aksi as TA
 
-BILL = {"id": "b", "invoice_number": "PB-1", "status": "posted", "status_v2": "posted"}
+BILL = {"id": "b", "invoice_number": "PB-1", "status": "posted", "status_v2": "posted", "journal_id": None}  # journal_id = baris nyata void_bill/rencana_void; None = aturan jurnal-dibalik tak diuji di sini (test_void_tagihan_jurnal_dibalik)
 
 
 class _K:
