@@ -21,6 +21,7 @@ from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pelanggan + Vendor satu penentu
 from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
+from ..services import kontak_detail as KDT  # B2 detail + aksi_tersedia + rename-impact (satu penentu dua modul)
 from ..services import alamat_pelanggan as _alamat  # V428 alamat terstruktur
 from ..schemas.customers import (
     CreateCustomerRequest,
@@ -518,7 +519,6 @@ async def get_customer(request: Request, customer_id: str):
                 ctx["tenant_id"], str(row["id"]))]
             _uang_muka = sum((await compute_deposit_remaining_many(conn, ctx["tenant_id"], _dp_ids)).values(), Decimal("0"))
             from ..services.smart_delete import cek_jejak
-            from ..services import kontak_detail as KDT
             _aksi = KDT.aksi_detail(row["is_active"], await cek_jejak(conn, str(row["id"]), row["nama"], JEJAK_PELANGGAN),
                                     await saldo_awal_pelanggan(conn, ctx["tenant_id"], row["id"]))
             # F3: sumber termin menurut aturan YANG SAMA dengan pembuat faktur (termin_bayar)
@@ -589,6 +589,7 @@ async def get_customer(request: Request, customer_id: str):
                     "tipe_text": KDT.tipe_text(row["customer_type"]),
                     "termin_text": KDT.termin_text(row["payment_terms_days"]),
                     "aksi": _aksi,
+                    "aksi_tersedia": KDT.aksi_tersedia(_aksi),
                     "last_transaction_at": _penjualan["last_invoice_date"],
                     # Metadata
                     "has_transactions": bool(has_tx),
@@ -628,16 +629,7 @@ async def get_customer(request: Request, customer_id: str):
 # customer_id (diukur information_schema 25 Sep; accounts_receivable turunan
 # faktur -> tak dihitung dua kali).
 PENANDA_RENAME_IMPACT = "rename-impact-jumlah-dokumen"
-RENAME_TABEL = (
-    ("sales_invoices", "faktur_penjualan"),
-    ("sales_orders", "pesanan_penjualan"),
-    ("quotes", "penawaran"),
-    ("proformas", "proforma"),
-    ("customer_deposits", "uang_muka"),
-    ("receive_payments", "penerimaan"),
-    ("credit_notes", "nota_kredit"),
-    ("sales_receipts", "kwitansi_penjualan"),
-)
+RENAME_TABEL = KDT.GANTI_NAMA["customer"]["dok"]  # satu daftar dengan penentu (kontak_detail.dampak_ganti_nama)
 
 
 @router.get("/{customer_id}/rename-impact")
@@ -654,39 +646,10 @@ async def get_customer_rename_impact(request: Request, customer_id: UUID):
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-            cust = await conn.fetchrow(
-                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id,
-                tenant_id,
-            )
-            if not cust:
-                raise HTTPException(status_code=404, detail="Customer not found")
-            per_jenis = {}
-            for tabel, kunci in RENAME_TABEL:
-                r = await conn.fetchrow(
-                    f"SELECT count(*) AS total, "  # nosec B608 - tabel dari konstanta
-                    f"count(*) FILTER (WHERE customer_name IS DISTINCT FROM $3) AS nama_berbeda "
-                    f"FROM {tabel} WHERE tenant_id = $1 AND customer_id = $2",
-                    tenant_id,
-                    customer_id,
-                    cust["nama"],
-                )
-                per_jenis[kunci] = {"total": r["total"], "nama_berbeda": r["nama_berbeda"]}
-    total = sum(v["total"] for v in per_jenis.values())
-    return {
-        "success": True,
-        "data": {
-            "customer_id": str(customer_id),
-            "nama": cust["nama"],
-            "total_dokumen": total,
-            "nama_berbeda": sum(v["nama_berbeda"] for v in per_jenis.values()),
-            "per_jenis": per_jenis,
-            "pesan": (
-                f"Nama baru hanya dipakai dokumen baru. {total} dokumen yang sudah ada "
-                "tetap memakai nama saat dokumen itu dibuat."
-            ) if total else None,
-        },
-    }
+            data = await KDT.dampak_ganti_nama(conn, tenant_id, "customer", customer_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"success": True, "data": data}
 
 
 # =============================================================================
@@ -973,6 +936,68 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
     return new_id
 
 
+# PATCH pelanggan: nama medan skema -> kolom DB (selain ini nama sama) + label riwayat. SATU sumber untuk tulis, aktivitas, dan pratinjau ubah.
+UBAH_KOLOM = {"name": "nama", "code": "nomor_member", "phone": "telepon", "address": "alamat"}
+UBAH_LABEL = {
+    "name": "Nama", "company_name": "Perusahaan", "phone": "Telepon", "email": "Email", "credit_limit": "Limit kredit",
+    "payment_terms_days": "Termin pembayaran", "is_active": "Status aktif", "contact_person": "Kontak person", "city": "Kota",
+    "province": "Provinsi", "postal_code": "Kode pos", "tax_id": "NPWP", "notes": "Catatan", "mobile_phone": "HP", "website": "Website",
+    "display_name": "Nama tampilan", "customer_type": "Tipe pelanggan", "is_pkp": "PKP", "nik": "NIK", "nitku": "NITKU",
+    "jenis_id": "Jenis ID", "negara": "Negara", "nomor_dokumen": "No. dokumen", "currency": "Mata uang", "address": "Alamat",
+    "price_list_id": "Daftar harga",
+}
+
+
+async def _siapkan_ubah_pelanggan(conn, tid: str, customer_id, body: UpdateCustomerRequest) -> tuple:
+    """Aturan PATCH pelanggan (BACA SAJA; galat = HTTPException yang sama dengan tulis). -> (baris sekarang, update_data siap tulis).
+    Dipakai PATCH /{id} DAN POST /{id}/edit/preview -- pratinjau tak bisa berbeda dari simpan."""
+    current = await conn.fetchrow(
+        """SELECT id, nama, company_name, telepon, email, credit_limit, payment_terms_days,
+                is_active, contact_person, city, province, postal_code,
+                tax_id, notes, mobile_phone, website, display_name,
+                customer_type, is_pkp, nik, currency, alamat,
+                phone2, community, nitku, jenis_id, negara, nomor_dokumen
+           FROM customers WHERE id = $1 AND tenant_id = $2""",
+        customer_id,
+        tid,
+    )
+    if not current:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if body.name and body.name != current["nama"]:
+        await tolak_nama_dipakai(conn, tid, body.name, kecuali_id=customer_id)
+    # 10 Okt (B2): `code` -> nomor_member dulu ditulis TANPA cek; V402 kini menjaganya di DB
+    await tolak_nomor_dipakai(conn, tid, body.code, kecuali_id=customer_id)
+    # V420: Passport/Other wajib bernomor dokumen -- cek keadaan GABUNGAN (badan + DB), bukan badan saja
+    if {"jenis_id", "nomor_dokumen"} & body.model_fields_set:
+        tolak_identitas_pajak_tak_lengkap(
+            body.jenis_id if "jenis_id" in body.model_fields_set else current["jenis_id"],
+            body.nomor_dokumen if "nomor_dokumen" in body.model_fields_set else current["nomor_dokumen"],
+        )
+    update_data = body.model_dump(exclude_unset=True)
+    if not update_data:
+        return current, update_data
+    # DAFTAR-HARGA: daftar harga wajib milik usaha ini dan aktif (null = kembali ke daftar bawaan tenant)
+    await pastikan_daftar_harga(conn, tid, update_data.get("price_list_id"))
+    if update_data.get("opening_balance_date"):
+        try:
+            from datetime import datetime
+            update_data["opening_balance_date"] = datetime.strptime(update_data["opening_balance_date"], "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid opening_balance_date format. Use YYYY-MM-DD")
+    return current, update_data
+
+
+def perubahan_pelanggan(current, update_data: dict) -> list:
+    """[{field, label, lama, baru}] medan yang nilainya BERUBAH (aturan banding SAMA dengan riwayat 'Pelanggan diperbarui')."""
+    out = []
+    for field, baru in update_data.items():
+        kol = UBAH_KOLOM.get(field, field)
+        lama = current.get(kol) if current else None
+        if lama != baru:
+            out.append({"field": field, "label": UBAH_LABEL.get(field, UBAH_LABEL.get(kol, field)), "lama": lama, "baru": baru})
+    return out
+
+
 @router.patch("/{customer_id}", response_model=CustomerResponse)
 async def update_customer(
     request: Request, customer_id: str, body: UpdateCustomerRequest
@@ -990,41 +1015,7 @@ async def update_customer(
         await assert_if_match_row(request, "customers", customer_id)
 
         async with pool.acquire() as conn:
-            # Check if customer exists
-            existing = await conn.fetchrow(
-                "SELECT id, nama FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Customer not found")
-
-            # Check for duplicate name if name is being changed
-            if body.name and body.name != existing["nama"]:
-                await tolak_nama_dipakai(conn, ctx["tenant_id"], body.name, kecuali_id=customer_id)
-            # 10 Okt (B2): `code` -> nomor_member dulu ditulis TANPA cek; V402 kini menjaganya di DB
-            await tolak_nomor_dipakai(conn, ctx["tenant_id"], body.code, kecuali_id=customer_id)
-
-            # Get current values for change tracking
-            current = await conn.fetchrow(
-                """SELECT nama, company_name, telepon, email, credit_limit, payment_terms_days,
-                        is_active, contact_person, city, province, postal_code,
-                        tax_id, notes, mobile_phone, website, display_name,
-                        customer_type, is_pkp, nik, currency, alamat,
-                        phone2, community, nitku, jenis_id, negara, nomor_dokumen
-                   FROM customers WHERE id = $1""",
-                customer_id,
-            )
-
-            # V420: Passport/Other wajib bernomor dokumen -- cek keadaan GABUNGAN (badan + DB), bukan badan saja
-            if current and ({"jenis_id", "nomor_dokumen"} & body.model_fields_set):
-                tolak_identitas_pajak_tak_lengkap(
-                    body.jenis_id if "jenis_id" in body.model_fields_set else current["jenis_id"],
-                    body.nomor_dokumen if "nomor_dokumen" in body.model_fields_set else current["nomor_dokumen"],
-                )
-
-            # Build update query dynamically
-            update_data = body.model_dump(exclude_unset=True)
+            current, update_data = await _siapkan_ubah_pelanggan(conn, ctx["tenant_id"], customer_id, body)
             if not update_data:
                 return {
                     "success": True,
@@ -1032,37 +1023,12 @@ async def update_customer(
                     "data": {"id": str(customer_id)},
                 }
 
-            # DAFTAR-HARGA: daftar harga wajib milik usaha ini dan aktif (null = kembali ke daftar bawaan tenant)
-            await pastikan_daftar_harga(conn, ctx["tenant_id"], update_data.get("price_list_id"))
-
-            # Map schema field names to database column names
-            field_mapping = {
-                "name": "nama",
-                "code": "nomor_member",
-                "phone": "telepon",
-                "address": "alamat",
-                # New fields use same name in both schema and DB
-            }
-
             updates = []
             params = []
             param_idx = 1
 
             for field, value in update_data.items():
-                # Handle special date field
-                if field == "opening_balance_date" and value:
-                    try:
-                        from datetime import datetime
-
-                        value = datetime.strptime(value, "%Y-%m-%d").date()
-                    except ValueError:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Invalid opening_balance_date format. Use YYYY-MM-DD",
-                        )
-
-                db_field = field_mapping.get(field, field)
-                updates.append(f"{db_field} = ${param_idx}")
+                updates.append(f"{UBAH_KOLOM.get(field, field)} = ${param_idx}")
                 params.append(value)
                 param_idx += 1
 
@@ -1081,52 +1047,8 @@ async def update_customer(
                 if {"address", "city", "province", "postal_code"} & set(update_data):
                     await _alamat.cermin_dari_datar(conn, ctx["tenant_id"], customer_id, ctx.get("user_id"))
 
-                # Build change details for activity logging
-                field_labels = {
-                    "name": "Nama",
-                    "nama": "Nama",
-                    "company_name": "Perusahaan",
-                    "phone": "Telepon",
-                    "telepon": "Telepon",
-                    "email": "Email",
-                    "credit_limit": "Limit kredit",
-                    "payment_terms_days": "Termin pembayaran",
-                    "is_active": "Status aktif",
-                    "contact_person": "Kontak person",
-                    "city": "Kota",
-                    "province": "Provinsi",
-                    "postal_code": "Kode pos",
-                    "tax_id": "NPWP",
-                    "notes": "Catatan",
-                    "mobile_phone": "HP",
-                    "website": "Website",
-                    "display_name": "Nama tampilan",
-                    "customer_type": "Tipe pelanggan",
-                    "is_pkp": "PKP",
-                    "nik": "NIK",
-                    "nitku": "NITKU",
-                    "jenis_id": "Jenis ID",
-                    "negara": "Negara",
-                    "nomor_dokumen": "No. dokumen",
-                    "currency": "Mata uang",
-                    "address": "Alamat",
-                    "alamat": "Alamat",
-                    "price_list_id": "Daftar harga",
-                }
-
-                change_parts = []
-                for field, new_value in update_data.items():
-                    db_field = field_mapping.get(field, field)
-                    old_value = current.get(db_field) if current else None
-
-                    # Compare values (handle None cases)
-                    if old_value != new_value:
-                        label = field_labels.get(
-                            field, field_labels.get(db_field, field)
-                        )
-                        old_display = old_value if old_value is not None else "-"
-                        new_display = new_value if new_value is not None else "-"
-                        change_parts.append(f"{label}: {old_display} -> {new_display}")
+                change_parts = [f"{x['label']}: {x['lama'] if x['lama'] is not None else '-'} -> "
+                                f"{x['baru'] if x['baru'] is not None else '-'}" for x in perubahan_pelanggan(current, update_data)]
 
                 # Log activity if there were changes
                 if change_parts:
@@ -1171,6 +1093,91 @@ async def update_customer(
         raise HTTPException(status_code=500, detail="Failed to update customer")
 
 
+async def _pratinjau_baca(conn, kerja):
+    """Jalankan penentu di transaksi READ ONLY lalu rollback (nol tulis). -> daftar blok; 404 diteruskan (tak ada yang dipratinjau)."""
+    bloks = []
+    tr = conn.transaction(readonly=True)
+    await tr.start()
+    try:
+        await kerja()
+    except HTTPException as e:
+        if e.status_code == 404:
+            raise
+        bloks.append(blok_dari_galat(e))
+    finally:
+        await tr.rollback()
+    return bloks
+
+
+@router.post("/{customer_id}/edit/preview")
+async def preview_update_customer(request: Request, customer_id: UUID, body: dict):
+    """Pratinjau UBAH pelanggan (K-B, 9 Nov 2026): penentu SAMA dengan PATCH /{id} (_siapkan_ubah_pelanggan; exclude_unset, null =
+    kosongkan; If-Match opt-in), transaksi READ ONLY, nol tulis. 200 {ok, blocks[{code,message,field?}], perubahan[{field,label,lama,baru}],
+    catatan[...], payload}. catatan = pesan rename-impact bila nama berubah (KDT.dampak_ganti_nama, satu penentu dengan /rename-impact)."""
+    from pydantic import ValidationError
+    from ..services.optimistic_concurrency import assert_if_match_row
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        ub = UpdateCustomerRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "perubahan": [], "catatan": [], "payload": payload}}
+    hasil = {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async def kerja():
+            hasil["cur"], hasil["data"] = await _siapkan_ubah_pelanggan(conn, ctx["tenant_id"], customer_id, ub)
+            await assert_if_match_row(request, "customers", customer_id)
+        bloks = await _pratinjau_baca(conn, kerja)
+        perubahan = [{**x, "lama": KDT.nilai_json(x["lama"]), "baru": KDT.nilai_json(x["baru"])}
+                     for x in perubahan_pelanggan(hasil.get("cur"), hasil.get("data") or {})]
+        catatan = []
+        if any(x["field"] == "name" for x in perubahan):
+            dampak = await KDT.dampak_ganti_nama(conn, ctx["tenant_id"], "customer", customer_id)
+            if dampak and dampak["pesan"]:
+                catatan.append(dampak["pesan"])
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "perubahan": perubahan, "catatan": catatan, "payload": payload}}
+
+
+@router.patch("/{customer_id}/status", response_model=CustomerResponse)
+async def set_customer_status(request: Request, customer_id: UUID,
+                              status: Literal["active", "inactive"] = Query(..., description="Status baru")):
+    """Alias satu bentuk dengan PATCH /vendors/{id}/status (K, 9 Nov 2026): active = PATCH /reactivate, inactive = PATCH /{id}
+    {is_active: false}. Nol logika tulis baru -- penulisnya tetap yang lama."""
+    if status == "active":
+        return await reactivate_customer(request, str(customer_id))
+    return await update_customer(request, str(customer_id), UpdateCustomerRequest(is_active=False))
+
+
+@router.post("/{customer_id}/status/preview")
+async def preview_customer_status(request: Request, customer_id: UUID,
+                                  status: Literal["active", "inactive"] = Query(..., description="Status baru")):
+    """Pratinjau ubah status: aktifkan = _cek_aktifkan_pelanggan (penentu tulis yang SAMA); nonaktifkan tanpa syarat selain ada.
+    200 {ok, blocks, rencana{is_active}}; 404 bila pelanggan tak ada."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async def kerja():
+            if status == "active":
+                await _cek_aktifkan_pelanggan(conn, ctx["tenant_id"], customer_id)
+            elif not await conn.fetchval("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, ctx["tenant_id"]):
+                raise HTTPException(status_code=404, detail="Customer not found")
+        bloks = await _pratinjau_baca(conn, kerja)
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": {"is_active": status == "active"}}}
+
+
+@router.post("/{customer_id}/delete/preview")
+async def preview_delete_customer(request: Request, customer_id: UUID):
+    """Pratinjau HAPUS: cek_jejak YANG SAMA dengan DELETE (smart_delete), nol tulis. 200 {ok, blocks, rencana{id, nama}}; 404."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KDT.pratinjau_hapus(conn, ctx["tenant_id"], "customer", customer_id, JEJAK_PELANGGAN)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"success": True, "data": data}
+
+
 # DELETE CUSTOMER (Soft delete - block if customer has transaction history)
 # =============================================================================
 @router.delete("/{customer_id}", response_model=CustomerResponse)
@@ -1207,6 +1214,22 @@ async def delete_customer(request: Request, customer_id: str):
         raise HTTPException(status_code=500, detail="Failed to delete customer")
 
 
+async def _cek_aktifkan_pelanggan(conn, tid: str, customer_id):
+    """Aturan AKTIFKAN pelanggan (BACA SAJA). Dipakai PATCH /reactivate, PATCH /status?status=active, dan pratinjaunya. -> baris."""
+    existing = await conn.fetchrow(
+        "SELECT id, nama, nomor_member, is_active, deleted_at FROM customers WHERE id = $1 AND tenant_id = $2",
+        customer_id,
+        tid,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if existing["is_active"] and existing["deleted_at"] is None:
+        raise HTTPException(status_code=400, detail="Pelanggan sudah aktif.")
+    # 10 Okt (B2): kodenya mungkin sudah dipakai pelanggan lain sejak dihapus (V402 unik parsial)
+    await tolak_nomor_dipakai(conn, tid, existing["nomor_member"], kecuali_id=customer_id)
+    return existing
+
+
 @router.patch("/{customer_id}/reactivate", response_model=CustomerResponse)
 async def reactivate_customer(request: Request, customer_id: str):
     """
@@ -1218,20 +1241,7 @@ async def reactivate_customer(request: Request, customer_id: str):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            # Check customer exists and is inactive
-            existing = await conn.fetchrow(
-                "SELECT id, nama, nomor_member, is_active, deleted_at FROM customers WHERE id = $1 AND tenant_id = $2",
-                customer_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Customer not found")
-
-            if existing["is_active"] and existing["deleted_at"] is None:
-                raise HTTPException(status_code=400, detail="Pelanggan sudah aktif.")
-
-            # 10 Okt (B2): kodenya mungkin sudah dipakai pelanggan lain sejak dihapus (V402 unik parsial)
-            await tolak_nomor_dipakai(conn, ctx["tenant_id"], existing["nomor_member"], kecuali_id=customer_id)
+            existing = await _cek_aktifkan_pelanggan(conn, ctx["tenant_id"], customer_id)
 
             await conn.execute(
                 """

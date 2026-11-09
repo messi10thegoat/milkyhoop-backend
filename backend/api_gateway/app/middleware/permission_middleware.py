@@ -220,6 +220,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customers/summary$", ["GET"], "customer", "R"),
     (r"^/api/customers$", ["GET"], "customer", "R"),
     (r"^/api/customers/preview$", ["POST"], "customer", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
+    # K 9 Nov 2026: pratinjau ikut huruf tulisnya (ubah = PATCH U; hapus = DELETE D; status = /reactivate P -- alias PATCH /status ikut P,
+    # tidak melonggarkan aktifkan)
+    (r"^/api/customers/[^/]+/edit/preview$", ["POST"], "customer", "U"),
+    (r"^/api/customers/[^/]+/delete/preview$", ["POST"], "customer", "D"),
+    (r"^/api/customers/[^/]+/status(/preview)?$", ["PATCH", "POST"], "customer", "P"),
     (r"^/api/customers$", ["POST"], "customer", "C"),
     # V428 alamat per baris: ubah alamat = ubah master pelanggan (U), termasuk hapus alamat (bukan hapus pelanggan)
     (r"^/api/customers/[^/]+/addresses$", ["GET"], "customer", "R"),
@@ -233,6 +238,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/summary$", ["GET"], "supplier", "R"),
     (r"^/api/vendors$", ["GET"], "supplier", "R"),
     (r"^/api/vendors$", ["POST"], "supplier", "C"),
+    (r"^/api/vendors/preview$", ["POST"], "supplier", "C"),  # K 2a: pratinjau buat (huruf SAMA dgn buat)
+    (r"^/api/vendors/[^/]+/edit/preview$", ["POST"], "supplier", "U"),
+    (r"^/api/vendors/[^/]+/delete/preview$", ["POST"], "supplier", "D"),
+    (r"^/api/vendors/[^/]+/status/preview$", ["POST"], "supplier", "U"),  # = PATCH /status
+    (r"^/api/vendors/[^/]+/rename\-impact$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+$", ["PATCH", "PUT"], "supplier", "U"),
     (r"^/api/vendors/[^/]+$", ["DELETE"], "supplier", "D"),
