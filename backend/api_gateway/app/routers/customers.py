@@ -424,7 +424,8 @@ async def get_next_customer_code(request: Request):
 # GET CUSTOMER DETAIL
 # =============================================================================
 # Jejak transaksi yang menolak hapus pelanggan -- SATU daftar untuk DELETE (smart_delete) dan aksi detail B2 (cek_jejak)
-JEJAK_PELANGGAN = [
+JEJAK_PELANGGAN = [  # lengkap = SEMUA tabel ber-FK NO ACTION ke tabel ini (+ dokumen tanpa FK); diukur pg_constraint 9 Nov 2026 -- yang
+    # terlewat dulu membuat DELETE 500 (FK) atau meninggalkan dokumen yatim. Penjaga: test_kontak_aksi_pratinjau.test_jejak_hapus_lengkap
         (
             "sales_invoices",
             "customer_id",
@@ -450,6 +451,26 @@ JEJAK_PELANGGAN = [
             "customer_deposits",
             "customer_id",
             "Tidak bisa menghapus pelanggan yang memiliki deposit. Nonaktifkan saja.",
+        ),
+        (
+            "sales_orders",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki pesanan penjualan. Nonaktifkan saja.",
+        ),
+        (
+            "quotes",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki penawaran. Nonaktifkan saja.",
+        ),
+        (
+            "proformas",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki proforma. Nonaktifkan saja.",
+        ),
+        (
+            "sales_receipts",
+            "customer_id",
+            "Tidak bisa menghapus pelanggan yang memiliki kwitansi penjualan. Nonaktifkan saja.",
         ),
     ]
 
