@@ -3,7 +3,7 @@ kaos + nyawit. Angka SENGAJA berubah (dulu baris VOID/DRAFT/masa depan ikut); ya
  S  selisih lama − baru (Σ debit & Σ kredit) == Σ baris yang lama salah hitung PERSIS: baris jurnal non-POSTED / tanggal > as_of pada
     akun AKTIF tenant (dulu ikut) dikurangi baris POSTED <= as_of pada akun NONAKTIF (dulu dibuang; BL-07).
  P  baru per akun == Σ(debit, kredit) journal_lines POSTED <= as_of (buku besar), semua akun bersaldo, termasuk nonaktif.
- F  baru == /trial-balance/full (closing, periode fiskal yang berakhir pada as_of; /full memotong sen dengan int()).
+ F  baru == /trial-balance/full (closing, periode fiskal yang berakhir pada as_of; PERSIS per sen -- tiket kecil: /full tak lagi int()).
  N  akun nonaktif bersaldo ikut: klon BARU menonaktifkan satu akun bersaldo -> tetap tampil, total tetap seimbang.
  T  as_of dan as_of_date sama-sama dihormati; tanpa keduanya = tanggal bisnis tenant.
  X  teks: tipe_label/saldo_normal_label = SATU peta; debit/kredit_tampil = angka_laporan; status_text konsisten dengan selisih."""
@@ -127,7 +127,7 @@ async def main():
                     for a in h["accounts"]:
                         x = fa.get(a["account_id"])
                         cek(f"F {tid}|{p['end_date']} {a['account_code']} == /full", x is not None and
-                            (x["closing_debit"], x["closing_credit"]) == (int(d(a["total_debit"])), int(d(a["total_credit"]))), (a, x))
+                            (d(x["closing_debit"]), d(x["closing_credit"])) == (d(a["total_debit"]), d(a["total_credit"])), (a, x))
                         if x:
                             cek(f"X {tid} /full label {a['account_code']}", (x["tipe_label"], x["saldo_normal_label"]) == (a["tipe_label"], a["saldo_normal_label"]), x)
                 # N: nonaktifkan satu akun bersaldo DI KLON (tulis hanya di salinan) -> tetap tampil, total tetap

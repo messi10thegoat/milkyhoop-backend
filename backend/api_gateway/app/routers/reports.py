@@ -1451,12 +1451,13 @@ async def get_trial_balance_full(
             }
 
             for row in rows:
-                opening_d = int(row["opening_debit"] or 0)
-                opening_c = int(row["opening_credit"] or 0)
-                period_d = int(row["period_debit"] or 0)
-                period_c = int(row["period_credit"] or 0)
-                closing_d = int(row["closing_debit"] or 0)
-                closing_c = int(row["closing_credit"] or 0)
+                # dulu int(): sen terpotong di SEMUA kolom uang (tiket L3 10 Nov); kini Decimal, medan tetap angka
+                opening_d = Decimal(str(row["opening_debit"] or 0))
+                opening_c = Decimal(str(row["opening_credit"] or 0))
+                period_d = Decimal(str(row["period_debit"] or 0))
+                period_c = Decimal(str(row["period_credit"] or 0))
+                closing_d = Decimal(str(row["closing_debit"] or 0))
+                closing_c = Decimal(str(row["closing_credit"] or 0))
 
                 # Skip zero balance accounts unless requested
                 if not show_zero_balance and not row["is_header"]:
@@ -3538,7 +3539,7 @@ async def get_aging_receivable(request: Request):
                         ELSE '90+'
                     END as aging_bucket
                 FROM compute_ar_outstanding($1) a
-                ORDER BY a.due_date ASC
+                ORDER BY a.due_date ASC, a.invoice_number, a.invoice_id  -- urutan deterministik (tie due_date)
             """,
                 ctx["tenant_id"],
                 hari_ini,
@@ -3626,7 +3627,7 @@ async def get_customer_aging_invoices(request: Request, customer_id: str):
                     GREATEST(0, $3::date - a.due_date) as days_overdue
                 FROM compute_ar_outstanding($1) a
                 WHERE a.customer_id = $2
-                ORDER BY a.due_date ASC
+                ORDER BY a.due_date ASC, a.invoice_number, a.invoice_id  -- urutan deterministik (tie due_date)
             """,
                 ctx["tenant_id"],
                 customer_id,
@@ -3692,7 +3693,7 @@ async def get_aging_payable(request: Request):
                         ELSE '90+'
                     END AS aging_bucket
                 FROM compute_ap_outstanding($1) a
-                ORDER BY a.due_date ASC
+                ORDER BY a.due_date ASC, a.bill_number, a.bill_id  -- urutan deterministik (tie due_date)
             """,
                 ctx["tenant_id"],
                 hari_ini,
@@ -3780,7 +3781,7 @@ async def get_vendor_aging_bills(request: Request, vendor_id: str):
                     GREATEST(0, $3::date - a.due_date) as days_overdue
                 FROM compute_ap_outstanding($1) a
                 WHERE a.vendor_id = $2::UUID
-                ORDER BY a.due_date ASC
+                ORDER BY a.due_date ASC, a.bill_number, a.bill_id  -- urutan deterministik (tie due_date)
             """,
                 ctx["tenant_id"],
                 vendor_id,
