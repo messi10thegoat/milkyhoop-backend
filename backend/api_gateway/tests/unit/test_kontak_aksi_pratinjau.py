@@ -462,6 +462,9 @@ async def test_ubah_vendor_memakai_penentu_yang_sama(monkeypatch):
     (f"/api/vendors/{ID}/status/preview", "POST", ("supplier", "U")),
     (f"/api/vendors/{ID}/status", "PATCH", ("supplier", "U")),
     (f"/api/vendors/{ID}/rename-impact", "GET", ("supplier", "R")),
+    ("/api/customers/merge/preview", "POST", ("customer", "C")),
+    ("/api/customers/merge", "POST", ("customer", "C")),
+    ("/api/vendors/merge/preview", "POST", ("supplier", "C")),
 ])
 def test_izin_rute_ikut_huruf_tulisnya(jalur, metode, harap):
     from app.middleware.permission_middleware import PermissionMiddleware

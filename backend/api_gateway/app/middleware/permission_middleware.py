@@ -731,7 +731,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customers/[^/]+/opening-balance$", ["POST"], "customer", "C"),
     (r"^/api/customers/[^/]+/reactivate$", ["PATCH"], "customer", "P"),
     (r"^/api/customers/merge$", ["POST"], "customer", "C"),
-    (r"^/api/customers/merge/preview$", ["POST"], "customer", "R"),
+    (r"^/api/customers/merge/preview$", ["POST"], "customer", "C"),  # K-D 9 Nov 2026: pratinjau ikut huruf tulisnya (= /merge, simetri vendor)
     # efaktur
     (r"^/api/efaktur/export$", ["POST"], "tax", "E"),
     (r"^/api/efaktur/validate$", ["POST"], "tax", "R"),
