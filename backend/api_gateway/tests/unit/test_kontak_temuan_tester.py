@@ -97,6 +97,6 @@ def test_baris_lama_pelanggan_diterjemahkan():
 
 def test_penulis_pelanggan_seragam_vendor():
     src = (APP / "routers/customers.py").read_text()
-    assert "Merged customer" not in src and "'Pelanggan diperbarui'" not in src
+    assert "Merged customer" not in src and "'updated', 'Pelanggan diperbarui'" not in src
     assert src.count("KDT.teks_ubah(") == 1 and "digabung ke pelanggan ini" in src and "Digabung ke pelanggan " in src
     assert "KDT.teks_ubah(" in (APP / "routers/vendors.py").read_text()

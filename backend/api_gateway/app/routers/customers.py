@@ -1011,7 +1011,7 @@ async def _siapkan_ubah_pelanggan(conn, tid: str, customer_id, body: UpdateCusto
 
 
 def perubahan_pelanggan(current, update_data: dict) -> list:
-    """[{field, label, lama, baru}] medan yang nilainya BERUBAH (aturan banding SAMA dengan riwayat 'Pelanggan diperbarui')."""
+    """[{field, label, lama, baru}] medan yang nilainya BERUBAH (aturan banding SAMA dengan riwayat per medan, KDT.teks_ubah)."""
     out = []
     for field, baru in update_data.items():
         kol = UBAH_KOLOM.get(field, field)

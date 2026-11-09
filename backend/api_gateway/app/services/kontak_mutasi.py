@@ -208,11 +208,11 @@ def _waktu(r) -> tuple:
     return (r.get("dibuat") is not None, r.get("dibuat") or 0)
 
 def susun(baris: list, jenis: str, dari, skip: int, limit: int) -> dict:
-    """Urutkan (tanggal, WAKTU BUAT jurnal, urut komponen, nomor), saldo berjalan atas SELURUH urutan, saldo_awal = baris sebelum `dari`.
+    """Urutkan (tanggal, WAKTU BUAT jurnal, lalu pengurai lama: nomor jurnal, urut komponen, nomor dokumen), saldo berjalan atas SELURUH urutan, saldo_awal = baris sebelum `dari`.
     Temuan B (TESTER nyawit 9 Nov): dulu nomor jurnal sebelum waktu -> "BP-0013" (11:37) tampil sebelum "BILL-0016" (10:43) di hari
     yang sama dan saldo berjalan sempat negatif. `dibuat` = journal_entries.created_at (kronologis); saldo akhir tak berubah."""
     tanda = JENIS[jenis]["tanda"]
-    baris = sorted(baris, key=lambda r: (r["tgl"], _waktu(r), r["urut"], r["jno"] or "", r["dno"] or ""))
+    baris = sorted(baris, key=lambda r: (r["tgl"], _waktu(r), r["jno"] or "", r["urut"], r["dno"] or ""))
     saldo, awal, isi, td, tk = NOL, NOL, [], NOL, NOL
     for r in baris:
         d, k = Decimal(str(r["debit"] or 0)), Decimal(str(r["kredit"] or 0))
