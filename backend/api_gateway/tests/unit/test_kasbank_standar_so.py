@@ -413,3 +413,59 @@ def test_main_memasang_router_mutasi_manual():
     assert 'include_router(_bank_transactions.router, prefix="/api/bank-transactions"' in src
     t = ast.parse(src)
     assert any(isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_api_route" for n in ast.walk(t))
+
+
+# ---------------------------------------------------------------- placeholder == argumen (uji salinan 9 Nov: ?aksi=draf mengirim tanggal tanpa $n -> 500)
+class KonHitung(KonDaftar):
+    """asyncpg menolak jumlah argumen != placeholder tertinggi; tiruan ini meniru penolakan itu untuk SEMUA kueri daftar."""
+    @staticmethod
+    def _cocok(sql, a):
+        import re
+        n = max([int(x) for x in re.findall(r"\$(\d+)", sql)] or [0])
+        assert n == len(a), (n, len(a), sql[-200:])
+
+    async def fetchval(self, sql, *a):
+        self._cocok(sql, a)
+        return 1
+
+    async def fetchrow(self, sql, *a):
+        self._cocok(sql, a)
+        if "AS s," in sql:
+            return {"s": D("1"), "f": D("0"), "k": D("0")}
+        return await KonDaftar.fetchrow(self, sql, *a)
+
+    async def fetch(self, sql, *a):
+        self._cocok(sql, a)
+        return []
+
+
+@pytest.mark.parametrize("aksi", [None, "draf", "bulan_ini"])
+def test_daftar_transfer_placeholder_cocok(monkeypatch, aksi):
+    k = KonHitung()
+
+    async def pool():
+        return Pool(k)
+    monkeypatch.setattr(BT, "get_pool", pool)
+    h = jalan(BT.list_bank_transfers(req(), status="draft", from_bank_id=None, to_bank_id=None, search="TRF", date_from=None, date_to=None,
+                                     skip=0, limit=20, sort_by="created_at", sort_order="desc", aksi=aksi, with_totals=True))
+    assert h["total"] == 1
+
+
+@pytest.mark.parametrize("aksi", [None, "saldo_minus", "nonaktif"])
+def test_daftar_rekening_placeholder_cocok(monkeypatch, aksi):
+    k = KonHitung()
+
+    async def pool():
+        return Pool(k)
+    monkeypatch.setattr(BA, "get_pool", pool)
+    h = jalan(BA.list_bank_accounts(req(), is_active=True, account_type="cash", search="kas", skip=0, limit=20, sort_by="account_name",
+                                    sort_order="asc", aksi=aksi, with_totals=True))
+    assert h["total"] == 1
+
+
+@pytest.mark.parametrize("aksi", [None, "masuk_bulan_ini", "keluar_bulan_ini"])
+def test_daftar_manual_placeholder_cocok(monkeypatch, aksi):
+    k = KonHitung()
+    _pasang(monkeypatch, k)
+    jalan(BTX.list_bank_transactions(req(), arah="masuk", bank_account_id=BA_ID, status="tercatat", date_from=HARI, date_to=HARI, search="a b",
+                                     aksi=aksi, with_totals=True, skip=0, limit=50, sort_by="tanggal", sort_order="desc"))

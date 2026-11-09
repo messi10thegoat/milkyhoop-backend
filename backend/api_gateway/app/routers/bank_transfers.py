@@ -179,9 +179,11 @@ async def list_bank_transfers(
                 param_idx += 1
 
             if aksi in KD.SEMUA_KUNCI_TRANSFER:
-                conditions.append(KD.sql_aksi_transfer(aksi, f"${param_idx}"))
-                params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
-                param_idx += 1
+                predikat = KD.sql_aksi_transfer(aksi, f"${param_idx}")
+                conditions.append(predikat)
+                if f"${param_idx}" in predikat:  # hanya kunci bertanggal (bulan_ini) yang memakai placeholder tanggal bisnis
+                    params.append(await tanggal_dokumen(conn, ctx["tenant_id"]))
+                    param_idx += 1
 
             where_clause = " AND ".join(conditions)
 
