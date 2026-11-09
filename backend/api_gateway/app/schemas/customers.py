@@ -6,6 +6,7 @@ Following QB/Xero/Zoho patterns for customer master data.
 """
 
 from pydantic import BaseModel, Field, field_validator
+from .aksi_tersedia import AksiTersediaPeta
 from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
@@ -311,6 +312,7 @@ class CustomerDetail(PosisiDariStatus):
     tipe_text: Optional[str] = None
     termin_text: Optional[str] = None
     aksi: List[Dict[str, Any]] = []  # [{kunci, label, utama?, bahaya?, boleh, alasan?}]
+    aksi_tersedia: Optional[AksiTersediaPeta] = None  # 9 Nov 2026: bentuk bersama dari aksi yang SAMA (KDT.aksi_tersedia)
     
     # Metadata
     default_currency_id: Optional[str] = None

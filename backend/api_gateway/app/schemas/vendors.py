@@ -7,6 +7,7 @@ This module defines request and response models for the /api/vendors endpoints.
 from decimal import Decimal
 from uuid import UUID
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from .aksi_tersedia import AksiTersediaPeta
 from .posisi import PosisiDariStatus  # position_text = status_text (standar SO v3)
 from typing import Optional, List, Dict, Any, Literal, Union
 import re
@@ -423,6 +424,7 @@ class VendorDetail(PosisiDariStatus):
     tipe_text: Optional[str] = None
     termin_text: Optional[str] = None
     aksi: List[Dict[str, Any]] = []  # [{kunci, label, utama?, bahaya?, boleh, alasan?}]
+    aksi_tersedia: Optional[AksiTersediaPeta] = None  # 9 Nov 2026: bentuk bersama dari aksi yang SAMA (KDT.aksi_tersedia)
 
     is_active: bool
     created_at: str

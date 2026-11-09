@@ -18,6 +18,7 @@ import asyncpg
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pelanggan + Vendor satu penentu
 from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
+from ..services import kontak_detail as KDT  # B2 detail + aksi_tersedia + rename-impact (satu penentu dua modul)
 from ..services import vendor_unik as VU  # VENDOR-DUPLIKAT (1 Nov 2026): 409 berkode satu bentuk dengan pelanggan
 from ..services import idem_buat  # VENDOR-IDEM (25 Okt 2026): X-Idempotency-Key buat/status/hapus/gabung
 from ..schemas.vendors import (
@@ -710,7 +711,6 @@ async def get_vendor(request: Request, vendor_id: UUID):
             _medan = KD.medan_baris("vendor", row, await KD.fakta_kontak(conn, ctx["tenant_id"], "vendor", [str(row["id"])], _hari))
             from ..services.vendor_pembelian import pembelian_vendor
             from ..services.smart_delete import cek_jejak
-            from ..services import kontak_detail as KDT
             _beli = (await pembelian_vendor(conn, ctx["tenant_id"], [row["id"]]))[str(row["id"])]
             from ..services.uang_muka_vendor import sisa_vendor
             try:
@@ -787,6 +787,7 @@ async def get_vendor(request: Request, vendor_id: UUID):
                     "tipe_text": KDT.tipe_text(row["vendor_type"]),
                     "termin_text": KDT.termin_text(row["payment_terms_days"]),
                     "aksi": _aksi,
+                    "aksi_tersedia": KDT.aksi_tersedia(_aksi),
                 },
             }
             # K2b: agregat dokumen hanya untuk yang boleh BACA modulnya (pola omitted B4; medan null, bukan 0 palsu)
@@ -890,6 +891,40 @@ async def _kunci_vendor(conn, tenant_id: str, *vendor_ids, saldo_awal: bool = Fa
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_OPENING:{v}")
 
 
+PESAN_SALDO_AWAL_SAAT_BUAT = ("Saldo awal hutang tidak bisa diisi saat membuat vendor. "
+                              "Simpan vendor dulu, lalu isi lewat Saldo awal di halaman vendor.")
+
+
+async def _siapkan_buat_vendor(conn, tid: str, body: CreateVendorRequest) -> None:
+    """Aturan buat vendor (BACA SAJA; galat = HTTPException SAMA dengan POST /vendors). Dipakai POST /vendors (sesudah kunci nama/kode)
+    DAN POST /vendors/preview. VENDOR-DUPLIKAT: nama/kode ganda -> 409 berkode (predikat == indeks unik DB; nonaktif ikut)."""
+    if (getattr(body, "opening_balance", 0) or 0) > 0:
+        raise HTTPException(status_code=422, detail=PESAN_SALDO_AWAL_SAAT_BUAT)
+    await VU.tolak_nama_dipakai(conn, tid, body.name)
+    await VU.tolak_kode_dipakai(conn, tid, body.code)
+
+
+@router.post("/preview")
+async def preview_create_vendor(request: Request, body: dict):
+    """Pratinjau BUAT vendor (K 2a, 9 Nov 2026; kembar POST /customers/preview): penentu SAMA dengan POST /vendors (_siapkan_buat_vendor),
+    transaksi READ ONLY, nol tulis. 200 {success, data:{ok, blocks[{code,message,field?,id?}], rencana{...}, payload}}. Badan = badan POST
+    byte-identik; galat skema -> blok DATA_TIDAK_SAH (bukan 422)."""
+    from pydantic import ValidationError
+    from .customers import blok_validasi, _pratinjau_baca
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        cb = CreateVendorRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "rencana": None, "payload": payload}}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        bloks = await _pratinjau_baca(conn, lambda: _siapkan_buat_vendor(conn, ctx["tenant_id"], cb))
+    rencana = {"name": cb.name, "code": cb.code, "vendor_type": cb.vendor_type, "payment_terms_days": cb.payment_terms_days,
+               "efek": []}  # nol jurnal: saldo awal lewat rute terpisah
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
+
+
 @router.post("", response_model=VendorResponse, status_code=201)
 async def create_vendor(request: Request, body: CreateVendorRequest, response: Response = None):
     """
@@ -925,12 +960,8 @@ async def create_vendor(request: Request, body: CreateVendorRequest, response: R
         ctx = get_user_context(request)
         # Audit F1 (10 Okt 2026, Law 1/16): hutang awal HANYA lewat POST /vendors/{id}/opening-balance (jurnal Dr Hutang /
         # Cr Modal Saldo Awal). Angka di kolom tanpa jurnal = angka tak berbuku.
-        if (getattr(body, "opening_balance", 0) or 0) > 0:
-            raise HTTPException(
-                status_code=422,
-                detail="Saldo awal hutang tidak bisa diisi saat membuat vendor. "
-                       "Simpan vendor dulu, lalu isi lewat Saldo awal di halaman vendor.",
-            )
+        if (getattr(body, "opening_balance", 0) or 0) > 0:  # tanpa koneksi bila badan sudah pasti ditolak (galat SAMA dgn penentu)
+            raise HTTPException(status_code=422, detail=PESAN_SALDO_AWAL_SAAT_BUAT)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
@@ -944,8 +975,7 @@ async def create_vendor(request: Request, body: CreateVendorRequest, response: R
                 if body.code:
                     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{ctx['tenant_id']}:{body.code.strip().lower()}")
                 # VENDOR-DUPLIKAT: nama/kode ganda -> 409 berkode (predikat == indeks unik DB; nonaktif ikut)
-                await VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name)
-                await VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code)
+                await _siapkan_buat_vendor(conn, ctx["tenant_id"], body)
 
                 # Parse opening_balance_date from string to date
                 opening_date = parse_date(getattr(body, "opening_balance_date", None))
@@ -1056,6 +1086,65 @@ async def create_vendor(request: Request, body: CreateVendorRequest, response: R
 # =============================================================================
 # UPDATE VENDOR
 # =============================================================================
+UBAH_LABEL = {  # label riwayat PATCH vendor -- SATU sumber untuk aktivitas dan pratinjau ubah
+    "name": "Nama", "code": "Kode", "contact_person": "Kontak", "phone": "Telepon", "email": "Email", "address": "Alamat", "city": "Kota",
+    "province": "Provinsi", "postal_code": "Kode Pos", "tax_id": "NPWP", "payment_terms_days": "Termin Pembayaran",
+    "credit_limit": "Limit Kredit", "notes": "Catatan", "vendor_type": "Tipe Vendor", "company_name": "Nama Perusahaan",
+    "display_name": "Nama Tampilan", "mobile_phone": "HP", "website": "Website", "is_pkp": "PKP", "currency": "Mata Uang",
+    "bank_name": "Bank", "bank_account_number": "No Rekening", "bank_account_holder": "Pemilik Rekening", "is_active": "Status Aktif",
+    "nik": "NIK", "account_number": "No Akun", "tax_address": "Alamat Pajak", "tax_city": "Kota Pajak", "tax_province": "Provinsi Pajak",
+    "tax_postal_code": "Kode Pos Pajak", "nitku": "NITKU", "negara": "Negara", "default_tax_code": "Kode Pajak Bawaan",
+    "default_pph_type": "Jenis PPh Bawaan", "default_pph_rate": "Tarif PPh Bawaan",
+}
+
+
+async def _siapkan_ubah_vendor(conn, tid: str, vendor_id, body: UpdateVendorRequest, kunci: bool = True) -> tuple:
+    """Aturan PATCH vendor (galat = HTTPException yang sama dengan tulis). -> (baris sekarang, update_data kolom, anak_dikirim).
+    Dipakai PATCH /{id} (kunci=True, di dalam transaksinya) DAN POST /{id}/edit/preview (kunci=False, READ ONLY)."""
+    existing = await conn.fetchrow(
+        """SELECT id, name, code, contact_person, phone, email,
+              address, city, province, postal_code, tax_id,
+              payment_terms_days, credit_limit, notes,
+              vendor_type, company_name, display_name,
+              mobile_phone, website, is_pkp, currency,
+              bank_name, bank_account_number, bank_account_holder,
+              is_active, nik, account_number, tax_address, tax_city,
+              tax_province, tax_postal_code, nitku, negara,
+              default_tax_code, default_pph_type, default_pph_rate
+       FROM vendors WHERE id = $1 AND tenant_id = $2""",
+        vendor_id,
+        tid,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    # VENDOR-DUPLIKAT: nama/kode yang BERUBAH -> kunci (kembar buat) lalu 409 berkode bila dipakai vendor lain.
+    # Dulu kode tak dicek sama sekali -> indeks unik DB -> 500.
+    if body.name and body.name != existing["name"]:
+        if kunci:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_NAMA:{tid}:{body.name.strip().lower()}")
+        await VU.tolak_nama_dipakai(conn, tid, body.name, kecuali_id=vendor_id)
+    if body.code and body.code != existing["code"]:
+        if kunci:
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{tid}:{body.code.strip().lower()}")
+        await VU.tolak_kode_dipakai(conn, tid, body.code, kecuali_id=vendor_id)
+    update_data = body.model_dump(exclude_unset=True)
+    # Anak (alamat pengiriman, kontak) bukan kolom vendors: ditulis terpisah di transaksi yang sama.
+    anak_dikirim = {k for k in ("shipping_address", "contacts") if k in update_data}
+    for k in ("shipping_address", "contacts", "contacts_replace"):
+        update_data.pop(k, None)
+    if update_data.get("nik"):
+        tipe_efektif = update_data.get("vendor_type") or existing["vendor_type"]
+        if tipe_efektif != "ORANG_PRIBADI":
+            raise HTTPException(status_code=422, detail="NIK hanya untuk pemasok Orang Pribadi")
+    return existing, update_data, anak_dikirim
+
+
+def perubahan_vendor(existing, update_data: dict) -> list:
+    """[{field, label, lama, baru}] kolom yang nilainya BERUBAH (aturan banding SAMA dengan riwayat 'X diubah')."""
+    return [{"field": f, "label": UBAH_LABEL.get(f, f), "lama": existing.get(f) if existing else None, "baru": v}
+            for f, v in update_data.items() if (existing.get(f) if existing else None) != v]
+
+
 @router.patch("/{vendor_id}", response_model=VendorResponse)
 async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorRequest):
     """
@@ -1073,43 +1162,7 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Fetch existing vendor with all fields for change tracking
-                existing = await conn.fetchrow(
-                    """SELECT id, name, code, contact_person, phone, email,
-                          address, city, province, postal_code, tax_id,
-                          payment_terms_days, credit_limit, notes,
-                          vendor_type, company_name, display_name,
-                          mobile_phone, website, is_pkp, currency,
-                          bank_name, bank_account_number, bank_account_holder,
-                          is_active, nik, account_number, tax_address, tax_city,
-                          tax_province, tax_postal_code, nitku, negara,
-                          default_tax_code, default_pph_type, default_pph_rate
-                   FROM vendors WHERE id = $1 AND tenant_id = $2""",
-                    vendor_id,
-                    ctx["tenant_id"],
-                )
-                if not existing:
-                    raise HTTPException(status_code=404, detail="Vendor not found")
-
-                # VENDOR-DUPLIKAT: nama/kode yang BERUBAH -> kunci (kembar buat) lalu 409 berkode bila dipakai vendor lain.
-                # Dulu kode tak dicek sama sekali -> indeks unik DB -> 500.
-                if body.name and body.name != existing["name"]:
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_NAMA:{ctx['tenant_id']}:{body.name.strip().lower()}")
-                    await VU.tolak_nama_dipakai(conn, ctx["tenant_id"], body.name, kecuali_id=vendor_id)
-                if body.code and body.code != existing["code"]:
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"VENDOR_KODE:{ctx['tenant_id']}:{body.code.strip().lower()}")
-                    await VU.tolak_kode_dipakai(conn, ctx["tenant_id"], body.code, kecuali_id=vendor_id)
-
-                # Build update query dynamically
-                update_data = body.model_dump(exclude_unset=True)
-                # Anak (alamat pengiriman, kontak) bukan kolom vendors: ditulis terpisah di transaksi yang sama.
-                anak_dikirim = {k for k in ("shipping_address", "contacts") if k in update_data}
-                for k in ("shipping_address", "contacts", "contacts_replace"):
-                    update_data.pop(k, None)
-                if update_data.get("nik"):
-                    tipe_efektif = update_data.get("vendor_type") or existing["vendor_type"]
-                    if tipe_efektif != "ORANG_PRIBADI":
-                        raise HTTPException(status_code=422, detail="NIK hanya untuk pemasok Orang Pribadi")
+                existing, update_data, anak_dikirim = await _siapkan_ubah_vendor(conn, ctx["tenant_id"], vendor_id, body)
                 if not update_data and not anak_dikirim:
                     return {
                         "success": True,
@@ -1150,72 +1203,27 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
                     or "System"
                 )
 
-                field_labels = {
-                    "name": "Nama",
-                    "code": "Kode",
-                    "contact_person": "Kontak",
-                    "phone": "Telepon",
-                    "email": "Email",
-                    "address": "Alamat",
-                    "city": "Kota",
-                    "province": "Provinsi",
-                    "postal_code": "Kode Pos",
-                    "tax_id": "NPWP",
-                    "payment_terms_days": "Termin Pembayaran",
-                    "credit_limit": "Limit Kredit",
-                    "notes": "Catatan",
-                    "vendor_type": "Tipe Vendor",
-                    "company_name": "Nama Perusahaan",
-                    "display_name": "Nama Tampilan",
-                    "mobile_phone": "HP",
-                    "website": "Website",
-                    "is_pkp": "PKP",
-                    "currency": "Mata Uang",
-                    "bank_name": "Bank",
-                    "bank_account_number": "No Rekening",
-                    "bank_account_holder": "Pemilik Rekening",
-                    "is_active": "Status Aktif",
-                    "nik": "NIK",
-                    "account_number": "No Akun",
-                    "tax_address": "Alamat Pajak",
-                    "tax_city": "Kota Pajak",
-                    "tax_province": "Provinsi Pajak",
-                    "tax_postal_code": "Kode Pos Pajak",
-                    "nitku": "NITKU",
-                    "negara": "Negara",
-                    "default_tax_code": "Kode Pajak Bawaan",
-                    "default_pph_type": "Jenis PPh Bawaan",
-                    "default_pph_rate": "Tarif PPh Bawaan",
-                }
-
                 changes_logged = []
-                for field, new_value in update_data.items():
-                    old_value = existing.get(field)
-                    # Normalize values for comparison
-                    if old_value != new_value:
-                        label = field_labels.get(field, field)
-                        old_display = str(old_value) if old_value is not None else "-"
-                        new_display = str(new_value) if new_value is not None else "-"
-
-                        # Log each change
-                        await conn.execute(
-                            """
-                        INSERT INTO vendor_activities
-                        (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
-                        VALUES ($1, $2, 'updated', $3, $4, $5, $6, $7, $8)
-                        """,
-                            vendor_id,
-                            ctx["tenant_id"],
-                            f"{label} diubah",
-                            field,
-                            old_display,
-                            new_display,
-                            user_id,
-                            user_name,
-                        )
-                        changes_logged.append(
-                            f"{label}: {old_display} -> {new_display}"
-                        )
+                for x in perubahan_vendor(existing, update_data):
+                    old_display = str(x["lama"]) if x["lama"] is not None else "-"
+                    new_display = str(x["baru"]) if x["baru"] is not None else "-"
+                    # Log each change
+                    await conn.execute(
+                        """
+                    INSERT INTO vendor_activities
+                    (vendor_id, tenant_id, type, description, field_name, old_value, new_value, actor_id, actor_name)
+                    VALUES ($1, $2, 'updated', $3, $4, $5, $6, $7, $8)
+                    """,
+                        vendor_id,
+                        ctx["tenant_id"],
+                        f"{x['label']} diubah",
+                        x["field"],
+                        old_display,
+                        new_display,
+                        user_id,
+                        user_name,
+                    )
+                    changes_logged.append(f"{x['label']}: {old_display} -> {new_display}")
 
                 for nama_anak in anak_berubah:
                     await conn.execute(
@@ -1246,6 +1254,79 @@ async def update_vendor(request: Request, vendor_id: UUID, body: UpdateVendorReq
     except Exception as e:
         logger.error(f"Error updating vendor {vendor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update vendor")
+
+
+@router.post("/{vendor_id}/edit/preview")
+async def preview_update_vendor(request: Request, vendor_id: UUID, body: dict):
+    """Pratinjau UBAH vendor (K-B, 9 Nov 2026): penentu SAMA dengan PATCH /{id} (_siapkan_ubah_vendor; exclude_unset, null = kosongkan;
+    If-Match opt-in), READ ONLY tanpa kunci, nol tulis. 200 {ok, blocks, perubahan[{field,label,lama,baru}], catatan[...], payload}.
+    catatan = pesan rename-impact bila nama berubah (KDT.dampak_ganti_nama) + anak (alamat pengiriman / kontak) yang dikirim."""
+    from pydantic import ValidationError
+    from ..services.optimistic_concurrency import assert_if_match_row
+    from .customers import blok_validasi, _pratinjau_baca
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        ub = UpdateVendorRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "perubahan": [], "catatan": [], "payload": payload}}
+    hasil = {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async def kerja():
+            hasil["cur"], hasil["data"], hasil["anak"] = await _siapkan_ubah_vendor(conn, ctx["tenant_id"], vendor_id, ub, kunci=False)
+            await assert_if_match_row(request, "vendors", vendor_id)
+        bloks = await _pratinjau_baca(conn, kerja)
+        perubahan = [{**x, "lama": KDT.nilai_json(x["lama"]), "baru": KDT.nilai_json(x["baru"])}
+                     for x in perubahan_vendor(hasil.get("cur"), hasil.get("data") or {})]
+        catatan = []
+        if any(x["field"] == "name" for x in perubahan):
+            dampak = await KDT.dampak_ganti_nama(conn, ctx["tenant_id"], "vendor", vendor_id)
+            if dampak and dampak["pesan"]:
+                catatan.append(dampak["pesan"])
+        catatan += [ANAK_TEKS[k] for k in ("shipping_address", "contacts") if k in hasil.get("anak", ())]
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "perubahan": perubahan, "catatan": catatan, "payload": payload}}
+
+
+ANAK_TEKS = {"shipping_address": "Alamat pengiriman ikut disimpan.", "contacts": "Daftar kontak ikut disimpan."}
+
+
+@router.get("/{vendor_id}/rename-impact")
+async def get_vendor_rename_impact(request: Request, vendor_id: UUID):
+    """Jumlah dokumen yang menyimpan nama vendor ini sebagai snapshot (kembar /customers/{id}/rename-impact; penentu
+    KDT.dampak_ganti_nama). Hanya baca."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KDT.dampak_ganti_nama(conn, ctx["tenant_id"], "vendor", vendor_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return {"success": True, "data": data}
+
+
+@router.post("/{vendor_id}/status/preview")
+async def preview_vendor_status(request: Request, vendor_id: UUID,
+                                status: Literal["active", "inactive"] = Query(..., description="Status baru")):
+    """Pratinjau PATCH /{id}/status: penulisnya tanpa syarat selain vendor ada. 200 {ok, blocks, rencana{is_active}}; 404."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        ada = await conn.fetchval("SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, ctx["tenant_id"])
+    if not ada:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return {"success": True, "data": {"ok": True, "blocks": [], "rencana": {"is_active": status == "active"}}}
+
+
+@router.post("/{vendor_id}/delete/preview")
+async def preview_delete_vendor(request: Request, vendor_id: UUID):
+    """Pratinjau HAPUS: cek_jejak YANG SAMA dengan DELETE (smart_delete, JEJAK_VENDOR), nol tulis. 200 {ok, blocks, rencana{id, nama}}; 404."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await KDT.pratinjau_hapus(conn, ctx["tenant_id"], "vendor", vendor_id, JEJAK_VENDOR)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return {"success": True, "data": data}
 
 
 # =============================================================================

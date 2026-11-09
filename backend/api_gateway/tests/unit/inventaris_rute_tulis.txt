@@ -157,6 +157,7 @@ PATCH /api/customer-deposits/{deposit_id}
 PATCH /api/customers/{customer_id}
 PATCH /api/customers/{customer_id}/addresses/{address_id}
 PATCH /api/customers/{customer_id}/reactivate
+PATCH /api/customers/{customer_id}/status
 PATCH /api/documents/{document_id}
 PATCH /api/employees/bulk-group
 PATCH /api/expenses/{expense_id}
@@ -340,6 +341,9 @@ POST /api/customers/{customer_id}/opening-balance
 POST /api/customers/{customer_id}/opening-balance/reverse
 POST /api/customers/{customer_id}/addresses
 POST /api/customers/{customer_id}/addresses/{address_id}/default
+POST /api/customers/{customer_id}/edit/preview
+POST /api/customers/{customer_id}/status/preview
+POST /api/customers/{customer_id}/delete/preview
 POST /api/devices/logout-all-web
 POST /api/devices/remote-scan/cancel
 POST /api/devices/remote-scan/request
@@ -653,6 +657,10 @@ POST /api/vendors/merge/preview
 POST /api/vendors/{vendor_id}/opening-balance
 POST /api/vendors/{vendor_id}/opening-balance/legacy/reverse
 POST /api/vendors/{vendor_id}/opening-balance/legacy/reverse/preview
+POST /api/vendors/preview
+POST /api/vendors/{vendor_id}/edit/preview
+POST /api/vendors/{vendor_id}/status/preview
+POST /api/vendors/{vendor_id}/delete/preview
 POST /api/warehouses
 POST /api/warehouses/{warehouse_id}/set-default
 POST /{tenant_id}/chat
