@@ -252,6 +252,12 @@ def barang_tidak_ditemukan() -> str:
     return "Barang tidak ditemukan di usaha ini."
 
 
+def stok_kurang(nama, gudang, tersedia, jumlah, satuan=None) -> str:
+    """terbit-pratinjau-1: stok kurang untuk baris bersatuan DASAR (atau tanpa satuan) -- satu kalimat penulis faktur, pratinjau terbit, SJ."""
+    s = f" {satuan}" if satuan else ""
+    return f"Stok {nama} di {gudang or 'gudang'} hanya {qty(tersedia)}{s}, diminta {qty(jumlah)}{s}."
+
+
 def stok_kurang_satuan(nama, gudang, tersedia, dasar, jumlah, satuan, jumlah_dasar) -> str:
     """QTY-DASAR R2 (kalimat OK MASTER): stok kurang untuk baris bersatuan BUKAN dasar -- angka dalam dasar + padanannya."""
     return (f"Stok {nama} di {gudang or 'gudang'} hanya {qty(tersedia)} {dasar}, diminta {qty(jumlah)} {satuan} "

@@ -40,6 +40,36 @@ WHERE so.tenant_id = $1 AND soi.item_id = ANY($2::uuid[]) AND so.status <> ALL($
   AND COALESCE(soi.perlu_kirim, true) AND ($4::uuid IS NULL OR so.id <> $4)"""
 
 
+# terbit-pratinjau-1 (10 Nov 2026): SATU penentu "stok gudang cukup?" untuk jalur KELUAR -- penulis faktur (_execute_fulfillment),
+# pratinjau terbit (faktur_terbit_rencana) dan SJ dari pesanan (sj_so). Kolom DIPERTAHANKAN per pemanggil (perilaku lama): penulis faktur
+# = warehouse_stock.quantity, SJ = available_quantity -- beda definisi DICATAT di kontrak, bukan diubah diam-diam.
+KOLOM_STOK = ("quantity", "available_quantity")
+KODE_STOK_KURANG = "STOK_KURANG"
+
+
+async def tersedia_gudang(conn, tid: str, gudang_id, item_id, kolom: str = "quantity", kunci: bool = False) -> Decimal:
+    if kolom not in KOLOM_STOK:
+        raise ValueError(kolom)
+    return Decimal(str(await conn.fetchval(
+        f"SELECT COALESCE((SELECT {kolom} FROM warehouse_stock WHERE tenant_id = $1 AND warehouse_id = $2 AND item_id = $3"
+        + (" FOR UPDATE" if kunci else "") + "), 0)", tid, gudang_id, item_id)))
+
+
+def blok_kurang(nama, gudang_nama, tersedia: Decimal, qd: dict, jumlah, unit, kode: str = KODE_STOK_KURANG) -> Optional[dict]:
+    """qd = hasil satuan_dasar.hitung/qty_dasar (qty_dasar, faktor, satuan_dasar). None = cukup. Kalimat SAMA di semua pemanggil."""
+    if tersedia >= qd["qty_dasar"]:
+        return None
+    if qd["faktor"] == SD.SATU:
+        pesan = tg.stok_kurang(nama, gudang_nama, tersedia, jumlah, unit or qd.get("satuan_dasar"))
+    else:
+        pesan = tg.stok_kurang_satuan(nama, gudang_nama, tersedia, qd["satuan_dasar"], jumlah, unit, qd["qty_dasar"])
+    return {"code": kode, "message": pesan, "status": 409}
+
+
+async def nama_gudang(conn, tid: str, gudang_id) -> Optional[str]:
+    return await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", gudang_id, tid)
+
+
 def angka(x: Optional[Decimal]) -> Optional[str]:
     """Decimal -> string kontrak (4 desimal, tanpa nol buntut); None tetap None."""
     if x is None:
