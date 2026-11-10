@@ -1,5 +1,5 @@
-"""terbit-pratinjau-1 uji di SALINAN, handler ASLI. SIAPKAN=1 (pohon LAMA, sekali, HANYA klon): draf faktur ber-stok tenant uji diurut id;
-indeks genap -> warehouse_stock barangnya di gudang posting di-NOL-kan (kekurangan buatan), ganjil -> dicukupkan (qty dasar faktur + 1).
+"""terbit-pratinjau-1 uji di SALINAN, handler ASLI. SIAPKAN=1 (pohon LAMA, sekali, HANYA klon): kebijakan tenant uji -> 'invoice' dan stok
+diatur PER BARANG (genap 0, ganjil cukup) di gudang posting -- lihat siapkan().
 Cek (pohon BARU):
  E  setiap draf: rencana_terbit_ro blok STOK_KURANG  <=>  penulis (simulasi posting savepoint+rollback) menolak dengan 409 "Stok ..."; kalimat IDENTIK.
  J  preview-journal {invoice_id}: ditolak -> ok:false + blok, NOL baris jurnal, tanpa "Pelanggan belum dipilih"; lolos -> ok:true + baris jurnal.
@@ -47,23 +47,34 @@ async def draf_berstok(conn, tid):
 
 
 async def siapkan(conn):
+    """HANYA di klon. (1) kebijakan pengakuan tenant uji -> 'invoice' (kirim otomatis saat terbit = jalur yang memeriksa stok; kaos aslinya
+    'delivery' sehingga posting tak pernah memeriksa stok). (2) stok diatur PER BARANG (bukan per draf -- barang dipakai beberapa draf):
+    barang ber-stok diurut id, indeks genap -> warehouse_stock 0 di gudang posting, ganjil -> Σ kebutuhan dasar semua draf + 1."""
     n = 0
     for tid in TENANT:
-        for k, iid in enumerate(await draf_berstok(conn, tid)):
+        await conn.execute("UPDATE tenant_config SET revenue_recognition_policy = 'invoice' WHERE tenant_id = $1", tid)
+        draf = await draf_berstok(conn, tid)
+        if not draf:
+            continue
+        g_bawaan = (await GB.bawaan(conn, tid) or {}).get("id")
+        butuh = {}  # (gudang, barang) -> Σ qty dasar
+        for iid in draf:
             inv = await conn.fetchrow("SELECT warehouse_id FROM sales_invoices WHERE id = $1 AND tenant_id = $2", iid, tid)
-            g = inv["warehouse_id"] or (await GB.bawaan(conn, tid) or {}).get("id")
+            g = inv["warehouse_id"] or g_bawaan
             if g is None:
                 continue
             rows = await conn.fetch("""SELECT it.item_id, it.unit, it.quantity FROM sales_invoice_items it JOIN sales_invoices si ON si.id = it.invoice_id
-                                      WHERE it.invoice_id = $1 AND si.tenant_id = $2 AND it.item_id IS NOT NULL""", iid, tid)
+                                       WHERE it.invoice_id = $1 AND si.tenant_id = $2 AND it.item_id IS NOT NULL""", iid, tid)
             ktx = await SD.muat(conn, tid, [r["item_id"] for r in rows])
             for r in rows:
                 h = SD.hitung(ktx, r["item_id"], r["unit"], r["quantity"], "konversi")
-                q = 0 if k % 2 == 0 else (h["qty_dasar"] if not h["blok"] else r["quantity"]) + 1
-                await conn.execute("""INSERT INTO warehouse_stock (tenant_id, warehouse_id, item_id, quantity) VALUES ($1, $2, $3, $4)
-                                      ON CONFLICT (tenant_id, warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity""", tid, g, r["item_id"], q)
+                butuh[(g, r["item_id"])] = butuh.get((g, r["item_id"]), 0) + (r["quantity"] if h["blok"] else h["qty_dasar"])
+        for k, ((g, item), q) in enumerate(sorted(butuh.items(), key=lambda x: str(x[0][1]))):
+            await conn.execute("""INSERT INTO warehouse_stock (tenant_id, warehouse_id, item_id, quantity) VALUES ($1, $2, $3, $4)
+                                  ON CONFLICT (tenant_id, warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity""",
+                               tid, g, item, 0 if k % 2 == 0 else q + 1)
             n += 1
-    print(f"[siapkan] {n} draf disetel stoknya (HANYA di klon)")
+    print(f"[siapkan] kebijakan 'invoice' + {n} (gudang, barang) disetel stoknya (HANYA di klon)")
 
 
 async def utama():
