@@ -172,6 +172,11 @@ async def main():
                     await conn.execute("UPDATE chart_of_accounts SET is_active = true WHERE id = $1::uuid AND tenant_id = $2", a["account_id"], tid)
                     cek(f"N {tid} akun nonaktif bersaldo ikut", any(x["account_id"] == a["account_id"] for x in hn["accounts"])
                         and hn["total_debit"] == h0["total_debit"] and hn["status_text"] == "Seimbang", hn["status_text"])
+    async with pool.acquire() as conn:  # orakel independen untuk Z: berapa baris jurnal POSTED tenant uji yang punya pecahan sen
+        out["sen_di_buku"] = await conn.fetchval(
+            """SELECT count(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+               WHERE je.tenant_id = ANY($1::text[]) AND je.status = 'POSTED'
+                 AND (jl.debit <> trunc(jl.debit) OR jl.credit <> trunc(jl.credit))""", list(TENANT))
     out["cek"] = CEK
     with open(os.environ["KELUAR"], "w") as fo:
         json.dump(out, fo, default=str)
