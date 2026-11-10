@@ -151,6 +151,10 @@ JENIS_KELUARGA = {
     "bill": ("bills", None),
     "payment_out": ("bill-payments", None),
     "vendor_credit": ("vendor-credits", None),     # F2a: rute pabrik lampiran_induk
+    # LAMPIRAN-BACA-KASBANK (10 Nov): dokumen tunggal tanpa keluarga (routers/lampiran_dokumen.JENIS_TUNGGAL), rute pabrik lampiran_induk
+    "bank_transaction": ("bank-transactions", None),
+    "bank_transfer": ("bank-transfers", None),
+    "employee_advance": ("employee-advances", None),
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})
