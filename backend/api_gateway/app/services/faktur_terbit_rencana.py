@@ -11,6 +11,7 @@ from typing import Optional
 from . import dokumen_nol as DN  # SI-FPB-RP0
 
 NOL = Decimal("0")
+PENANDA_TERBIT_PRATINJAU = "terbit-pratinjau-1-w20261110"  # stok gudang == penulis (stok_baris), blok berkode di preview-journal
 SEN = Decimal("0.01")
 
 CABANG_SJ_PENUH = "sj_penuh"            # semua barang stok sudah terkirim lewat SJ dari pesanan (reklas ditulis alokasi SJ)
@@ -241,6 +242,25 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
         for x in await SD.blok_baris(conn, tid, [{"product_id": it["item_id"], "unit": it.get("unit"), "quantity": it["quantity"]}
                                                   for it in items if it["id"] in untuk_kirim], "konversi"):
             blok(x["code"], x["message"], x["status"])
+        # terbit-pratinjau-1: stok gudang == penulis _execute_fulfillment (SB.tersedia_gudang + SB.blok_kurang, kolom quantity), urut baris
+        # seperti penulis: stok berkurang oleh baris sebelumnya di faktur yang sama.
+        gudang = ({"id": inv["warehouse_id"]} if inv["warehouse_id"] else await GB.bawaan(conn, tid))
+        if gudang is not None:
+            from . import stok_baris as SB
+            ktx = await SD.muat(conn, tid, [it["item_id"] for it in items if it["id"] in untuk_kirim])
+            gn, terpakai = await SB.nama_gudang(conn, tid, gudang["id"]), {}
+            for i, it in enumerate(items):
+                if it["id"] not in untuk_kirim:
+                    continue
+                qd = SD.hitung(ktx, it["item_id"], it.get("unit"), it["quantity"], "konversi")
+                if qd["blok"]:
+                    continue  # sudah diblok di atas
+                k = str(it["item_id"])
+                sisa = await SB.tersedia_gudang(conn, tid, gudang["id"], it["item_id"], "quantity") - terpakai.get(k, NOL)
+                bk = SB.blok_kurang(it.get("description") or "", gn, sisa, qd, _d(it["quantity"]), it.get("unit"))
+                if bk:
+                    blok(bk["code"], bk["message"], bk["status"], f"items[{i}]")
+                terpakai[k] = terpakai.get(k, NOL) + qd["qty_dasar"]
     if cabang == CABANG_TANGGUH_WAC0:
         for it in items:
             if not it.get("item_id"):
