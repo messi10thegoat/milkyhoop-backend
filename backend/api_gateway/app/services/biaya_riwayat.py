@@ -23,14 +23,17 @@ def _tgl(v) -> Optional[str]:
     return v.isoformat() if v else None
 
 
+PENANDA_BIAYA_B6 = "biaya-b6-bundel-w20261110"  # bentuk bundel == modul lain: paper A4 + anchor.vendor
+
+
 def _dok(kind, id_, number, date, amount, status, batal=False) -> dict:
     return {"kind": kind, "id": str(id_), "number": number, "date": _tgl(date), "amount": amount,
-            "paper": None, "sent": {"state": "none", "sent_at": None, "viewed_at": None}, "batal": batal, "status": status}
+            "paper": "A4", "sent": {"state": "none", "sent_at": None, "viewed_at": None}, "batal": batal, "status": status}
 
 
 async def _muat(conn, tid: str, expense_id):
     return await conn.fetchrow(
-        """SELECT id, expense_number, expense_date, status, total_amount, account_name, paid_through_name, journal_id,
+        """SELECT id, expense_number, expense_date, status, total_amount, account_name, paid_through_name, journal_id, vendor_name,
                   created_at, created_by
            FROM expenses WHERE id = $1 AND tenant_id = $2""", expense_id, tid)
 
@@ -77,7 +80,7 @@ async def dokumen_biaya(conn, tid: str, expense_id) -> Optional[dict]:
         kel.append({"key": "bukti", "label": "Bukti",
                     "docs": [_dok("attachment", b["id"], b["file_name"], b["uploaded_at"], None, "ada") for b in bukti]})
     return {
-        "anchor": {"kind": "expense", "id": str(e["id"]), "number": n, "date": _tgl(e["expense_date"]),
+        "anchor": {"kind": "expense", "id": str(e["id"]), "number": n, "vendor": e["vendor_name"] or "", "date": _tgl(e["expense_date"]),
                    "position_text": BD.position_text(e["status"], e["paid_through_name"], bool(bukti)),
                    "total": _uang(e["total_amount"]), "account_name": e["account_name"]},
         "default": {"group": "biaya", "index": 0},
