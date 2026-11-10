@@ -60,7 +60,9 @@ def blok_kurang(nama, gudang_nama, tersedia: Decimal, qd: dict, jumlah, unit, ko
     if tersedia >= qd["qty_dasar"]:
         return None
     if qd["faktor"] == SD.SATU:
-        pesan = tg.stok_kurang(nama, gudang_nama, tersedia, jumlah, unit or qd.get("satuan_dasar"))
+        # satuan = satuan BARIS saja: penulis (satuan_dasar.qty_dasar) tak me-resolve satuan dasar untuk baris tanpa satuan, pratinjau
+        # (satuan_dasar.hitung) me-resolve-nya -> memakai satuan_dasar di sini membuat kalimat pratinjau != penulis (terbukti di klon 10 Nov)
+        pesan = tg.stok_kurang(nama, gudang_nama, tersedia, jumlah, unit)
     else:
         pesan = tg.stok_kurang_satuan(nama, gudang_nama, tersedia, qd["satuan_dasar"], jumlah, unit, qd["qty_dasar"])
     return {"code": kode, "message": pesan, "status": 409}

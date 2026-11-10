@@ -3,6 +3,7 @@ baris jurnal (dulu jurnal Rp 0 + "Pelanggan belum dipilih" dari badan kosong); (
 faktur, pratinjau terbit, dan SJ dari pesanan -- kalimat sama, kolom per pemanggil dipertahankan."""
 import asyncio
 import inspect
+import re
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -25,9 +26,14 @@ def req():
     return SimpleNamespace(state=SimpleNamespace(user={"tenant_id": T, "user_id": "00000000-0000-0000-0000-0000000000a1"}))
 
 
+class KolamTerlarang:  # preview_journal mengambil pool di awal; jalur perkiraan dari badan = acquire() -> wajib tak terjadi untuk draf tersimpan
+    def acquire(self):
+        raise AssertionError("jalur perkiraan dari badan TAK boleh dipakai untuk draf tersimpan")
+
+
 def pratinjau(monkeypatch, sim, body):
     async def kolam():
-        raise AssertionError("jalur perkiraan dari badan TAK boleh dipakai untuk draf tersimpan")
+        return KolamTerlarang()
 
     async def palsu(pool, ctx, ref):
         if isinstance(sim, Exception):
@@ -94,19 +100,25 @@ class Kon:
 
 @pytest.mark.parametrize("kolom", SB.KOLOM_STOK)
 def test_tersedia_gudang_bertenant_kolom(kolom):
-    k = Kon(None)
-    assert asyncio.run(SB.tersedia_gudang(k, T, "g", "i", kolom)) == Decimal("0")  # tak ada baris = 0 (perilaku lama)
+    k = Kon(0)
+    assert asyncio.run(SB.tersedia_gudang(k, T, "g", "i", kolom)) == Decimal("0")
     sql, a = k.sql[0]
+    assert sql.startswith("SELECT COALESCE((SELECT")  # tak ada baris = 0 (perilaku lama), di SQL
     assert f"SELECT {kolom} FROM warehouse_stock WHERE tenant_id = $1 AND warehouse_id = $2 AND item_id = $3" in sql and a == (T, "g", "i")
     assert "FOR UPDATE" not in sql
     with pytest.raises(ValueError):
         asyncio.run(SB.tersedia_gudang(k, T, "g", "i", "quantity; DROP"))
 
 
+def kode(fn_atau_modul) -> str:
+    """Sumber TANPA komentar baris (komentar lama boleh menyebut kalimat/tabel lama)."""
+    return "\n".join(re.sub(r"\s+#.*$", "", b) for b in inspect.getsource(fn_atau_modul).splitlines() if not b.lstrip().startswith("#"))
+
+
 def test_satu_penentu_di_tiga_pemanggil():
-    tulis = inspect.getsource(SI._execute_fulfillment)
-    ro = inspect.getsource(FTR.rencana_terbit_ro)
-    sj = inspect.getsource(sj_so)
+    tulis = kode(SI._execute_fulfillment)
+    ro = kode(FTR.rencana_terbit_ro)
+    sj = kode(sj_so)
     assert 'SB.tersedia_gudang(conn, tenant_id, warehouse_id, product_id, "quantity")' in tulis and "SB.blok_kurang(" in tulis
     assert 'SB.tersedia_gudang(conn, tid, gudang["id"], it["item_id"], "quantity")' in ro and "SB.blok_kurang(" in ro
     assert '                if bk:\n                    blok(bk["code"], bk["message"], bk["status"], f"items[{i}]")' in ro

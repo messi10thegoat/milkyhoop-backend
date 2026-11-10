@@ -8,5 +8,5 @@ SAB=(
  "s1 fallback badan dipulihkan|$SI|s#            return _pratinjau_ditolak(_he.detail, _he.status_code)#            pass#|$T"
  "s2 pratinjau terbit tanpa cek stok|$R|s#                if bk:#                if False and bk:#|$T"
  "s3 penulis pakai available_quantity|$SI|s#warehouse_id, product_id, \"quantity\")#warehouse_id, product_id, \"available_quantity\")#|$T"
- "s4 kalimat stok satuan dasar salinan lokal|$A/services/stok_baris.py|s#pesan = tg.stok_kurang(nama, gudang_nama, tersedia, jumlah, unit or qd.get(\"satuan_dasar\"))#pesan = f\"Stok {nama} tidak cukup\"#|$T"
+ "s4 kalimat stok satuan dasar salinan lokal|$A/services/stok_baris.py|s#pesan = tg.stok_kurang(nama, gudang_nama, tersedia, jumlah, unit)#pesan = f\"Stok {nama} tidak cukup\"#|$T"
 )
