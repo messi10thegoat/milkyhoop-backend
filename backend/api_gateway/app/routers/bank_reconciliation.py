@@ -2812,6 +2812,30 @@ async def categorize_statement_line(
         )
 
 
+PENANDA_REKON_LAMA_PAGAR = "rekon-lama-pagar-w20261110"
+
+
+SQL_TERCOCOK_SESI = """SELECT COALESCE(SUM(l.amount) FILTER (WHERE l.match_status = 'matched'), 0) FROM bank_statement_lines_v2 l
+                         JOIN reconciliation_sessions s ON s.id = l.session_id WHERE l.session_id = $1 AND s.tenant_id = $2"""
+
+
+def blok_selesai(selisih: list, penyesuaian) -> Optional[dict]:
+    """REKON-LAMA-PAGAR: None = boleh diselesaikan. Penyesuaian apa pun, selisih tak diketahui (None) atau != 0 -> blok berkalimat."""
+    if penyesuaian:
+        return {"code": "REKON_PENYESUAIAN_DITOLAK",
+                "message": "Rekonsiliasi tidak membuat jurnal penyesuaian. Catat biaya, bunga, atau transaksi yang kurang lewat Kas & Bank, "
+                           "lalu selesaikan saat selisihnya nol."}
+    if any(x is None for x in selisih):
+        return {"code": "SELISIH_REKONSILIASI",
+                "message": "Saldo rekening koran belum lengkap, jadi selisihnya belum bisa dihitung. Isi saldo awal dan akhir dulu."}
+    beda = max((abs(Decimal(str(x))) for x in selisih), default=Decimal("0"))
+    if beda != 0:
+        return {"code": "SELISIH_REKONSILIASI",
+                "message": f"Selisih {tg.rp(beda)} harus nol sebelum rekonsiliasi diselesaikan. Cocokkan atau catat "
+                           "transaksi yang belum ada di buku lewat Kas & Bank dulu."}
+    return None
+
+
 @router.post("/sessions/{session_id}/complete", response_model=CompleteResponse)
 async def complete_session(
     request: Request,
@@ -2821,8 +2845,7 @@ async def complete_session(
     """
     Complete a reconciliation session.
 
-    Validates that the difference is zero (or covered by adjustments),
-    creates journal entries for adjustments, marks transactions as reconciled,
+    Selisih wajib 0 dan penyesuaian ditolak (REKON-LAMA-PAGAR, tanpa jurnal), lalu marks transactions as reconciled,
     and updates session status to completed.
     """
     try:
@@ -2854,23 +2877,17 @@ async def complete_session(
                     status_code=400, detail="Can only complete in-progress sessions"
                 )
 
-            # Calculate adjustments total
-            adjustments_total = sum(adj.amount for adj in body.adjustments)
-            current_difference = session["difference"] or 0
-            final_difference = current_difference - adjustments_total
-
-            # Validate difference is covered
-            if final_difference != 0 and len(body.adjustments) == 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Cannot complete session with difference of {final_difference}. Add adjustments to balance.",
-                )
-
-            if abs(final_difference) > 100:  # Allow small rounding differences
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Remaining difference of {final_difference} is too large. Add more adjustments.",
-                )
+            # REKON-LAMA-PAGAR (10 Nov 2026, TESTER #12 T5; putusan pemilik Bank Feed P2/P3): rekonsiliasi TAK PERNAH menulis jurnal
+            # penutup selisih. Dulu FE mengirim `adjustments` sebesar selisih -> jurnal RECONCILIATION_ADJUSTMENT otomatis (toleransi 100).
+            # Kini: penyesuaian ditolak, selisih wajib 0 persis.
+            # selisih DIHITUNG ULANG (kolom difference bisa NULL/basi bila statistik sesi tak pernah diperbarui): rekening koran akhir vs
+            # (awal + Σ baris tercocok) DAN rumus statistik lama (akhir - Σ tercocok); salah satu != 0 -> blok
+            tercocok = await conn.fetchval(SQL_TERCOCOK_SESI, session_id, ctx["tenant_id"])
+            akhir, awal = session["statement_ending_balance"], session["statement_beginning_balance"]
+            tolak = blok_selesai([*([session["difference"]] if session["difference"] is not None else []), None if akhir is None else akhir - (awal or 0) - tercocok,
+                                  None if akhir is None else akhir - tercocok], body.adjustments)
+            if tolak:
+                raise HTTPException(status_code=409, detail=tolak)
 
             async with conn.transaction():
                 # Law 13: Advisory lock on session completion
@@ -2879,180 +2896,7 @@ async def complete_session(
                     f"RECON_COMPLETE:{str(session_id)}",
                 )
 
-                # Law 5: Check period is open for adjustment journals
-                # t10b-3b: jurnal RECON-ADJ bertanggal bisnis tenant; periode dicek pada tanggal yang sama
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                period = await conn.fetchrow(
-                    """
-                    SELECT id, status FROM fiscal_periods
-                    WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
-                    ORDER BY start_date DESC LIMIT 1
-                    """,
-                    ctx["tenant_id"],
-                    hari_ini,
-                )
-                if period and period["status"] in ("CLOSED", "LOCKED"):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=tg.periode_tertutup(None, period['status']),
-                    )
-
                 now = datetime.utcnow()
-                journal_entries_created = 0
-
-                # Get bank account COA entry
-                bank_account = await conn.fetchrow(
-                    "SELECT coa_id FROM bank_accounts WHERE id = $1",
-                    session["account_id"],
-                )
-
-                # Create adjustments and journal entries
-                for adj in body.adjustments:
-                    adj_id = uuid.uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO reconciliation_adjustments (
-                            id, tenant_id, session_id, type, amount, description,
-                            account_id, created_by, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        """,
-                        adj_id,
-                        ctx["tenant_id"],
-                        session_id,
-                        adj.type,
-                        adj.amount,
-                        adj.description,
-                        UUID(adj.account_id),
-                        ctx["user_id"],
-                        now,
-                    )
-
-                    # Create journal entry for adjustment (Law 20: DRAFT->POSTED)
-                    journal_id = uuid.uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_date, journal_number, description,
-                            source_type, source_id, status, total_debit, total_credit,
-                            created_by, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, 'RECONCILIATION_ADJUSTMENT', $6::text, 'DRAFT',
-                                  $7, $7, $8, $9, $9)
-                        """,
-                        journal_id,
-                        ctx["tenant_id"],
-                        hari_ini,  # t10-tanggal-bisnis
-                        f"RECON-ADJ-{session_id.hex[:8]}",
-                        f"Bank Reconciliation Adjustment: {adj.description}",
-                        session_id,
-                        adj.amount,
-                        ctx["user_id"],
-                        now,
-                    )
-
-                    line_num = 0
-
-                    # Create journal entry lines
-                    # Debit/Credit depends on adjustment type
-                    if adj.type in ["bank_fee", "correction"]:
-                        # Fee: Debit expense, Credit bank
-                        line_num += 1
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                            """,
-                            uuid.uuid4(),
-                            journal_id,
-                            line_num,
-                            UUID(adj.account_id),
-                            adj.amount,
-                            adj.description,
-                        )
-                        if bank_account and bank_account["coa_id"]:
-                            line_num += 1
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (
-                                    id, journal_id, line_number, account_id, debit, credit, memo
-                                ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                                """,
-                                uuid.uuid4(),
-                                journal_id,
-                                line_num,
-                                bank_account["coa_id"],
-                                adj.amount,
-                                adj.description,
-                            )
-                    elif adj.type == "interest":
-                        # Interest: Debit bank, Credit income
-                        if bank_account and bank_account["coa_id"]:
-                            line_num += 1
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (
-                                    id, journal_id, line_number, account_id, debit, credit, memo
-                                ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                                """,
-                                uuid.uuid4(),
-                                journal_id,
-                                line_num,
-                                bank_account["coa_id"],
-                                adj.amount,
-                                adj.description,
-                            )
-                        line_num += 1
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                            """,
-                            uuid.uuid4(),
-                            journal_id,
-                            line_num,
-                            UUID(adj.account_id),
-                            adj.amount,
-                            adj.description,
-                        )
-                    else:
-                        # Other: Default to debit expense, credit bank
-                        line_num += 1
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, 0, $6)
-                            """,
-                            uuid.uuid4(),
-                            journal_id,
-                            line_num,
-                            UUID(adj.account_id),
-                            adj.amount,
-                            adj.description,
-                        )
-                        if bank_account and bank_account["coa_id"]:
-                            line_num += 1
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (
-                                    id, journal_id, line_number, account_id, debit, credit, memo
-                                ) VALUES ($1, $2, $3, $4, 0, $5, $6)
-                                """,
-                                uuid.uuid4(),
-                                journal_id,
-                                line_num,
-                                bank_account["coa_id"],
-                                adj.amount,
-                                adj.description,
-                            )
-
-                    # Law 20: DRAFT -> POSTED after lines are inserted
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        journal_id,
-                    )
-                    journal_entries_created += 1
 
                 # Mark all matched transactions as reconciled
                 await conn.execute(
@@ -3092,7 +2936,7 @@ async def complete_session(
                     """,
                     session_id,
                     now,
-                    final_difference,
+                    0,
                 )
 
                 return CompleteResponse(
@@ -3100,12 +2944,12 @@ async def complete_session(
                     completed_at=now.isoformat(),
                     final_stats=FinalStats(
                         total_matched=matched_count or 0,
-                        total_adjustments=len(body.adjustments),
-                        opening_difference=current_difference,
-                        closing_difference=adjustments_total,
-                        final_difference=final_difference,
+                        total_adjustments=0,
+                        opening_difference=0,
+                        closing_difference=0,
+                        final_difference=0,
                     ),
-                    journal_entries_created=journal_entries_created,
+                    journal_entries_created=0,  # REKON-LAMA-PAGAR: rekonsiliasi tak pernah menulis jurnal
                 )
 
     except HTTPException:
