@@ -146,6 +146,8 @@ async def langkah_ubah(pool, tid):
         st, resp = await panggil(R.update_bank_account, req(tid), ba["id"], body)
         async with pool.acquire() as conn:
             sesudah = dict(await conn.fetchrow("SELECT * FROM bank_accounts WHERE id = $1 AND tenant_id = $2", ba["id"], tid))
+        if isinstance(resp, dict) and isinstance(resp.get("data"), dict):  # id rekening = uuid baru per klon (lama/baru beda klon)
+            resp = {**resp, "data": {kk: v for kk, v in resp["data"].items() if kk != "id"}}
         OUT["ubah"][k] = {"status": st, "resp": resp, "baris": {kk: v for kk, v in j(sesudah).items() if kk not in ("id", "coa_id", "updated_at", "created_at")}}
         if BARU:
             if st >= 400:

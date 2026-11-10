@@ -37,6 +37,8 @@ KHUSUS = {
     "POST /api/proformas/{proforma_id}/update/preview": "PATCH /api/proformas/{proforma_id}",
     # kontrak PO tahap 2: ubah = PATCH, hapus = DELETE (penentu bersama services/po_rencana)
     "POST /api/purchase-orders/{po_id}/edit/preview": "PATCH /api/purchase-orders/{po_id}",
+    # kelola rekening Kas & Bank (rek-r2): pratinjau hapus menjalankan penentu yang sama dengan DELETE /bank-accounts/{id}
+    "POST /api/bank-accounts/{bank_account_id}/delete/preview": "DELETE /api/bank-accounts/{bank_account_id}",
     "POST /api/purchase-orders/{po_id}/delete/preview": "DELETE /api/purchase-orders/{po_id}",
     # CW penuh UM Pembelian: buat = POST koleksi, hapus = DELETE (penentu bersama services/uang_muka_vendor_rencana)
     "POST /api/vendor-deposits/preview": "POST /api/vendor-deposits",
