@@ -9,6 +9,7 @@ kaos + nyawit. Angka SENGAJA berubah (dulu baris VOID/DRAFT/masa depan ikut); ya
  X  teks: tipe_label/saldo_normal_label = SATU peta; debit/kredit_tampil = angka_laporan; status_text konsisten dengan selisih."""
 import asyncio
 import inspect
+import inspect
 import json
 import os
 import sys
@@ -36,12 +37,20 @@ def req(tid):
     return r
 
 
+LABEL_TIPE = {"ASSET": "Aset", "RECEIVABLE": "Piutang", "LIABILITY": "Liabilitas", "PAYABLE": "Utang", "EQUITY": "Ekuitas",
+              "REVENUE": "Pendapatan", "INCOME": "Pendapatan", "COGS": "Harga Pokok Penjualan", "EXPENSE": "Beban",
+              "OTHER_INCOME": "Pendapatan Lain-lain", "OTHER_EXPENSE": "Beban Lain-lain"}  # label PSAK yang disepakati (L3)
+LABEL_NORMAL = {"DEBIT": "Debit", "CREDIT": "Kredit"}
+
+
 def d(x):
     return Decimal(str(x or 0))
 
 
 async def panggil(tid, **kw):
-    h = await RP.get_trial_balance(req(tid), **kw)
+    # panggilan langsung: parameter Query yang tak diisi tetap objek Query(None) -> isi SEMUA (FastAPI mengisinya None)
+    nama = inspect.signature(RP.get_trial_balance).parameters  # pohon lama tak punya as_of_date
+    h = await RP.get_trial_balance(req(tid), **{k: v for k, v in {"as_of": None, "as_of_date": None, **kw}.items() if k in nama})
     if isinstance(h, dict):  # handler mengembalikan dict; FastAPI menyerialkan lewat response_model (computed_field tipe_label dst.) -> tiru itu
         h = RP.TrialBalanceResponse.model_validate(h)
     return json.loads(h.model_dump_json())
@@ -79,7 +88,6 @@ async def buku(conn, tid, per):
 
 async def periksa_baru(conn, tid, k, h, per, presisi):
     from app.services import teks_galat as tg
-    from app.services.report_engine import baris as B
     bk = await buku(conn, tid, per)
     akun = {a["account_id"]: a for a in h["accounts"]}
     cek(f"P {k} himpunan akun == buku besar", set(akun) == set(bk), (set(akun) ^ set(bk)))
@@ -91,8 +99,9 @@ async def periksa_baru(conn, tid, k, h, per, presisi):
             cek(f"X {k} kolom saldo {a['account_code']}", (d(a["debit_saldo"]), d(a["kredit_saldo"])) == ((neto, NOL) if neto > 0 else (NOL, -neto)), a)
             cek(f"X {k} tampil {a['account_code']}", a["debit_tampil"] == ("" if d(a["debit_saldo"]) == 0 else tg.angka_laporan(a["debit_saldo"], presisi))
                 and a["kredit_tampil"] == ("" if d(a["kredit_saldo"]) == 0 else tg.angka_laporan(a["kredit_saldo"], presisi)), a)
-            cek(f"X {k} label {a['account_code']}", a["tipe_label"] == B.tipe_label(a["account_type"])
-                and a["saldo_normal_label"] == B.saldo_normal_label(a["normal_balance"]), a)
+            # ORAKEL SENDIRI (bukan peta kode yang diuji -- syarat MASTER 10 Nov: harness wajib bisa MERAH bila label dirusak)
+            cek(f"X {k} label {a['account_code']}", a["tipe_label"] == LABEL_TIPE.get(str(a["account_type"]).upper(), a["account_type"])
+                and a["saldo_normal_label"] == LABEL_NORMAL.get(str(a["normal_balance"]).upper(), ""), a)
     sel = d(h["selisih"])
     cek(f"X {k} status_text", h["status_text"] == ("Seimbang" if sel == 0 else f"Tidak seimbang — selisih {tg.angka_laporan(abs(sel), presisi)}"), h["status_text"])
     cek(f"X {k} seimbang", sel == 0 and h["is_balanced"], (sel, h["is_balanced"]))
@@ -124,7 +133,9 @@ async def main():
                 if p:  # F: /full closing pada periode fiskal yang berakhir p.end_date
                     h = await panggil(tid, as_of=p["end_date"])
                     f = (await RP.get_trial_balance_full(req(tid), period_id=str(p["id"]), show_zero_balance=False, group_by_type=True))
-                    f = f["data"] if isinstance(f, dict) else f.data.model_dump()
+                    if isinstance(f, dict):  # seperti FastAPI: lewat response_model (computed_field label)
+                        f = RP.TrialBalanceFullResponse.model_validate(f)
+                    f = json.loads(f.model_dump_json())["data"]
                     fa = {x["id"]: x for x in f["accounts"] if not x["is_header"]}
                     for a in h["accounts"]:
                         x = fa.get(a["account_id"])
