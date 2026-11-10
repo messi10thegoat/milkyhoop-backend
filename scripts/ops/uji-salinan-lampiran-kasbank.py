@@ -7,6 +7,7 @@ lampiran uji per dokumen (2 s3 + 1 'local' + 1 terhapus) ditulis HANYA di klon. 
  P  (baru) kasbon: pemilik -> 200; pengguna luar pay-group -> pembaca 404 DAN pabrik 404.
  PS (baru) kasbon, pay-group SEMPIT: HR_PAYROLL non-pemilik ber-akses pay-group kasbon -> terbaca == pabrik; ber-akses HANYA pay-group lain
     -> 404 di pembaca DAN pabrik (pengguna + akses dibuat HANYA di klon, SIAPKAN).
+ XS (baru) kueri baris pembaca langsung di klon: tenant sendiri >= 1 baris, tenant lain 0 baris.
  L  jenis lama (dokumen penjualan/pembelian, sampel) -> keluaran LAMA == BARU (ditulis ke KELUAR, dibanding di luar)."""
 import asyncio
 import json
@@ -184,6 +185,14 @@ async def utama():
                 p2 = await panggil(rute(s, "daftar"), req(tid, ORANG_LUAR), doc_id=did)
                 cek(f"P {tid} kasbon {did} luar pay-group 404", p1[0] == 404 and p2[0] == 404, f"pembaca {p1} pabrik {p2}")
     cek("P kasbon teruji", any(uji[(t, "employee_advance")] for t in TENANT), "tak ada kasbon di tenant uji")
+    # XS (syarat MASTER: harness wajib MERAH bila saring tenant SQL pembaca dibuang): kueri baris pembaca dijalankan LANGSUNG pada data klon
+    # dengan tenant pemilik (wajib >= 1 baris) dan tenant LAIN (wajib 0) -- pagar lapis kedua, tak terjangkau lewat handler (induk 404 dulu)
+    async with pool.acquire() as conn:
+        for (tid, jenis), ids in uji.items():
+            for did in ids:
+                sendiri = len(await conn.fetch(LD.sql_tunggal(jenis), did, tid))
+                asing = len(await conn.fetch(LD.sql_tunggal(jenis), did, lain[tid]))
+                cek(f"XS {tid} {jenis} {did} kueri baris bertenant", sendiri >= 1 and asing == 0, f"sendiri {sendiri} tenant lain {asing}")
     cek("PS pay-group sempit teruji di >= 1 tenant", any(PG_SIAP.values()), "tak ada tenant dengan kasbon ber-pay-group + pay-group lain")
 
 
