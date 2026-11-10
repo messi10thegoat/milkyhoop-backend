@@ -4,7 +4,7 @@ import sys
 
 lama, baru = (json.load(open(p)) for p in sys.argv[1:3])
 for k, v in lama.get("lama", {}).items():
-    print("LAMA", k, "status", v["hasil"]["tanpa"][0], v["hasil"]["dengan"][0], "jurnal", v["jurnal_sebelum_sesudah"], v["status"])
+    print("LAMA", k, "status", v["hasil"]["tanpa"][0], v["hasil"]["dengan"][0], "jurnal", v["jurnal"], v["status"])
 gagal = [c for c in baru["cek"] if not c[1]]
 for c in gagal:
     print("GAGAL", c[0], c[2])
