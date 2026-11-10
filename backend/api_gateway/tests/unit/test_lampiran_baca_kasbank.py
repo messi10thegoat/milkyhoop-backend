@@ -53,7 +53,10 @@ def test_sql_bertenant_tiap_tabel(jenis):
     assert f"WHERE {s.tabel}.id = $1 AND {s.tabel}.tenant_id = $2" in q
     assert f"da.entity_type = '{s.entitas}' AND da.entity_id = {s.tabel}.id AND da.tenant_id = $2" in q
     assert "d.tenant_id = $2 AND d.deleted_at IS NULL" in q and f"{s.tabel}.{tgl}::date AS tanggal" in q
-    assert re.findall(r"\bFROM\s+(\w+)", q) == [s.tabel]  # tanpa alias: NOMOR_MUTASI_BANK merujuk nama tabel
+    assert f"FROM {s.tabel} JOIN document_attachments da" in q  # tanpa alias: NOMOR_MUTASI_BANK merujuk nama tabel
+    # setiap tabel yang dibaca (termasuk subkueri nomor dari spesifikasi pabrik, mis. journal_entries) bertenant
+    for tabel, alias in re.findall(r"\bFROM\s+(\w+)(?:\s+(\w+))?\s+WHERE", q):
+        assert re.search(rf"\b{alias or tabel}\.tenant_id = (\$2|{s.tabel}\.tenant_id)", q), (tabel, q)
 
 
 class Kon:
