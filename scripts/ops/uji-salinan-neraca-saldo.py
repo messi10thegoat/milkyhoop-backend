@@ -42,7 +42,9 @@ def d(x):
 
 async def panggil(tid, **kw):
     h = await RP.get_trial_balance(req(tid), **kw)
-    return json.loads(h.model_dump_json()) if hasattr(h, "model_dump_json") else h
+    if isinstance(h, dict):  # handler mengembalikan dict; FastAPI menyerialkan lewat response_model (computed_field tipe_label dst.) -> tiru itu
+        h = RP.TrialBalanceResponse.model_validate(h)
+    return json.loads(h.model_dump_json())
 
 
 async def tanggal_uji(conn, tid):
