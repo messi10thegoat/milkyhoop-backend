@@ -1,5 +1,5 @@
 # Konfig gerbang unit (dibaca scripts/ops/gerbang-unit.sh). Sabotase = bukti unit ini; tiap baris WAJIB membuat tes merah.
-W=/root/mh-lamp; CABANG=feat/lampiran-baca-kasbank-kasbon; NAMA_JENDELA=lamp-1
+W=/root/mh-lamp-r2; CABANG=feat/lampiran-baca-kasbank-kasbon-r2; NAMA_JENDELA=lamp-1
 POLA_UNIT='lampiran|izin_rute|inventaris_rute'
 HARNESS=scripts/ops/uji-salinan-lampiran-kasbank.sh
 PENANDA_BERKAS=routers/lampiran_dokumen.py; PENANDA='PENANDA_LAMPIRAN_KASBANK = "lampiran-baca-kasbank-kasbon-w20261110"'
