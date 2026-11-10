@@ -4,6 +4,7 @@ GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_p
                                         | quote (LAMPIRAN-NK-QUOTE 15 Okt)
                                         | purchase_order | vendor_deposit | goods_receipt | bill | payment_out | vendor_credit (F1/F2a/F2b: keluarga
                                           Pembelian, lihat JENIS_PEMBELIAN)
+                                        | bank_transaction | bank_transfer | employee_advance (Kas&Bank + Kasbon, JENIS_TUNGGAL)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
      {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen" | "keluarga_pembelian", "sales_order": {"id", "nomor"} | null}
 
@@ -21,11 +22,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 
+from . import lampiran_induk as LI
 from . import sales_order_lampiran as SL
 
 router = APIRouter()
 
 PENANDA_LAMPIRAN_DOKUMEN = "lampiran-dokumen-tanpa-so-w20261015"
+PENANDA_LAMPIRAN_KASBANK = "lampiran-baca-kasbank-kasbon-w20261110"
 
 # jenis -> (tabel pemilik, kolom nomor)
 JENIS_DOKUMEN = {
@@ -187,6 +190,47 @@ WHERE m.jenis = 'bill'
 """
 
 
+# LAMPIRAN-BACA-KASBANK (10 Nov 2026, tiket MASTER): Kas&Bank + Kasbon lewat pembaca yang SAMA -> FE punya SATU pembaca lampiran.
+# Tanpa keluarga: grup = dokumen itu sendiri (mode "dokumen"). Induk, entity_type, nomor, dan pagar per dokumen (kasbon: pay-group) =
+# SpecLampiran pabrik lampiran_induk yang SAMA dengan GET /api/{modul}/{id}/attachments; tenant eksplisit di tiap tabel.
+# jenis -> (spesifikasi pabrik, kolom tanggal)
+JENIS_TUNGGAL = {
+    "bank_transaction": (LI.SPEC_MUTASI_BANK, "transaction_date"),
+    "bank_transfer": (LI.SPEC_TRANSFER_BANK, "transfer_date"),
+    "employee_advance": (LI.SPEC_KASBON, "granted_date"),
+}
+
+
+def sql_tunggal(jenis: str) -> str:
+    """Baris lampiran SATU dokumen berbentuk baris keluarga. Tabel TANPA alias: NOMOR_MUTASI_BANK merujuk bank_transactions.*"""
+    s, tgl = JENIS_TUNGGAL[jenis]
+    t = s.tabel
+    return f"""
+SELECT '{jenis}'::text AS jenis, {t}.id AS dok_id, ({s.kolom_nomor})::text AS nomor, {t}.{tgl}::date AS tanggal,
+       {t}.status::text AS status,
+       d.id AS lampiran_id, COALESCE(da.display_name, d.file_name) AS nama,
+       d.file_type AS mime, d.file_size AS ukuran, d.storage_type, d.uploaded_at,
+       COALESCE(NULLIF(trim(up.display_name), ''), NULLIF(trim(u.fullname), ''),
+                NULLIF(trim(u.name), ''), u.email) AS pengunggah,
+       'hub'::text AS sumber
+FROM {t}
+JOIN document_attachments da ON da.entity_type = '{s.entitas}' AND da.entity_id = {t}.id AND da.tenant_id = $2
+JOIN documents d ON d.id = da.document_id AND d.tenant_id = $2 AND d.deleted_at IS NULL
+LEFT JOIN "User" u ON u.id = d.uploaded_by::text
+LEFT JOIN user_profiles up ON up.user_id = u.id
+WHERE {t}.id = $1 AND {t}.tenant_id = $2
+"""
+
+
+async def nomor_tunggal(conn, tenant_id: str, user_id, jenis: str, dok_id) -> str:
+    """Pagar SAMA dengan _induk pabrik: tak ada di tabel induk tenant ini, atau pagar dokumen (kasbon luar pay-group) -> 404."""
+    s, _ = JENIS_TUNGGAL[jenis]
+    r = await conn.fetchrow(LI.sql_spec(s)["induk"], dok_id, tenant_id)
+    if not r or (s.pra_cek_dok is not None and not await s.pra_cek_dok(conn, tenant_id, user_id, dok_id)):
+        raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan.")
+    return r["nomor"]
+
+
 def _uuid(v: str) -> UUID:
     try:
         return UUID(str(v))
@@ -207,7 +251,7 @@ async def tentukan(conn, tenant_id: str, jenis: str, dok_id) -> dict:
 
 @router.get("/{jenis}/{dok_id}")
 async def lampiran_dokumen(request: Request, jenis: str, dok_id: str):
-    if jenis not in JENIS_DOKUMEN and jenis not in JENIS_PEMBELIAN:
+    if jenis not in JENIS_DOKUMEN and jenis not in JENIS_PEMBELIAN and jenis not in JENIS_TUNGGAL:
         raise HTTPException(status_code=404, detail="Jenis dokumen tidak dikenal.")
     did = _uuid(dok_id)
     tenant_id = request.state.user["tenant_id"]
@@ -215,7 +259,12 @@ async def lampiran_dokumen(request: Request, jenis: str, dok_id: str):
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
-            if jenis in JENIS_PEMBELIAN:
+            if jenis in JENIS_TUNGGAL:
+                user = request.state.user
+                t = {"nomor": await nomor_tunggal(conn, tenant_id, user.get("user_id") or user.get("id"), jenis, did)}
+                rows = await conn.fetch(sql_tunggal(jenis), did, tenant_id)
+                sumber = {"mode": "dokumen", "sales_order": None}
+            elif jenis in JENIS_PEMBELIAN:
                 tabel, kol = JENIS_PEMBELIAN[jenis]
                 nomor = await conn.fetchrow(f"SELECT {kol} AS nomor FROM {tabel} WHERE id = $1 AND tenant_id = $2", did, tenant_id)
                 if not nomor:
