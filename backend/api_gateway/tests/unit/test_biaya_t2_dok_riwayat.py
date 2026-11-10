@@ -14,7 +14,7 @@ T0 = datetime(2026, 11, 7, 1, tzinfo=timezone.utc)
 
 def _exp(status="posted", journal=True):
     return {"id": EID, "expense_number": "EXP-0001", "expense_date": date(2026, 11, 7), "status": status,
-            "total_amount": 150000, "account_name": "Beban Listrik", "paid_through_name": "Kas Toko",
+            "total_amount": 150000, "account_name": "Beban Listrik", "paid_through_name": "Kas Toko", "vendor_name": None,
             "journal_id": JID if journal else None, "created_at": T0, "created_by": U1}
 
 
