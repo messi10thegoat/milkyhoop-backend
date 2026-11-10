@@ -2878,7 +2878,7 @@ async def complete_session(
                 )
 
             # REKON-LAMA-PAGAR (10 Nov 2026, TESTER #12 T5; putusan pemilik Bank Feed P2/P3): rekonsiliasi TAK PERNAH menulis jurnal
-            # penutup selisih. Dulu FE mengirim `adjustments` sebesar selisih -> jurnal RECONCILIATION_ADJUSTMENT otomatis (toleransi 100).
+            # penutup selisih. Dulu FE mengirim `adjustments` sebesar selisih -> jurnal penyesuaian rekonsiliasi otomatis (toleransi 100).
             # Kini: penyesuaian ditolak, selisih wajib 0 persis.
             # selisih DIHITUNG ULANG (kolom difference bisa NULL/basi bila statistik sesi tak pernah diperbarui): rekening koran akhir vs
             # (awal + Σ baris tercocok) DAN rumus statistik lama (akhir - Σ tercocok); salah satu != 0 -> blok
