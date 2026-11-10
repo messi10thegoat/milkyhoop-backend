@@ -61,7 +61,7 @@ async def siapkan(conn):
                 h = SD.hitung(ktx, r["item_id"], r["unit"], r["quantity"], "konversi")
                 q = 0 if k % 2 == 0 else (h["qty_dasar"] if not h["blok"] else r["quantity"]) + 1
                 await conn.execute("""INSERT INTO warehouse_stock (tenant_id, warehouse_id, item_id, quantity) VALUES ($1, $2, $3, $4)
-                                      ON CONFLICT (warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity""", tid, g, r["item_id"], q)
+                                      ON CONFLICT (tenant_id, warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity""", tid, g, r["item_id"], q)
             n += 1
     print(f"[siapkan] {n} draf disetel stoknya (HANYA di klon)")
 
