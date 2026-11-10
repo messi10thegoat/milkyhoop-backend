@@ -5,6 +5,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
+from app.schemas import expenses as S
 from app.services import biaya_riwayat as BR
 
 KUNCI_DOK = {"kind", "id", "number", "date", "amount", "paper", "sent", "batal", "status"}
@@ -51,3 +52,10 @@ def test_anchor_memuat_vendor():
 
 def test_penanda():
     assert BR.PENANDA_BIAYA_B6 == "biaya-b6-bundel-w20261110"
+
+
+def test_bentuk_lewat_response_model_seperti_fastapi():
+    """Respons GET /expenses/{id}/documents disaring ExpenseDocumentsResponse: medan yang tak ada di model DIBUANG diam-diam."""
+    keluar = S.ExpenseDocumentsResponse.model_validate({"success": True, "data": bundel("PLN")}).model_dump(mode="json")["data"]
+    assert keluar["anchor"]["vendor"] == "PLN"
+    assert all(x["paper"] == "A4" for g in keluar["groups"] for x in g["docs"])

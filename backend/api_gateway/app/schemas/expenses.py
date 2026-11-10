@@ -253,6 +253,7 @@ class ExpenseDocAnchor(BaseModel):
     kind: Literal["expense"] = "expense"
     id: str
     number: Optional[str] = None
+    vendor: str = ""  # B6 (10 Nov): pola anchor modul lain (goods_receipt/bill/payment_out) -- tanpa medan ini FastAPI MEMBUANGnya
     date: Optional[str] = None
     position_text: str
     total: str
