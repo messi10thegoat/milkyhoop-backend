@@ -137,7 +137,12 @@ async def main():
                         f = RP.TrialBalanceFullResponse.model_validate(f)
                     f = json.loads(f.model_dump_json())["data"]
                     fa = {x["id"]: x for x in f["accounts"] if not x["is_header"]}
+                    header = {str(r["id"]) for r in await conn.fetch(
+                        "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND is_header", tid)}
                     for a in h["accounts"]:
+                        if a["account_id"] in header:  # /full menyaring akun header; Neraca Saldo menampilkan SEMUA akun berjurnal (Law 1)
+                            out.setdefault("header_berjurnal", []).append([tid, a["account_code"], a["total_debit"], a["total_credit"]])
+                            continue
                         x = fa.get(a["account_id"])
                         cek(f"F {tid}|{p['end_date']} {a['account_code']} == /full", x is not None and
                             (x["closing_debit"], x["closing_credit"]) == (int(d(a["total_debit"])), int(d(a["total_credit"]))), (a, x))
