@@ -131,6 +131,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # LAMPIRAN-PEMBELIAN F2a (30 Okt 2026): keluarga PO / Nota Debit + rute pabrik lampiran keduanya (pola NK: tambah lampiran = U)
     (r"^/api/lampiran/purchase_order/[^/]+$", ["GET"], "purchase_order", "R"),
     (r"^/api/lampiran/vendor_credit/[^/]+$", ["GET"], "debit_note", "R"),
+    # LAMPIRAN-BACA-KASBANK (10 Nov 2026): Kas&Bank = R kas_bank; kasbon = R payroll (+ pay-group per dokumen di handler -> 404)
+    (r"^/api/lampiran/bank_transaction/[^/]+$", ["GET"], "kas_bank", "R"),
+    (r"^/api/lampiran/bank_transfer/[^/]+$", ["GET"], "kas_bank", "R"),
+    (r"^/api/lampiran/employee_advance/[^/]+$", ["GET"], "payroll", "R"),
     (r"^/api/purchase-orders/[^/]+/attachments$", ["POST"], "purchase_order", "U"),
     (r"^/api/purchase-orders/[^/]+/attachments$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase-orders/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_order", "R"),
