@@ -28,7 +28,17 @@ for k, v in lama.get("full", {}).items():
     if lv != bv:
         berubah += 1
         print(f"[Z] {k}: lama {lv} -> baru {bv}")
-        if not (abs(bv - lv) < 1 and lv == int(bv)):
+        tid_pid, akun, kol = k.rsplit("|", 2)
+        if akun == "RINGKASAN":
+            # total = Σ baris: lama menjumlah baris yang SUDAH dipotong int(), jadi selisih total == Σ selisih sel akun kolom itu
+            # (bukan < 1). Kolom total_opening_debit <-> opening_debit, dst.
+            kolom = kol[len("total_"):]
+            harap = sum((Decimal(baru["full"][x]) - Decimal(lama["full"][x]) for x in lama["full"]
+                         if x.startswith(tid_pid + "|") and x.endswith("|" + kolom) and "|RINGKASAN|" not in x
+                         and x in baru["full"]), Decimal("0"))
+            if bv - lv != harap:
+                gagal.append(f"Z {k} selisih total {bv - lv} != Σ selisih baris {harap}")
+        elif not (abs(bv - lv) < 1 and lv == int(bv)):
             gagal.append(f"Z {k} berubah lebih dari pecahan sen: lama {lv} baru {bv}")
 if set(baru.get("full", {})) - set(lama.get("full", {})):
     gagal.append(f"Z sel baru tanpa pasangan lama: {sorted(set(baru['full']) - set(lama['full']))[:5]}")
