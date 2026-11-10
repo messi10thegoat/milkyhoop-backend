@@ -1,5 +1,5 @@
 # Konfig gerbang unit (dibaca scripts/ops/gerbang-unit.sh). Sabotase = bukti unit ini; tiap baris WAJIB membuat tes merah.
-W=/root/mh-kecil; CABANG=fix/laporan-urutan-umur-sen-full; NAMA_JENDELA=kecil-1
+W=/root/mh-kecil-r2; CABANG=fix/laporan-urutan-umur-sen-full-r2; NAMA_JENDELA=kecil-1
 POLA_UNIT='reports|ledger|report_engine|neraca_saldo|trial|aging|umur|tanggal_bisnis|rute'
 HARNESS=scripts/ops/uji-salinan-neraca-saldo.sh
 PENANDA_BERKAS=routers/reports.py; PENANDA='ORDER BY a.due_date ASC, a.bill_number, a.bill_id'
