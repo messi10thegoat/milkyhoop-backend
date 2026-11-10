@@ -43,6 +43,25 @@ for k, v in lama.get("full", {}).items():
 if set(baru.get("full", {})) - set(lama.get("full", {})):
     gagal.append(f"Z sel baru tanpa pasangan lama: {sorted(set(baru['full']) - set(lama['full']))[:5]}")
 print(f"[Z] sel /full {len(lama.get('full', {}))}; berubah {berubah} (semua wajib pecahan sen)")
+sen_di_buku = baru.get("sen_di_buku")
+# harness wajib bisa MERAH (orakel independen, bukan peta yang diuji): tiap akun /full BARU wajib memenuhi identitas buku
+# (closing_d - closing_c) == (opening_d - opening_c) + (period_d - period_c) PERSIS ke sen. int() yang kembali di kolom mana pun memecahnya
+# begitu ada akun bersen; sen_di_buku = baris jurnal POSTED bersen (diukur dari DB) memastikan identitas itu benar-benar diuji.
+akun_sel = {}
+for k, v in baru.get("full", {}).items():
+    tp, akun, kol = k.rsplit("|", 2)
+    if akun != "RINGKASAN":
+        akun_sel.setdefault((tp, akun), {})[kol] = Decimal(v)
+langgar = 0
+for (tp, akun), c in akun_sel.items():
+    if {"opening_debit", "opening_credit", "period_debit", "period_credit", "closing_debit", "closing_credit"} <= set(c):
+        if c["closing_debit"] - c["closing_credit"] != (c["opening_debit"] - c["opening_credit"]) + (c["period_debit"] - c["period_credit"]):
+            langgar += 1
+            if langgar <= 10:
+                gagal.append(f"Z identitas buku {tp} {akun}: closing {c['closing_debit']}/{c['closing_credit']} != opening+period")
+print(f"[Z] identitas buku: {len(akun_sel)} akun, melanggar {langgar}; baris jurnal bersen di buku: {sen_di_buku}")
+if sen_di_buku and berubah == 0:
+    gagal.append(f"Z nol sel mendapat sen kembali padahal {sen_di_buku} baris jurnal bersen (int() masih memotong?)")
 gagal += [f"cek {c[0]} :: {c[2]}" for c in baru["cek"] if not c[1]]
 for i in info:
     print("[S]", i)
