@@ -10,6 +10,11 @@ for k, (ld, lk) in lama["total"].items():
         gagal.append(f"S {k} tak ada di baru")
         continue
     bd, bk = baru["total"][k]
+    if "salah" not in lama:  # basis sudah memuat ns-r2 (Neraca Saldo baru live): unit ini tak boleh mengubah total Neraca Saldo sama sekali
+        if (Decimal(str(ld)), Decimal(str(lk))) != (Decimal(str(bd)), Decimal(str(bk))):
+            gagal.append(f"S {k} total Neraca Saldo berubah: lama {ld}/{lk} baru {bd}/{bk}")
+        info.append(f"{k}: basis memuat ns-r2 -> total lama == baru {bd}/{bk}")
+        continue
     (ed, ek, en), (kd, kk, kn) = lama["salah"][k]
     harap_d, harap_k = Decimal(ed) - Decimal(kd), Decimal(ek) - Decimal(kk)
     sel_d = (Decimal(str(ld)) - Decimal(str(bd))).quantize(Decimal("0.01"))
