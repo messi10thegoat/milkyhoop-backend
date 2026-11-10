@@ -70,9 +70,13 @@ async def siapkan(conn):
                 h = SD.hitung(ktx, r["item_id"], r["unit"], r["quantity"], "konversi")
                 butuh[(g, r["item_id"])] = butuh.get((g, r["item_id"]), 0) + (r["quantity"] if h["blok"] else h["qty_dasar"])
         for k, ((g, item), q) in enumerate(sorted(butuh.items(), key=lambda x: str(x[0][1]))):
-            await conn.execute("""INSERT INTO warehouse_stock (tenant_id, warehouse_id, item_id, quantity) VALUES ($1, $2, $3, $4)
-                                  ON CONFLICT (tenant_id, warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity""",
-                               tid, g, item, 0 if k % 2 == 0 else q + 1)
+            # ganjil: quantity cukup TETAPI seluruhnya reserved -> available_quantity (kolom GENERATED = quantity - reserved) = 0. Penulis faktur
+            # (quantity) lolos; penulis yang salah memakai available_quantity menolak -> harness E bisa MERAH untuk sabotase s3.
+            cukup = 0 if k % 2 == 0 else q + 1
+            await conn.execute("""INSERT INTO warehouse_stock (tenant_id, warehouse_id, item_id, quantity, reserved_quantity) VALUES ($1, $2, $3, $4, $4)
+                                  ON CONFLICT (tenant_id, warehouse_id, item_id) DO UPDATE SET quantity = EXCLUDED.quantity,
+                                  reserved_quantity = EXCLUDED.reserved_quantity""",
+                               tid, g, item, cukup)
             n += 1
     print(f"[siapkan] kebijakan 'invoice' + {n} (gudang, barang) disetel stoknya (HANYA di klon)")
 
