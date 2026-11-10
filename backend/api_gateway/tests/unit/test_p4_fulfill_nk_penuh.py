@@ -47,6 +47,8 @@ class Conn:
             return True   # V318: baris berstok -> jalur stok (bukan kirim non-stok)
         if "FROM warehouse_stock" in sql:
             return Decimal("0")   # stok nol -> bukti MAJU melewati penjaga P4
+        if "FROM warehouses" in sql:
+            return "Gudang Utama"  # terbit-pratinjau-1: kalimat stok kurang menyebut gudang
         raise AssertionError(sql[:60])
 
     async def execute(self, sql, *a):

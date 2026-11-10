@@ -326,7 +326,7 @@ def _src(rel, nama):
 
 def test_pengiriman_faktur_stok_kartu_hpp_dalam_dasar_biaya_dokumen_presisi_penuh():
     src = _src("routers/sales_invoices.py", "_execute_fulfillment")
-    for frag in ("Decimal(str(available_stock)) < qd", "line_cogs = _r2d(avg_cost * qd)", "biaya_dok = avg_cost if _f == _SD.SATU else line_cogs / req_qty",
+    for frag in ("_tersedia < qd",  # terbit-pratinjau-1: penentu stok SATU (stok_baris) "line_cogs = _r2d(avg_cost * qd)", "biaya_dok = avg_cost if _f == _SD.SATU else line_cogs / req_qty",
                  "new_balance = Decimal(str(current_balance or 0)) - qd", "str(qd)", "'unit_cost': biaya_dok"):
         assert frag in src, frag
     assert "line_cogs = _r2d(avg_cost * req_qty)" not in src
@@ -347,7 +347,7 @@ def test_biaya_per_satuan_dokumen_presisi_penuh_tanpa_selisih_sen():
 
 def test_sj_kasir_nd_direct_action_rencana_kirim_memakai_qty_dasar():
     sj = _src("services/sj_so.py", "rencana")
-    assert "ln['value'] = _r2(ln['qty_dasar'] * wac)" in sj and "avail < ln['qty_dasar']" in sj
+    assert "ln['value'] = _r2(ln['qty_dasar'] * wac)" in sj and "SB.blok_kurang(nama, gudang['name'], avail, h_sd" in sj  # bandingan qty dasar di SB.blok_kurang
     tl = _src("services/sj_so.py", "tulis")
     assert "saldo - qd" in tl
     ks = _src("routers/sales_receipts.py", "create_sales_receipt")

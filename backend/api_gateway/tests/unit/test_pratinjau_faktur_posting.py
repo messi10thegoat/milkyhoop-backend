@@ -162,7 +162,7 @@ async def test_preview_journal_dengan_invoice_id_mengembalikan_simulasi(monkeypa
     monkeypatch.setattr(SI, "_pratinjau_dari_posting", _sim)
     monkeypatch.setattr(SI, "get_user_context", lambda req: CTX)
     r = await SI.preview_journal(SimpleNamespace(), {"invoice_id": str(INV)})
-    assert r is sentinel
+    assert r == {"ok": True, "blocks": [], **sentinel}  # terbit-pratinjau-1: bentuk lama + ok/blocks (aditif)
 
 
 # ---- B2 BUG-049/075 (6 Nov): terbit draf -> isyarat stok dihitung SEBELUM posting simulasi (stok belum digerakkan faktur ini)
