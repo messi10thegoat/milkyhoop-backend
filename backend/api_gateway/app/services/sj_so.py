@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from . import pengiriman_serah as serah_mod
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
+from . import stok_baris as SB  # terbit-pratinjau-1: penentu stok gudang SATU
 from . import teks_galat as tg  # QTY-DASAR R2: kalimat stok bersatuan bukan dasar
 from .role_resolver import AccountRole, resolve_account_id_by_role
 from .so_riwayat import catat_riwayat
@@ -307,15 +308,11 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             if gudang is not None:
                 if kunci:
                     await _kunci(conn, f"STOCK:{b['item_id']}:{gudang['id']}")
-                avail = Decimal(str(await conn.fetchval(
-                    "SELECT COALESCE((SELECT available_quantity FROM warehouse_stock WHERE tenant_id = $1 AND warehouse_id = $2 "
-                    "AND item_id = $3" + (" FOR UPDATE" if kunci else "") + "), 0)", tid, gudang["id"], b["item_id"])))
+                avail = await SB.tersedia_gudang(conn, tid, gudang["id"], b["item_id"], "available_quantity", kunci=kunci)
                 ln["available"] = avail
-                if avail < ln["qty_dasar"]:
-                    blocks.append(_blok("SJ_SO_STOK_TIDAK_CUKUP",
-                                        f"Stok {nama} di {gudang['name']} hanya {avail:f}, diminta {qty:f}." if ln["faktor"] == SD.SATU
-                                        else tg.stok_kurang_satuan(nama, gudang["name"], avail, h_sd["satuan_dasar"], qty, b["unit"], ln["qty_dasar"]),
-                                        409, bid))
+                bk = SB.blok_kurang(nama, gudang["name"], avail, h_sd, qty, b["unit"], kode="SJ_SO_STOK_TIDAK_CUKUP")
+                if bk:  # terbit-pratinjau-1: penentu + kalimat SATU (stok_baris)
+                    blocks.append(_blok(bk["code"], bk["message"], bk["status"], bid))
         lines.append(ln)
     if not lines and not any(b["code"] != "SJ_SO_STATUS_TIDAK_BOLEH" for b in blocks):
         if any(d["alasan"] == "SJ_SO_STOK_BELUM_DIDUKUNG" for d in dilewati):  # T-G4: sisa ada tapi tersaring flag stok -> kalimat jujur

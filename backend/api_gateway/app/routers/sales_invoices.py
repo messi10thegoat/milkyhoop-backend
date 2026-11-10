@@ -630,6 +630,18 @@ _EVENT_PRATINJAU = {
 }
 
 
+def _pratinjau_ditolak(detail, status: int) -> dict:
+    """terbit-pratinjau-1: penolakan penulis -> bentuk B8 (blok berkode + kalimat penulis apa adanya), nol baris jurnal."""
+    if isinstance(detail, dict):
+        kode, pesan = detail.get("code") or "TERBIT_DITOLAK", detail.get("message") or detail.get("detail") or str(detail)
+    else:
+        kode, pesan = "TERBIT_DITOLAK", str(detail)
+    if kode == "TERBIT_DITOLAK" and status == 409 and str(pesan).startswith("Stok "):
+        kode = SB.KODE_STOK_KURANG
+    return {"ok": False, "blocks": [{"code": kode, "message": pesan, "status": status}], "journal_lines": [], "warnings": [],
+            "simulasi_posting": True}
+
+
 async def _pratinjau_dari_posting(pool, ctx: dict, invoice_ref) -> Optional[dict]:
     """Tinjau faktur DRAF dengan jalur posting SUNGGUHAN di savepoint lalu ROLLBACK (nol jejak). None = bukan draf milik tenant.
     Deposit TIDAK diterapkan di pratinjau (apply_deposits=False; bukan dampak faktur). Kunci baris posting dipegang singkat."""
@@ -742,19 +754,23 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     # LALU-ROLLBACK jalur posting yang SAMA (`terbitkan_faktur`) di dalam savepoint; baris jurnal yang tampil = jurnal yang akan terbit
     # (termasuk alokasi Surat Jalan tanpa faktur: HPP snapshot, Barang Terkirim, pendapatan). Tanpa invoice tersimpan / simulasi gagal ->
     # jalur perkiraan lama (di bawah) + peringatan.
+    # terbit-pratinjau-1 (10 Nov 2026, TESTER INV-2611-0022): draf tersimpan yang simulasinya DITOLAK penulis -> BLOK berkode, NOL baris
+    # jurnal. Dulu galat ditelan lalu jatuh ke jalur perkiraan dari BADAN (yang hanya memuat invoice_id) -> jurnal Rp 0 + "Pelanggan belum
+    # dipilih". Jalur perkiraan di bawah HANYA untuk form yang belum tersimpan.
     _inv_ref = body.get("invoice_id") or body.get("id")
-    _sim_peringatan = None
     if _inv_ref:
         try:
             _sim = await _pratinjau_dari_posting(pool, ctx, _inv_ref)
             if _sim is not None:
-                return _sim
+                return {"ok": True, "blocks": [], **_sim}
+            if not body.get("items"):  # bukan draf tenant ini & tak ada badan form -> jangan hitung perkiraan dari badan kosong
+                return _pratinjau_ditolak({"code": "SI_BUKAN_DRAF", "message": "Hanya faktur berstatus Draf yang bisa diterbitkan."}, 400)
         except HTTPException as _he:
-            _d = _he.detail
-            _sim_peringatan = _d.get("message") if isinstance(_d, dict) else str(_d)
+            return _pratinjau_ditolak(_he.detail, _he.status_code)
         except Exception as _e:  # noqa: BLE001
             logger.warning("preview-journal: simulasi posting gagal: %s", _e)
-            _sim_peringatan = "Pratinjau dari jalur posting tidak dapat dijalankan; angka di bawah adalah perkiraan."
+            return _pratinjau_ditolak({"code": "PRATINJAU_GAGAL",
+                                       "message": "Pratinjau terbit belum bisa dihitung. Coba lagi; bila tetap gagal, simpan sebagai draf."}, 500)
 
     def _n(v) -> str:
         """Angka untuk mata manusia: 98.0000 -> '98', 2.5000 -> '2,5'."""
@@ -766,8 +782,6 @@ async def preview_journal(request: Request, body: dict = Body(...)):
     invoice_date = body.get("invoice_date")
     customer_id = body.get("customer_id")
     warnings: list[str] = []
-    if _sim_peringatan:
-        warnings.append(_sim_peringatan)
 
     # Aritmetika memakai compute_document() — KALKULATOR YANG SAMA dengan create/
     # update//calculate, yang menghasilkan `tax_amount` yang kelak dibaca
@@ -2103,22 +2117,12 @@ async def _execute_fulfillment(
         # step 7 below decrements warehouse_stock via that trigger. We MUST NOT
         # manually UPDATE warehouse_stock here or the stock double-decrements
         # (inventory Rule 1 / dual-ledger; trigger owns warehouse_stock).
-        available_stock = await conn.fetchval(
-            """
-            SELECT COALESCE(quantity, 0)
-            FROM warehouse_stock
-            WHERE item_id = $1 AND warehouse_id = $2 AND tenant_id = $3
-        """,
-            product_id,
-            warehouse_id,
-            tenant_id,
-        )
-        if available_stock is None or Decimal(str(available_stock)) < qd:
-            if _f != _SD.SATU:
-                _gn = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, tenant_id)
-                raise HTTPException(409, tg.stok_kurang_satuan(description, _gn, Decimal(str(available_stock or 0)), _qd["satuan_dasar"],
-                                                              req_qty, inv_item.get("unit"), qd))
-            raise HTTPException(409, f"Stok {description} tidak cukup")
+        # terbit-pratinjau-1: penentu SATU (SB.tersedia_gudang + SB.blok_kurang) == blok pratinjau terbit (faktur_terbit_rencana).
+        _tersedia = await SB.tersedia_gudang(conn, tenant_id, warehouse_id, product_id, "quantity")
+        if _tersedia < qd:
+            _bk = SB.blok_kurang(description, await SB.nama_gudang(conn, tenant_id, warehouse_id), _tersedia, _qd, req_qty,
+                                 inv_item.get("unit"))
+            raise HTTPException(409, _bk["message"])
 
         # 4. Get WAC
         avg_cost = await conn.fetchval(
