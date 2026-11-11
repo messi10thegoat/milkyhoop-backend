@@ -313,7 +313,11 @@ async def test_laba_rugi_rumus_laporan_dan_lainnya_menjumlah_total(monkeypatch):
     total_beban = 300000 - 10000 + sum(10000 * i for i in range(1, 8)) + 5000
     assert pnl["revenue"] == "1050000.00"  # pendapatan lain IKUT (laba_bersih laporan)
     assert pnl["expense"] == f"{total_beban}.00" and pnl["profit"] == f"{1050000 - total_beban}.00"
-    assert len(ex["categories"]) == 7 and ex["categories"][-1]["name"] == "Lainnya"
+    # laporan-fix-2 (d): koreksi (saldo kredit 5-2) tampil dengan NAMA AKUN, "Lainnya" = akun debit di luar teratas saja (6-2, 6-1, 8-1 = 35.000)
+    nama = [c["name"] for c in ex["categories"]]
+    assert len(ex["categories"]) == 8 and nama.count("Lainnya") == 1 and "5-2" in nama and pnl["revenue_label"] == "Penjualan"
+    por = {c["name"]: Decimal(c["amount"]) for c in ex["categories"]}
+    assert por["Lainnya"] == Decimal(35000) and por["5-2"] == Decimal(-10000)
     assert sum(Decimal(c["amount"]) for c in ex["categories"]) == Decimal(total_beban)
     assert ex["categories"][0]["name"] == "5-1"  # HPP ikut sebagai biaya (baris L/R), terbesar dulu
     assert set(dipanggil) == {"REVENUE", "OTHER_INCOME"}

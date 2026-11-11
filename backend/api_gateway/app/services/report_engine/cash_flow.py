@@ -48,10 +48,11 @@ SUMBER_SALDO_AWAL = ["OPENING", "OPENING_BALANCE", "BANK_OPENING_BALANCE", "VEND
 
 def _get_label(account_type, psak_sub_category, account_name=None):
     """Get display label from psak_sub_category (priority) or account_type. (c) ASSET tanpa sub-kategori = NAMA akun (mis. "Uang Muka
-    Pembelian"), bukan "Penerimaan/pengeluaran aset" yang menyesatkan."""
+    Pembelian"), bukan "Penerimaan/pengeluaran aset" yang menyesatkan. laporan-fix-2 (c): LIABILITY juga = NAMA akun (mis. "Uang Muka Pelanggan"
+    = DP diterima, baris SENDIRI): label umum "Pembayaran liabilitas" salah arah untuk uang MASUK dan melebur semua liabilitas jadi satu baris."""
     if psak_sub_category and psak_sub_category in LABEL_MAP_SUB:
         return LABEL_MAP_SUB[psak_sub_category]
-    if account_type == "ASSET" and account_name:
+    if account_type in ("ASSET", "LIABILITY") and account_name:
         return account_name
     return LABEL_MAP_TYPE.get(account_type, f"Lain-lain ({account_type})")
 
@@ -104,10 +105,10 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         SELECT flow_category,
                account_type,
                psak_sub_category,
-               CASE WHEN account_type = 'ASSET' THEN account_name END AS account_name,
+               CASE WHEN account_type IN ('ASSET', 'LIABILITY') THEN account_name END AS account_name,
                SUM(net_cash * line_amount / NULLIF(journal_total, 0)) AS net_flow
         FROM counterpart_weights
-        GROUP BY flow_category, account_type, psak_sub_category, CASE WHEN account_type = 'ASSET' THEN account_name END
+        GROUP BY flow_category, account_type, psak_sub_category, CASE WHEN account_type IN ('ASSET', 'LIABILITY') THEN account_name END
         HAVING ABS(SUM(net_cash * line_amount / NULLIF(journal_total, 0))) > 0.01
         ORDER BY flow_category, account_type, psak_sub_category
     """
