@@ -271,6 +271,8 @@ async def utama():
             await tulis(conn, tid, o)
             await lawan(conn, tid, o)
     out["CEK"] = CEK
+    print("[info] akun-pilihan: " + ", ".join(f"{t}: {out[t].get('D_pilihan') or out[t].get('D_lewat') or out[t].get('D_lewat_pilihan') or 'BELUM JALAN'}"
+                                              for t in TENANT), flush=True)
     json.dump(out, open(os.environ["KELUAR"], "w"), sort_keys=True, indent=1)
     print("[info] " + ", ".join(f"{t}: {len(out[t]['A_sal'])} penyesuaian, {len(out[t]['A_whl'])} gudang, {out[t].get('C_lewat', 'tulis jalan')}"
                                 for t in TENANT), flush=True)
