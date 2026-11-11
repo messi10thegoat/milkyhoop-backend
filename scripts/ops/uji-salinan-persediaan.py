@@ -33,13 +33,13 @@ def req(tid, method="GET"):
     return r
 
 
-def req_json(tid, body):
-    """POST ber-body JSON (quick adjust items.py membaca request.json())."""
+def req_json(tid, body, headers=None):
+    """POST ber-body JSON (quick adjust items.py membaca request.json()); headers opsional (mis. X-Idempotency-Key)."""
     raw = json.dumps(body).encode()
 
     async def receive():
         return {"type": "http.request", "body": raw, "more_body": False}
-    r = Request({"type": "http", "method": "POST", "path": "/", "headers": [(b"content-type", b"application/json")]}, receive)
+    r = Request({"type": "http", "method": "POST", "path": "/", "headers": [(b"content-type", b"application/json")] + (headers or [])}, receive)
     r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan-persediaan"}
     return r
 
@@ -258,6 +258,93 @@ async def lawan(conn, tid, o):
     o["D_pilihan"] = {"sah": sah["account_code"], "kas": True}
 
 
+async def quick3(conn, tid, o):
+    """penyesuaian-3: quick adjust = penulis DOKUMEN (nomor SA-, gudang, daftar, batal), pagar minus/tanpa-stok, per gudang, set, alias akun, idempotensi,
+    data lama QSA- tak berubah. Hanya pohon yang punya SA._buat_draf."""
+    if not hasattr(SA, "_buat_draf"):
+        return
+    pr = await conn.fetch(
+        """SELECT p.id FROM products p JOIN inventory_ledger il ON il.product_id = p.id AND il.tenant_id = p.tenant_id
+           WHERE p.tenant_id = $1 AND p.item_type = 'goods' GROUP BY p.id HAVING SUM(il.quantity_in) - SUM(il.quantity_out) > 1
+           ORDER BY p.id LIMIT 1""", tid)
+    if not pr:
+        o["D3_lewat"] = "barang berstok < 2"
+        return
+    p = str(pr[0]["id"])
+    gud = await conn.fetch("SELECT id FROM warehouses WHERE tenant_id = $1 AND is_active ORDER BY is_default DESC, created_at", tid)
+    utama_id = str(gud[0]["id"])
+
+    async def sidik3():
+        return [await conn.fetchval(f"SELECT md5(COALESCE(string_agg(x::text, '|' ORDER BY x.id), '')) FROM {t} x WHERE x.tenant_id = $1", tid)
+                for t in ("journal_entries", "inventory_ledger", "stock_adjustments")]
+
+    async def jml(sql):
+        return await conn.fetchval(sql, tid)
+    qsa0 = await jml("SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE 'QSA-%'")
+    n0 = await jml("SELECT COUNT(*) FROM stock_adjustments WHERE tenant_id = $1")
+    # 1. add 2 -> dokumen posted bernomor SA- di gudang utama, jurnal tertaut, muncul di daftar
+    h = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 2, "reason": "UJI q3 tambah"}), p))
+    ok1 = h["ok"] and (h["hasil"].get("adjustment_id") is not None)
+    doc = await conn.fetchrow("SELECT status, adjustment_number, warehouse_id, journal_id FROM stock_adjustments WHERE id = $1 AND tenant_id = $2",
+                              h["hasil"]["adjustment_id"], tid) if ok1 else None
+    cek(f"{tid} q3 add: dokumen posted bernomor SA- di gudang utama + jurnal tertaut", ok1 and doc and doc["status"] == "posted"
+        and doc["adjustment_number"].startswith("SA-") and str(doc["warehouse_id"]) == utama_id and doc["journal_id"] is not None
+        and str(doc["journal_id"]) == h["hasil"]["journal_id"] and h["hasil"]["warehouse_id"] == utama_id, (h, doc))
+    cek(f"{tid} q3 add: jumlah dokumen +1", await jml("SELECT COUNT(*) FROM stock_adjustments WHERE tenant_id = $1") == n0 + 1)
+    if ok1:
+        led = [dict(r) for r in await conn.fetch(
+            "SELECT quantity_in, quantity_out, warehouse_id, journal_id FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2", tid, h["hasil"]["adjustment_id"])]
+        cek(f"{tid} q3 add: ledger masuk 2 di gudang utama, bertaut jurnal", len(led) == 1 and Decimal(led[0]["quantity_in"]) == 2 and str(led[0]["warehouse_id"]) == utama_id
+            and str(led[0]["journal_id"]) == h["hasil"]["journal_id"], led)
+        d = await SA.list_stock_adjustments(req(tid), status="all", adjustment_type=None, search=None, date_from=None, date_to=None, skip=0, limit=100,
+                                            sort_by="created_at", sort_order="desc")
+        cek(f"{tid} q3 add: muncul di Daftar Penyesuaian", h["hasil"]["adjustment_id"] in {x["id"] for x in d["items"]})
+        for k in ("success", "message", "old_stock", "new_stock", "adjustment", "journal_id", "unit_cost", "cost_source"):
+            cek(f"{tid} q3 respons lama tetap: {k}", k in h["hasil"])
+        # 2. batal dokumen: pembalik + ledger kembali (Inv-1)
+        hv = await coba(SA.void_stock_adjustment(req(tid, "POST"), h["hasil"]["adjustment_id"], VoidStockAdjustmentRequest(reason="UJI q3")))
+        e = await efek(conn, tid, h["hasil"]["adjustment_id"])
+        cek(f"{tid} q3 batal dokumen quick: pembalik ada, Inv-1 barang", hv["ok"] and e["pembalik"] is not None and await inv1(conn, tid, [pr[0]["id"]]) == 0, (hv, e))
+    # 3. minus ditolak berkode tanpa tulisan
+    s0 = await sidik3()
+    hm = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "subtract", "quantity": 99999999, "reason": "UJI q3 minus"}), p))
+    cek(f"{tid} q3 minus: 422 STOK_TIDAK_CUKUP tanpa tulisan", not hm["ok"] and hm["status"] == 422 and hm["code"] == "STOK_TIDAK_CUKUP" and s0 == await sidik3(), hm)
+    # 4. set: stok gudang utama -> +3 ; adjustment 3
+    sebelum = Decimal(str(await conn.fetchval("SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2::uuid "
+                                              "AND warehouse_id = $3::uuid", tid, p, utama_id)))
+    hs = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "set", "quantity": float(sebelum + 3), "reason": "UJI q3 set"}), p))
+    cek(f"{tid} q3 set: selisih per gudang +3, stok baru == target", hs["ok"] and Decimal(hs["hasil"]["adjustment"]) == 3 and Decimal(hs["hasil"]["new_stock"]) == sebelum + 3, (hs, sebelum))
+    # 5. gudang kedua (bila ada)
+    if len(gud) >= 2:
+        g2 = str(gud[1]["id"])
+        hg = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI q3 gudang2", "warehouse_id": g2}), p))
+        led2 = [dict(r) for r in await conn.fetch("SELECT warehouse_id FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2", tid, hg["hasil"]["adjustment_id"])] if hg["ok"] else []
+        cek(f"{tid} q3 gudang kedua: dokumen + ledger di gudang itu", hg["ok"] and hg["hasil"]["warehouse_id"] == g2 and len(led2) == 1 and str(led2[0]["warehouse_id"]) == g2, (hg, led2))
+    # 6. alias adjustment_account_id (nama yang dikirim FE form lama) dipakai sebagai akun lawan
+    dd = (await SA.daftar_akun_lawan_penyesuaian(req(tid)))["data"]
+    sah = next((a for a in dd["akun"] if not a["bawaan"]), None)
+    if sah:
+        ha = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI q3 alias", "adjustment_account_id": sah["id"]}), p))
+        ak = {str(b["account_id"]) for b in (await baris_jurnal(conn, tid, ha["hasil"].get("journal_id") if ha["ok"] else None) or [])}
+        cek(f"{tid} q3 alias adjustment_account_id jadi akun lawan", ha["ok"] and sah["id"] in ak and dd["bawaan_id"] not in ak, (ha, ak))
+    # 7. idempotensi: kunci sama -> respons sama, satu dokumen
+    n1 = await jml("SELECT COUNT(*) FROM stock_adjustments WHERE tenant_id = $1")
+    hdr = [(b"x-idempotency-key", f"uji-q3-{tid}".encode())]
+    b1 = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI q3 idem"}, hdr), p))
+    b2 = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI q3 idem"}, hdr), p))
+    cek(f"{tid} q3 idempotensi: replay sama, satu dokumen", b1["ok"] and b2["ok"] and b1["hasil"].get("adjustment_id") == b2["hasil"].get("adjustment_id")
+        and await jml("SELECT COUNT(*) FROM stock_adjustments WHERE tenant_id = $1") == n1 + 1, (b1, b2))
+    # 8. barang non-inventory ditolak berkode (bila tenant punya)
+    ni = await conn.fetchval("SELECT id FROM products WHERE tenant_id = $1 AND (item_type <> 'goods' OR track_inventory IS FALSE) ORDER BY id LIMIT 1", tid)
+    if ni:
+        s0 = await sidik3()
+        hn = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI q3 tanpa stok"}), str(ni)))
+        cek(f"{tid} q3 non-inventory: 422 BARANG_TANPA_STOK tanpa tulisan", not hn["ok"] and hn["status"] == 422 and hn["code"] == "BARANG_TANPA_STOK" and s0 == await sidik3(), hn)
+    # 9. data lama QSA- tak diubah (tak ada jurnal QSA- baru)
+    cek(f"{tid} q3 jurnal QSA- lama tak berubah", await jml("SELECT COUNT(*) FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE 'QSA-%'") == qsa0)
+    o["D3"] = {"produk": p, "gudang": len(gud), "non_inventory_diuji": bool(ni), "akun_alias_diuji": bool(sah)}
+
+
 async def utama():
     pool = await SA.get_pool()
     out = {"baru": BARU, "pen2": hasattr(SA, "daftar_akun_lawan_penyesuaian")}  # pen2 = pembeda lama/baru sejak gelombang 2 LIVE (BARU sudah True di master)
@@ -270,7 +357,9 @@ async def utama():
             await baca(conn, tid, o)
             await tulis(conn, tid, o)
             await lawan(conn, tid, o)
+            await quick3(conn, tid, o)
     out["CEK"] = CEK
+    print("[info] penyesuaian-3: " + ", ".join(f"{t}: {out[t].get('D3') or out[t].get('D3_lewat') or 'BELUM JALAN'}" for t in TENANT), flush=True)
     print("[info] akun-pilihan: " + ", ".join(f"{t}: {out[t].get('D_pilihan') or out[t].get('D_lewat') or out[t].get('D_lewat_pilihan') or 'BELUM JALAN'}"
                                               for t in TENANT), flush=True)
     json.dump(out, open(os.environ["KELUAR"], "w"), sort_keys=True, indent=1)

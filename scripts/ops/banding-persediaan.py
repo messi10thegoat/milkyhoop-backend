@@ -6,6 +6,7 @@
  B/G (cek pohon BARU) -> semua lulus."""
 import json
 import sys
+from decimal import Decimal
 
 lama, baru = (json.load(open(f)) for f in sys.argv[1:3])
 ADITIF = {"jenis_text", "position_text", "aksi", "aksi_semua", "documents", "doc_count", "aksi_tersedia", "warehouse_id", "warehouse_name",
@@ -50,6 +51,19 @@ for tid in (k for k in baru if k not in ("baru", "pen2", "CEK")):
                 cek(f"{tid} {k} nomor jurnal lama SA-<dok> -> dokumen", na == f"SA-{nb}", (na, nb))
                 sah["nomor_jurnal"] += 1
             cek(f"{tid} {k} respons + efek identik", a == b and ea == eb, json.dumps([L[k], B[k]])[:600])
+        elif k == "D_quick_bawaan":
+            # penyesuaian-3: quick adjust TANPA pilihan: akun jurnal sama, arah sama, nilai beda < Rp1 (harga pokok bulat rupiah, putusan pembulatan; lama koma),
+            # jumlah penyesuaian sama; old/new stock (per gudang), unit_cost (bulat), cost_source (wac) = perubahan yang DIPUTUSKAN
+            a, b = L[k], B[k]
+            cek(f"{tid} quick bawaan ok sama", a["ok"] == b["ok"], (a.get("status"), b.get("status")))
+            if a["ok"] and b["ok"]:
+                ja, jb = a["jurnal"] or [], b["jurnal"] or []
+                cek(f"{tid} quick bawaan akun jurnal sama (urut)", [x["account_id"] for x in ja] == [x["account_id"] for x in jb], (ja, jb))
+                cek(f"{tid} quick bawaan sisi debit/kredit sama", [(Decimal(x["debit"]) > 0, Decimal(x["credit"]) > 0) for x in ja] == [(Decimal(x["debit"]) > 0, Decimal(x["credit"]) > 0) for x in jb])
+                da, db = sum(Decimal(x["debit"]) for x in ja), sum(Decimal(x["debit"]) for x in jb)
+                cek(f"{tid} quick bawaan nilai jurnal beda < Rp1 (harga pokok bulat)", abs(da - db) < 1, (da, db))
+                cek(f"{tid} quick bawaan jumlah penyesuaian sama", str(a["hasil"].get("adjustment")) == str(b["hasil"].get("adjustment")), (a["hasil"], b["hasil"]))
+                sah["quick_beda"] = sah.get("quick_beda", 0) + sum(1 for f in ("old_stock", "new_stock", "unit_cost", "cost_source") if a["hasil"].get(f) != b["hasil"].get(f))
         elif k == "C_wh_jumlah_utama":
             cek(f"{tid} gudang utama baru == 1", B[k] == 1, (L[k], B[k]))
             sah["utama"] += L[k] != B[k]
