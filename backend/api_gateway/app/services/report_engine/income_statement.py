@@ -13,7 +13,7 @@ Gelombang 4 L1 (10 Nov 2026): hitungan SELURUHNYA Decimal (hitung_laba_rugi; Law
 """
 from decimal import Decimal
 from . import baris as B
-from .ledger import compute_balance, compute_balance_detail
+from .ledger import _to_date, compute_balance, compute_balance_detail
 
 
 def _make_section(total: Decimal, detail: list, negate: bool = False) -> dict:
@@ -46,19 +46,25 @@ def _make_section(total: Decimal, detail: list, negate: bool = False) -> dict:
 
 async def hitung_laba_rugi(conn, tenant_id: str, start: str, end: str, basis: str = "accrual") -> dict:
     """Model Decimal Laba Rugi start..end (dipakai generate_income_statement DAN neraca untuk laba periode berjalan)."""
-    cash_filter = {"cash_only": True} if basis == "cash" else {}
-
     async def b(fp):
         return await compute_balance(conn, tenant_id, fp, start_date=start, end_date=end)
 
     async def bd(fp):
         return await compute_balance_detail(conn, tenant_id, fp, start_date=start, end_date=end)
 
+    kas = None
+    if basis == "cash":  # laporan-fix-2: basis kas = pendapatan + HPP faktur proporsional saat DIBAYAR, beban saat dibayar (SATU sumber dgn dasbor)
+        from . import basis_kas
+        kas = await basis_kas.detail(conn, tenant_id, _to_date(start), _to_date(end))
     m = {}
     for k, tipe in (("revenue", "REVENUE"), ("cogs", "COGS"), ("opex", "EXPENSE"), ("other_inc", "OTHER_INCOME"),
                     ("other_exp", "OTHER_EXPENSE")):
-        m[k + "_raw"] = await b({"account_type": tipe, **cash_filter})
-        m[k + "_detail"] = await bd({"account_type": tipe, **cash_filter})
+        if kas is not None:
+            m[k + "_detail"] = kas[tipe]
+            m[k + "_raw"] = sum((z["balance"] for z in kas[tipe]), Decimal("0"))
+        else:
+            m[k + "_raw"] = await b({"account_type": tipe})
+            m[k + "_detail"] = await bd({"account_type": tipe})
     m["revenue"] = -m["revenue_raw"]                      # credit normal -> negate
     m["gross"] = m["revenue"] - m["cogs_raw"]
     m["op_profit"] = m["gross"] - m["opex_raw"]
