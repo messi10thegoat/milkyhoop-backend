@@ -85,7 +85,10 @@ def test_arus_kas_harian_mengecualikan_semua_jurnal_saldo_awal():
     assert DA.SUMBER_SALDO_AWAL == SUMBER
     s = DA.SQL_ARUS_KAS_HARIAN
     assert "je.source_type NOT IN ('OPENING', 'OPENING_BALANCE', 'BANK_OPENING_BALANCE', 'VENDOR_OPENING_BALANCE')" in s
-    assert "is_effective_journal(je.id) = true" in s  # pembalik saldo awal tetap tersingkir di sini
+    # laporan-fix-2: definisi aliran SATU (aliran_kas.KONDISI_ALIRAN, sadar-periode) menggantikan is_effective_journal retroaktif; pembalik saldo awal
+    # (reversal_of_id) tetap tersingkir di sini kecuali atas asli periode lalu yang POSTED
+    from app.services.report_engine.aliran_kas import KONDISI_ALIRAN
+    assert KONDISI_ALIRAN in s and "je.reversal_of_id IS NOT NULL" in s
 
 
 def test_saldo_kas_tetap_memuat_saldo_awal():

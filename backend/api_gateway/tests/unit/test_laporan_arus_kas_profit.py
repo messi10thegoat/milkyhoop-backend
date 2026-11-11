@@ -25,7 +25,8 @@ class _K:
 
 
 def _r(cat, tipe, n, sub=None, nama=None):
-    return {"flow_category": cat, "account_type": tipe, "psak_sub_category": sub, "account_name": nama, "net_flow": D(n)}
+    return {"flow_category": cat, "account_type": tipe, "psak_sub_category": sub, "account_name": nama, "net_flow": D(n),
+            "arah": 1 if D(n) > 0 else -1}  # laporan-fix-2: butir dipecah per label DAN arah (tanda neto kas jurnal)
 
 
 def test_arus_kas_saldo_awal_jadi_kas_awal_ekuitas_pendanaan_label_aset(monkeypatch):

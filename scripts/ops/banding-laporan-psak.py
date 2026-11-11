@@ -24,8 +24,15 @@ DIPUTUSKAN = (".balance_sheet.ekuitas", ".balance_sheet.total_liabilitas_ekuitas
 ITEM_ARUS = (".cash_flow.operasi.items", ".cash_flow.investasi.items", ".cash_flow.pendanaan.items")
 
 
+# Total arus kas + rekonsiliasi berubah HANYA di tenant beranomali (jurnal pembalik POSTED tanpa asli POSTED, data lama; harness cek A memastikan selisihnya == neto anomali):
+# aliran efektif membuang pembalik itu, saldo POSTED memuatnya. Tenant tanpa anomali: total arus kas WAJIB identik.
+TOTAL_ARUS = (".cash_flow.operasi.total", ".cash_flow.investasi.total", ".cash_flow.pendanaan.total", ".cash_flow.kenaikan_kas_bersih", ".cash_flow._reconciled")
+
+
 def boleh(k, j):
-    return j.startswith(DIPUTUSKAN + ITEM_ARUS) or (k.endswith("|cash") and j.startswith(".income_statement"))
+    ber_anomali = (baru.get("anom") or {}).get(k.split("|")[0], 0) > 0
+    return (j.startswith(DIPUTUSKAN + ITEM_ARUS) or (k.endswith("|cash") and j.startswith(".income_statement"))
+            or (ber_anomali and j.startswith(TOTAL_ARUS)))
 
 
 for k, v in lama["lama"].items():

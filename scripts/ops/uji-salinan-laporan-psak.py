@@ -204,8 +204,11 @@ async def fix2(conn, tid, k, basis, mulai, akhir, presisi, pl, bs, cf, nb, lb, t
 async def main():
     from app.services.uang_presisi import presisi_tenant
     pool = await PR.get_pool() if BARU else None
-    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": [], "gap": {}, "fix2": FIX2}
+    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": [], "gap": {}, "fix2": FIX2, "anom": {}}
     for tid in TENANT:
+        if FIX2:
+            async with pool.acquire() as c0:
+                out["anom"][tid] = await c0.fetchval(ANOM_SEMUA, tid)
         for mulai, akhir in rentang():
             for basis in ("accrual", "cash"):
                 k = f"{tid}|{mulai}|{akhir}|{basis}"
