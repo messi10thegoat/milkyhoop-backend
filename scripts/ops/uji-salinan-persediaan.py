@@ -202,7 +202,7 @@ async def lawan(conn, tid, o):
     jid = h["hasil"].get("journal_id") if h["ok"] else None
     o["D_quick_bawaan"] = {"ok": h["ok"], "status": h.get("status"), "jurnal": await baris_jurnal(conn, tid, jid),
                            "hasil": {k: v for k, v in h.get("hasil", {}).items() if k != "journal_id"}}
-    if not BARU:
+    if not hasattr(SA, "daftar_akun_lawan_penyesuaian"):  # pohon lama (master) belum punya akun lawan pilihan; BARU (gelombang 2) sudah True di master
         return
     from app.schemas.stock_adjustments import PostStockAdjustmentRequest as Pos
     dd = (await SA.daftar_akun_lawan_penyesuaian(req(tid)))["data"]
