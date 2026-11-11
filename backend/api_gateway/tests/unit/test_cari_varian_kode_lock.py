@@ -79,3 +79,10 @@ def test_bentrok_kode_eksplisit_tetap_pesan_lama():
     g = I.galat_bentrok_unik(_uv("idx_products_tenant_item_code"), SimpleNamespace(item_code="BRG-0001", sku=None, name="X"))
     assert g.status_code == 409 and g.detail["code"] == I.KODE_KODE_BARANG and "BRG-0001" in g.detail["message"]
     assert I.galat_bentrok_unik(ValueError("x"), SimpleNamespace(item_code=None, sku=None, name="X")) is None
+
+
+def test_pemeriksaan_ganda_kode_hanya_untuk_nilai_dari_pengguna():
+    """Kode/SKU OTOMATIS dihitung ulang di bawah kunci -> pemeriksaan ganda sebelum transaksi hanya bila pengguna mengisi kode/SKU."""
+    s = inspect.getsource(I._siapkan_buat_barang)
+    assert "if existing_sku and (body.sku or body.item_code):" in s
+    assert "if existing_item_code and body.item_code:" in s

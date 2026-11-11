@@ -686,7 +686,9 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
         tenant_id,
         sku_to_use,
     )
-    if existing_sku:
+    # Pemeriksaan ganda HANYA untuk nilai dari PENGGUNA (kode/SKU eksplisit): kode OTOMATIS dihitung ULANG di bawah kunci oleh
+    # tulis_barang_baru; kode otomatis yang kebetulan sudah diambil penulis serentak bukan salah pengguna (harness cari-1, 12 Nov).
+    if existing_sku and (body.sku or body.item_code):
         raise galat_kode_barang_dipakai(sku_to_use, field="sku", pemegang=existing_sku)
 
     # Check for duplicate item_code (after item_code is finalized)
@@ -696,7 +698,7 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
         tenant_id,
         item_code_to_use,
     )
-    if existing_item_code:
+    if existing_item_code and body.item_code:
         raise galat_kode_barang_dipakai(item_code_to_use, field="item_code", pemegang=existing_item_code)
 
     # Pajak item: id = otoritas, nama teks diisi dari tax_codes (W-20261013-ITEMFIELD; dulu id dibuang diam).
