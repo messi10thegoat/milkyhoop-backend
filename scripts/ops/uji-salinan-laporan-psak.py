@@ -62,6 +62,19 @@ ORA_TAGIHAN = """WITH beban_tagihan AS (SELECT je.source_id AS bill, SUM(jl.debi
     FROM bill_payment_allocations a JOIN bill_payments_v2 p ON p.id = a.payment_id AND p.tenant_id = $1 AND p.status = 'posted'
     JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $1 LEFT JOIN beban_tagihan bt ON bt.bill = b.id WHERE p.payment_date BETWEEN $2 AND $3"""
 
+# UKUR akar selisih kartu arus kas dasbor vs laporan: empat varian per tenant (bruto/neto per jurnal x POSTED/efektif), jurnal saldo awal dikecualikan
+UKUR_KAS = """WITH kj AS (
+        SELECT je.id, SUM(jl.debit) FILTER (WHERE c.is_cash) AS din, SUM(jl.credit) FILTER (WHERE c.is_cash) AS dout
+        FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND (NOT $4::boolean OR is_effective_journal(je.id)) AND je.journal_date BETWEEN $2 AND $3
+          AND je.source_type <> ALL($5::text[])
+          AND EXISTS (SELECT 1 FROM journal_lines k JOIN chart_of_accounts kc ON kc.id = k.account_id WHERE k.journal_id = je.id AND NOT COALESCE(kc.is_cash, false))
+        GROUP BY je.id)
+    SELECT COALESCE(SUM(din), 0) AS bruto_masuk, COALESCE(SUM(dout), 0) AS bruto_keluar,
+           COALESCE(SUM(GREATEST(COALESCE(din, 0) - COALESCE(dout, 0), 0)), 0) AS neto_masuk,
+           COALESCE(SUM(GREATEST(COALESCE(dout, 0) - COALESCE(din, 0), 0)), 0) AS neto_keluar FROM kj"""
+SALDO_AWAL = ["OPENING", "OPENING_BALANCE", "BANK_OPENING_BALANCE", "VENDOR_OPENING_BALANCE"]
+
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
 BARU = hasattr(PR, "_tampil")
 CEK = []
@@ -159,6 +172,11 @@ async def fix2(conn, tid, k, basis, mulai, akhir, presisi, pl, bs, cf, nb, lb, t
         butir = [(b["label"], b["nilai"]) for b in cf["baris"] if b["kunci"] == "butir"]
         print(f"[ukur] {tid} arus kas YTD: dasbor masuk/keluar {masuk}/{keluar} | laporan Σ butir + / − {pos}/{neg} | selisih {masuk - pos}/{keluar - neg}", flush=True)
         print(f"[ukur] {tid} butir arus kas: {butir}", flush=True)
+        for efektif in (False, True):
+            u = await conn.fetchrow(UKUR_KAS, tid, d1, d2, efektif, SALDO_AWAL)
+            print(f"[ukur2] {tid} YTD {'EFEKTIF' if efektif else 'POSTED '}: bruto masuk/keluar {u['bruto_masuk']}/{u['bruto_keluar']} | neto-per-jurnal masuk/keluar "
+                  f"{u['neto_masuk']}/{u['neto_keluar']}", flush=True)
+        print(f"[ukur2] {tid} YTD dasbor {masuk}/{keluar} | laporan Σ butir {pos}/{neg}", flush=True)
 
 
 async def main():
