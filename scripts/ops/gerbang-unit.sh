@@ -25,7 +25,7 @@ nilai_pytest() {  # $1 label, $2 ringkasan (DI SHELL INI, bukan pipa: tolak di s
   echo "$r" | grep -qE "^(FAILED|ERROR) | [0-9]+ (failed|error)" && tolak "$1: ada yang gagal"
   return 0
 }
-cd backend/api_gateway; F=$(grep -rlE --include="*.py" "$POLA_UNIT" tests | sort -u | tr "\n" " "); cd "$W"
+cd backend/api_gateway; F=$(grep -rlE --include="*.py" "$POLA_UNIT" tests/unit tests/milkybook | sort -u | tr "\n" " "); cd "$W"
 echo "== 1 unit ($(echo $F | wc -w) berkas) $(date +%H:%M)"
 R=$(timeout 1500 scripts/jalankan_unit.sh "$W" -q -p no:cacheprovider $F 2>&1 | ringkas); nilai_pytest "unit" "$R"
 if [ "${GERBANG_KONTROL_MERAH:-0}" = 1 ]; then  # kontrol merah: cukup langkah 1 (tanpa salinan/suite berat); WAJIB TOLAK
@@ -50,7 +50,7 @@ for s in "${SAB[@]}"; do
   git checkout -q -- "$berkas"
 done
 echo "== 4 suite $(date +%H:%M)"
-R=$(timeout 1800 scripts/jalankan_unit.sh "$W" -q -p no:cacheprovider tests 2>&1 | ringkas 30); nilai_pytest "suite" "$R"
+R=$(timeout 1800 scripts/jalankan_unit.sh "$W" -q -p no:cacheprovider tests/unit tests/milkybook 2>&1 | ringkas 30); nilai_pytest "suite" "$R"
 echo "== 5 gate $(date +%H:%M)"
 G=$(timeout 600 docker run --rm -i --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -v "$W/backend:/app/backend:ro" -w /app \
   --entrypoint python milkyhoop-dev-api_gateway:latest - < "$W/scripts/gate_izin_rute.py" 2>&1 | tail -6)
