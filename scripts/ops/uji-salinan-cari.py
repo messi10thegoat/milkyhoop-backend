@@ -47,6 +47,16 @@ async def buat_barang(tid, nama):
 
 async def periksa(pool, tid):
     stamp = int(time.time())
+    try:
+        await t1(pool, tid, stamp)
+    except Exception as e:  # noqa: BLE001
+        if not KONTROL_MERAH:
+            raise
+        cek(f"{tid} T1 (kontrol merah: pohon tanpa varian[] gagal seperti diharapkan, lanjut ke T2)", False, repr(e)[:80])
+    await t2(pool, tid, stamp)
+
+
+async def t1(pool, tid, stamp):
     # ---- T1 (a): data varian via SQL langsung (cabang ini tak memuat router matriks B1)
     induk = f"UJI Cari {stamp}"
     async with pool.acquire() as c:
@@ -70,6 +80,9 @@ async def periksa(pool, tid):
         t = [x for x in tool["items"] if x["nama"] == induk]
         cek(f"{tid} T1 tool LLM search_items tanpa varian[] (hemat token), ukuran tetap", len(t) == 1 and "varian" not in t[0] and len(t[0]["ukuran"]) == 4)
 
+
+
+async def t2(pool, tid, stamp):
     # ---- T2 (b): balapan kode barang otomatis
     async with pool.acquire() as c:
         n0 = await c.fetchval("SELECT count(*) FROM products WHERE tenant_id = $1 AND nama_produk LIKE $2", tid, f"UJI Race {stamp} %")
