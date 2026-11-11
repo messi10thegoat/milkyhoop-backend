@@ -386,9 +386,11 @@ POST /api/expense-claims/{claim_id}/submit
 POST /api/expense-policy
 POST /api/expenses
 POST /api/expenses/calculate
+POST /api/expenses/preview
 POST /api/expenses/preview-journal
 POST /api/expenses/{expense_id}/attachments
 POST /api/expenses/{expense_id}/delete/preview
+POST /api/expenses/{expense_id}/edit/preview
 POST /api/expenses/{expense_id}/post
 POST /api/expenses/{expense_id}/post/preview
 POST /api/expenses/{expense_id}/void
