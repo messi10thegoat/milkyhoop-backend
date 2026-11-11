@@ -337,3 +337,9 @@ def test_izin_kas_bank_baca_dan_buat_serta_inventaris():
     inv = open(inspect.getsourcefile(MR).replace("app/routers/mutasi_bank.py", "tests/unit/inventaris_rute_tulis.txt")).read()
     for baris in ("POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor", "POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor/preview"):
         assert re.search(rf"^{re.escape(baris)}$", inv, re.M), baris
+
+
+def test_sql_baris_anti_duplikat_dijaga_basis_data_bukan_hanya_pemeriksaan_di_kode():
+    # fake DB di tes ini tak menegakkan keunikan; penjaga SERENTAK ada di DB: indeks unik (tenant, rekening, sidik) + ON CONFLICT DO NOTHING
+    assert "ON CONFLICT (tenant_id, bank_account_id, sidik) DO NOTHING RETURNING id" in BI.SQL_BARIS
+    assert re.search(r"INSERT INTO mutasi_bank \(tenant_id, bank_account_id,", BI.SQL_BARIS)   # tenant tertulis eksplisit pada tiap baris
