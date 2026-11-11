@@ -68,6 +68,19 @@ def tanggal_pendek(t) -> str:
     return f"{d.day} {BULAN_PANJANG[d.month - 1][:3]} {d.year}"
 
 
+def rentang_tanggal(mulai, akhir) -> str:
+    """Rentang periode laporan (putusan MASTER 12 Nov): '1 Nov – 12 Nov 2026' (tahun sama) | '1 Des 2025 – 12 Jan 2026' (beda tahun) |
+    '12 Nov 2026' (sehari). Bulan singkat = tanggal_pendek; en dash berspasi; tanggal tanpa nol depan."""
+    from datetime import date as _date
+    a = mulai if isinstance(mulai, _date) else _date.fromisoformat(str(mulai)[:10])
+    b = akhir if isinstance(akhir, _date) else _date.fromisoformat(str(akhir)[:10])
+    if a == b:
+        return tanggal_pendek(b)
+    if a.year == b.year:
+        return f"{tanggal_pendek(a)[:-5]} – {tanggal_pendek(b)}"
+    return f"{tanggal_pendek(a)} – {tanggal_pendek(b)}"
+
+
 def tanggal_panjang(t) -> str:
     """date / 'YYYY-MM-DD' -> '31 Oktober 2026' (judul periode laporan)."""
     from datetime import date as _date

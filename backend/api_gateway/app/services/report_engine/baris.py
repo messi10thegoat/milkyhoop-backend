@@ -77,6 +77,11 @@ def periode_berakhir(akhir) -> str:
     return f"Untuk Periode yang Berakhir {tg.tanggal_panjang(akhir)}"
 
 
+def periode_rentang(mulai, akhir) -> str:
+    """'1 Nov – 12 Nov 2026' untuk header layar L/R + Arus Kas (periode_text lama = judul resmi/PDF tetap)."""
+    return tg.rentang_tanggal(mulai, akhir)
+
+
 def per_tanggal(t) -> str:
     return f"Per Tanggal {tg.tanggal_panjang(t)}"
 
