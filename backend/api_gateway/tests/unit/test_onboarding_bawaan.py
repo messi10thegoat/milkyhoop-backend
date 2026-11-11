@@ -81,6 +81,10 @@ def test_rekening_awal_nol_jurnal_idempoten_dan_saldo_nol():
     assert "opening_balance, current_balance" in RA.SQL_SISIP and "0, 0, $6" in RA.SQL_SISIP   # saldo awal & cache 0 (turunan jurnal)
 
 
+def test_pencarian_akun_coa_bertenant():
+    assert "tenant_id = $1 AND account_code = $2" in RA.SQL_AKUN   # akun CoA hanya milik tenant ybs (set_config bukan pagar)
+
+
 def test_rekening_awal_lewati_bila_akun_coa_tak_ada():
     k = _K(coa={"1-10200": uuid.uuid4()})
     assert asyncio.run(RA.seed_rekening_awal(k, "t", UID)) == 1
