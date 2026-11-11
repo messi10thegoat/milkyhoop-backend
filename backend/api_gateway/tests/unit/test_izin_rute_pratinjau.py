@@ -25,6 +25,8 @@ INVENTARIS = DISINI / "inventaris_rute_tulis.txt"
 KHUSUS = {
     # Biaya B7 (gelombang 1): pratinjau hapus draf -> DELETE /expenses/{id} (penentu SAMA: biaya_daftar.blok_hapus; izin expense D)
     "POST /api/expenses/{expense_id}/delete/preview": "DELETE /api/expenses/{expense_id}",
+    # Biaya B2 (gelombang 2): pratinjau ubah draf -> PATCH /expenses/{id} (penentu SAMA: ubah_biaya_inti; izin expense U); pratinjau buat -> POST /api/expenses (default)
+    "POST /api/expenses/{expense_id}/edit/preview": "PATCH /api/expenses/{expense_id}",
     # pelunasan faktur/pesanan menulis receive_payments (penulis bersama so_pelunasan._jalankan_inti)
     "POST /api/sales-invoices/{invoice_id}/receive-payment/preview": "POST /api/receive-payments",
     "POST /api/sales-orders/{order_id}/receive-payment/preview": "POST /api/receive-payments",

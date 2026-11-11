@@ -564,6 +564,15 @@ async def get_expenses_summary(
 # =============================================================================
 # CALCULATE (Preview)
 # =============================================================================
+def _hitung_total(subtotal, tax_rate, pph_rate) -> tuple:
+    """SATU kalkulator pajak/PPh/total (Biaya BE gelombang 2): /calculate, buat_biaya_inti, ubah_biaya_inti, dan kedua pratinjau memakainya.
+    -> (tax_amount, pph_amount, total_amount) Decimal; pajak dan PPh dibulatkan rupiah penuh (putusan pembulatan 4 Nov)."""
+    s = Decimal(str(subtotal))
+    tax = (s * Decimal(str(tax_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+    pph = (s * Decimal(str(pph_rate or 0)) / Decimal("100")).quantize(Decimal("1"))
+    return tax, pph, s + tax - pph
+
+
 @router.post("/calculate", response_model=CalculateExpenseResponse)
 async def calculate_expense_totals(request: Request, body: CreateExpenseRequest):
     """
@@ -581,13 +590,7 @@ async def calculate_expense_totals(request: Request, body: CreateExpenseRequest)
             subtotal = body.amount or 0
 
         # Calculate tax and PPh
-        tax_amount = (
-            Decimal(str(subtotal)) * Decimal(str(body.tax_rate or 0)) / Decimal("100")
-        ).quantize(Decimal("1"))
-        pph_amount = (
-            Decimal(str(subtotal)) * Decimal(str(body.pph_rate or 0)) / Decimal("100")
-        ).quantize(Decimal("1"))
-        total_amount = subtotal + tax_amount - pph_amount
+        tax_amount, pph_amount, total_amount = _hitung_total(subtotal, body.tax_rate, body.pph_rate)
 
         # B8: Tinjau biaya POSTED dari KAS yang membuat saldo minus -> blok KAS_MINUS (penentu SAMA dengan create_expense_journal)
         blocks = []
@@ -1287,17 +1290,7 @@ async def buat_biaya_inti(conn, ctx: dict, body: CreateExpenseRequest) -> dict:
             status_code=400, detail="Expense amount must be greater than 0"
         )
 
-    tax_amount = (
-        Decimal(str(subtotal))
-        * Decimal(str(body.tax_rate or 0))
-        / Decimal("100")
-    ).quantize(Decimal("1"))
-    pph_amount = (
-        Decimal(str(subtotal))
-        * Decimal(str(body.pph_rate or 0))
-        / Decimal("100")
-    ).quantize(Decimal("1"))
-    total_amount = subtotal + tax_amount - pph_amount
+    tax_amount, pph_amount, total_amount = _hitung_total(subtotal, body.tax_rate, body.pph_rate)
 
     # Get paid_through account info
     paid_through = await conn.fetchrow(
@@ -1824,6 +1817,197 @@ async def create_expense_journal(
 # =============================================================================
 # UPDATE EXPENSE
 # =============================================================================
+async def ubah_biaya_inti(conn, ctx: dict, expense_id, body: UpdateExpenseRequest) -> tuple:
+    """Inti PATCH /expenses/{id} (diekstrak apa adanya, Biaya BE gelombang 2): kunci baris + periksa + hitung ulang + tulis DRAF. WAJIB di dalam transaksi pemanggil.
+    SATU penulis: handler PATCH DAN pratinjau ubah (POST /{id}/edit/preview, transaksi yang selalu di-ROLLBACK). -> (baris sebelum, baris sesudah)."""
+    existing = await conn.fetchrow(
+        "SELECT * FROM expenses WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+        str(expense_id),
+        ctx["tenant_id"],
+    )
+    if not existing:
+        raise GalatBerkode(404, "EXPENSE_TIDAK_DITEMUKAN", "Biaya tidak ditemukan.")
+    if existing["status"] != "draft":
+        raise GalatBerkode(400, "BIAYA_BUKAN_DRAF", "Hanya biaya draf yang bisa diubah; batalkan biaya yang sudah diterbitkan.")
+
+    data = body.model_dump(exclude_unset=True)
+
+    def _eff(key):
+        return data[key] if key in data else existing[key]
+
+    eff_date = _eff("expense_date")
+    eff_is_itemized = _eff("is_itemized")
+    eff_paid_through = _eff("paid_through_id")
+    eff_tax_rate = _eff("tax_rate")
+    eff_pph_rate = _eff("pph_rate")
+
+    # Law 5: periode tanggal efektif harus terbuka
+    await check_period_is_open(conn, ctx["tenant_id"], eff_date)
+
+    # Baris efektif: bila line_items dikirim -> ganti; else pakai yang ada
+    new_items = data["line_items"] if "line_items" in data else None
+    if new_items is not None and len(new_items) > 0:
+        eff_is_itemized = True
+    if eff_is_itemized:
+        if new_items is not None:
+            items_for_sum = new_items
+        else:
+            rows = await conn.fetch(
+                "SELECT account_id, account_name, amount, notes, line_number "
+                "FROM expense_items WHERE expense_id = $1 ORDER BY line_number",
+                str(expense_id),
+            )
+            items_for_sum = [dict(r) for r in rows]
+        if not items_for_sum:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one line item is required for itemized expense",
+            )
+        subtotal = sum(int(it["amount"]) for it in items_for_sum)
+    else:
+        subtotal = data["amount"] if "amount" in data else existing["subtotal"]
+
+    if subtotal is None or subtotal <= 0:
+        raise HTTPException(
+            status_code=400, detail="Expense amount must be greater than 0"
+        )
+
+    # paid_through WAJIB ada
+    paid_through = await conn.fetchrow(
+        "SELECT id, account_name, coa_id FROM bank_accounts "
+        "WHERE id = $1 AND tenant_id = $2",
+        str(eff_paid_through),
+        ctx["tenant_id"],
+    )
+    if not paid_through:
+        raise HTTPException(
+            status_code=400, detail="Invalid paid_through account"
+        )
+
+    async def _acct(aid):
+        if not aid:
+            return None
+        return await conn.fetchrow(
+            "SELECT id, name FROM chart_of_accounts "
+            "WHERE id = $1 AND tenant_id = $2",
+            str(aid),
+            ctx["tenant_id"],
+        )
+
+    # Akun beban WAJIB ada (per baris bila itemized, atau header bila tidak)
+    if eff_is_itemized:
+        for it in items_for_sum:
+            if not await _acct(it["account_id"]):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid expense account in line item",
+                )
+        eff_account_id = None
+        eff_account_name = None
+    else:
+        eff_account_id = _eff("account_id")
+        if not eff_account_id:
+            raise HTTPException(
+                status_code=400, detail="Expense account required"
+            )
+        acct = await _acct(eff_account_id)
+        if not acct:
+            raise HTTPException(
+                status_code=400, detail="Invalid expense account"
+            )
+        eff_account_name = (
+            data.get("account_name")
+            or (existing["account_name"] if "account_id" not in data else None)
+            or acct["name"]
+        )
+
+    # Recompute derived (Decimal) — cermin create_expense
+    tax_amount, pph_amount, total_amount = _hitung_total(subtotal, eff_tax_rate, eff_pph_rate)
+
+    eff_vendor_id = _eff("vendor_id")
+    eff_billed_to = _eff("billed_to_customer_id")
+    eff_tax_id = _eff("tax_id")
+
+    await conn.execute(
+        """
+        UPDATE expenses SET
+            expense_date = $1,
+            paid_through_id = $2, paid_through_name = $3, paid_through_coa_id = $4,
+            account_id = $5, account_name = $6,
+            vendor_id = $7, vendor_name = $8,
+            tax_id = $9, tax_name = $10, tax_rate = $11, tax_amount = $12,
+            pph_type = $13, pph_rate = $14, pph_amount = $15,
+            subtotal = $16, total_amount = $17, is_itemized = $18,
+            currency = $19, is_billable = $20, billed_to_customer_id = $21,
+            reference = $22, notes = $23, has_receipt = $24,
+            updated_at = NOW()
+        WHERE id = $25 AND tenant_id = $26 AND status = 'draft'
+        """,
+        eff_date,
+        str(eff_paid_through),
+        paid_through["account_name"],
+        paid_through["coa_id"],
+        str(eff_account_id) if eff_account_id else None,
+        eff_account_name,
+        str(eff_vendor_id) if eff_vendor_id else None,
+        _eff("vendor_name"),
+        str(eff_tax_id) if eff_tax_id else None,
+        _eff("tax_name"),
+        Decimal(str(eff_tax_rate or 0)),
+        tax_amount,
+        _eff("pph_type"),
+        Decimal(str(eff_pph_rate or 0)),
+        pph_amount,
+        subtotal,
+        total_amount,
+        eff_is_itemized,
+        _eff("currency") or "IDR",
+        _eff("is_billable"),
+        str(eff_billed_to) if eff_billed_to else None,
+        _eff("reference"),
+        _eff("notes"),
+        _eff("has_receipt"),
+        str(expense_id),
+        ctx["tenant_id"],
+    )
+
+    # Ganti baris bila line_items dikirim; bersihkan bila beralih ke non-itemized
+    if new_items is not None:
+        await conn.execute(
+            "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
+            str(expense_id),
+            ctx["tenant_id"],
+        )
+        if eff_is_itemized:
+            for idx, it in enumerate(new_items, 1):
+                await conn.execute(
+                    """
+                    INSERT INTO expense_items (
+                        tenant_id, expense_id, account_id, account_name,
+                        amount, notes, line_number
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    ctx["tenant_id"],
+                    str(expense_id),
+                    str(it["account_id"]),
+                    it.get("account_name"),
+                    it["amount"],
+                    it.get("notes"),
+                    idx,
+                )
+    elif "is_itemized" in data and not eff_is_itemized:
+        await conn.execute(
+            "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
+            str(expense_id),
+            ctx["tenant_id"],
+        )
+
+    expense = await conn.fetchrow(
+        "SELECT * FROM expenses WHERE id = $1", str(expense_id)
+    )
+    return existing, expense
+
+
 @router.patch("/{expense_id}", response_model=UpdateExpenseResponse)
 async def update_expense(
     request: Request, expense_id: UUID, body: UpdateExpenseRequest, response: Response = None
@@ -1860,203 +2044,7 @@ async def update_expense(
                                                              body.model_dump(mode="json", exclude_unset=True), response)
                 if _lama is not None:
                     return _lama
-                existing = await conn.fetchrow(
-                    "SELECT * FROM expenses WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                    str(expense_id),
-                    ctx["tenant_id"],
-                )
-                if not existing:
-                    raise HTTPException(status_code=404, detail="Expense not found")
-                if existing["status"] != "draft":
-                    raise HTTPException(
-                        status_code=400, detail="Only draft expenses can be updated"
-                    )
-
-                data = body.model_dump(exclude_unset=True)
-
-                def _eff(key):
-                    return data[key] if key in data else existing[key]
-
-                eff_date = _eff("expense_date")
-                eff_is_itemized = _eff("is_itemized")
-                eff_paid_through = _eff("paid_through_id")
-                eff_tax_rate = _eff("tax_rate")
-                eff_pph_rate = _eff("pph_rate")
-
-                # Law 5: periode tanggal efektif harus terbuka
-                await check_period_is_open(conn, ctx["tenant_id"], eff_date)
-
-                # Baris efektif: bila line_items dikirim -> ganti; else pakai yang ada
-                new_items = data["line_items"] if "line_items" in data else None
-                if new_items is not None and len(new_items) > 0:
-                    eff_is_itemized = True
-                if eff_is_itemized:
-                    if new_items is not None:
-                        items_for_sum = new_items
-                    else:
-                        rows = await conn.fetch(
-                            "SELECT account_id, account_name, amount, notes, line_number "
-                            "FROM expense_items WHERE expense_id = $1 ORDER BY line_number",
-                            str(expense_id),
-                        )
-                        items_for_sum = [dict(r) for r in rows]
-                    if not items_for_sum:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="At least one line item is required for itemized expense",
-                        )
-                    subtotal = sum(int(it["amount"]) for it in items_for_sum)
-                else:
-                    subtotal = data["amount"] if "amount" in data else existing["subtotal"]
-
-                if subtotal is None or subtotal <= 0:
-                    raise HTTPException(
-                        status_code=400, detail="Expense amount must be greater than 0"
-                    )
-
-                # paid_through WAJIB ada
-                paid_through = await conn.fetchrow(
-                    "SELECT id, account_name, coa_id FROM bank_accounts "
-                    "WHERE id = $1 AND tenant_id = $2",
-                    str(eff_paid_through),
-                    ctx["tenant_id"],
-                )
-                if not paid_through:
-                    raise HTTPException(
-                        status_code=400, detail="Invalid paid_through account"
-                    )
-
-                async def _acct(aid):
-                    if not aid:
-                        return None
-                    return await conn.fetchrow(
-                        "SELECT id, name FROM chart_of_accounts "
-                        "WHERE id = $1 AND tenant_id = $2",
-                        str(aid),
-                        ctx["tenant_id"],
-                    )
-
-                # Akun beban WAJIB ada (per baris bila itemized, atau header bila tidak)
-                if eff_is_itemized:
-                    for it in items_for_sum:
-                        if not await _acct(it["account_id"]):
-                            raise HTTPException(
-                                status_code=400,
-                                detail="Invalid expense account in line item",
-                            )
-                    eff_account_id = None
-                    eff_account_name = None
-                else:
-                    eff_account_id = _eff("account_id")
-                    if not eff_account_id:
-                        raise HTTPException(
-                            status_code=400, detail="Expense account required"
-                        )
-                    acct = await _acct(eff_account_id)
-                    if not acct:
-                        raise HTTPException(
-                            status_code=400, detail="Invalid expense account"
-                        )
-                    eff_account_name = (
-                        data.get("account_name")
-                        or (existing["account_name"] if "account_id" not in data else None)
-                        or acct["name"]
-                    )
-
-                # Recompute derived (Decimal) — cermin create_expense
-                tax_amount = (
-                    Decimal(str(subtotal))
-                    * Decimal(str(eff_tax_rate or 0))
-                    / Decimal("100")
-                ).quantize(Decimal("1"))
-                pph_amount = (
-                    Decimal(str(subtotal))
-                    * Decimal(str(eff_pph_rate or 0))
-                    / Decimal("100")
-                ).quantize(Decimal("1"))
-                total_amount = Decimal(str(subtotal)) + tax_amount - pph_amount
-
-                eff_vendor_id = _eff("vendor_id")
-                eff_billed_to = _eff("billed_to_customer_id")
-                eff_tax_id = _eff("tax_id")
-
-                await conn.execute(
-                    """
-                    UPDATE expenses SET
-                        expense_date = $1,
-                        paid_through_id = $2, paid_through_name = $3, paid_through_coa_id = $4,
-                        account_id = $5, account_name = $6,
-                        vendor_id = $7, vendor_name = $8,
-                        tax_id = $9, tax_name = $10, tax_rate = $11, tax_amount = $12,
-                        pph_type = $13, pph_rate = $14, pph_amount = $15,
-                        subtotal = $16, total_amount = $17, is_itemized = $18,
-                        currency = $19, is_billable = $20, billed_to_customer_id = $21,
-                        reference = $22, notes = $23, has_receipt = $24,
-                        updated_at = NOW()
-                    WHERE id = $25 AND tenant_id = $26 AND status = 'draft'
-                    """,
-                    eff_date,
-                    str(eff_paid_through),
-                    paid_through["account_name"],
-                    paid_through["coa_id"],
-                    str(eff_account_id) if eff_account_id else None,
-                    eff_account_name,
-                    str(eff_vendor_id) if eff_vendor_id else None,
-                    _eff("vendor_name"),
-                    str(eff_tax_id) if eff_tax_id else None,
-                    _eff("tax_name"),
-                    Decimal(str(eff_tax_rate or 0)),
-                    tax_amount,
-                    _eff("pph_type"),
-                    Decimal(str(eff_pph_rate or 0)),
-                    pph_amount,
-                    subtotal,
-                    total_amount,
-                    eff_is_itemized,
-                    _eff("currency") or "IDR",
-                    _eff("is_billable"),
-                    str(eff_billed_to) if eff_billed_to else None,
-                    _eff("reference"),
-                    _eff("notes"),
-                    _eff("has_receipt"),
-                    str(expense_id),
-                    ctx["tenant_id"],
-                )
-
-                # Ganti baris bila line_items dikirim; bersihkan bila beralih ke non-itemized
-                if new_items is not None:
-                    await conn.execute(
-                        "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
-                        str(expense_id),
-                        ctx["tenant_id"],
-                    )
-                    if eff_is_itemized:
-                        for idx, it in enumerate(new_items, 1):
-                            await conn.execute(
-                                """
-                                INSERT INTO expense_items (
-                                    tenant_id, expense_id, account_id, account_name,
-                                    amount, notes, line_number
-                                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                                """,
-                                ctx["tenant_id"],
-                                str(expense_id),
-                                str(it["account_id"]),
-                                it.get("account_name"),
-                                it["amount"],
-                                it.get("notes"),
-                                idx,
-                            )
-                elif "is_itemized" in data and not eff_is_itemized:
-                    await conn.execute(
-                        "DELETE FROM expense_items WHERE expense_id = $1 AND tenant_id = $2",
-                        str(expense_id),
-                        ctx["tenant_id"],
-                    )
-
-                expense = await conn.fetchrow(
-                    "SELECT * FROM expenses WHERE id = $1", str(expense_id)
-                )
+                _sebelum, expense = await ubah_biaya_inti(conn, ctx, expense_id, body)
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "EXPENSE_UPDATE", {
                     "success": True,
                     "message": "Expense updated successfully",
@@ -2253,6 +2241,26 @@ async def _posting_biaya(conn, ctx: dict, expense_id) -> dict:
     }
 
 
+async def _efek_jurnal(conn, tid: str, expense_id, aksi_nama: str) -> tuple:
+    """Jurnal + transaksi bank yang DITULIS/akan ditulis oleh aksi pada biaya itu (dibaca di transaksi pratinjau yang akan di-ROLLBACK). -> (jurnal[], bank[])."""
+    jurnal, bank = [], []
+    e = await conn.fetchrow("SELECT journal_id FROM expenses WHERE id = $1 AND tenant_id = $2", str(expense_id), tid)
+    jid = e["journal_id"] if e else None
+    if aksi_nama == "batalkan" and jid:   # jurnal yang AKAN ditulis = pembalik jurnal asli
+        jid = await conn.fetchval("SELECT id FROM journal_entries WHERE reversal_of_id = $1", jid)
+    if jid:
+        j = await conn.fetchrow("SELECT id, journal_number, source_type, description FROM journal_entries WHERE id = $1", jid)
+        baris = await conn.fetch(
+            """SELECT c.account_code, c.name AS account_name, jl.debit, jl.credit FROM journal_lines jl
+               JOIN chart_of_accounts c ON c.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""", jid)
+        jurnal.append({"source_type": j["source_type"], "description": j["description"],
+                       "lines": [{"account_code": b["account_code"], "account_name": b["account_name"],
+                                  "debit": float(b["debit"] or 0), "credit": float(b["credit"] or 0)} for b in baris]})
+        bank = [{"amount": float(b["amount"]), "transaction_type": b["transaction_type"]} for b in await conn.fetch(
+            "SELECT amount, transaction_type FROM bank_transactions WHERE journal_id = $1", jid)]
+    return jurnal, bank
+
+
 async def _pratinjau_biaya(request: Request, expense_id: UUID, aksi_nama: str, jalankan) -> dict:
     """Biaya t2: pratinjau = jalur tulis YANG SAMA di transaksi yang SELALU di-ROLLBACK -> blok/jurnal/transaksi bank identik."""
     ctx = get_user_context(request)
@@ -2271,20 +2279,7 @@ async def _pratinjau_biaya(request: Request, expense_id: UUID, aksi_nama: str, j
                 blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or f"HTTP_{e.status_code}",
                              "message": (d.get("message") or str(d)) if isinstance(d, dict) else str(d)})
             if not blok:
-                e = await conn.fetchrow("SELECT journal_id FROM expenses WHERE id = $1 AND tenant_id = $2", str(expense_id), ctx["tenant_id"])
-                jid = e["journal_id"] if e else None
-                if aksi_nama == "batalkan" and jid:   # jurnal yang AKAN ditulis = pembalik jurnal asli
-                    jid = await conn.fetchval("SELECT id FROM journal_entries WHERE reversal_of_id = $1", jid)
-                if jid:
-                    j = await conn.fetchrow("SELECT id, journal_number, source_type, description FROM journal_entries WHERE id = $1", jid)
-                    baris = await conn.fetch(
-                        """SELECT c.account_code, c.name AS account_name, jl.debit, jl.credit FROM journal_lines jl
-                           JOIN chart_of_accounts c ON c.id = jl.account_id WHERE jl.journal_id = $1 ORDER BY jl.line_number""", jid)
-                    jurnal.append({"source_type": j["source_type"], "description": j["description"],
-                                   "lines": [{"account_code": b["account_code"], "account_name": b["account_name"],
-                                              "debit": float(b["debit"] or 0), "credit": float(b["credit"] or 0)} for b in baris]})
-                    bank = [{"amount": float(b["amount"]), "transaction_type": b["transaction_type"]} for b in await conn.fetch(
-                        "SELECT amount, transaction_type FROM bank_transactions WHERE journal_id = $1", jid)]
+                jurnal, bank = await _efek_jurnal(conn, ctx["tenant_id"], expense_id, aksi_nama)
         finally:
             await tr.rollback()   # SELALU: pratinjau tak pernah menulis
     return {"success": True, "data": {"action": aksi_nama, "can_proceed": not blok, "blocks": blok, "journals": jurnal,
@@ -2310,6 +2305,77 @@ async def preview_void_expense(request: Request, expense_id: UUID, body: Optiona
         d["blocks"].append({"code": "BIAYA_REASON_REQUIRED", "message": "Isi alasan pembatalan."})
         d["can_proceed"] = False
     return hasil
+
+
+async def _pratinjau_tulis(request: Request, jalankan) -> dict:
+    """Biaya BE gelombang 2 (B2): pratinjau BUAT/UBAH = jalur tulis YANG SAMA (buat_biaya_inti / ubah_biaya_inti) di transaksi yang SELALU di-ROLLBACK:
+    blok/jurnal/transaksi bank/angka identik dgn tulis, nomor dokumen + urut jurnal ikut batal (penghitung berbasis tabel), nol tulisan.
+    `jalankan(conn, ctx)` -> dict {expense_id, ...} atau melempar HTTPException (-> blok berkalimat, tetap 200)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    await _ensure_role_preconditions(pool, ctx["tenant_id"])
+    blok, jurnal, bank, hasil = [], [], [], None
+    async with pool.acquire() as conn:
+        await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            try:
+                hasil = await jalankan(conn, ctx)
+            except HTTPException as e:
+                d = e.detail
+                blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or getattr(e, "code", None) or f"HTTP_{e.status_code}",
+                             "message": (d.get("message") or str(d)) if isinstance(d, dict) else str(d)})
+            if not blok and hasil:
+                jurnal, bank = await _efek_jurnal(conn, ctx["tenant_id"], hasil["expense_id"], "posting")
+        finally:
+            await tr.rollback()   # SELALU: pratinjau tak pernah menulis
+    return {"blocks": blok, "journals": jurnal, "bank_transactions": bank, "hasil": hasil}
+
+
+_KOLOM_ANGKA = ("subtotal", "tax_amount", "pph_amount", "total_amount")
+
+
+def _angka_biaya(row) -> dict:
+    """Angka + isian tampil satu biaya (sebelum/sesudah ubah, hasil buat) -- dari baris DB yang SAMA dgn tulis."""
+    return {**{k: row[k] for k in _KOLOM_ANGKA}, "expense_date": row["expense_date"].isoformat() if row["expense_date"] else None,
+            "paid_through_name": row["paid_through_name"], "account_name": row["account_name"], "vendor_name": row["vendor_name"],
+            "is_itemized": bool(row["is_itemized"]), "status": row["status"]}
+
+
+@router.post("/preview")
+async def preview_create_expense(request: Request, body: CreateExpenseRequest):
+    """B2: pratinjau BUAT biaya (badan = CreateExpenseRequest; itemized + pajak + PPh; status draft|posted). 200 selalu: can_proceed/blocks/journals/
+    bank_transactions/calculation/payload. Penentu = buat_biaya_inti (SAMA dgn POST /expenses) di transaksi ROLLBACK; draft = tanpa jurnal/bank."""
+    async def jalan(conn, ctx):
+        await buat_biaya_inti(conn, ctx, body)
+        row = await conn.fetchrow("SELECT * FROM expenses WHERE tenant_id = $1 AND created_by = $2 ORDER BY created_at DESC LIMIT 1", ctx["tenant_id"], str(ctx["user_id"]))
+        return {"expense_id": row["id"], "sesudah": _angka_biaya(row)}
+    h = await _pratinjau_tulis(request, jalan)
+    sesudah = (h["hasil"] or {}).get("sesudah")
+    if sesudah:
+        hitung = {k: sesudah[k] for k in _KOLOM_ANGKA}
+    else:   # ditolak: angka dari kalkulator yang SAMA atas badan (bila masuk akal)
+        sub = sum(i.amount for i in body.line_items) if body.is_itemized and body.line_items else (body.amount or 0)
+        pajak, pph, total = _hitung_total(sub, body.tax_rate, body.pph_rate) if sub else (None, None, None)
+        hitung = {"subtotal": sub or None, "tax_amount": pajak, "pph_amount": pph, "total_amount": total}
+    return {"success": True, "data": {"action": "buat", "can_proceed": not h["blocks"], "blocks": h["blocks"], "journals": h["journals"],
+                                      "bank_transactions": h["bank_transactions"], "calculation": hitung, "payload": body.model_dump(mode="json"), "preview": True}}
+
+
+@router.post("/{expense_id}/edit/preview")
+async def preview_update_expense(request: Request, expense_id: UUID, body: UpdateExpenseRequest):
+    """B2: pratinjau UBAH draf (badan = UpdateExpenseRequest, parsial). Penentu = ubah_biaya_inti (SAMA dgn PATCH) di transaksi ROLLBACK: sebelum/sesudah dari baris
+    DB yang sama; draf tanpa jurnal (journals/bank kosong); bukan draf = blok BIAYA_BUKAN_DRAF."""
+    async def jalan(conn, ctx):
+        sebelum, sesudah = await ubah_biaya_inti(conn, ctx, expense_id, body)
+        return {"expense_id": expense_id, "sebelum": _angka_biaya(sebelum), "sesudah": _angka_biaya(sesudah)}
+    h = await _pratinjau_tulis(request, jalan)
+    hasil = h["hasil"] or {}
+    return {"success": True, "data": {"action": "ubah", "can_proceed": not h["blocks"], "blocks": h["blocks"], "journals": h["journals"],
+                                      "bank_transactions": h["bank_transactions"], "sebelum": hasil.get("sebelum"), "sesudah": hasil.get("sesudah"),
+                                      "calculation": {k: hasil["sesudah"][k] for k in _KOLOM_ANGKA} if hasil.get("sesudah") else None,
+                                      "payload": body.model_dump(mode="json", exclude_unset=True), "preview": True}}
 
 
 @router.post("/{expense_id}/delete/preview")

@@ -217,7 +217,7 @@ def test_post_dan_void_idempoten_replay_tanpa_menulis(pasang, idem):
 
 def test_patch_idempoten_disambung_sebelum_tulis():
     src = inspect.getsource(EX.update_expense)
-    assert '"EXPENSE_UPDATE", expense_id' in src and src.index("idem_buat.mulai_aksi(") < src.index("SELECT * FROM expenses WHERE id = $1 AND tenant_id = $2 FOR UPDATE")
+    assert '"EXPENSE_UPDATE", expense_id' in src and src.index("idem_buat.mulai_aksi(") < src.index("ubah_biaya_inti(")   # idempotensi SEBELUM penulis (gelombang 2: inti diekstrak)
     assert 'exclude_unset=True' in src and "idem_buat.simpan(conn, ctx, _kp, _sd, \"EXPENSE_UPDATE\"" in src
     for fn in (EX.post_expense, EX.void_expense, EX.update_expense):
         assert "response" in inspect.signature(fn).parameters           # penerima header X-Idempotent-Replay

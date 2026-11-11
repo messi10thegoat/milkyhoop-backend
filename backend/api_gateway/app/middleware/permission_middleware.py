@@ -293,6 +293,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/expenses/[^/]+/post/preview$", ["POST"], "expense", "P"),  # Biaya t2: pratinjau = izin tulisnya
     (r"^/api/expenses/[^/]+/void/preview$", ["POST"], "expense", "V"),
     (r"^/api/expenses/[^/]+/delete/preview$", ["POST"], "expense", "D"),  # B7: pratinjau hapus = izin tulisnya
+    (r"^/api/expenses/preview$", ["POST"], "expense", "C"),  # B2: pratinjau buat = izin buat
+    (r"^/api/expenses/[^/]+/edit/preview$", ["POST"], "expense", "U"),  # B2: pratinjau ubah = izin ubah
     (r"^/api/expenses/[^/]+/attachments$", ["POST"], "expense", "U"),
     # ================================================================
     # Sub-jalur & rute tulis yang TAK PERNAH terjaga — DITAMBAHKAN 12 Sep 2026.

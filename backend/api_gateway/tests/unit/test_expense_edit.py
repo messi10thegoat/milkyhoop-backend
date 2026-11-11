@@ -153,7 +153,7 @@ async def test_a_red_non_draft(monkeypatch):
     _patch(monkeypatch, conn)
     with pytest.raises(HTTPException) as ei:
         await update_expense(_req(), EXP, UpdateExpenseRequest(amount=1))
-    assert ei.value.status_code == 400 and "draft" in ei.value.detail
+    assert ei.value.status_code == 400 and ei.value.code == "BIAYA_BUKAN_DRAF" and "biaya draf" in ei.value.detail   # gelombang 2: berkode + kalimat Indonesia
 
 
 @pytest.mark.asyncio
