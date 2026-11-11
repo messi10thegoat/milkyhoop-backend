@@ -1,5 +1,5 @@
 # Konfig gerbang unit laporan-fix-2 (basis kas per akun + footing bulat per baris + label arus kas/dasbor + periode_rentang_text). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-lapfix2; CABANG=feat/laporan-fix-2; NAMA_JENDELA=lapfix-2
+W=/root/mh-lapfix2-r2; CABANG=feat/laporan-fix-2-r2; NAMA_JENDELA=lapfix-2
 POLA_UNIT='basis_kas|footing|laporan_psak|laporan_fix2|dashboard|laba_presisi|report|ledger|cash_flow|arus_kas|teks_galat|rupiah|izin_rute|inventaris_rute|pagar_rute'
 HARNESS=scripts/ops/uji-salinan-laporan-psak.sh
 PENANDA_BERKAS=services/report_engine/basis_kas.py; PENANDA='def ringkas'
