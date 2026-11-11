@@ -207,6 +207,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         # gelombang 4 L1: tampilan server (aditif)
         "judul": B.JUDUL["arus_kas"],
         "periode_text": B.periode_berakhir(end),
+        "periode_rentang_text": B.periode_rentang(start, end),
         "satuan_text": B.SATUAN_TEXT,
         "baris": r,
     }

@@ -108,6 +108,7 @@ async def generate_income_statement(conn, tenant_id: str, start: str, end: str, 
         # gelombang 4 L1: tampilan server (aditif)
         "judul": B.JUDUL["laba_rugi"],
         "periode_text": B.periode_berakhir(end),
+        "periode_rentang_text": B.periode_rentang(start, end),
         "basis_text": B.BASIS_TEXT.get(basis, basis),
         "satuan_text": B.SATUAN_TEXT,
         "baris": baris_laba_rugi(m),

@@ -27,9 +27,13 @@ async def get_pool() -> asyncpg.Pool:
     return await get_db_pool()
 
 
-def _tampil(laporan: dict, presisi: int) -> dict:
-    """nilai_tampil per baris (SATU pemformat; gaya teks_galat.GAYA_ANGKA_LAPORAN diputus belakangan)."""
+def _tampil(laporan: dict, presisi: int, jenis: str = None) -> dict:
+    """nilai_tampil per baris (SATU pemformat; gaya teks_galat.GAYA_ANGKA_LAPORAN diputus belakangan). jenis (laba_rugi|neraca|arus_kas) ->
+    SATU footing: baris akun dibulatkan, total = Σ tampil (laporan-fix-2 (b), pola Accurate)."""
     from ..services import teks_galat as tg
+    if jenis:
+        from ..services.report_engine.footing import footing
+        footing(jenis, laporan.get("baris", []), presisi)
     for b in laporan.get("baris", []):
         b["nilai_tampil"] = None if b["nilai"] is None else tg.angka_laporan(b["nilai"], presisi)
     return laporan
@@ -84,9 +88,9 @@ async def get_financial_statements(
             presisi = await presisi_tenant(conn, tenant_id)
 
         return {
-            "balance_sheet": _tampil(bs, presisi),
-            "income_statement": _tampil(pl, presisi),
-            "cash_flow": _tampil(cf, presisi),
+            "balance_sheet": _tampil(bs, presisi, "neraca"),
+            "income_statement": _tampil(pl, presisi, "laba_rugi"),
+            "cash_flow": _tampil(cf, presisi, "arus_kas"),
             "validation_errors": errors,
             "generated_at": datetime.utcnow().isoformat(),
         }
