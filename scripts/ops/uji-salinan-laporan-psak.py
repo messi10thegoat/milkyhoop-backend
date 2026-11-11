@@ -117,7 +117,7 @@ def rentang():
 
 
 def lama_saja(lap: dict) -> dict:
-    return {k: v for k, v in lap.items() if k not in ("judul", "periode_text", "basis_text", "satuan_text", "baris")}
+    return {k: v for k, v in lap.items() if k not in ("judul", "periode_text", "periode_rentang_text", "basis_text", "satuan_text", "baris")}
 
 
 async def saldo(conn, tid, aid, mulai, akhir):

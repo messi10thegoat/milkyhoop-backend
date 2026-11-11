@@ -68,6 +68,6 @@ def test_footing_tetap_jumlah_dari_butir_tampil_dan_sql_efektif_per_arah(jalan):
     n = {b["kunci"]: b for b in r["baris"] if b["jenis"] != "judul"}
     assert n["kas_neto_operasi"]["nilai"] == "-177000.00"                             # Σ tampil: 201.000 − 378.000
     sql = k.sql[0][0]
-    assert "is_effective_journal(je.id)" in sql and "CASE WHEN cpj.net_cash > 0 THEN 1 ELSE -1 END AS arah" in sql
+    assert "reversed_by_id IS NOT NULL" in sql and "CASE WHEN cpj.net_cash > 0 THEN 1 ELSE -1 END AS arah" in sql
     assert "GROUP BY flow_category, account_type, arah," in sql
     assert "je.tenant_id = $1" in sql

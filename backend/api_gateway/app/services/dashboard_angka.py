@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
+from .report_engine.aliran_kas import KONDISI_ALIRAN  # SATU definisi aliran dgn Arus Kas PSAK (laporan-fix-2)
 from .report_engine.ledger import compute_balance, compute_balance_detail
 
 NOL = Decimal("0")
@@ -31,7 +32,7 @@ SQL_ARUS_KAS_HARIAN = f"""
         SELECT je.id, je.journal_date
         FROM journal_entries je
         WHERE je.tenant_id = $1 AND je.journal_date >= $2 AND je.journal_date <= $3
-          AND je.status = 'POSTED' AND is_effective_journal(je.id) = true
+          AND {KONDISI_ALIRAN}
           AND je.source_type NOT IN ({", ".join(f"'{s}'" for s in SUMBER_SALDO_AWAL)})
           AND EXISTS (SELECT 1 FROM journal_lines jl2 JOIN chart_of_accounts c2 ON c2.id = jl2.account_id
                       WHERE jl2.journal_id = je.id AND COALESCE(c2.is_cash, false) = false)

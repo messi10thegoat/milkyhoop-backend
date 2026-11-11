@@ -13,6 +13,7 @@ lama; + baris[] tampil server (report_engine.baris; label kas neto mengikuti TAN
 from decimal import Decimal
 from datetime import date as date_type, datetime, timedelta
 from . import baris as B
+from .aliran_kas import KONDISI_ALIRAN
 from .ledger import compute_balance, _to_date
 
 
@@ -69,7 +70,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
     Direct method cash flow statement with line items.
     Uses proportional distribution to avoid N:M double-counting.
     """
-    sql = """
+    sql = f"""
         WITH cash_per_journal AS (
             -- Step 1: Net cash movement per journal (avoids double-counting)
             SELECT jl.journal_id,
@@ -77,8 +78,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
             FROM journal_lines jl
             JOIN journal_entries je ON je.id = jl.journal_id
             JOIN chart_of_accounts coa ON coa.id = jl.account_id
-            WHERE je.status = 'POSTED'
-              AND is_effective_journal(je.id)   -- laporan-fix-2: SATU definisi dgn kartu arus kas dasbor (jurnal EFEKTIF; pasangan batal tak jadi aliran)
+            WHERE {KONDISI_ALIRAN}   -- laporan-fix-2: SATU definisi dgn kartu arus kas dasbor (sadar-periode; lihat aliran_kas.py)
               AND je.tenant_id = $1
               AND je.journal_date >= $2
               AND je.journal_date <= $3
