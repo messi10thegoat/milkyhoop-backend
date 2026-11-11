@@ -23,6 +23,8 @@ INVENTARIS = DISINI / "inventaris_rute_tulis.txt"
 
 # pratinjau -> rute tulis yang benar-benar dijalankan, bila bukan "jalur tanpa /preview"
 KHUSUS = {
+    # Biaya B7 (gelombang 1): pratinjau hapus draf -> DELETE /expenses/{id} (penentu SAMA: biaya_daftar.blok_hapus; izin expense D)
+    "POST /api/expenses/{expense_id}/delete/preview": "DELETE /api/expenses/{expense_id}",
     # pelunasan faktur/pesanan menulis receive_payments (penulis bersama so_pelunasan._jalankan_inti)
     "POST /api/sales-invoices/{invoice_id}/receive-payment/preview": "POST /api/receive-payments",
     "POST /api/sales-orders/{order_id}/receive-payment/preview": "POST /api/receive-payments",
