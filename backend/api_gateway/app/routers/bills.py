@@ -51,7 +51,8 @@ from ..schemas.bills import (
 )
 
 # Import calculator for preview endpoint
-from ..services.bills_service import PESAN_TAGIHAN_TAK_ADA, BillCalculator, NomorTerpakai, PESAN_NOMOR_TERPAKAI
+from ..services.bills_service import PESAN_TAGIHAN_TAK_ADA, BillCalculator
+from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services.tax_factor import resolve_dpp_factor
 from ..services.role_resolver import (  # noqa: E402
     AccountRole,
@@ -804,6 +805,15 @@ async def health_check():
 # =============================================================================
 # GET BILL DETAIL
 # =============================================================================
+@router.get("/next-number")
+async def pratinjau_nomor_tagihan(request: Request):
+    """BUG-149: nomor otomatis BERIKUTNYA untuk form (PERKIRAAN: hanya baca, seri tak dimakan; penulis paralel bisa mengambilnya dulu)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": {"number": await NOMOR.pratinjau(conn, ctx["tenant_id"], "bill"), "estimated": True}}
+
+
 @router.get("/{bill_id}", response_model=BillDetailResponse)
 async def get_bill_detail(request: Request, bill_id: UUID):
     """
@@ -1207,11 +1217,10 @@ async def create_bill(request: Request, body: CreateBillRequest):
 
     except HTTPException:
         raise
-    except NomorTerpakai as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except asyncpg.exceptions.UniqueViolationError:
-        raise HTTPException(status_code=409, detail=PESAN_NOMOR_TERPAKAI)
     except Exception as e:
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)
+        if galat_nomor:
+            raise galat_nomor from e
         logger.error(f"Error creating bill: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat faktur pembelian.")
 
@@ -1739,12 +1748,13 @@ async def create_bill_v2(request: Request, body: CreateBillRequestV2, response: 
 
     except HTTPException:
         raise
-    except NomorTerpakai as e:
-        raise HTTPException(status_code=409, detail=str(e))   # nomor manual sudah dipakai = konflik, bukan isian salah (3 Nov 2026)
     except asyncpg.exceptions.UniqueViolationError as e:
         logger.error(f"Duplicate bill: {e}")
-        # balapan serentak nomor yang sama: UNIQUE (tenant, invoice_number) = penegak akhir -> 409
-        raise HTTPException(status_code=409, detail=PESAN_NOMOR_TERPAKAI)
+        # balapan serentak nomor yang sama: UNIQUE (tenant, invoice_number) = penegak akhir -> 409 (hanya indeks nomor)
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)
+        if galat_nomor:
+            raise galat_nomor from e
+        raise HTTPException(status_code=409, detail="Data bertabrakan dengan data yang sudah ada.")
     except asyncpg.exceptions.ForeignKeyViolationError as e:
         logger.error(f"Foreign key error: {e}")
         raise HTTPException(

@@ -261,5 +261,6 @@ async def test_nomor_sama_bukan_medan_terkunci_nomor_beda_terkunci_terstruktur()
 def test_pra_cek_nomor_router_hanya_jalur_draf_dan_medan_sama_tak_masuk_riwayat():
     src = inspect.getsource(SO.update_sales_order)
     assert "Nomor dokumen yang sudah terbit tidak dapat diubah" not in src      # 400 polos hilang; service yang menolak
-    assert 'order["status"] == "draft" and await conn.fetchval(' in src         # pra-cek unik hanya draf
+    assert 'if order["status"] == "draft":\n                        await NOMOR.pastikan_bebas(' in src   # pra-cek unik hanya draf
+    assert src.count("NOMOR.pastikan_bebas(") == 1
     assert "fs -= set(HEADER_KUNCI)" in inspect.getsource(SUT.ubah)

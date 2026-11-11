@@ -26,6 +26,7 @@ from fastapi import HTTPException  # B1b-2: inti hapus draf menolak dengan {code
 from decimal import Decimal, ROUND_HALF_UP
 from .sales_doc_calc import q2 as _q2
 from . import teks_galat as tg  # 6a  # item 7: 0.01 HALF_UP
+from . import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from . import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void (Law 12)
 from .tax_factor import resolve_dpp_factor
 
@@ -458,24 +459,6 @@ async def hapus_draf_tagihan_core(conn, tenant_id: str, bill_id, user_id=None) -
             f"memiliki referensi terkait: {fk_err.detail or str(fk_err)}")})
     return {"id": str(bill_id), "invoice_number": bill["invoice_number"]}, berkas
 
-
-PESAN_NOMOR_TERPAKAI = "Nomor faktur sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk auto-generate."
-
-
-async def nomor_tagihan(conn, tenant_id: str, manual, sql_generator: str) -> str:
-    """Nomor tagihan SATU aturan (create v1 + v2; 3 Nov 2026): manual = trim, sudah dipakai di tenant ini -> NomorTerpakai
-    (router -> 409); kosong -> generator DB yang MELOMPATI nomor terpakai (migrasi V475). UNIQUE (tenant, invoice_number) tetap
-    penegak akhir untuk balapan serentak (UniqueViolation -> 409 di router)."""
-    nomor = (manual or "").strip() if isinstance(manual, str) else manual
-    if nomor:
-        if await conn.fetchval("SELECT 1 FROM bills WHERE tenant_id = $1 AND invoice_number = $2", tenant_id, nomor):
-            raise NomorTerpakai(PESAN_NOMOR_TERPAKAI)
-        return nomor
-    return await conn.fetchval(sql_generator, tenant_id)
-
-
-class NomorTerpakai(Exception):
-    """Nomor dokumen manual sudah dipakai -> 409 (bukan 400)."""
 
 class BillsService:
     """Service for managing bills (faktur pembelian)."""
@@ -1040,8 +1023,8 @@ class BillsService:
                 )
 
                 # 1. Nomor: manual (trim, terpakai -> 409) atau otomatis yang melompati terpakai (nomor_tagihan, satu aturan)
-                invoice_number = await nomor_tagihan(conn, tenant_id, request.get("invoice_number"),
-                                                     "SELECT generate_bill_number($1, 'BILL')")
+                invoice_number = await NOMOR.tetapkan_nomor(conn, tenant_id, "bill", request.get("invoice_number"),
+                                                            NOMOR.GENERATOR_TAGIHAN_V1)
 
                 # 2. Get vendor name
                 vendor_name = request.get("vendor_name")
@@ -2523,8 +2506,7 @@ class BillsService:
                     return {"success": False, "message": _bloks[0]["message"], "data": None}
 
                 # 1. Nomor: manual (trim, terpakai -> 409) atau otomatis yang melompati terpakai (nomor_tagihan, satu aturan)
-                invoice_number = await nomor_tagihan(conn, tenant_id, request.get("invoice_number"),
-                                                     "SELECT generate_purchase_bill_number($1)")
+                invoice_number = await NOMOR.tetapkan_nomor(conn, tenant_id, "bill", request.get("invoice_number"))
 
                 # 2. Resolve vendor (auto-create if needed)
                 vendor_id = request.get("vendor_id")

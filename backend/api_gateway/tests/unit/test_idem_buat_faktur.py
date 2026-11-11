@@ -98,7 +98,7 @@ def test_kunci_sama_badan_beda_409_menyebut_faktur_tersimpan(monkeypatch, conn):
 
 def test_bentuk_kode():
     src = inspect.getsource(SI.create_invoice)
-    assert src.index("IDEM:") < src.index("generate_sales_invoice_number"), "replay SEBELUM nomor terbit"
+    assert src.index("IDEM:") < src.index("tetapkan_nomor"), "replay SEBELUM nomor terbit"
     assert src.count("_simpan_idem_buat(") == 2, "draf DAN auto_post menyimpan replay"
     assert "\n                return {" not in src and "\n                    return {" not in src
     assert inspect.signature(SI.create_invoice).parameters["response"].default is None

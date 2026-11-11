@@ -43,6 +43,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.tanggal_uang_muka import tgl as _tgl_id  # BUG-095: "7 Nov 2026"
 from ..services import po_daftar as PD  # P-U2: keadaan/aksi/position_text/documents SERVER (satu sumber)
+from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services import po_agregat as PA  # #4 agregat Workspace (cermin so_agregat Q-012)
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor bukan PKP (non-fatal)
@@ -70,7 +71,6 @@ from ..schemas.purchase_orders import (
 )
 
 logger = logging.getLogger(__name__)
-PESAN_PO_TERPAKAI = "Nomor PO sudah digunakan. Gunakan nomor lain atau biarkan kosong untuk nomor otomatis."
 
 router = APIRouter()
 
@@ -519,6 +519,15 @@ async def get_purchase_order_aggregate(
 # =============================================================================
 
 
+@router.get("/next-number")
+async def nomor_po_berikut(request: Request):
+    """BUG-149: nomor otomatis BERIKUTNYA untuk form (PERKIRAAN: hanya baca, seri tak dimakan; penulis paralel bisa mengambilnya dulu)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": {"number": await NOMOR.pratinjau(conn, ctx["tenant_id"], "purchase_order"), "estimated": True}}
+
+
 @router.get("/{po_id}", response_model=PurchaseOrderDetailResponse)
 async def get_purchase_order(request: Request, po_id: UUID):
     """Get detailed information for a purchase order."""
@@ -749,16 +758,8 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
                 vendor = await _vendor_tenant(conn, ctx["tenant_id"], body.vendor_id)
 
-                # Nomor: manual (sudah dipakai -> 409) atau otomatis yang melompati terpakai (migrasi V475). UNIQUE = penegak akhir.
-                if body.po_number:
-                    if await conn.fetchval("SELECT 1 FROM purchase_orders WHERE tenant_id = $1 AND po_number = $2",
-                                           ctx["tenant_id"], body.po_number):
-                        raise HTTPException(status_code=409, detail=PESAN_PO_TERPAKAI)
-                    po_number = body.po_number
-                else:
-                    po_number = await conn.fetchval(
-                        "SELECT generate_purchase_order_number($1, 'PO')", ctx["tenant_id"]
-                    )
+                # Nomor: manual (sudah dipakai -> 409) atau otomatis yang melompati terpakai (V475). UNIQUE = penegak akhir.
+                po_number = await NOMOR.tetapkan_nomor(conn, ctx["tenant_id"], "purchase_order", body.po_number)
 
                 h = await PR.hitung_po(conn, ctx["tenant_id"], [item.model_dump() for item in body.items], body.discount_percent,
                                        body.discount_amount, body.tax_rate, tolak=True)  # BUG-088: + faktor DPP
@@ -813,9 +814,10 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
 
     except HTTPException:
         raise
-    except asyncpg.exceptions.UniqueViolationError:
-        raise HTTPException(status_code=409, detail=PESAN_PO_TERPAKAI)   # balapan serentak nomor manual yang sama
     except Exception as e:
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)   # balapan serentak nomor manual yang sama
+        if galat_nomor:
+            raise galat_nomor from e
         logger.error(f"Error creating purchase order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat pesanan pembelian.")
 

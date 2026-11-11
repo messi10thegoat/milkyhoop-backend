@@ -16,6 +16,7 @@ import asyncpg
 from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
+from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services.galat_berkode import GalatBerkode
 from ..services.dokumen_nol import tolak_faktur_nol  # SI-FPB-RP0
 
@@ -1165,6 +1166,15 @@ def _syarat_cari(search: str, mulai: int) -> tuple:
 
 
 from datetime import date as _date  # noqa: E402  (anotasi query /defaults; modul tak mengimpor date di atas)
+
+
+@router.get("/next-number")
+async def nomor_faktur_berikut(request: Request):
+    """BUG-149: nomor otomatis BERIKUTNYA untuk form (PERKIRAAN: hanya baca, seri tak dimakan; penulis paralel bisa mengambilnya dulu)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": {"number": await NOMOR.pratinjau(conn, ctx["tenant_id"], "sales_invoice"), "estimated": True}}
 
 
 @router.get("/defaults")
@@ -3494,18 +3504,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         return _lama
 
                 # Generate invoice number
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
-                if _nomor_manual:
-                    if await conn.fetchval(
-                        "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2",
-                        ctx["tenant_id"], _nomor_manual):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                    invoice_number = _nomor_manual
-                else:
-                    invoice_number = await conn.fetchval(
-                        "SELECT generate_sales_invoice_number($1, 'INV')", ctx["tenant_id"]
-                    )
+                invoice_number = await NOMOR.tetapkan_nomor(conn, ctx["tenant_id"], "sales_invoice", getattr(body, "invoice_number", None))
 
                 # Satu kalkulator bersama (services/sales_doc_calc.py): diskon dokumen
                 # dialokasikan pro-rata ke SEMUA baris, PPN per baris dari DPP sesudah
@@ -3856,6 +3855,9 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
     except HTTPException:
         raise
     except Exception as e:
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)
+        if galat_nomor:
+            raise galat_nomor from e
         logger.error(f"Error creating invoice: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat faktur.")
 
@@ -3959,17 +3961,13 @@ async def update_invoice(
                 from ..services.optimistic_concurrency import assert_if_match
                 assert_if_match(request, invoice["updated_at"])
 
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "invoice_number", None))
+                _new_num = NOMOR.bersihkan(getattr(body, "invoice_number", None))
                 if _new_num is None:
                     body.__pydantic_fields_set__.discard("invoice_number")
                 else:
                     if invoice["status"] != "draft":
                         raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
-                    if await conn.fetchval(
-                        "SELECT 1 FROM sales_invoices WHERE tenant_id=$1 AND invoice_number=$2 AND id <> $3",
-                        ctx["tenant_id"], _new_num, invoice_id):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    await NOMOR.pastikan_bebas(conn, ctx["tenant_id"], "sales_invoice", _new_num, invoice_id)
                     body.invoice_number = _new_num
 
                 # Guard: Cannot update voided invoices

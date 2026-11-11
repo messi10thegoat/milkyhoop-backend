@@ -13,6 +13,7 @@ from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB
 from ..services import faktur_cetak as _fc_snap
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services import teks_galat as tg
+from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services.termin_bayar import tentukan_jatuh_tempo
 from ..services.penawaran_kedaluwarsa import kedaluwarsa, sql_kedaluwarsa, sql_menunggu_aktif
 from ..services.penawaran_kedaluwarsa import AKSI, AMBANG_SEGERA_HABIS, aksi_penawaran, sql_aksi, sql_aksi_berparam
@@ -440,6 +441,15 @@ async def list_quotes(
         raise HTTPException(status_code=500, detail="Gagal memuat daftar penawaran.")
 
 
+@router.get("/next-number")
+async def nomor_penawaran_berikut(request: Request):
+    """BUG-149: nomor otomatis BERIKUTNYA untuk form (PERKIRAAN: hanya baca, seri tak dimakan; penulis paralel bisa mengambilnya dulu)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": {"number": await NOMOR.pratinjau(conn, ctx["tenant_id"], "quote"), "estimated": True}}
+
+
 @router.get("/defaults")
 async def get_quote_defaults(request: Request, customer_id: Optional[str] = None):
     """Q6 (3 Okt 2026): default form Penawaran CW -- bentuk SAMA dengan /sales-orders/defaults (dp_percent,
@@ -764,6 +774,9 @@ async def create_quote(request: Request, body: CreateQuoteRequest, response: _Re
     except HTTPException:
         raise
     except Exception as e:
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)
+        if galat_nomor:
+            raise galat_nomor from e
         logger.error(f"Error creating quote: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat penawaran.")
 
@@ -772,18 +785,7 @@ async def buat_penawaran_inti(conn, ctx: dict, body: CreateQuoteRequest) -> tupl
     """Tulis SATU penawaran draf di transaksi PEMANGGIL (POST /quotes dan Milkybook v2 buat atomik, 1 Nov 2026):
     nomor, hitung, PPN non-PKP, DP, pelanggan milik tenant, ongkir V467, isian surat, baris. -> (quote_id, data respons)."""
     # Generate quote number
-    from ..services.document_number import bersihkan_nomor_dokumen_opsional
-    _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
-    if _nomor_manual:
-        if await conn.fetchval(
-            "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2",
-            ctx["tenant_id"], _nomor_manual):
-            raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-        quote_number = _nomor_manual
-    else:
-        quote_number = await conn.fetchval(
-            "SELECT generate_quote_number($1, 'QUO')", ctx["tenant_id"]
-        )
+    quote_number = await NOMOR.tetapkan_nomor(conn, ctx["tenant_id"], "quote", getattr(body, "quote_number", None))
 
     # 3h: kalkulator bersama (sales_doc_calc; HALF_UP 2dp).
     _doc = await _quote_calc(
@@ -1074,17 +1076,13 @@ async def _ubah_penawaran(conn, ctx: dict, quote_id: str, body: UpdateQuoteReque
     if body.model_fields_set == {"expiry_date"} and quote["status"] in ("sent", "viewed"):
         return await _perpanjang_penawaran(conn, ctx, quote_id, body, quote)
 
-    from ..services.document_number import bersihkan_nomor_dokumen_opsional
-    _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "quote_number", None))
+    _new_num = NOMOR.bersihkan(getattr(body, "quote_number", None))
     if _new_num is None:
         body.__pydantic_fields_set__.discard("quote_number")
     else:
         if quote["status"] != "draft":
             raise HTTPException(status_code=400, detail="Nomor dokumen yang sudah terbit tidak dapat diubah")
-        if await conn.fetchval(
-            "SELECT 1 FROM quotes WHERE tenant_id=$1 AND quote_number=$2 AND id <> $3",
-            ctx["tenant_id"], _new_num, uuid_module.UUID(quote_id)):
-            raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+        await NOMOR.pastikan_bebas(conn, ctx["tenant_id"], "quote", _new_num, uuid_module.UUID(quote_id))
         body.quote_number = _new_num
 
     # 13 Okt 2026 (MASTER, pola estimate Xero/Zoho/NetSuite): penawaran yang BELUM DIJAWAB boleh diubah, termasuk

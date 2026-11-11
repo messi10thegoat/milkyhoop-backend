@@ -96,7 +96,7 @@ def test_so_create_tersambung_ke_idempotency_dan_kunci_berruang_pengguna():
     teks = ast.unparse(f)
     assert "SO_CREATE:{ctx['user_id']}:" in teks and "pg_advisory_xact_lock" in teks
     # Lookup replay WAJIB sebelum cek nomor manual (pengulangan ber-nomor-manual bukan 409).
-    assert teks.index("ambil_replay_klien") < teks.index("bersihkan_nomor_dokumen_opsional")
+    assert teks.index("ambil_replay_klien") < teks.index("tetapkan_nomor")
 
 
 def test_permissions_me_membawa_features_di_kedua_jalur():

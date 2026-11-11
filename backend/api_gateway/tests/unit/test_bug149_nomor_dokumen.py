@@ -117,11 +117,13 @@ def _sumber(modul):
     return inspect.getsource(importlib.import_module(f"app.{modul}"))
 
 
-@pytest.mark.parametrize("modul", ["routers.sales_invoices", "routers.sales_orders", "routers.quotes", "routers.purchase_orders",
-                                   "routers.bills", "services.bills_service"])
-def test_penjaga_ast_satu_aturan_tak_ada_salinan(modul):
+@pytest.mark.parametrize("modul,pakai", [
+    ("routers.sales_invoices", "tetapkan_nomor("), ("routers.sales_orders", "tetapkan_nomor("), ("routers.quotes", "tetapkan_nomor("),
+    ("routers.purchase_orders", "tetapkan_nomor("), ("services.bills_service", "tetapkan_nomor("),
+    ("routers.bills", "dari_pelanggaran_unik(")])  # router tagihan memetakan balapan; nomor ditetapkan di bills_service
+def test_penjaga_ast_satu_aturan_tak_ada_salinan(modul, pakai):
     s = _sumber(modul)
-    assert "tetapkan_nomor(" in s
+    assert pakai in s
     for lama in ("bersihkan_nomor_dokumen_opsional", "Nomor sudah dipakai di tenant ini.", "PESAN_PO_TERPAKAI",
                  "PESAN_NOMOR_TERPAKAI", "class NomorTerpakai", "def nomor_tagihan"):
         assert lama not in s, (modul, lama)

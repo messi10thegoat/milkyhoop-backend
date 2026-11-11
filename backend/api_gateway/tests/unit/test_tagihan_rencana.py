@@ -25,7 +25,7 @@ def test_tulis_dan_pratinjau_satu_kalkulator():
 
 def test_blok_buat_sebelum_nomor_dan_vendor():
     src = inspect.getsource(BS.BillsService.create_bill_v2)
-    assert src.index("TR.blok_buat(") < src.index("generate_purchase_bill_number") < src.index("INSERT INTO vendors")
+    assert src.index("TR.blok_buat(") < src.index("tetapkan_nomor") < src.index("INSERT INTO vendors")
 
 
 def test_aturan_pajak_kepala_nol_dan_ppn_baris_ke_grand_total():
@@ -73,7 +73,7 @@ def test_idempotensi_buat_bills_v2():
     r = inspect.getsource(BR.create_bill_v2)
     assert "idem_buat.kunci_dari(request)" in r and "idem=" in r
     src = inspect.getsource(BS.BillsService.create_bill_v2)
-    assert src.index("idem_buat.mulai(") < src.index("TR.blok_buat(") < src.index("generate_purchase_bill_number")
+    assert src.index("idem_buat.mulai(") < src.index("TR.blok_buat(") < src.index("tetapkan_nomor")
     assert 'idem_buat.simpan(conn, idem["ctx"], _kp, _sidik, "BILL_CREATE"' in src
 
 

@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from app.routers import bills as RB
 from app.routers import purchase_orders as PO
 from app.services import bills_service as BS
+from app.services import nomor_dokumen as ND
 from tests.unit import test_po_tulis as TPO
 
 MIG = sorted((Path(__file__).resolve().parents[2].parent / "migrations").glob("V*__nomor_pembelian_lompati_terpakai.sql"))
@@ -51,18 +52,20 @@ class _K:
 @pytest.mark.parametrize("manual,harap", [("  PB-2611-0009 ", "PB-2611-0009"), (None, "PB-2611-0003"), ("   ", "PB-2611-0003"), ("", "PB-2611-0003")])
 def test_nomor_tagihan_manual_trim_atau_otomatis(manual, harap):
     k = _K()
-    assert asyncio.run(BS.nomor_tagihan(k, "t1", manual, "SELECT generate_purchase_bill_number($1)")) == harap
+    assert asyncio.run(ND.tetapkan_nomor(k, "t1", "bill", manual)) == harap
     assert all(a[0] == "t1" for _, a in k.sql)   # tenant eksplisit
 
 
 def test_nomor_tagihan_manual_terpakai_409_berkalimat():
-    with pytest.raises(BS.NomorTerpakai, match="Nomor faktur sudah digunakan"):
-        asyncio.run(BS.nomor_tagihan(_K({"PB-2611-0002"}), "t1", "PB-2611-0002", "SELECT generate_purchase_bill_number($1)"))
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(ND.tetapkan_nomor(_K({"PB-2611-0002"}), "t1", "bill", "PB-2611-0002"))
+    assert e.value.status_code == 409 and e.value.detail["code"] == "NOMOR_DOKUMEN_TERPAKAI"
+    assert "Nomor PB-2611-0002 sudah dipakai" in e.value.detail["message"]
 
 
 def test_create_tagihan_v1_v2_memakai_pembantu_satu_aturan():
     src = Path(BS.__file__).read_text()
-    assert src.count("await nomor_tagihan(conn, tenant_id, request.get(\"invoice_number\")") == 2
+    assert src.count("await NOMOR.tetapkan_nomor(conn, tenant_id, \"bill\", request.get(\"invoice_number\")") == 2
     assert 'request.get("invoice_number")\n                if not invoice_number' not in src
 
 
@@ -71,9 +74,7 @@ def test_router_tagihan_duplikat_409_bukan_400():
     for nama in ("async def create_bill(request: Request, body: CreateBillRequest):", "async def create_bill_v2("):
         i = src.index(nama)
         blok = src[i:src.index("\n@router.", i)]
-        assert "except NomorTerpakai" in blok and "status_code=409" in blok, nama
-        j = blok.index("except asyncpg.exceptions.UniqueViolationError")
-        assert "status_code=409" in blok[j:j + 300], nama
+        assert "NOMOR.dari_pelanggaran_unik(e)" in blok and "raise galat_nomor from e" in blok, nama   # balapan -> 409 (hanya indeks nomor)
     assert 'status_code=400,\n            detail="Nomor faktur sudah digunakan' not in src
 
 
@@ -89,7 +90,9 @@ class _KonPO(TPO.Kon):
             self.log.append(("cek", a))
             return 1 if a[1] in self.terpakai else None
         if q.startswith("INSERT INTO purchase_orders") and self.unik:
-            raise asyncpg.exceptions.UniqueViolationError("duplicate key value violates unique constraint uq_po_tenant_number")
+            e = asyncpg.exceptions.UniqueViolationError("duplicate key value violates unique constraint uq_po_tenant_number")
+            e.constraint_name, e.detail = "uq_po_tenant_number", "Key (tenant_id, po_number)=(t, PO-2611-0005) already exists."
+            raise e
         return await super().fetchval(sql, *a)
 
 
@@ -115,7 +118,7 @@ def test_po_nomor_manual_terpakai_409_tanpa_tulis(monkeypatch):
     TPO._pool(monkeypatch, k)
     with pytest.raises(HTTPException) as e:
         asyncio.run(PO.create_purchase_order(TPO._Req(), TPO._body(po_number="PO-2611-0002")))
-    assert e.value.status_code == 409 and "Nomor PO sudah digunakan" in e.value.detail
+    assert e.value.status_code == 409 and "Nomor PO-2611-0002 sudah dipakai" in e.value.detail["message"]
     assert not [q for q, _ in k.writes if q.startswith("INSERT INTO purchase_orders")]
 
 
@@ -124,4 +127,4 @@ def test_po_balapan_serentak_unique_409(monkeypatch):
     TPO._pool(monkeypatch, k)
     with pytest.raises(HTTPException) as e:
         asyncio.run(PO.create_purchase_order(TPO._Req(), TPO._body(po_number="PO-2611-0005")))
-    assert e.value.status_code == 409 and "Nomor PO sudah digunakan" in e.value.detail
+    assert e.value.status_code == 409 and "Nomor PO-2611-0005 sudah dipakai" in e.value.detail["message"]

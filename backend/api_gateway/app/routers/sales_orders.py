@@ -13,6 +13,7 @@ import logging
 import uuid as uuid_module
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
+from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
 from ..services import stok_baris as SB
 from ..services import satuan_dasar as SD
@@ -474,6 +475,15 @@ async def get_sales_order_aggregate(
         raise HTTPException(status_code=500, detail="Gagal memuat agregat pesanan.")
 
 
+@router.get("/next-number")
+async def nomor_so_berikut(request: Request):
+    """BUG-149: nomor otomatis BERIKUTNYA untuk form (PERKIRAAN: hanya baca, seri tak dimakan; penulis paralel bisa mengambilnya dulu)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": {"number": await NOMOR.pratinjau(conn, ctx["tenant_id"], "sales_order"), "estimated": True}}
+
+
 @router.get("/defaults")
 async def get_sales_order_defaults(request: Request, customer_id: Optional[str] = None):
     """Default form Pesanan Penjualan (default bisa-ditimpa tahap 1, 30 Sep 2026): persen uang muka perusahaan +
@@ -812,18 +822,7 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
                         response.headers["X-Idempotent-Replay"] = "true"
                         return SalesOrderResponse(**_lama)
 
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _nomor_manual = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
-                if _nomor_manual:
-                    if await conn.fetchval(
-                        "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2",
-                        ctx["tenant_id"], _nomor_manual):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
-                    order_number = _nomor_manual
-                else:
-                    order_number = await conn.fetchval(
-                        "SELECT generate_sales_order_number($1, 'SO')", ctx["tenant_id"]
-                    )
+                order_number = await NOMOR.tetapkan_nomor(conn, ctx["tenant_id"], "sales_order", getattr(body, "order_number", None))
 
                 _items = [item.model_dump() for item in body.items]
                 await turunkan_tarif_baris(conn, ctx["tenant_id"], _items, "tax_id")  # #34
@@ -968,6 +967,9 @@ async def create_sales_order(request: Request, body: CreateSalesOrderRequest, re
     except HTTPException:
         raise
     except Exception as e:
+        galat_nomor = NOMOR.dari_pelanggaran_unik(e)
+        if galat_nomor:
+            raise galat_nomor from e
         logger.error(f"Error creating sales order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat pesanan.")
 
@@ -1108,18 +1110,15 @@ async def update_sales_order(
                             success=True, message="Pesanan diperbarui", data={"id": order_id}
                         ), order["id"])
 
-                from ..services.document_number import bersihkan_nomor_dokumen_opsional
-                _new_num = bersihkan_nomor_dokumen_opsional(getattr(body, "order_number", None))
+                _new_num = NOMOR.bersihkan(getattr(body, "order_number", None))
                 if _new_num is None:
                     body.__pydantic_fields_set__.discard("order_number")
                 else:
                     # Nomor di SO TERKONFIRMASI = medan terkunci: sama -> no-op, beda -> 409 SO_FIELD_LOCKED terstruktur
                     # (so_ubah_terkonfirmasi, SAMA dengan pratinjau). Pra-cek unik hanya untuk jalur draf (13 Okt 2026:
                     # FE mengirim balik seluruh form -> dulu 400 polos walau nomor tak berubah, sedangkan pratinjau hijau).
-                    if order["status"] == "draft" and await conn.fetchval(
-                        "SELECT 1 FROM sales_orders WHERE tenant_id=$1 AND order_number=$2 AND id <> $3",
-                        ctx["tenant_id"], _new_num, _so_uuid(order_id)):
-                        raise HTTPException(status_code=409, detail="Nomor sudah dipakai di tenant ini.")
+                    if order["status"] == "draft":
+                        await NOMOR.pastikan_bebas(conn, ctx["tenant_id"], "sales_order", _new_num, _so_uuid(order_id))
                     body.order_number = _new_num
 
                 if order["status"] != "draft":
