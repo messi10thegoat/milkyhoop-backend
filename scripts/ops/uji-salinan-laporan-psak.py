@@ -18,6 +18,50 @@ from starlette.requests import Request
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import psak_reports as PR  # noqa: E402
 
+try:  # laporan-fix-2 (pohon BARU saja; pohon lama = master tanpa modul ini)
+    from app.services import dashboard_angka as DA  # noqa: E402
+    from app.services.report_engine import basis_kas as BK  # noqa: E402,F401
+    from app.services.report_engine.footing import bulat as _bulat  # noqa: E402
+    FIX2 = True
+except ImportError:
+    FIX2 = False
+    _bulat = None
+
+# ORAKEL independen basis kas: SQL total LAMA dasbor (22 Okt, live sebelum laporan-fix-2) + HPP faktur proporsional; struktur beda dari per-akun basis_kas.
+BAYAR = """bayar AS (
+        SELECT a.invoice_id, a.amount_applied, rp.payment_date AS tgl
+        FROM receive_payment_allocations a JOIN receive_payments rp ON rp.id = a.payment_id AND rp.tenant_id = $1 AND rp.status = 'posted'
+        WHERE a.status = 'active'
+        UNION ALL
+        SELECT cda.invoice_id, cda.amount_applied, cd.deposit_date
+        FROM customer_deposit_applications cda
+        JOIN customer_deposits cd ON cd.id = cda.deposit_id AND cd.tenant_id = $1 AND cd.status <> 'void' AND cd.journal_id IS NOT NULL
+        WHERE cda.tenant_id = $1 AND cda.status = 'active')"""
+ORA_PEND = f"""WITH rev AS (SELECT je.source_id AS inv, SUM(jl.credit - jl.debit) AS r
+        FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)
+          AND c.account_type IN ('REVENUE', 'OTHER_INCOME') AND je.source_type IN ('INVOICE_REVENUE', 'INVOICE') GROUP BY je.source_id), {BAYAR}
+    SELECT COALESCE(SUM(b.amount_applied * COALESCE(rev.r, 0) / NULLIF(si.total_amount, 0)), 0)
+    FROM bayar b JOIN sales_invoices si ON si.id = b.invoice_id AND si.tenant_id = $1 LEFT JOIN rev ON rev.inv = si.id WHERE b.tgl BETWEEN $2 AND $3"""
+ORA_HPP = f"""WITH cogs AS (SELECT je.source_id AS inv, SUM(jl.debit - jl.credit) AS h
+        FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)
+          AND c.account_type = 'COGS' AND je.source_type IN ('INVOICE_FULFILLMENT', 'DELIVERY_INVOICED') GROUP BY je.source_id), {BAYAR}
+    SELECT COALESCE(SUM(b.amount_applied * COALESCE(cogs.h, 0) / NULLIF(si.total_amount, 0)), 0)
+    FROM bayar b JOIN sales_invoices si ON si.id = b.invoice_id AND si.tenant_id = $1 LEFT JOIN cogs ON cogs.inv = si.id WHERE b.tgl BETWEEN $2 AND $3"""
+ORA_LANGSUNG = """SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+    FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id
+    WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id)
+      AND c.account_type IN ('COGS', 'EXPENSE', 'OTHER_EXPENSE') AND je.journal_date BETWEEN $2 AND $3
+      AND EXISTS (SELECT 1 FROM journal_lines k JOIN chart_of_accounts kc ON kc.id = k.account_id WHERE k.journal_id = je.id AND kc.is_cash)"""
+ORA_TAGIHAN = """WITH beban_tagihan AS (SELECT je.source_id AS bill, SUM(jl.debit - jl.credit) AS beban
+        FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id
+        WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND is_effective_journal(je.id) AND je.source_type = 'BILL'
+          AND c.account_type IN ('COGS', 'EXPENSE', 'OTHER_EXPENSE') GROUP BY je.source_id)
+    SELECT COALESCE(SUM(a.amount_applied * COALESCE(bt.beban, 0) / NULLIF(COALESCE(b.grand_total, b.amount), 0)), 0)
+    FROM bill_payment_allocations a JOIN bill_payments_v2 p ON p.id = a.payment_id AND p.tenant_id = $1 AND p.status = 'posted'
+    JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $1 LEFT JOIN beban_tagihan bt ON bt.bill = b.id WHERE p.payment_date BETWEEN $2 AND $3"""
+
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
 BARU = hasattr(PR, "_tampil")
 CEK = []
@@ -72,7 +116,7 @@ async def paritas(conn, tid, nama, lap, mulai, akhir, presisi):
         if b["jenis"] == "akun" and b.get("account_id"):
             s = await saldo(conn, tid, b["account_id"], mulai, akhir)
             harap = -s if NEGASI.get(seksi) else s
-            cek(f"P {nama} akun {b['account_code']} == jurnal", Decimal(b["nilai"]) == harap.quantize(Decimal("0.01")),
+            cek(f"P {nama} akun {b['account_code']} == jurnal", Decimal(b["nilai"]) == (_bulat(harap, presisi) if FIX2 else harap.quantize(Decimal("0.01"))),
                 {"baris": b, "jurnal": str(s), "seksi": seksi})
         if b["jenis"] == "akun":
             jumlah[seksi] = jumlah.get(seksi, Decimal("0")) + Decimal(b["nilai"])
@@ -82,10 +126,45 @@ async def paritas(conn, tid, nama, lap, mulai, akhir, presisi):
         cek(f"P {nama} Σ akun seksi {s} == total", jumlah.get(s, Decimal("0")) == t, {"jumlah": str(jumlah.get(s)), "total": str(t)})
 
 
+def _q(x):
+    return Decimal(str(x or 0))
+
+
+async def fix2(conn, tid, k, basis, mulai, akhir, presisi, pl, bs, cf, nb, lb, tol_pl, ak):
+    """laporan-fix-2: (b) total tampil == Σ baris tampil di rantai L/R + neraca seimbang di tampilan; basis kas = dasbor (SATU sumber) == orakel lama
+    (pendapatan) dan orakel lama + HPP faktur (beban); ukur arus kas dasbor vs laporan + baris uang muka (c)(d)."""
+    d1, d2 = date.fromisoformat(mulai), date.fromisoformat(akhir)
+    cek(f"B {k} L/R laba bersih tampil == Σ rantai tampil", lb["laba_bersih"] == lb["total_pendapatan"] - lb["total_hpp"] - lb["total_beban_usaha"] + lb["total_lain"],
+        lb)
+    cek(f"B {k} neraca tampil seimbang (total aset == total L+E)", nb["total_aset"] == nb["total_liabilitas_ekuitas"], (nb["total_aset"], nb["total_liabilitas_ekuitas"]))
+    if basis == "cash":
+        kas = await DA.laba_rugi_kas(conn, tid, d1, d2)
+        n = sum(1 for b in pl["baris"] if b["jenis"] == "akun") + 1
+        pend = _q(pl["pendapatan"]["total"]) + _q(pl["pendapatan_lain"]["total"])
+        beban = _q(pl["hpp"]["total"]) + _q(pl["beban_usaha"]["total"]) + _q(pl["beban_lain"]["total"])
+        cek(f"K {k} L/R PSAK kas == dasbor laba_rugi_kas (pendapatan, beban, laba)", abs(pend - kas["pendapatan"]) < Decimal("0.02") and abs(beban - kas["beban"]) <
+            Decimal("0.02") and abs(_q(pl["laba_bersih"]) - kas["laba"]) < Decimal("0.02"), (pend, beban, pl["laba_bersih"], kas))
+        o_p = _q(await conn.fetchval(ORA_PEND, tid, d1, d2))
+        o_h = _q(await conn.fetchval(ORA_HPP, tid, d1, d2))
+        o_b = _q(await conn.fetchval(ORA_LANGSUNG, tid, d1, d2)) + _q(await conn.fetchval(ORA_TAGIHAN, tid, d1, d2))
+        tol = Decimal("0.005") * n + Decimal("0.01")
+        cek(f"K {k} pendapatan == orakel dasbor LAMA", abs(kas["pendapatan"] - o_p) <= tol, (kas["pendapatan"], o_p))
+        cek(f"K {k} beban == orakel LAMA + HPP faktur proporsional", abs(kas["beban"] - (o_b + o_h)) <= tol, (kas["beban"], o_b, o_h))
+        print(f"[ukur] {k} kas: pendapatan {kas['pendapatan']} (orakel lama {o_p}) | HPP faktur proporsional {o_h} | beban lama {o_b} | beban baru {kas['beban']}", flush=True)
+    if basis == "accrual" and mulai == f"{akhir[:4]}-01-01":
+        ph = await DA.arus_kas_harian(conn, tid, d1, d2)
+        masuk, keluar = sum((v[0] for v in ph.values()), Decimal(0)), sum((v[1] for v in ph.values()), Decimal(0))
+        pos = sum((_q(b["nilai"]) for b in cf["baris"] if b["kunci"] == "butir" and _q(b["nilai"]) > 0), Decimal(0))
+        neg = -sum((_q(b["nilai"]) for b in cf["baris"] if b["kunci"] == "butir" and _q(b["nilai"]) < 0), Decimal(0))
+        butir = [(b["label"], b["nilai"]) for b in cf["baris"] if b["kunci"] == "butir"]
+        print(f"[ukur] {tid} arus kas YTD: dasbor masuk/keluar {masuk}/{keluar} | laporan Σ butir + / − {pos}/{neg} | selisih {masuk - pos}/{keluar - neg}", flush=True)
+        print(f"[ukur] {tid} butir arus kas: {butir}", flush=True)
+
+
 async def main():
     from app.services.uang_presisi import presisi_tenant
     pool = await PR.get_pool() if BARU else None
-    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": [], "gap": {}}
+    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": [], "gap": {}, "fix2": FIX2}
     for tid in TENANT:
         for mulai, akhir in rentang():
             for basis in ("accrual", "cash"):
@@ -103,12 +182,16 @@ async def main():
                     presisi = await presisi_tenant(conn, tid)
                     bs, pl, cf = r["balance_sheet"], r["income_statement"], r["cash_flow"]
                     lb = {b["kunci"]: Decimal(b["nilai"]) for b in pl["baris"] if b["jenis"] in ("hasil", "total")}
-                    cek(f"H {k} laba bersih == lama", abs(float(lb["laba_bersih"]) - pl["laba_bersih"]) < 0.005, (lb["laba_bersih"], pl["laba_bersih"]))
+                    satuan = Decimal("0.5") if presisi == 0 else Decimal("0.005")   # footing: tiap baris akun bergeser <= setengah satuan
+                    tol_pl = satuan * sum(1 for b in pl["baris"] if b["jenis"] == "akun") + Decimal("0.01")
+                    tol_bs = satuan * sum(1 for b in bs["baris"] if b["jenis"] == "akun") + Decimal("0.01")
+                    cek(f"H {k} laba bersih == lama (± pembulatan per baris)", abs(lb["laba_bersih"] - Decimal(str(pl["laba_bersih"]))) <= tol_pl,
+                        (lb["laba_bersih"], pl["laba_bersih"]))
                     nb = {b["kunci"]: Decimal(b["nilai"]) for b in bs["baris"] if b["kunci"] != "akun" and b["nilai"] is not None}
-                    cek(f"H {k} total aset & L+E == lama", abs(float(nb["total_aset"]) - bs["total_aset"]) < 0.005 and
-                        abs(float(nb["total_liabilitas_ekuitas"]) - bs["total_liabilitas_ekuitas"]) < 0.005, nb)
+                    cek(f"H {k} total aset & L+E == lama (± pembulatan per baris)", abs(nb["total_aset"] - Decimal(str(bs["total_aset"]))) <= tol_bs and
+                        abs(nb["total_liabilitas_ekuitas"] - Decimal(str(bs["total_liabilitas_ekuitas"]))) <= tol_bs, nb)
                     if basis == "accrual" and mulai == f"{akhir[:4]}-01-01":  # sebanding (laporan-fix-1: neraca = laba tahun berjalan akrual)
-                        cek(f"H {k} laba tahun berjalan neraca == laba bersih L/R", nb["laba_periode"] == lb["laba_bersih"], (nb["laba_periode"], lb["laba_bersih"]))
+                        cek(f"H {k} laba tahun berjalan neraca == laba bersih L/R", abs(nb["laba_periode"] - lb["laba_bersih"]) <= tol_pl + tol_bs, (nb["laba_periode"], lb["laba_bersih"]))
                     cek(f"N {k} neraca BALANCE (aset == L+E; basis/period_start tak mengubah)", abs(bs["total_aset"] - bs["total_liabilitas_ekuitas"]) < 0.01 and bs["_balanced"],
                         (bs["total_aset"], bs["total_liabilitas_ekuitas"]))
                     if "laba_ditahan_lalu" in bs["ekuitas"]:  # hanya pohon BARU (pohon lama = master tanpa medan ini)
@@ -123,7 +206,9 @@ async def main():
                             cek(f"P {k} A/K nilai_tampil", b["nilai_tampil"] == tg.angka_laporan(b["nilai"], presisi), b)
                     ak = {b["kunci"]: Decimal(b["nilai"]) for b in cf["baris"] if b["nilai"] is not None and b["kunci"] != "butir"}
                     cek(f"H {k} A/K kas awal + kenaikan == kas akhir (bila rekonsiliasi lama benar)",
-                        not cf["_reconciled"] or abs(ak["kas_awal"] + ak["kenaikan_kas"] - ak["kas_akhir"]) < Decimal("0.02"), ak)
+                        not cf["_reconciled"] or abs(ak["kas_awal"] + ak["kenaikan_kas"] - ak["kas_akhir"]) < (Decimal("1.6") if presisi == 0 else Decimal("0.03")), ak)
+                    if FIX2:
+                        await fix2(conn, tid, k, basis, mulai, akhir, presisi, pl, bs, cf, nb, lb, tol_pl, ak)
     out["cek"] = CEK
     with open(os.environ["KELUAR"], "w") as fo:
         json.dump(out, fo, default=str)
