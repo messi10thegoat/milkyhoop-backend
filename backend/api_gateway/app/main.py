@@ -29,6 +29,7 @@ from .routers import products
 from .routers import suppliers
 from .routers import inventory
 from .routers import items
+from .routers import mutasi_bank  # BF-1a: Bank Feed impor + daftar mutasi
 from .routers import matrix_items  # BUG-159 B1: barang matriks / varian
 from .routers import item_aliases  # W3/U4 — WAJIB di-include SEBELUM items.router
 from .routers import members
@@ -510,6 +511,7 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"]
 app.include_router(item_aliases.router, prefix="/api", tags=["items"])
 # Items master data router
 app.include_router(items.router, prefix="/api", tags=["items"])
+app.include_router(mutasi_bank.router, prefix="/api/bank-accounts", tags=["Bank Feed"])  # BF-1a (izin: kas_bank R/C generik)
 app.include_router(matrix_items.router, prefix="/api/matrix-items", tags=["Matrix Items"])  # BUG-159 B1 (izin: modul item)
 
 # Members/Customer management router (for POS)
