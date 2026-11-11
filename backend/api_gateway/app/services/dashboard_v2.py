@@ -50,6 +50,7 @@ TIPE_BEBAN = ("COGS", "EXPENSE", "OTHER_EXPENSE")
 # bank_accounts.account_type yang berarti KAS (lainnya = bank / e-wallet / kartu).
 TIPE_KAS = ("cash", "petty_cash", "kas")
 MAKS_KATEGORI = 6
+REVENUE_LABEL = "Penjualan"  # label kartu 'Ke mana uangmu pergi' untuk pendapatan (server memutus teks; FE tak menanam 'Uang masuk')
 LAJUR_URUT = {"now": 0, "week": 1, "any": 2}
 
 
@@ -463,7 +464,8 @@ async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) ->
     pendapatan, rinci, beban, laba = _lr["pendapatan"], _lr["rinci_beban"], _lr["beban"], _lr["laba"]
     p = await UP.presisi_tenant(conn, tenant_id)
     pnl = {"revenue": uang_p(pendapatan, p), "expense": uang_p(beban, p), "profit": uang_p(laba, p),
-           "margin_pct": persen(laba, pendapatan) if pendapatan > NOL else 0.0}
+           "margin_pct": persen(laba, pendapatan) if pendapatan > NOL else 0.0,
+           "revenue_label": REVENUE_LABEL}  # teks dari SERVER (laporan-fix-2 (d)): nilainya pendapatan akrual = "Penjualan", bukan "Uang masuk"
 
     kode = [r["account_code"] for r in rinci]
     ids = {}
@@ -477,9 +479,14 @@ async def laba_rugi_dan_beban(conn, tenant_id: str, mulai: date, akhir: date) ->
     sisa = [r for r in urut if r not in teratas]
     kategori = [{"account_id": ids.get(r["account_code"]), "name": r["account_name"], "amount": d(r["balance"])}
                 for r in teratas]
-    lainnya = sum((d(r["balance"]) for r in sisa), NOL)
-    if sisa and lainnya != NOL:
+    # laporan-fix-2 (d): akun KOREKSI (saldo kredit, mis. Retur Pembelian) tampil dengan NAMA AKUN sendiri (amount < 0), tak lagi dilebur ke "Lainnya";
+    # "Lainnya" hanya menjumlah akun bersaldo debit di luar teratas. Σ amount tetap = beban neto.
+    sisa_debit = [r for r in sisa if d(r["balance"]) > NOL]
+    lainnya = sum((d(r["balance"]) for r in sisa_debit), NOL)
+    if lainnya != NOL:
         kategori.append({"account_id": None, "name": "Lainnya", "amount": lainnya})
+    kategori += [{"account_id": ids.get(r["account_code"]), "name": r["account_name"], "amount": d(r["balance"])}
+                 for r in sisa if d(r["balance"]) < NOL]
     beban_100 = per_100rb(beban, pendapatan)
     expenses = {
         "total": uang_p(beban, p),

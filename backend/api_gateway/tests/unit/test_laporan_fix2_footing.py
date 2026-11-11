@@ -91,3 +91,15 @@ def test_jenis_kosong_tak_menyentuh_baris_dan_rute_memakai_footing():
     src = inspect.getsource(PR.get_financial_statements)
     for n, v, j in (("balance_sheet", "bs", "neraca"), ("income_statement", "pl", "laba_rugi"), ("cash_flow", "cf", "arus_kas")):
         assert f'"{n}": _tampil({v}, presisi, "{j}")' in src
+
+
+def test_arus_kas_label_liabilitas_nama_akun_bukan_pembayaran_umum():
+    """laporan-fix-2 (c): DP pelanggan (LIABILITY, uang MASUK) = baris sendiri "Uang Muka Pelanggan", bukan "Pembayaran liabilitas"; piutang tak tercampur."""
+    from app.services.report_engine import cash_flow as CF
+    assert CF._get_label("LIABILITY", None, "Uang Muka Pelanggan") == "Uang Muka Pelanggan"
+    assert CF._get_label("LIABILITY", None) == "Pembayaran liabilitas"                       # tanpa nama: label lama (tak pernah kosong)
+    assert CF._get_label("RECEIVABLE", "TRADE_RECEIVABLE", "Piutang Usaha") == "Penerimaan piutang usaha"   # piutang tetap satu baris sendiri
+    assert CF._get_label("PAYABLE", "TRADE_PAYABLE", "Utang Usaha") == "Pembayaran utang usaha"
+    assert CF._get_label("ASSET", None, "Uang Muka Pembelian") == "Uang Muka Pembelian"
+    src = inspect.getsource(CF.generate_cash_flow)
+    assert src.count("account_type IN ('ASSET', 'LIABILITY') THEN account_name") == 2  # SELECT dan GROUP BY satu ekspresi
