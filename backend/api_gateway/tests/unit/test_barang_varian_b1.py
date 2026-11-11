@@ -142,7 +142,26 @@ def test_tulis_konflik_nama_409_sebelum_menulis_apa_pun(monkeypatch):
         asyncio.run(BV.tulis(k, CTX, _body(), "u", "n"))
     assert e.value.status_code == 409 and e.value.detail["code"] == "VARIAN_DITOLAK"
     assert e.value.detail["blocks"][0]["name"] == "Kaos Polos Cotton 30s L"
-    assert not dibuat and not k.tulis
+    assert not dibuat and not [q for q, _ in k.tulis if "advisory" not in q]   # hanya kunci (bukan data) yang boleh terjadi
+
+
+def test_tulis_dan_tambah_mengunci_per_tenant_sebelum_apa_pun(monkeypatch):
+    _pasang_tulis(monkeypatch)
+    k = _K()
+    asyncio.run(BV.tulis(k, CTX, _body(), "u", "n"))
+    assert "pg_advisory_xact_lock" in k.tulis[0][0] and k.tulis[0][1] == (f"MATRIX:{T}",)
+    k2 = _K(induk=INDUK, anak_atribut={"ukuran": "S"})
+    asyncio.run(BV.tambah(k2, CTX, INDUK["id"], [{"nama": "ukuran", "nilai": ["XL"]}], "u", "n"))
+    assert "pg_advisory_xact_lock" in k2.tulis[0][0]
+
+
+def test_bentrok_kode_barang_serentak_dipetakan_409_bukan_500():
+    import asyncpg
+    e = asyncpg.exceptions.UniqueViolationError("duplicate key")
+    e.constraint_name = "idx_products_tenant_item_code"
+    g = MR._galat_tulis(e, "Gagal membuat barang matriks.")
+    assert g.status_code == 409 and g.detail["code"] == "KODE_BARANG_BENTROK"
+    assert MR._galat_tulis(ValueError("x"), "Gagal membuat barang matriks.").status_code == 500
 
 
 # ---------------------------------------------------------------- tambah varian

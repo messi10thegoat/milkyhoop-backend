@@ -109,8 +109,15 @@ async def _tulis_anak(conn, ctx: dict, dasar, induk_id, anak: list, user_id, use
     return hasil
 
 
+async def _kunci_tenant(conn, tenant_id: str) -> None:
+    """Pembuatan matriks serentak di tenant yang sama BERURUTAN: kode barang otomatis (BRG-NNNN dari nomor terbesar) bentrok bila dua
+    penulis menghitung bersamaan; yang kedua kemudian melihat nama bentrok -> 409 bersih, bukan 500 (uji salinan 12 Nov)."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"MATRIX:{tenant_id}")
+
+
 async def tulis(conn, ctx: dict, body, user_id, user_name) -> dict:
     """Buat induk + semua anak di transaksi PEMANGGIL. Bentrok nama -> 409 VARIAN_DITOLAK sebelum menulis apa pun."""
+    await _kunci_tenant(conn, ctx["tenant_id"])
     r = await rencana(conn, ctx["tenant_id"], body)
     if r["blocks"]:
         raise _ditolak(r["blocks"])
@@ -157,6 +164,7 @@ async def rencana_tambah(conn, tenant_id: str, induk_id, dimensi) -> dict:
 
 async def tambah(conn, ctx: dict, induk_id, dimensi, user_id, user_name) -> dict:
     """Tambah varian ke induk yang ada (harga/satuan/kategori mengikuti induk). Bentrok nama -> 409 sebelum menulis."""
+    await _kunci_tenant(conn, ctx["tenant_id"])
     induk, anak, blocks = await _rencana_tambah(conn, ctx["tenant_id"], induk_id, dimensi)
     if blocks:
         raise _ditolak(blocks)

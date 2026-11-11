@@ -42,6 +42,8 @@ def _galat_tulis(e: Exception, pesan: str) -> HTTPException:
     from .items import galat_nama_barang_dipakai, nama_barang_bentrok
     if nama_barang_bentrok(e):  # balapan serentak: indeks unik nama menolak -> 409 berkode, bukan 500
         return galat_nama_barang_dipakai()
+    if getattr(e, "constraint_name", None) in ("idx_products_tenant_item_code", "idx_products_tenant_sku"):  # pengaman: penulis barang lain serentak
+        return HTTPException(status_code=409, detail={"code": "KODE_BARANG_BENTROK", "message": "Kode barang otomatis bentrok dengan pembuatan barang lain yang serentak. Coba lagi."})
     logger.error(f"{pesan}: {e}", exc_info=True)
     return HTTPException(status_code=500, detail=pesan)
 
