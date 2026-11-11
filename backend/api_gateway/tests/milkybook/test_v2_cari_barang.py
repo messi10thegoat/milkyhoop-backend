@@ -51,8 +51,11 @@ BARIS = {"id": "p1", "nama": "Kaos Combed 30s Hitam", "kode": "BRG-001", "satuan
 
 
 def test_baris_ke_hasil_tanpa_varian_ukuran_kosong():
-    assert B.baris_ke_hasil(BARIS) == {"id": "p1", "nama": "Kaos Combed 30s Hitam", "kode": "BRG-001", "satuan": "pcs",
-                                       "jenis": "goods", "harga": 75000, "ukuran": [], "skor": 4, "mirip": False}
+    lama = {"id": "p1", "nama": "Kaos Combed 30s Hitam", "kode": "BRG-001", "satuan": "pcs",
+            "jenis": "goods", "harga": 75000, "ukuran": [], "skor": 4, "mirip": False}
+    # 12 Nov (BUG-159 B1 cari-varian): kunci `varian` ADITIF pada jawaban API (bawaan); tool LLM memanggil dengan_varian=False -> bentuk lama persis
+    assert B.baris_ke_hasil(BARIS) == {**lama, "varian": []}
+    assert B.baris_ke_hasil(BARIS, dengan_varian=False) == lama
     assert B.baris_ke_hasil({**BARIS, "kelas": 2})["mirip"] is True
 
 
