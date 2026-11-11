@@ -19,11 +19,20 @@ gagal, ekor, n, daftar_ekor, diputuskan = [], 0, 0, [], []
 # laporan-fix-1 (putusan pemilik 10 Nov): HANYA bagian ekuitas neraca + validasi laba boleh berubah; selain itu lama == baru
 DIPUTUSKAN = (".balance_sheet.ekuitas", ".balance_sheet.total_liabilitas_ekuitas", ".balance_sheet._balanced", ".balance_sheet.basis_applied",
               ".validation_errors")
+# laporan-fix-2 (putusan pemilik 10 Nov + arah MASTER 12 Nov): basis kas Laba Rugi berubah (hanya kunci ...|cash), label butir arus kas (liabilitas = nama akun);
+# TOTAL arus kas, akrual, dan neraca (di luar ekuitas) tetap wajib sama.
+ITEM_ARUS = (".cash_flow.operasi.items", ".cash_flow.investasi.items", ".cash_flow.pendanaan.items")
+
+
+def boleh(k, j):
+    return j.startswith(DIPUTUSKAN + ITEM_ARUS) or (k.endswith("|cash") and j.startswith(".income_statement"))
+
+
 for k, v in lama["lama"].items():
     a, b = dict(ratakan(v)), dict(ratakan(baru["lama"].get(k, {})))
     beda_kunci = sorted(set(a) ^ set(b))
-    if [j for j in beda_kunci if not j.startswith(DIPUTUSKAN)]:
-        gagal.append(f"KUNCI beda {k}: {[j for j in beda_kunci if not j.startswith(DIPUTUSKAN)][:6]}")
+    if [j for j in beda_kunci if not boleh(k, j)]:
+        gagal.append(f"KUNCI beda {k}: {[j for j in beda_kunci if not boleh(k, j)][:6]}")
         continue
     for j, x in a.items():
         if j not in b:  # kunci hanya di lama dan termasuk bagian yang diputuskan
@@ -31,7 +40,7 @@ for k, v in lama["lama"].items():
             continue
         n += 1
         y = b[j]
-        if j.startswith(DIPUTUSKAN):
+        if boleh(k, j):
             if x != y:
                 diputuskan.append(f"{k}{j}: lama {x!r} baru {y!r}")
             continue
