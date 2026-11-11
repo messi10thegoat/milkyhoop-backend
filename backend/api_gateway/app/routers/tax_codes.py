@@ -227,7 +227,8 @@ async def list_tax_codes(
             # Get items
             query = f"""
                 SELECT id, code, name, rate, tax_type, is_inclusive, is_active, is_default,
-                       dpp_factor_num, dpp_factor_den, is_withholding
+                       dpp_factor_num, dpp_factor_den, is_withholding, coa_id,
+                       (SELECT c.name FROM chart_of_accounts c WHERE c.id = tax_codes.coa_id AND c.tenant_id = tax_codes.tenant_id) AS coa_name
                 FROM tax_codes
                 WHERE {where_clause}
                 ORDER BY {sort_field} {sort_dir}
@@ -250,6 +251,8 @@ async def list_tax_codes(
                     "dpp_factor_num": row["dpp_factor_num"],
                     "dpp_factor_den": row["dpp_factor_den"],
                     "is_withholding": bool(row["is_withholding"]),
+                    "coa_id": str(row["coa_id"]) if row["coa_id"] else None,
+                    "coa_name": row["coa_name"],
                 }
                 for row in rows
             ]
@@ -283,7 +286,8 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                 SELECT id, code, name, rate, tax_type, is_inclusive,
                        sales_tax_account, purchase_tax_account, description,
                        is_active, is_default, created_at, updated_at,
-                       dpp_factor_num, dpp_factor_den, is_withholding
+                       dpp_factor_num, dpp_factor_den, is_withholding, coa_id,
+                       (SELECT c.name FROM chart_of_accounts c WHERE c.id = tax_codes.coa_id AND c.tenant_id = tax_codes.tenant_id) AS coa_name
                 FROM tax_codes
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -309,6 +313,8 @@ async def get_tax_code(request: Request, tax_code_id: UUID):
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
                     "is_withholding": bool(row["is_withholding"]),
+                    "coa_id": str(row["coa_id"]) if row["coa_id"] else None,
+                    "coa_name": row["coa_name"],
                     "created_at": row["created_at"].isoformat(),
                     "updated_at": row["updated_at"].isoformat(),
                 },

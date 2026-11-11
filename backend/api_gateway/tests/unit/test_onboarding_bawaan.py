@@ -78,8 +78,7 @@ def test_rekening_awal_nol_jurnal_idempoten_dan_saldo_nol():
     for q, _ in k.tulis:
         assert q.startswith("INSERT INTO bank_accounts") and "ON CONFLICT DO NOTHING" in q
         assert not re.search(r"journal", q, re.I)             # saldo awal 0 -> tanpa jurnal (Hukum Besi 1/16)
-    src = inspect.getsource(RA.seed_rekening_awal)
-    assert "opening_balance" in src and ", 0," in src
+    assert "opening_balance, current_balance" in RA.SQL_SISIP and "0, 0, $6" in RA.SQL_SISIP   # saldo awal & cache 0 (turunan jurnal)
 
 
 def test_rekening_awal_lewati_bila_akun_coa_tak_ada():

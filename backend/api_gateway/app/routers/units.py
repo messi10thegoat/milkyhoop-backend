@@ -41,61 +41,25 @@ async def list_units(
     is_active: Optional[bool] = Query(None),
     limit: int = Query(100, ge=1, le=500),
 ):
-    """List all units — system + custom."""
+    """Daftar satuan master = bawaan + milik tenant (SATU sumber dengan /dropdown dan halaman Satuan: services/satuan_master.daftar;
+    BUG-162: dulu hanya membaca product_units -> tenant baru 0 padahal picker memuat 14 satuan bawaan)."""
     try:
         ctx = get_user_context(request)
+        if is_active is False:  # daftar master hanya memuat satuan aktif (nonaktif = dihapus lunak)
+            return {"items": [], "total": 0}
         pool = await get_pool()
         async with pool.acquire() as conn:
-            conditions = ["tenant_id = $1"]
-            params = [ctx["tenant_id"]]
-            idx = 2
-
-            if search:
-                conditions.append(f"(name ILIKE ${idx} OR abbreviation ILIKE ${idx})")
-                params.append(f"%{search}%")
-                idx += 1
-
-            if is_active is not None:
-                conditions.append(f"is_active = ${idx}")
-                params.append(is_active)
-                idx += 1
-
-            where = " AND ".join(conditions)
-            params.append(limit)
-
-            rows = await conn.fetch(
-                f"""
-                SELECT id, name, abbreviation, is_system, is_active, created_at
-                FROM product_units
-                WHERE {where}
-                ORDER BY is_system DESC, name ASC
-                LIMIT ${idx}
-            """,
-                *params,
-            )
-
-            total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM product_units WHERE {where}", *params[:-1]
-            )
-
-            return {
-                "items": [
-                    {
-                        "id": str(r["id"]),
-                        "name": r["name"],
-                        "abbreviation": r["abbreviation"],
-                        "is_system": r["is_system"],
-                        "is_active": r["is_active"],
-                    }
-                    for r in rows
-                ],
-                "total": total,
-            }
+            semua = await SM.daftar(conn, ctx["tenant_id"], search)
+        return {
+            "items": [{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"], "is_system": u["is_system"], "is_active": True}
+                      for u in semua[:limit]],
+            "total": len(semua),
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing units: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list units")
+        raise HTTPException(status_code=500, detail="Gagal memuat satuan")
 
 
 # =============================================================================

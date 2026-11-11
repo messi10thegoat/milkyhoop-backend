@@ -164,6 +164,12 @@ async def create_tenant_and_user(
             )
             logger.info(f"Default warehouse seeded for tenant {tenant_id}")
 
+            # 3e. Rekening awal Kas (default) + Bank (BUG-157): tanpa ini tenant baru tak punya rekening Kas/Bank sama sekali.
+            from .rekening_awal import seed_rekening_awal
+
+            rek_count = await seed_rekening_awal(conn, tenant_id, user_id)
+            logger.info(f"Initial bank accounts seeded: {rek_count} for tenant {tenant_id}")
+
             # 4. Assign OWNER role to the new account owner.
             # Resolve the shared system OWNER role dynamically (do NOT hardcode UUID).
             # Without this row the new owner has no role -> empty sidebar + 403s.

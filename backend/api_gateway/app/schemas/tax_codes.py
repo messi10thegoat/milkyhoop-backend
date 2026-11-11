@@ -111,6 +111,9 @@ class TaxCodeListItem(BaseModel):
     dpp_factor_num: int = 1
     dpp_factor_den: int = 1
     is_withholding: bool = False  # PPh dipotong (25 Okt 2026): penyaring FE PPh vs pajak baris
+    # BUG-153: akun CoA tertaut (dulu tak dikirim -> FE menganggap kosong = "Belum" padahal tertaut). None = memang belum/tanpa akun.
+    coa_id: Optional[str] = None
+    coa_name: Optional[str] = None
 
 
 class TaxCodeListResponse(BaseModel):
@@ -140,6 +143,8 @@ class TaxCodeDetail(BaseModel):
     is_active: bool
     is_default: bool
     is_withholding: bool = False
+    coa_id: Optional[str] = None      # BUG-153: sama dengan daftar
+    coa_name: Optional[str] = None
     created_at: str
     updated_at: str
 
