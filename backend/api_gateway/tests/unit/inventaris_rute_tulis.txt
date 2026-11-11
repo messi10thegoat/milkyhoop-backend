@@ -78,6 +78,8 @@ POST /api/matrix-items
 POST /api/matrix-items/preview
 POST /api/matrix-items/{item_id}/variants
 POST /api/matrix-items/{item_id}/variants/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor/preview
 POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
