@@ -1,275 +1,125 @@
-"""
-Matrix Items Router - Parent-Variant Item Management
-"""
-import json
+"""Barang MATRIKS / varian (BUG-159 B1, 12 Nov 2026). Induk + anak per kombinasi ukuran x warna dalam SATU POST; aturan di
+services/barang_varian (batas 2 dimensi / 20 nilai / 100 varian; tulis lewat jalur resmi tulis_barang_baru, atomik). Izin = modul Barang
+(item R/C) lewat permission_middleware. Router lama (tak pernah dipasang) diganti seluruhnya."""
+import logging
+from typing import Optional
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
+from ..schemas.barang_varian import (
+    BuatMatriksRequest, BuatMatriksResponse, DaftarMatriksResponse, DetailMatriksResponse, PratinjauResponse, TambahVarianRequest,
+)
+from ..services import barang_varian as BV
+from ..services import idem_buat
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 async def get_pool():
-    """Get singleton connection pool (Law 32)."""
+    """Pool koneksi tunggal (Law 32)."""
     from ..services.db_pool import get_db_pool
 
     return await get_db_pool()
 
 
 def get_user_context(request: Request) -> dict:
-    if not hasattr(request.state, "user"):
+    if not hasattr(request.state, "user") or not request.state.user:
         raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    return {
-        "tenant_id": request.state.user["tenant_id"],
-        "user_id": request.state.user.get("user_id"),
-    }
+    user = request.state.user
+    if not user.get("tenant_id"):
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
+    return {"tenant_id": user["tenant_id"], "user_id": user.get("user_id")}
 
 
-@router.get("")
-async def list_matrix_items(
-    request: Request, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)
-):
-    """List matrix parent items"""
+def _nama_pengguna(request: Request):
+    u = request.state.user
+    return u.get("username") or u.get("email")
+
+
+def _galat_tulis(e: Exception, pesan: str) -> HTTPException:
+    from .items import galat_nama_barang_dipakai, nama_barang_bentrok
+    if nama_barang_bentrok(e):  # balapan serentak: indeks unik nama menolak -> 409 berkode, bukan 500
+        return galat_nama_barang_dipakai()
+    logger.error(f"{pesan}: {e}", exc_info=True)
+    return HTTPException(status_code=500, detail=pesan)
+
+
+@router.get("", response_model=DaftarMatriksResponse)
+async def daftar_matriks(request: Request, cari: Optional[str] = Query(None), limit: int = Query(50, ge=1, le=200),
+                         offset: int = Query(0, ge=0)):
+    """Daftar barang induk (matriks) + jumlah varian."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        rows = await conn.fetch(
-            """
-            SELECT
-                p.id, p.nama_produk as name, p.base_unit, p.sales_price, p.purchase_price,
-                p.image_url, p.kategori, p.status, p.created_at,
-                COUNT(v.id) as variant_count
-            FROM products p
-            LEFT JOIN products v ON v.matrix_parent_id = p.id AND v.deleted_at IS NULL
-            WHERE p.tenant_id = $1
-              AND p.is_matrix_parent = true
-              AND p.deleted_at IS NULL
-            GROUP BY p.id
-            ORDER BY p.nama_produk
-            LIMIT $2 OFFSET $3
-        """,
-            ctx["tenant_id"],
-            limit,
-            offset,
-        )
-
-        total = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM products
-            WHERE tenant_id = $1 AND is_matrix_parent = true AND deleted_at IS NULL
-        """,
-            ctx["tenant_id"],
-        )
-
-        items = []
-        for row in rows:
-            items.append(
-                {
-                    "id": str(row["id"]),
-                    "name": row["name"],
-                    "base_unit": row["base_unit"],
-                    "sales_price": float(row["sales_price"])
-                    if row["sales_price"]
-                    else None,
-                    "variant_count": row["variant_count"],
-                }
-            )
-
-        return {"success": True, "items": items, "total": total}
+        return {"success": True, **await BV.daftar(conn, ctx["tenant_id"], cari, limit, offset)}
 
 
-@router.get("/{item_id}")
-async def get_matrix_item(request: Request, item_id: str):
-    """Get matrix parent with variants"""
+@router.post("/preview", response_model=PratinjauResponse)
+async def pratinjau_matriks(request: Request, body: BuatMatriksRequest):
+    """Pratinjau BUAT: induk + varian yang akan terbentuk + nama yang bentrok. Baca saja (penentu SAMA dengan POST)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        parent = await conn.fetchrow(
-            """
-            SELECT * FROM products
-            WHERE tenant_id = $1 AND id = $2::uuid
-              AND is_matrix_parent = true AND deleted_at IS NULL
-        """,
-            ctx["tenant_id"],
-            item_id,
-        )
-
-        if not parent:
-            raise HTTPException(status_code=404, detail="Matrix item not found")
-
-        variants = await conn.fetch(
-            """
-            SELECT * FROM get_matrix_variants($1, $2::uuid)
-        """,
-            ctx["tenant_id"],
-            item_id,
-        )
-
-        attribute_names = set()
-        variant_list = []
-        for v in variants:
-            attrs = (
-                v["attributes"]
-                if isinstance(v["attributes"], dict)
-                else json.loads(v["attributes"] or "{}")
-            )
-            attribute_names.update(attrs.keys())
-            variant_list.append(
-                {
-                    "id": str(v["variant_id"]),
-                    "name": v["variant_name"],
-                    "attributes": attrs,
-                    "sales_price": float(v["sales_price"])
-                    if v["sales_price"]
-                    else None,
-                    "status": v["status"],
-                }
-            )
-
-        return {
-            "success": True,
-            "data": {
-                "id": str(parent["id"]),
-                "name": parent["nama_produk"],
-                "base_unit": parent["base_unit"],
-                "attribute_names": list(attribute_names),
-                "variants": variant_list,
-            },
-        }
+        return {"success": True, "data": await BV.rencana(conn, ctx["tenant_id"], body)}
 
 
-@router.post("")
-async def create_matrix_item(request: Request):
-    """Create matrix parent item"""
+@router.post("", response_model=BuatMatriksResponse, status_code=201)
+async def buat_matriks(request: Request, body: BuatMatriksRequest, response: Response = None):
+    """Buat barang induk + semua varian (ukuran x warna) atomik. X-Idempotency-Key opsional (replay = respons asli)."""
     ctx = get_user_context(request)
-    body = await request.json()
-
-    if not body.get("name"):
-        raise HTTPException(status_code=400, detail="name is required")
-    if not body.get("base_unit"):
-        raise HTTPException(status_code=400, detail="base_unit is required")
-
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        row = await conn.fetchrow(
-            """
-            INSERT INTO products (
-                tenant_id, nama_produk, satuan, base_unit, item_type,
-                is_matrix_parent, track_inventory,
-                sales_price, purchase_price,
-                kategori, status
-            ) VALUES (
-                $1, $2, $3, $3, 'goods',
-                true, false,
-                $4, $5,
-                $6, 'active'
-            )
-            RETURNING id
-        """,
-            ctx["tenant_id"],
-            body["name"],
-            body["base_unit"],
-            body.get("sales_price"),
-            body.get("purchase_price"),
-            body.get("kategori"),
-        )
-
-        return {
-            "success": True,
-            "message": "Matrix parent created",
-            "data": {"id": str(row["id"])},
-        }
+    kunci = idem_buat.kunci_dari(request)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "MATRIX_CREATE", "batch", lambda: body.model_dump(), response)
+                if lama is not None:
+                    return lama
+                data = await BV.tulis(conn, ctx, body, ctx["user_id"], _nama_pengguna(request))
+                resp = {"success": True, "message": f"Barang matriks '{body.name}' dibuat dengan {len(data['varian'])} varian.", "data": data}
+                return await idem_buat.simpan(conn, ctx, kp, sd, "MATRIX_CREATE", resp, None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _galat_tulis(e, "Gagal membuat barang matriks.") from e
 
 
-@router.post("/{item_id}/variants")
-async def add_variants(request: Request, item_id: str):
-    """Add variants to matrix parent"""
+@router.post("/{item_id}/variants/preview", response_model=PratinjauResponse)
+async def pratinjau_tambah_varian(request: Request, item_id: UUID, body: TambahVarianRequest):
+    """Pratinjau TAMBAH varian ke induk yang ada (baca saja)."""
     ctx = get_user_context(request)
-    body = await request.json()
-
-    variants = body.get("variants", [])
-    if not variants:
-        raise HTTPException(status_code=400, detail="variants array is required")
-
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
+        return {"success": True, "data": await BV.rencana_tambah(conn, ctx["tenant_id"], item_id, body.dimensi)}
 
-        parent = await conn.fetchrow(
-            """
-            SELECT id, base_unit, item_type, track_inventory, sales_price, purchase_price
-            FROM products
-            WHERE tenant_id = $1 AND id = $2::uuid
-              AND is_matrix_parent = true AND deleted_at IS NULL
-        """,
-            ctx["tenant_id"],
-            item_id,
-        )
 
-        if not parent:
-            raise HTTPException(status_code=404, detail="Matrix parent not found")
+@router.post("/{item_id}/variants", response_model=BuatMatriksResponse, status_code=201)
+async def tambah_varian(request: Request, item_id: UUID, body: TambahVarianRequest, response: Response = None):
+    """Tambah varian ke induk (dimensi harus sama dengan varian yang ada; harga/satuan/kategori mengikuti induk)."""
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "MATRIX_VARIAN", str(item_id), lambda: body.model_dump(), response)
+                if lama is not None:
+                    return lama
+                data = await BV.tambah(conn, ctx, item_id, body.dimensi, ctx["user_id"], _nama_pengguna(request))
+                resp = {"success": True, "message": f"{len(data['varian'])} varian ditambahkan ke '{data['name']}'.", "data": data}
+                return await idem_buat.simpan(conn, ctx, kp, sd, "MATRIX_VARIAN", resp, None)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _galat_tulis(e, "Gagal menambah varian.") from e
 
-        created_ids = []
-        for v in variants:
-            if not v.get("name"):
-                continue
 
-            attrs = {}
-            for attr in v.get("attributes", []):
-                if attr.get("name") and attr.get("value"):
-                    attrs[attr["name"]] = attr["value"]
-
-            row = await conn.fetchrow(
-                """
-                INSERT INTO products (
-                    tenant_id, nama_produk, satuan, base_unit, item_type,
-                    matrix_parent_id, matrix_attributes,
-                    track_inventory, sales_price, purchase_price,
-                    barcode, sku, status
-                ) VALUES (
-                    $1, $2, $3, $3, $4,
-                    $5::uuid, $6::jsonb,
-                    $7, $8, $9,
-                    $10, $11, 'active'
-                )
-                RETURNING id
-            """,
-                ctx["tenant_id"],
-                v["name"],
-                parent["base_unit"],
-                parent["item_type"] or "goods",
-                item_id,
-                json.dumps(attrs),
-                parent["track_inventory"]
-                if parent["track_inventory"] is not None
-                else True,
-                v.get("sales_price") or parent["sales_price"],
-                v.get("purchase_price") or parent["purchase_price"],
-                v.get("barcode"),
-                v.get("sku"),
-            )
-            created_ids.append(str(row["id"]))
-
-        return {
-            "success": True,
-            "message": f"Created {len(created_ids)} variants",
-            "data": {"variant_ids": created_ids},
-        }
+@router.get("/{item_id}", response_model=DetailMatriksResponse)
+async def detail_matriks(request: Request, item_id: UUID):
+    """Detail barang induk + seluruh varian (atribut, kode, harga)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": await BV.detail(conn, ctx["tenant_id"], item_id)}

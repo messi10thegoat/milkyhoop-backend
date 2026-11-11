@@ -264,6 +264,11 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/impor/templat$", ["GET"], "item", "R"),  # BUG-021 impor barang
     (r"^/api/items/impor(/baca|/pratinjau)?$", ["POST"], "item", "C"),  # pratinjau/baca = huruf SAMA dgn tulis
     (r"^/api/items$", ["POST"], "item", "C"),
+    # BUG-159 B1 barang matriks/varian: baca = item R; buat/pratinjau/tambah varian = item C (pratinjau = huruf SAMA dgn tulis)
+    (r"^/api/matrix-items$", ["GET"], "item", "R"),
+    (r"^/api/matrix-items/[^/]+$", ["GET"], "item", "R"),
+    (r"^/api/matrix-items(/preview)?$", ["POST"], "item", "C"),
+    (r"^/api/matrix-items/[^/]+/variants(/preview)?$", ["POST"], "item", "C"),
     (r"^/api/items/[^/]+$", ["GET"], "item", "R"),
     (r"^/api/items/[^/]+$", ["PATCH", "PUT"], "item", "U"),
     (r"^/api/items/[^/]+$", ["DELETE"], "item", "D"),

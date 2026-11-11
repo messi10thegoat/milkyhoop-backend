@@ -74,6 +74,10 @@ POST /api/deliveries/{doc_id}/attachments
 POST /api/deliveries/{delivery_id}/void
 POST /api/deliveries/{delivery_id}/void/preview
 POST /api/goods-receipts/{doc_id}/attachments
+POST /api/matrix-items
+POST /api/matrix-items/preview
+POST /api/matrix-items/{item_id}/variants
+POST /api/matrix-items/{item_id}/variants/preview
 POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
