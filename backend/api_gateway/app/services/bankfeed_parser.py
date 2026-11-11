@@ -3,7 +3,8 @@
 Format: KlikBCA CSV "Download Mutasi" (latin-1; kepala `No. Rekening,=,'…`; baris `'dd/mm/yyyy,ket,'cabang,jumlah,CR|DB,saldo[,id_baris]`;
 kaki Saldo Awal/Kredit/Debet/Saldo Akhir) + CSV generik (`peta_kolom` usulan/dari pengguna). PDF e-statement = BF-3 (bukan di sini).
 - Pembaca csv BERKUTIP per baris: keterangan memuat koma (`"KARTU DEBIT …, ****0128"`); koma tak berkutip disambung defensif.
-- Baris PEND (belum dibukukan bank) DILEWATI dan dihitung (`dilewati`); tak ikut kaki berkas (bank juga belum menghitungnya).
+- Baris PEND (belum dibukukan bank) DILEWATI dan dihitung (`dilewati`), TAPI ikut kaki berkas & rantai saldo (terukur dari fixture Nov: Kredit/Debet
+  bank = nyata + PEND; Saldo Akhir = saldo baris PEND terakhir). Urutan berkas penuh ada di `urut`; `baris` hanya yang nyata.
 - Kontinuitas (TESTER-1): kaki berkas == Σ baris, Saldo Awal + Kredit - Debet == Saldo Akhir, saldo per baris berurutan -> blok
   BERKAS_TAK_SEIMBANG berkalimat (SATU blok: masalah pertama menurut urutan Kredit, Debet, Saldo akhir, baris).
 - Sidik anti-duplikat: sha256(tenant | rekening | tanggal | arah | nominal | keterangan_normal | saldo); tanpa saldo -> kemunculan ke-n tupel yang sama."""
@@ -39,6 +40,7 @@ class HasilBaca:
     format: str
     rekening_berkas: Optional[str] = None
     baris: list = field(default_factory=list)       # TANPA PEND
+    urut: list = field(default_factory=list)        # SEMUA baris berkas (nyata + PEND) urutan berkas; untuk pemeriksaan kaki/saldo
     dilewati: list = field(default_factory=list)    # [{alasan, n}]
     saldo_awal: Optional[Decimal] = None
     saldo_akhir: Optional[Decimal] = None
@@ -173,11 +175,9 @@ def _klikbca(teks: str) -> HasilBaca:
         ekstra = max(len(kolom) - len(kolom_kepala), 0)   # koma tak berkutip di keterangan -> sambung
         ket = ",".join(kolom[1:2 + ekstra]).strip()
         sisa = kolom[2 + ekstra:]
+        adalah_pend = awal.lstrip("'").upper() == "PEND"
         try:
-            if awal.lstrip("'").upper() == "PEND":
-                pend += 1
-                continue
-            tanggal = parse_tanggal(awal)
+            tanggal = None if adalah_pend else parse_tanggal(awal)
             if len(sisa) < 4:
                 raise ValueError("kolom kurang")
             nominal = parse_uang(sisa[1], "us")
@@ -188,8 +188,13 @@ def _klikbca(teks: str) -> HasilBaca:
         except ValueError as e:
             rusak.append((nomor, str(e)))
             continue
-        h.baris.append(BarisBank(baris_ke=nomor, tanggal=tanggal, keterangan=ket, nominal=nominal,
-                                 arah="masuk" if dbcr == "CR" else "keluar", saldo=saldo, mentah=mentah))
+        b = BarisBank(baris_ke=nomor, tanggal=tanggal, keterangan=ket, nominal=nominal,
+                      arah="masuk" if dbcr == "CR" else "keluar", saldo=saldo, mentah=mentah, pend=adalah_pend)
+        h.urut.append(b)
+        if adalah_pend:
+            pend += 1
+        else:
+            h.baris.append(b)
     if pend:
         h.dilewati.append({"alasan": "PEND (belum dibukukan bank)", "n": pend})
     if mata_uang and mata_uang != "IDR":
@@ -210,8 +215,8 @@ def _klikbca(teks: str) -> HasilBaca:
 
 def _periksa_kaki(h: HasilBaca) -> Optional[str]:
     """Kalimat masalah PERTAMA (Kredit, Debet, Saldo akhir, urutan saldo per baris) atau None."""
-    k = sum((b.nominal for b in h.baris if b.arah == "masuk"), Decimal(0))
-    d = sum((b.nominal for b in h.baris if b.arah == "keluar"), Decimal(0))
+    k = sum((b.nominal for b in h.urut if b.arah == "masuk"), Decimal(0))
+    d = sum((b.nominal for b in h.urut if b.arah == "keluar"), Decimal(0))
     if h.kredit is not None and h.kredit != k:
         return f"Kredit di kaki berkas {tg.rp(h.kredit)} tidak sama dengan jumlah baris CR {tg.rp(k)} (selisih {tg.rp(abs(h.kredit - k))})."
     if h.debet is not None and h.debet != d:
@@ -223,12 +228,13 @@ def _periksa_kaki(h: HasilBaca) -> Optional[str]:
                     f"selisih {tg.rp(abs(h.saldo_akhir - hitung))}.")
     if h.saldo_awal is not None:
         sebelum = h.saldo_awal
-        for b in h.baris:
+        for b in h.urut:
             if b.saldo is None:
                 continue
             harap = sebelum + b.nominal if b.arah == "masuk" else sebelum - b.nominal
+            tgl = b.tanggal.strftime('%d/%m/%Y') if b.tanggal else 'PEND'
             if harap != b.saldo:
-                return (f"Saldo berkas tidak berurutan di baris {b.baris_ke} ({b.tanggal:%d/%m/%Y}): seharusnya {tg.rp(harap)} "
+                return (f"Saldo berkas tidak berurutan di baris {b.baris_ke} ({tgl}): seharusnya {tg.rp(harap)} "
                         f"tetapi berkas {tg.rp(b.saldo)} (selisih {tg.rp(abs(b.saldo - harap))}).")
             sebelum = b.saldo
     return None

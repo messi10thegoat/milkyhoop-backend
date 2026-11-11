@@ -12,8 +12,8 @@ KEPALA = "No. Rekening,=,'******2185\nNama,=,PEMILIK\nMata Uang,=,IDR\n\nTanggal
 
 def klikbca(baris, saldo_awal="1000000.00", kredit=None, debet=None, saldo_akhir=None, kepala=KEPALA):
     """Berkas KlikBCA sintetis; kaki dihitung dari baris kecuali diberi eksplisit. baris = [(tgl, ket, jumlah, dbcr, saldo)]."""
-    k = sum(D(j) for tgl, ket, j, a, saldo in baris if a == "CR" and tgl != "PEND")
-    d = sum(D(j) for tgl, ket, j, a, saldo in baris if a == "DB" and tgl != "PEND")
+    k = sum(D(j) for tgl, ket, j, a, saldo in baris if a == "CR")      # kaki bank = nyata + PEND (terukur dari fixture Nov)
+    d = sum(D(j) for tgl, ket, j, a, saldo in baris if a == "DB")
     sa = D(saldo_awal)
     isi = kepala
     for tgl, ket, jumlah, dbcr, saldo in baris:
@@ -26,8 +26,8 @@ def klikbca(baris, saldo_awal="1000000.00", kredit=None, debet=None, saldo_akhir
 BARIS = [
     ("01/08/2026", "TRSF E-BANKING CR 0108/FTSCY/WS95031 500000.00 N001 N002", "500000.00", "CR", "1500000.00"),
     ("02/08/2026", '"KARTU DEBIT 1,5 JT, ****0128"', "150000.00", "DB", "1350000.00"),
-    ("PEND", "TRSF E-BANKING CR PENDING", "70000.00", "CR", "1420000.00"),
     ("03/08/2026", "BIAYA ADM", "25.00", "DB", "1349975.00"),
+    ("PEND", "TRSF E-BANKING CR PENDING", "70000.00", "CR", "1419975.00"),   # PEND di ujung berkas, ikut kaki & rantai saldo
 ]
 
 
@@ -38,8 +38,8 @@ def test_baca_klikbca_dasar():
         (date(2026, 8, 1), "masuk", D("500000.00"), D("1500000.00")),
         (date(2026, 8, 2), "keluar", D("150000.00"), D("1350000.00")),
         (date(2026, 8, 3), "keluar", D("25.00"), D("1349975.00"))]
-    assert r.saldo_awal == D("1000000.00") and r.saldo_akhir == D("1349975.00") and r.kredit == D("500000.00") and r.debet == D("150025.00")
-    assert r.dilewati == [{"alasan": "PEND (belum dibukukan bank)", "n": 1}] and r.baris[0].baris_ke == 6
+    assert r.saldo_awal == D("1000000.00") and r.saldo_akhir == D("1419975.00") and r.kredit == D("570000.00") and r.debet == D("150025.00")
+    assert r.dilewati == [{"alasan": "PEND (belum dibukukan bank)", "n": 1}] and r.baris[0].baris_ke == 6 and len(r.baris) == 3
 
 
 def test_koma_berkutip_terbaca_utuh_dan_kontrol_split_naif_meleset():
@@ -77,14 +77,21 @@ def test_kaki_tak_seimbang_blok_berkalimat(ubah, kata):
 
 
 def test_saldo_per_baris_meleset_menunjuk_baris_pertama():
-    rusak = [BARIS[0], ("02/08/2026", "TRSF X", "150000.00", "DB", "1300000.00"), BARIS[3]]   # seharusnya 1350000.00
+    rusak = [BARIS[0], ("02/08/2026", "TRSF X", "150000.00", "DB", "1300000.00"), BARIS[2]]   # seharusnya 1350000.00
     r = P.baca(klikbca(rusak, saldo_akhir="1349975.00"), "x.csv")
     assert r.blocks[0]["code"] == "BERKAS_TAK_SEIMBANG" and "baris 7" in r.blocks[0]["message"] and "50.000" in r.blocks[0]["message"]
 
 
-def test_pend_tak_ikut_hitungan_kaki():
-    # kaki bank belum menghitung PEND: Σ baris tanpa PEND == kaki; bila PEND ikut dihitung, kaki meleset -> terbukti dari berkas yang seimbang
-    assert P.baca(klikbca(BARIS), "x.csv").blocks == []
+def test_pend_ikut_kaki_dan_rantai_saldo_tapi_tak_diimpor():
+    # TERUKUR dari fixture Nov: kaki Kredit/Debet bank = nyata + PEND; saldo akhir berakhir di baris PEND terakhir
+    r = P.baca(klikbca(BARIS), "x.csv")
+    assert r.blocks == [] and len(r.baris) == 3 and all(not b.pend for b in r.baris)
+    # kaki yang HANYA menghitung nyata (Kredit 500000) tak lagi lolos -> kontrol: aturan lama (PEND tak ikut) kini ditolak
+    lama = P.baca(klikbca(BARIS, kredit="500000.00", saldo_akhir="1349975.00"), "x.csv")
+    assert lama.blocks and lama.blocks[0]["code"] == "BERKAS_TAK_SEIMBANG" and "Kredit" in lama.blocks[0]["message"]
+    # saldo baris PEND yang melompat tertangkap juga
+    lompat = list(BARIS[:3]) + [("PEND", "TRSF CR PENDING", "70000.00", "CR", "1400000.00")]
+    assert "baris" in P.baca(klikbca(lompat), "x.csv").blocks[0]["message"]
 
 
 def test_berkas_kosong_dan_format_tak_dikenal():

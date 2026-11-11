@@ -95,7 +95,7 @@ def test_rencana_ok_hitung_baru_dilewati_rentang_saldo_dan_payload():
     assert h["ok"] and h["blocks"] == [] and h["format"] == "klikbca_csv"
     assert (h["baru"], h["duplikat"]) == (3, 0) and h["dilewati"] == [{"alasan": "PEND (belum dibukukan bank)", "n": 1}]
     assert h["rentang"] == {"dari": "2026-08-01", "sampai": "2026-08-03"}
-    assert h["saldo_berkas"] == {"awal": "1000000.00", "akhir": "1349975.00"} and h["saldo_buku_pada"] == {"tanggal": "2026-08-03", "nilai": "1000000.00"}
+    assert h["saldo_berkas"] == {"awal": "1000000.00", "akhir": "1419975.00"} and h["saldo_buku_pada"] == {"tanggal": "2026-08-03", "nilai": "1000000.00"}
     assert len(h["contoh"]) == 3 and h["tebakan"] == {"yakin": 0, "periksa": 0, "kurang_data": 3}
     assert h["payload"] == {"document_id": str(DOK), "peta_kolom": None, "hash_isi": hashlib.sha256(ISI).hexdigest()}
     assert len(dalam["baris"]) == 3 and dalam["dilewati_n"] == 1 and "Baris PEND" in " ".join(h["catatan"])
