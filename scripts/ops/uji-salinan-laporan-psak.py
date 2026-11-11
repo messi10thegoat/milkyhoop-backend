@@ -85,7 +85,7 @@ async def paritas(conn, tid, nama, lap, mulai, akhir, presisi):
 async def main():
     from app.services.uang_presisi import presisi_tenant
     pool = await PR.get_pool() if BARU else None
-    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": []}
+    out = {"pohon": "baru" if BARU else "lama", "lama": {}, "waktu": [], "gap": {}}
     for tid in TENANT:
         for mulai, akhir in rentang():
             for basis in ("accrual", "cash"):
@@ -95,6 +95,8 @@ async def main():
                 out["waktu"].append((time.perf_counter() - t0) * 1000)
                 out["lama"][k] = {n: lama_saja(r[n]) for n in ("balance_sheet", "income_statement", "cash_flow")} | \
                     {"validation_errors": r["validation_errors"]}
+                bsl = r["balance_sheet"]
+                out["gap"][k] = str(Decimal(str(bsl["total_aset"])).quantize(Decimal("0.01")) - Decimal(str(bsl["total_liabilitas_ekuitas"])).quantize(Decimal("0.01")))
                 if not BARU:
                     continue
                 async with pool.acquire() as conn:
@@ -105,7 +107,12 @@ async def main():
                     nb = {b["kunci"]: Decimal(b["nilai"]) for b in bs["baris"] if b["kunci"] != "akun" and b["nilai"] is not None}
                     cek(f"H {k} total aset & L+E == lama", abs(float(nb["total_aset"]) - bs["total_aset"]) < 0.005 and
                         abs(float(nb["total_liabilitas_ekuitas"]) - bs["total_liabilitas_ekuitas"]) < 0.005, nb)
-                    cek(f"H {k} laba periode neraca == laba bersih L/R", nb["laba_periode"] == lb["laba_bersih"], (nb["laba_periode"], lb["laba_bersih"]))
+                    if basis == "accrual" and mulai == f"{akhir[:4]}-01-01":  # sebanding (laporan-fix-1: neraca = laba tahun berjalan akrual)
+                        cek(f"H {k} laba tahun berjalan neraca == laba bersih L/R", nb["laba_periode"] == lb["laba_bersih"], (nb["laba_periode"], lb["laba_bersih"]))
+                    cek(f"N {k} neraca BALANCE (aset == L+E; basis/period_start tak mengubah)", abs(bs["total_aset"] - bs["total_liabilitas_ekuitas"]) < 0.01 and bs["_balanced"],
+                        (bs["total_aset"], bs["total_liabilitas_ekuitas"]))
+                    cek(f"N {k} ekuitas = buku + laba lalu + laba tahun berjalan", abs(bs["ekuitas"]["laba_ditahan_lalu"] + bs["ekuitas"]["laba_periode"] - (bs["ekuitas"]["total"] - sum(
+                        x["balance"] for s in ("modal_disetor", "saldo_laba", "lainnya") for x in bs["ekuitas"][s]["akun"]))) < 0.02, bs["ekuitas"])
                     if basis == "accrual":  # basis kas memakai saringan jurnal kas (bukan Σ saldo akun langsung)
                         await paritas(conn, tid, f"{k} L/R", pl, mulai, akhir, presisi)
                         await paritas(conn, tid, f"{k} Neraca", bs, None, akhir, presisi)
