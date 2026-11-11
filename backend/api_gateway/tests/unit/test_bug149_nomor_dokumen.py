@@ -97,11 +97,11 @@ def test_pratinjau_nomor_manual_tak_menggeser_seri_bila_tidak_bentrok():
     assert asyncio.run(ND.pratinjau(k, "t", "sales_invoice")) == "INV-2611-0030"
 
 
-def test_tangkap_unik_hanya_indeks_nomor():
+def test_tangkap_unik_hanya_indeks_nomor(monkeypatch):
     class UV(Exception):
         def __init__(self, constraint_name, detail):
             self.constraint_name, self.detail = constraint_name, detail
-    ND.UniqueViolationError = UV  # tiruan; kelas asli diperiksa lewat isinstance di sumber
+    monkeypatch.setattr(ND, "UniqueViolationError", UV)  # tiruan; dipulihkan otomatis (dulu menimpa permanen -> tes lain tercemar)
     e = ND.dari_pelanggaran_unik(UV("uq_sales_orders_number", "Key (tenant_id, order_number)=(t, SO-2611-0030) already exists."))
     assert e is not None and e.status_code == 409 and "SO-2611-0030" in e.detail["message"]
     assert ND.dari_pelanggaran_unik(UV("uq_idempotency_kunci", "Key (tenant_id, kunci)=(t, k) already exists.")) is None

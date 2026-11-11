@@ -92,7 +92,7 @@ def test_jalur_buat_memakai_kunci_sebelum_menulis(fn, prefix, penanda):
 def test_inti_penawaran_menomori_dan_tanpa_idem_sendiri():
     """Inti bersama POST /quotes + Milkybook v2: penomoran DI DALAM inti (dipanggil sesudah replay), idem milik pemanggil."""
     src = inspect.getsource(QU.buat_penawaran_inti)
-    assert "generate_quote_number" in src and "idem_buat" not in src
+    assert "tetapkan_nomor" in src and "idem_buat" not in src
 
 
 def _req(kunci):
