@@ -71,7 +71,7 @@ async def generate_balance_sheet(
 ) -> dict:
     """
     Neraca per as_of. SELALU akrual (putusan pemilik 10 Nov 2026: basis kas hanya Laba Rugi) dan ekuitas = ekuitas buku + SEMUA laba
-    s.d. as_of: Laba Ditahan Tahun Sebelumnya (laba sebelum 1 Jan tahun as_of yang belum ditutup ke akun) + Laba Tahun Berjalan
+    s.d. as_of: Laba Ditahan (laba sebelum 1 Jan tahun as_of yang belum ditutup ke akun) + Laba Tahun Berjalan
     (1 Jan..as_of). `period_start` dan `basis` DITERIMA demi kompatibilitas rute tetapi TIDAK dipakai: neraca adalah posisi per
     tanggal, awal periode Laba Rugi tak boleh membuang laba sebelumnya (dulu period_start tengah tahun -> neraca tak balance).
     """

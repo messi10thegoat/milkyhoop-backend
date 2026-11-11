@@ -787,7 +787,7 @@ class PDFService:
         laba_lalu = ek.get("laba_ditahan_lalu", 0)
         if laba_lalu:
             equity_accounts.append(
-                {"code": "", "name": "Laba Ditahan Tahun Sebelumnya", "balance": laba_lalu}
+                {"code": "", "name": "Laba Ditahan", "balance": laba_lalu}
             )
         laba_periode = ek.get("laba_periode", 0)
         if laba_periode:

@@ -1,4 +1,4 @@
-"""laporan-fix-1 (neraca): ekuitas = ekuitas buku + SEMUA laba s.d. as_of -- Laba Ditahan Tahun Sebelumnya (sebelum 1 Jan tahun as_of,
+"""laporan-fix-1 (neraca): ekuitas = ekuitas buku + SEMUA laba s.d. as_of -- Laba Ditahan (sebelum 1 Jan tahun as_of,
 belum ditutup) + Laba Tahun Berjalan (1 Jan..as_of). Neraca SELALU akrual (putusan pemilik 10 Nov 2026); period_start/basis diterima tapi
 tak dipakai (dulu period_start tengah tahun membuang laba sebelumnya -> neraca tak balance, gap TESTER nyawit 1.200).
 Paritas nyata di salinan DB = scripts/ops/uji-salinan-laporan-psak.sh."""
@@ -46,7 +46,7 @@ def test_laba_sebelumnya_masuk_ekuitas_dan_neraca_balance(palsu):
     assert (ek["laba_periode"], ek["laba_tahun_berjalan"], ek["laba_ditahan_lalu"], ek["tahun_mulai"]) == (500.0, 500.0, 1200.0, "2026-01-01")
     assert ek["total"] == 3000.0 and r["total_liabilitas_ekuitas"] == 3000.0 and r["_balanced"] is True
     baris = {x["kunci"]: x for x in r["baris"]}
-    assert (baris["laba_ditahan_lalu"]["label"], baris["laba_ditahan_lalu"]["nilai"]) == ("Laba Ditahan Tahun Sebelumnya", "1200.00")
+    assert (baris["laba_ditahan_lalu"]["label"], baris["laba_ditahan_lalu"]["nilai"]) == ("Laba Ditahan", "1200.00")
     assert (baris["laba_periode"]["label"], baris["laba_periode"]["nilai"]) == ("Laba Tahun Berjalan", "500.00")
     assert baris["total_ekuitas"]["nilai"] == "3000.00"
 
