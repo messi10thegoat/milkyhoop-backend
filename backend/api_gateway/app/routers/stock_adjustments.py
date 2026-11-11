@@ -523,6 +523,40 @@ async def _lokasi(conn, tid: str, storage_location_id) -> Optional[str]:
     return loc["name"] if loc else None
 
 
+async def _buat_draf(conn, ctx, body, r):
+    """Tulis dokumen penyesuaian DRAF + baris dari penentu `r` (SS.rencana_buat). DI DALAM transaksi pemanggil. -> (sa_id, nomor, total_nilai).
+    SATU penulis: handler POST /stock-adjustments DAN quick adjust items.py (penyesuaian-3) memakainya."""
+    sa_number = await conn.fetchval(
+        "SELECT generate_stock_adjustment_number($1, 'SA')",
+        ctx["tenant_id"],
+    )
+    sa_id = uuid_module.uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO stock_adjustments (
+            id, tenant_id, adjustment_number, adjustment_date, adjustment_type,
+            storage_location_id, storage_location_name,
+            reference_no, notes, status, created_by, warehouse_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11)
+    """,
+        sa_id,
+        ctx["tenant_id"],
+        sa_number,
+        body.adjustment_date,
+        body.adjustment_type,
+        UUID(body.storage_location_id) if body.storage_location_id else None,
+        await _lokasi(conn, ctx["tenant_id"], body.storage_location_id),
+        body.reference_no,
+        body.notes,
+        ctx["user_id"],
+        r["gudang"]["id"],
+    )
+    await _tulis_baris_draf(conn, sa_id, r["baris_draf"])
+    total_value = sum((b["total_value"] for b in r["baris_draf"]), Decimal(0))
+    return sa_id, sa_number, total_value
+
+
 @router.post("/preview")
 async def preview_create_stock_adjustment(request: Request, body: CreateStockAdjustmentRequest):
     """Standar SO: pratinjau buat -- penentu SAMA dengan POST (gudang, stok sebelum PER gudang, selisih, nilai), READ ONLY."""
@@ -548,34 +582,7 @@ async def create_stock_adjustment(request: Request, body: CreateStockAdjustmentR
                 if _lama is not None:
                     return _lama
                 r = await SS.rencana_buat(conn, ctx["tenant_id"], body, Blok(False))
-                sa_number = await conn.fetchval(
-                    "SELECT generate_stock_adjustment_number($1, 'SA')",
-                    ctx["tenant_id"],
-                )
-                sa_id = uuid_module.uuid4()
-
-                await conn.execute(
-                    """
-                    INSERT INTO stock_adjustments (
-                        id, tenant_id, adjustment_number, adjustment_date, adjustment_type,
-                        storage_location_id, storage_location_name,
-                        reference_no, notes, status, created_by, warehouse_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', $10, $11)
-                """,
-                    sa_id,
-                    ctx["tenant_id"],
-                    sa_number,
-                    body.adjustment_date,
-                    body.adjustment_type,
-                    UUID(body.storage_location_id) if body.storage_location_id else None,
-                    await _lokasi(conn, ctx["tenant_id"], body.storage_location_id),
-                    body.reference_no,
-                    body.notes,
-                    ctx["user_id"],
-                    r["gudang"]["id"],
-                )
-                await _tulis_baris_draf(conn, sa_id, r["baris_draf"])
-                total_value = sum((b["total_value"] for b in r["baris_draf"]), Decimal(0))
+                sa_id, sa_number, total_value = await _buat_draf(conn, ctx, body, r)
 
                 logger.info(f"Stock adjustment created: {sa_id}, number={sa_number}")
 
@@ -741,6 +748,172 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
 # =============================================================================
 
 
+async def _tulis_posting(conn, ctx, adjustment_id, r, tanpa_jurnal_bila_nol: bool = False):
+    """Tulis jurnal + gerak inventory_ledger + status 'posted' dari penentu `r` (SS.rencana_posting). DI DALAM transaksi pemanggil.
+    -> (journal_id|None, journal_number|None). SATU penulis: handler POST /{id}/post DAN quick adjust items.py (penyesuaian-3).
+    tanpa_jurnal_bila_nol=True (quick adjust): total nilai 0 (barang tanpa harga pokok) = tanpa jurnal, stok tetap bergerak (perilaku quick adjust lama);
+    handler dokumen memakai bawaan False (perilaku dokumen tak berubah)."""
+    sa = r["sa"]
+    journal_id = journal_number = None
+    if r["baris"] or not tanpa_jurnal_bila_nol:
+        # Law 20: Create journal entry as DRAFT first
+        journal_id = uuid_module.uuid4()
+        trace_id = uuid_module.uuid4()
+        journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], sa["adjustment_number"], "SAJ")
+
+        # Step 1: INSERT as DRAFT (Law 20)
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, trace_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9)
+        """,
+            journal_id,
+            ctx["tenant_id"],
+            journal_number,
+            sa["adjustment_date"],
+            f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
+            adjustment_id,
+            str(trace_id),
+            r["total"],  # Law 25: pass Decimal directly
+            ctx["user_id"],
+        )
+
+        # Step 2: INSERT journal_lines dari penentu (== pratinjau)
+        for line_number, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                uuid_module.uuid4(), journal_id, line_number, _akun, _debit, _kredit, _memo,
+            )
+
+        # Step 3: UPDATE to POSTED (Law 20)
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            journal_id,
+        )
+
+
+    # inventory_ledger per gerak penentu (barang goods + track_inventory), di gudang penyesuaian
+    adj_warehouse_id = r["gudang"]["id"]
+    for g in r["gerak"]:
+        unit_cost = g["unit_cost"]
+        if g["masuk"] > 0:
+            # INBOUND: WAC recompute + ledger insert lewat helper KANONIK (milkyhoop-inventory Rule 3, L09)
+            from ..services.inventory_helpers import (
+                record_inventory_inbound,
+            )
+
+            await record_inventory_inbound(
+                conn,
+                tenant_id=ctx["tenant_id"],
+                product_id=g["product_id"],
+                product_code=g["product_code"],
+                product_name=g["product_name"],
+                warehouse_id=adj_warehouse_id,
+                quantity=g["masuk"],
+                unit_cost=unit_cost,
+                source_type="STOCK_ADJUSTMENT",
+                source_id=adjustment_id,
+                source_number=sa["adjustment_number"],
+                user_id=ctx["user_id"],
+                notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
+                movement_date=sa["adjustment_date"],
+                journal_id=journal_id,
+                movement_type="STOCK_ADJUSTMENT",
+                storage_location_id=sa["storage_location_id"],
+            )
+        else:
+            # OUTBOUND: WAC does NOT change (Rule 3). Snapshot current net-on-hand WAC, insert outbound row.
+            qty_out = g["keluar"]
+            total_cost = unit_cost * qty_out
+            balance_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
+                FROM inventory_ledger
+                WHERE tenant_id = $1 AND product_id = $2
+            """,
+                ctx["tenant_id"],
+                g["product_id"],
+            )
+            current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
+            new_balance = current_balance - qty_out
+
+            avg_cost_row = await conn.fetchrow(
+                """
+                SELECT
+                    COALESCE(SUM(quantity_in * unit_cost)
+                             - SUM(quantity_out * unit_cost), 0) as net_value,
+                    COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
+                FROM inventory_ledger
+                WHERE tenant_id = $1 AND product_id = $2
+            """,
+                ctx["tenant_id"],
+                g["product_id"],
+            )
+            if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
+                new_avg_cost = Decimal(str(avg_cost_row["net_value"])) / Decimal(str(avg_cost_row["total_qty"]))
+            else:
+                new_avg_cost = unit_cost
+
+            await conn.execute(
+                """
+                INSERT INTO inventory_ledger (
+                    tenant_id, product_id, product_code, product_name,
+                    movement_type, movement_date, source_type, source_id, source_number,
+                    quantity_in, quantity_out, quantity_balance,
+                    unit_cost, total_cost, average_cost,
+                    warehouse_id, storage_location_id, journal_id, created_by, notes
+                ) VALUES (
+                    $1, $2, $3, $4,
+                    'STOCK_ADJUSTMENT', $5, 'STOCK_ADJUSTMENT', $6, $7,
+                    0, $8, $9,
+                    $10, $11, $12,
+                    $13, $14, $15, $16, $17
+                )
+            """,
+                ctx["tenant_id"],
+                g["product_id"],
+                g["product_code"],
+                g["product_name"],
+                sa["adjustment_date"],
+                adjustment_id,
+                sa["adjustment_number"],
+                qty_out,
+                new_balance,
+                unit_cost,
+                total_cost,
+                new_avg_cost,
+                adj_warehouse_id,
+                sa["storage_location_id"],
+                journal_id,
+                ctx["user_id"],
+                f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
+            )
+
+    # Update stock adjustment status (+ gudang yang benar-benar dipakai, untuk draf lama tanpa warehouse_id)
+    await conn.execute(
+        """
+        UPDATE stock_adjustments
+        SET status = 'posted', journal_id = $2, warehouse_id = $4,
+            posted_at = NOW(), posted_by = $3, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $5
+    """,
+        adjustment_id,
+        journal_id,
+        ctx["user_id"],
+        adj_warehouse_id,
+        ctx["tenant_id"],
+    )
+
+    return journal_id, journal_number
+
+
 @router.post("/{adjustment_id}/post/preview")
 async def preview_post_stock_adjustment(request: Request, adjustment_id: UUID, body: Optional[PostStockAdjustmentRequest] = None):
     """Standar SO: pratinjau posting -- jurnal + gerak stok per gudang + isyarat (stok minus, harga pokok berubah sejak draf), penentu SAMA
@@ -787,159 +960,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
                 r = await SS.rencana_posting(conn, ctx["tenant_id"], adjustment_id, Blok(False), kunci=True, counter_account_id=lawan)
                 sa = r["sa"]
 
-                # Law 20: Create journal entry as DRAFT first
-                journal_id = uuid_module.uuid4()
-                trace_id = uuid_module.uuid4()
-                journal_number = await NJ.nomor_jurnal_dokumen(conn, ctx["tenant_id"], sa["adjustment_number"], "SAJ")
-
-                # Step 1: INSERT as DRAFT (Law 20)
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, trace_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7, 'DRAFT', $8, $8, $9)
-                """,
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    sa["adjustment_date"],
-                    f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
-                    adjustment_id,
-                    str(trace_id),
-                    r["total"],  # Law 25: pass Decimal directly
-                    ctx["user_id"],
-                )
-
-                # Step 2: INSERT journal_lines dari penentu (== pratinjau)
-                for line_number, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                        uuid_module.uuid4(), journal_id, line_number, _akun, _debit, _kredit, _memo,
-                    )
-
-                # Step 3: UPDATE to POSTED (Law 20)
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # inventory_ledger per gerak penentu (barang goods + track_inventory), di gudang penyesuaian
-                adj_warehouse_id = r["gudang"]["id"]
-                for g in r["gerak"]:
-                    unit_cost = g["unit_cost"]
-                    if g["masuk"] > 0:
-                        # INBOUND: WAC recompute + ledger insert lewat helper KANONIK (milkyhoop-inventory Rule 3, L09)
-                        from ..services.inventory_helpers import (
-                            record_inventory_inbound,
-                        )
-
-                        await record_inventory_inbound(
-                            conn,
-                            tenant_id=ctx["tenant_id"],
-                            product_id=g["product_id"],
-                            product_code=g["product_code"],
-                            product_name=g["product_name"],
-                            warehouse_id=adj_warehouse_id,
-                            quantity=g["masuk"],
-                            unit_cost=unit_cost,
-                            source_type="STOCK_ADJUSTMENT",
-                            source_id=adjustment_id,
-                            source_number=sa["adjustment_number"],
-                            user_id=ctx["user_id"],
-                            notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
-                            movement_date=sa["adjustment_date"],
-                            journal_id=journal_id,
-                            movement_type="STOCK_ADJUSTMENT",
-                            storage_location_id=sa["storage_location_id"],
-                        )
-                    else:
-                        # OUTBOUND: WAC does NOT change (Rule 3). Snapshot current net-on-hand WAC, insert outbound row.
-                        qty_out = g["keluar"]
-                        total_cost = unit_cost * qty_out
-                        balance_row = await conn.fetchrow(
-                            """
-                            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as balance
-                            FROM inventory_ledger
-                            WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                            ctx["tenant_id"],
-                            g["product_id"],
-                        )
-                        current_balance = Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
-                        new_balance = current_balance - qty_out
-
-                        avg_cost_row = await conn.fetchrow(
-                            """
-                            SELECT
-                                COALESCE(SUM(quantity_in * unit_cost)
-                                         - SUM(quantity_out * unit_cost), 0) as net_value,
-                                COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                            FROM inventory_ledger
-                            WHERE tenant_id = $1 AND product_id = $2
-                        """,
-                            ctx["tenant_id"],
-                            g["product_id"],
-                        )
-                        if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
-                            new_avg_cost = Decimal(str(avg_cost_row["net_value"])) / Decimal(str(avg_cost_row["total_qty"]))
-                        else:
-                            new_avg_cost = unit_cost
-
-                        await conn.execute(
-                            """
-                            INSERT INTO inventory_ledger (
-                                tenant_id, product_id, product_code, product_name,
-                                movement_type, movement_date, source_type, source_id, source_number,
-                                quantity_in, quantity_out, quantity_balance,
-                                unit_cost, total_cost, average_cost,
-                                warehouse_id, storage_location_id, journal_id, created_by, notes
-                            ) VALUES (
-                                $1, $2, $3, $4,
-                                'STOCK_ADJUSTMENT', $5, 'STOCK_ADJUSTMENT', $6, $7,
-                                0, $8, $9,
-                                $10, $11, $12,
-                                $13, $14, $15, $16, $17
-                            )
-                        """,
-                            ctx["tenant_id"],
-                            g["product_id"],
-                            g["product_code"],
-                            g["product_name"],
-                            sa["adjustment_date"],
-                            adjustment_id,
-                            sa["adjustment_number"],
-                            qty_out,
-                            new_balance,
-                            unit_cost,
-                            total_cost,
-                            new_avg_cost,
-                            adj_warehouse_id,
-                            sa["storage_location_id"],
-                            journal_id,
-                            ctx["user_id"],
-                            f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
-                        )
-
-                # Update stock adjustment status (+ gudang yang benar-benar dipakai, untuk draf lama tanpa warehouse_id)
-                await conn.execute(
-                    """
-                    UPDATE stock_adjustments
-                    SET status = 'posted', journal_id = $2, warehouse_id = $4,
-                        posted_at = NOW(), posted_by = $3, updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $5
-                """,
-                    adjustment_id,
-                    journal_id,
-                    ctx["user_id"],
-                    adj_warehouse_id,
-                    ctx["tenant_id"],
-                )
+                journal_id, journal_number = await _tulis_posting(conn, ctx, adjustment_id, r)
 
                 logger.info(
                     f"Stock adjustment posted: {adjustment_id}, journal={journal_id}"

@@ -130,9 +130,10 @@ def test_rute_dropdown_sebelum_rute_id_dan_post_membawa_pilihan():
     assert "counter_account_id=lawan" in inspect.getsource(SA.preview_post_stock_adjustment)
 
 
-def test_quick_adjust_validasi_pilihan_sebelum_tulisan_apa_pun():
+def test_quick_adjust_akun_lawan_lewat_penentu_dokumen_dan_alias():
+    """penyesuaian-3: quick adjust meneruskan pilihan ke SS.rencana_posting (SATU penentu, sama dgn dokumen; galat 422 membatalkan transaksi = nol tulisan);
+    kedua nama (adjustment_account_id dari FE form lama, counter_account_id)."""
     src = inspect.getsource(IT.create_stock_adjustment)
-    iv = src.index("SS_PEN.akun_lawan(")
-    assert iv < src.index("INSERT INTO journal_entries") and iv < src.index("record_inventory_inbound")
-    assert "akun_lawan_pilihan or await resolve_account_id(" in src                  # kosong = bawaan 5-50100 (perilaku lama)
-    assert len(re.findall(r"SS_PEN\.akun_lawan\(", src)) == 1
+    assert 'body.get("counter_account_id") or body.get("adjustment_account_id")' in src
+    assert "counter_account_id=lawan" in src and "SS_PEN.rencana_posting(" in src
+    assert "akun_lawan_pilihan" not in src and "5-50100" not in src                  # bawaan kini akun peran penyesuaian di penentu dokumen

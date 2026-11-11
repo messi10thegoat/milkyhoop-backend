@@ -3468,436 +3468,106 @@ async def list_cogs_accounts(request: Request):
 
 
 @router.post("/items/{item_id}/stock-adjustment")
-async def create_stock_adjustment(request: Request, item_id: str):
-    """
-    Create a stock adjustment for an item.
-    Iron Law compliant: Law 13 (advisory lock), Law 20 (DRAFT→POSTED),
-    Law 23 (atomic transaction), Law 25 (Decimal precision),
-    Inventory Rule 3 (WAC recalculation).
-    """
+async def create_stock_adjustment(request: Request, item_id: str, response: Response = None):
+    """Penyesuaian stok CEPAT satu barang -- disatukan ke penulis DOKUMEN penyesuaian (penyesuaian-3, putusan pemilik 12 Nov): per gudang (bawaan UTAMA),
+    harga pokok rata-rata, bernomor SA-, pratinjau + batal lewat /api/stock-adjustments; data lama QSA- tak diubah. Badan lama tetap diterima
+    (adjustment_type|type set/add/subtract, quantity, reason, reference_number, date, notes, adjustment_account_id|counter_account_id) + warehouse_id opsional.
+    SATU transaksi: draf + posting lewat SAR._buat_draf / SAR._tulis_posting (penulis yang sama dengan POST /stock-adjustments + /post).
+    Pagar yang dipertahankan: stok sesudah < 0 di gudang itu ditolak 422 STOK_TIDAK_CUKUP; barang tanpa stok (non-inventory) ditolak 422 BARANG_TANPA_STOK."""
+    from decimal import Decimal
+    import uuid as uuid_module
+    from datetime import date as _date
+    from . import stock_adjustments as SAR
+    from ..schemas.stock_adjustments import CreateStockAdjustmentRequest
+    from ..services import idem_buat
+    from ..services.galat_berkode import GalatBerkode
     try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
+        ctx = SAR.get_user_context(request)
+        tid = ctx["tenant_id"]
         body = await request.json()
+        if not isinstance(body, dict):
+            raise GalatBerkode(422, "BADAN_TAK_SAH", "Badan permintaan harus berupa objek JSON.")
 
-        from decimal import Decimal, ROUND_HALF_UP
-        import uuid as uuid_module
-
-        # Read adjustment_type (support both "adjustment_type" and legacy "type" key)
-        adjustment_type = body.get("adjustment_type") or body.get("type", "set")
-        quantity = body.get("quantity")
-        reason = body.get("reason")
-
-        # Normalize legacy values: increase->add, decrease->subtract
-        type_map = {"increase": "add", "decrease": "subtract"}
-        adjustment_type = type_map.get(adjustment_type, adjustment_type)
-
-        # Validate
-        if adjustment_type not in ("set", "add", "subtract"):
-            raise HTTPException(
-                status_code=422,
-                detail="Invalid adjustment_type. Must be: set, add, subtract",
-            )
-        if quantity is None:
-            raise HTTPException(status_code=422, detail="quantity is required")
+        # tipe lama (adjustment_type | type) + alias increase/decrease -> add/subtract
+        tipe = body.get("adjustment_type") or body.get("type", "set")
+        tipe = {"increase": "add", "decrease": "subtract"}.get(tipe, tipe)
+        if tipe not in ("set", "add", "subtract"):
+            raise GalatBerkode(422, "TIPE_TAK_SAH", "Jenis penyesuaian harus: set, add, atau subtract.", field="adjustment_type")
+        if body.get("quantity") is None:
+            raise GalatBerkode(422, "JUMLAH_WAJIB", "Jumlah wajib diisi.", field="quantity")
         try:
-            qty_check = Decimal(str(quantity))
+            jumlah = Decimal(str(body["quantity"]))
         except (TypeError, ValueError, ArithmeticError):
-            raise HTTPException(status_code=422, detail="quantity must be a number")
-        if qty_check <= 0:
-            raise HTTPException(
-                status_code=422, detail="quantity must be greater than 0"
-            )
-        if not reason:
-            raise HTTPException(status_code=422, detail="reason is required")
-
+            raise GalatBerkode(422, "JUMLAH_TAK_SAH", "Jumlah harus berupa angka.", field="quantity")
+        if jumlah <= 0:
+            raise GalatBerkode(422, "JUMLAH_HARUS_POSITIF", "Jumlah harus lebih dari 0.", field="quantity")
+        alasan = body.get("reason")
+        if not alasan:
+            raise GalatBerkode(422, "ALASAN_WAJIB", "Alasan wajib diisi.", field="reason")
         try:
-            product_uuid = uuid_module.UUID(item_id)
+            pid = uuid_module.UUID(item_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid item ID format")
+            raise GalatBerkode(400, "ID_BARANG_TAK_SAH", "Format ID barang tidak valid.")
+        # akun lawan: kedua nama (FE form lama mengirim adjustment_account_id; penyesuaian-2 memakai counter_account_id); divalidasi SS.akun_lawan
+        lawan = body.get("counter_account_id") or body.get("adjustment_account_id") or None
 
-        quantity_dec = Decimal(str(quantity))
-
+        pool = await get_pool()
+        await SAR._ensure_stock_adj_role_preconditions(pool, tid)
         async with pool.acquire() as conn:
-            # Law 23: Explicit transaction block — all operations atomic
             async with conn.transaction():
-                # Law 13: Advisory lock BEFORE any reads/writes
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"STOCK_ADJ_CREATE:{item_id}",
-                )
-
-                # Get product info
-                item = await conn.fetchrow(
-                    "SELECT id, nama_produk, item_code FROM products WHERE id = $1 AND tenant_id = $2",
-                    product_uuid,
-                    ctx["tenant_id"],
-                )
-                if not item:
-                    raise HTTPException(status_code=404, detail="Item not found")
-
-                item_name = item["nama_produk"] or "Unknown"
-                item_code = item["item_code"] or ""
-
-                # penyesuaian-2 (putusan pemilik 10 Nov #7a): akun lawan jurnal = PILIHAN pengguna (counter_account_id), divalidasi sebelum tulisan
-                # apa pun (SS.akun_lawan: bukan persediaan/induk/nonaktif/piutang-utang/kas-bank); kosong = akun penyesuaian bawaan.
-                _persediaan_cek = await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
-                akun_lawan_pilihan = await SS_PEN.akun_lawan(conn, ctx["tenant_id"], body.get("counter_account_id"), BlokPen(False), _persediaan_cek)
-
-                # Get current stock from inventory_ledger (Law 16)
-                old_stock_row = await conn.fetchval(
-                    "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
-                    product_uuid,
-                    ctx["tenant_id"],
-                )
-                old_stock = Decimal(str(old_stock_row or 0))
-
-                # Calculate new stock (Law 25: Decimal)
-                if adjustment_type == "set":
-                    new_stock = quantity_dec
-                elif adjustment_type == "add":
-                    new_stock = old_stock + abs(quantity_dec)
-                elif adjustment_type == "subtract":
-                    new_stock = old_stock - abs(quantity_dec)
-
-                if new_stock < 0:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Stock cannot be negative. Current: {old_stock}, would result in {new_stock}",
-                    )
-
-                adj_diff = new_stock - old_stock
-                if adj_diff == 0:
-                    return {
-                        "success": True,
-                        "message": "Stock unchanged",
-                        "old_stock": str(old_stock),
-                        "new_stock": str(new_stock),
-                        "adjustment": 0,
-                    }
-
-                adjustment_qty = abs(adj_diff)
-
-                # Get unit cost with fallbacks: WAC → purchase_price → sales_price
-                cost_row = await conn.fetchrow(
-                    """
-                    SELECT
-                        COALESCE(il.average_cost, 0) as ledger_cost,
-                        COALESCE(p.purchase_price, 0) as purchase_price,
-                        COALESCE(p.sales_price, 0) as sales_price
-                    FROM products p
-                    LEFT JOIN LATERAL (
-                        SELECT average_cost FROM inventory_ledger
-                        WHERE product_id = p.id AND tenant_id = CAST(p.tenant_id AS TEXT)
-                          AND average_cost IS NOT NULL AND average_cost > 0
-                        ORDER BY movement_date DESC, created_at DESC, id DESC LIMIT 1
-                    ) il ON true
-                    WHERE p.id = $1 AND p.tenant_id = $2
-                """,
-                    product_uuid,
-                    ctx["tenant_id"],
-                )
-
-                unit_cost = Decimal("0")
-                cost_source = None
-                if cost_row:
-                    ledger_cost = Decimal(str(cost_row["ledger_cost"] or 0))
-                    purchase_price = Decimal(str(cost_row["purchase_price"] or 0))
-                    sales_price = Decimal(str(cost_row["sales_price"] or 0))
-                    if ledger_cost > 0:
-                        unit_cost = ledger_cost
-                        cost_source = "inventory_ledger"
-                    elif purchase_price > 0:
-                        unit_cost = purchase_price
-                        cost_source = "purchase_price"
-                    elif sales_price > 0:
-                        unit_cost = sales_price
-                        cost_source = "sales_price"
-
-                total_value = (adjustment_qty * unit_cost).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-                journal_id = None
-                journal_note = None
-                created_by_uuid = None
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-
-                if total_value == 0:
-                    journal_note = (
-                        "Jurnal tidak dibuat karena item belum memiliki harga beli/jual"
-                    )
-                    logger.info(
-                        f"Stock adjustment on {item_id}: no journal created (unit_cost=0)"
-                    )
-
-                # --- GL Journal (Law 20: DRAFT→POSTED) ---
-                if total_value > 0:
-                    inv_account_id = await resolve_account_id(
-                        conn, ctx["tenant_id"], "1-10600"
-                    )
-                    adj_account_id = akun_lawan_pilihan or await resolve_account_id(
-                        conn, ctx["tenant_id"], "5-50100"
-                    )
-
-                    if inv_account_id and adj_account_id:
-                        journal_id = uuid_module.uuid4()
-                        trace_id = uuid_module.uuid4()
-                        today = hari_ini  # t10-tanggal-bisnis
-
-                        # Law 5: Period lock check
-                        period_row = await conn.fetchrow(
-                            """SELECT id, period_name, status FROM fiscal_periods
-                               WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
-                               ORDER BY start_date DESC LIMIT 1""",
-                            ctx["tenant_id"],
-                            today,
-                        )
-                        if period_row and period_row["status"] in ("CLOSED", "LOCKED"):
-                            raise HTTPException(
-                                status_code=403,
-                                detail=tg.periode_tertutup(period_row['period_name'], period_row['status']),
-                            )
-
-                        date_str = today.isoformat()
-
-                        prefix = f"QSA-{date_str[2:4]}{date_str[5:7]}-"
-                        seq_row = await conn.fetchrow(
-                            "SELECT COUNT(*) + 1 as next_num FROM journal_entries WHERE tenant_id = $1 AND journal_number LIKE $2",
-                            ctx["tenant_id"],
-                            f"{prefix}%",
-                        )
-                        next_num = seq_row["next_num"] if seq_row else 1
-                        journal_number = f"{prefix}{next_num:04d}"
-
-                        description = f"Penyesuaian Stok: {item_name} ({old_stock} -> {new_stock}) - {reason}"
-
-                        created_by_uuid = None
-                        user_id_val = ctx.get("user_id")
-                        if user_id_val:
-                            try:
-                                created_by_uuid = uuid_module.UUID(str(user_id_val))
-                            except (ValueError, AttributeError):
-                                pass
-
-                        # Law 20: INSERT as DRAFT first
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_entries (
-                                id, tenant_id, journal_number, journal_date, description,
-                                source_type, source_id, trace_id, status,
-                                total_debit, total_credit, created_by, created_at, updated_at
-                            ) VALUES ($1, $2, $3, $4, $5, 'STOCK_ADJUSTMENT', $6, $7,
-                                'DRAFT', $8, $8, $9, NOW(), NOW())
-                        """,
-                            journal_id,
-                            ctx["tenant_id"],
-                            journal_number,
-                            today,
-                            description,
-                            product_uuid,
-                            str(trace_id),
-                            total_value,
-                            created_by_uuid,
-                        )
-
-                        # Determine debit/credit accounts
-                        if adj_diff > 0:
-                            debit_account = inv_account_id
-                            credit_account = adj_account_id
-                        else:
-                            debit_account = adj_account_id
-                            credit_account = inv_account_id
-
-                        # Journal lines
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
-                            VALUES ($1, $2, 1, $3, $4, 0, $5, $6)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            debit_account,
-                            total_value,
-                            description,
-                            product_uuid,
-                        )
-
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo, item_id)
-                            VALUES ($1, $2, 2, $3, 0, $4, $5, $6)
-                        """,
-                            uuid_module.uuid4(),
-                            journal_id,
-                            credit_account,
-                            total_value,
-                            description,
-                            product_uuid,
-                        )
-
-                        # Law 20: UPDATE to POSTED (triggers hash chain)
-                        await conn.execute(
-                            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                            journal_id,
-                        )
-
-                        logger.info(
-                            f"Journal {journal_number} created for stock adjustment on {item_id}"
-                        )
-
-                # --- Inventory Ledger (Inventory Rule 1: Dual Ledger Sync) ---
-                # Resolve default warehouse for warehouse_stock trigger
-                warehouse_id = await conn.fetchval(
-                    "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at ASC LIMIT 1",
-                    ctx["tenant_id"],
-                )
-
-                if adj_diff > 0:
-                    # INBOUND: WAC recompute + ledger insert delegated to the
-                    # CANONICAL helper (milkyhoop-inventory Rule 3, L09
-                    # convergence). Helper computes net-on-hand WAC (numerator
-                    # AND denominator both deplete on outbound) — fixes the
-                    # gross-numerator inflation bug — and inserts the ledger
-                    # row, linking journal_id for dual-ledger sync.
-                    from ..services.inventory_helpers import (
-                        record_inventory_inbound,
-                    )
-
-                    await record_inventory_inbound(
-                        conn,
-                        tenant_id=ctx["tenant_id"],
-                        product_id=product_uuid,
-                        product_code=item_code,
-                        product_name=item_name,
-                        warehouse_id=warehouse_id,
-                        quantity=adjustment_qty,
-                        unit_cost=unit_cost,
-                        source_type="STOCK_ADJUSTMENT",
-                        source_id=product_uuid,
-                        source_number=f"QSA-{item_id[:8]}",
-                        user_id=created_by_uuid,
-                        notes=f"Penyesuaian stok: {reason}",
-                        journal_id=journal_id,
-                        movement_type="ADJUSTMENT",
-                    )
-                else:
-                    # OUTBOUND: WAC does NOT change (Rule 3). Snapshot current
-                    # WAC and insert the outbound ledger row inline.
-                    qty_out = abs(adj_diff)
-                    avg_cost_row = await conn.fetchrow(
-                        """
-                        SELECT
-                            COALESCE(SUM(quantity_in * unit_cost)
-                                     - SUM(quantity_out * unit_cost), 0) as net_value,
-                            COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) as total_qty
-                        FROM inventory_ledger
-                        WHERE tenant_id = $1 AND product_id = $2
-                    """,
-                        ctx["tenant_id"],
-                        product_uuid,
-                    )
-                    if avg_cost_row and Decimal(str(avg_cost_row["total_qty"])) > 0:
-                        new_avg_cost = Decimal(str(avg_cost_row["net_value"])) / Decimal(
-                            str(avg_cost_row["total_qty"])
-                        )
-                    else:
-                        new_avg_cost = unit_cost
-
-                    adj_total_cost = (qty_out * unit_cost).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            id, tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date,
-                            source_type, source_id, source_number,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, notes, created_at
-                        ) VALUES (
-                            gen_random_uuid(), $1, $2, $3, $4,
-                            'ADJUSTMENT', $15,
-                            'STOCK_ADJUSTMENT', $5, $6,
-                            0, $7, $8,
-                            $9, $10, $11,
-                            $12, $13, $14, NOW()
-                        )
-                    """,
-                        ctx["tenant_id"],
-                        product_uuid,
-                        item_code,
-                        item_name,
-                        product_uuid,
-                        f"QSA-{item_id[:8]}",
-                        qty_out,
-                        new_stock,
-                        unit_cost,
-                        adj_total_cost,
-                        new_avg_cost,
-                        warehouse_id,
-                        journal_id,
-                        f"Penyesuaian stok: {reason}",
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-
-                # --- Audit trail ---
-                reference_number = body.get(
-                    "reference_number", body.get("reference", "")
-                )
-                audit_metadata = json.dumps(
-                    {
-                        "item_id": str(product_uuid),
-                        "item_name": item_name,
-                        "adjustment_type": adjustment_type,
-                        "old_stock": str(old_stock),
-                        "new_stock": str(new_stock),
-                        "reason": reason,
-                        "reference_number": reference_number,
-                        "journal_id": str(journal_id) if journal_id else None,
-                        "unit_cost": str(unit_cost),
-                        "cost_source": cost_source,
-                        "journal_note": journal_note,
-                    }
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO audit_logs (id, "userId", "eventType", "ipAddress", "userAgent", metadata, success, "createdAt")
-                    VALUES ($1, $2, $3, $4, $5, $6, true, NOW())
-                """,
-                    str(uuid_module.uuid4()),
-                    str(ctx.get("user_id") or "system"),
-                    "STOCK_ADJUSTMENT",
-                    "",
-                    "",
-                    audit_metadata,
-                )
-
-            # Response (outside transaction — already committed)
-            logger.info(
-                f"Stock adjusted for {item_id}: {old_stock} -> {new_stock}, reason: {reason}"
-            )
-
-            response = {
-                "success": True,
-                "message": "Stock adjusted",
-                "old_stock": str(old_stock),
-                "new_stock": str(new_stock),
-                "adjustment": str(new_stock - old_stock),
-                "journal_id": str(journal_id) if journal_id else None,
-                "unit_cost": str(unit_cost),
-                "cost_source": cost_source,
-            }
-            if journal_note:
-                response["journal_note"] = journal_note
-            return response
+                tgl_badan = body.get("date")
+                tgl = _date.fromisoformat(str(tgl_badan)[:10]) if tgl_badan else await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "ITEM_STOCK_ADJ", item_id, body, response)
+                if _lama is not None:
+                    return _lama
+                g = await SS_PEN.gudang(conn, tid, body.get("warehouse_id"), BlokPen(False))
+                info = await SAR.get_product_info(conn, tid, pid)
+                if not info:
+                    raise GalatBerkode(404, "BARANG_TIDAK_DITEMUKAN", "Barang tidak ditemukan.")
+                tipe_brg = await conn.fetchrow("SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", pid, tid)
+                if not (tipe_brg and tipe_brg["item_type"] == "goods" and (tipe_brg["track_inventory"] if tipe_brg["track_inventory"] is not None else True)):
+                    raise GalatBerkode(422, "BARANG_TANPA_STOK", f"{info['name']} tidak melacak stok (non-inventory); penyesuaian stok tidak berlaku.")
+                # Law 13: kunci per (barang, gudang) SEBELUM membaca stok (anti-oversell lintas dokumen), lalu kunci buat per barang
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK:{item_id}:{g['id']}")
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ_CREATE:{item_id}")
+                sebelum = await SS_PEN.stok_gudang(conn, tid, pid, g["id"])   # Σ ledger gudang itu (Law 16)
+                ubah = (jumlah - sebelum) if tipe == "set" else (jumlah if tipe == "add" else -jumlah)
+                if ubah == 0:
+                    return {"success": True, "message": "Stock unchanged", "old_stock": str(sebelum), "new_stock": str(sebelum), "adjustment": 0}
+                if sebelum + ubah < 0:
+                    raise GalatBerkode(422, "STOK_TIDAK_CUKUP", f"Stok {info['name']} di {g['name']} tidak cukup: tersedia {sebelum}, dikurangi {abs(ubah)}.",
+                                       field="quantity")
+                catatan = " - ".join(x for x in (str(alasan), body.get("notes")) if x)
+                req = CreateStockAdjustmentRequest(
+                    adjustment_date=tgl, adjustment_type="recount" if tipe == "set" else ("increase" if ubah > 0 else "decrease"),
+                    warehouse_id=str(g["id"]), reference_no=body.get("reference_number") or body.get("reference") or None, notes=catatan,
+                    items=[{"product_id": str(pid), "quantity_adjustment": ubah, "reason_detail": str(alasan),
+                            "physical_quantity": jumlah if tipe == "set" else None}])
+                r_buat = await SS_PEN.rencana_buat(conn, tid, req, BlokPen(False))
+                sa_id, sa_number, total_nilai = await SAR._buat_draf(conn, ctx, req, r_buat)
+                r_post = await SS_PEN.rencana_posting(conn, tid, sa_id, BlokPen(False), kunci=True, counter_account_id=lawan)
+                journal_id, journal_number = await SAR._tulis_posting(conn, ctx, sa_id, r_post, tanpa_jurnal_bila_nol=True)
+                harga = r_buat["baris_draf"][0]["unit_cost"]
+                biaya_ledger = await conn.fetchval(
+                    "SELECT average_cost FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND average_cost IS NOT NULL AND average_cost > 0 "
+                    "ORDER BY created_at DESC LIMIT 1", tid, pid)
+                hasil = {
+                    "success": True, "message": "Stock adjusted", "old_stock": str(sebelum), "new_stock": str(sebelum + ubah), "adjustment": str(ubah),
+                    "journal_id": str(journal_id) if journal_id else None, "unit_cost": str(harga),
+                    "cost_source": "wac" if biaya_ledger else ("purchase_price" if harga else None),
+                    "adjustment_id": str(sa_id), "adjustment_number": sa_number, "journal_number": journal_number,
+                    "warehouse_id": str(g["id"]), "warehouse_name": g["name"],
+                }
+                if not journal_id:
+                    hasil["journal_note"] = "Jurnal tidak dibuat karena barang belum memiliki harga pokok (harga rata-rata/harga beli)"
+                logger.info(f"Stock adjusted {item_id}: {sebelum} -> {sebelum + ubah} ({sa_number})")
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_STOCK_ADJ", hasil, sa_id)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error adjusting stock: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to adjust stock")
+        raise HTTPException(status_code=500, detail="Gagal menyesuaikan stok.")
 
 
 # =============================================================================

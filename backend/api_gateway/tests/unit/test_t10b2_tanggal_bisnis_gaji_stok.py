@@ -112,13 +112,11 @@ async def test_nomor_gaji_cadangan_ikut_bulan_bisnis(jam, instant, harap):
 
 
 def test_ledger_dan_jurnal_penyesuaian_cepat_satu_tanggal():
-    """items.create_stock_adjustment: tanggal jurnal (today) dan movement_date ledger berasal
-    dari SATU hari_ini yang ditetapkan SEBELUM cabang (dulu today hanya ada di cabang jurnal)."""
+    """items.create_stock_adjustment (penyesuaian-3): SATU tanggal (`tgl` = badan `date` atau tanggal bisnis tenant) ditetapkan tepat sekali dan menjadi
+    adjustment_date dokumen; jurnal + gerak ledger memakai tanggal dokumen itu (penulis dokumen), bukan hari_ini/today terpisah."""
     f = _fungsi("routers/items.py", "create_stock_adjustment")
-    defs = [n for n in ast.walk(f) if isinstance(n, ast.Assign) and any(
-        isinstance(t, ast.Name) and t.id == "hari_ini" for t in n.targets)]
-    assert len(defs) == 1, "hari_ini harus didefinisikan tepat sekali"
-    today = [n for n in ast.walk(f) if isinstance(n, ast.Assign) and any(
-        isinstance(t, ast.Name) and t.id == "today" for t in n.targets)]
-    assert today and all(isinstance(n.value, ast.Name) and n.value.id == "hari_ini" for n in today)
-    assert defs[0].lineno < min(n.lineno for n in today)
+    defs = [n for n in ast.walk(f) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "tgl" for t in n.targets)]
+    assert len(defs) == 1, "tgl harus didefinisikan tepat sekali"
+    src = ast.unparse(f)
+    assert "tanggal_dokumen(conn, tid)" in src and "adjustment_date=tgl" in src
+    assert "hari_ini" not in src and "today" not in src.replace("Todo", "")
