@@ -43,8 +43,11 @@ def test_basis_kas_qbo_dan_errors_widget():
     # D1 putusan pemilik 22 Okt: basis kas = pola QBO (diakui saat dibayar, proporsional, tanpa PPN), bukan 0 palsu
     s = inspect.getsource(DB.get_dashboard_summary)
     assert 'DA.laba_rugi_kas if effective_basis == "cash" else DA.laba_rugi' in s
-    assert "receive_payment_allocations" in DA.SQL_PENDAPATAN_KAS and "customer_deposit_applications" in DA.SQL_PENDAPATAN_KAS
-    assert "NULLIF(si.total_amount, 0)" in DA.SQL_PENDAPATAN_KAS and "bill_payment_allocations" in DA.SQL_BEBAN_TAGIHAN_DIBAYAR
+    # laporan-fix-2: SQL basis kas pindah ke report_engine.basis_kas (SATU sumber dgn Laba Rugi PSAK basis kas; test_basis_kas.py menjaga isinya)
+    from app.services.report_engine import basis_kas as BK
+    assert "receive_payment_allocations" in BK.SQL_PENDAPATAN and "customer_deposit_applications" in BK.SQL_PENDAPATAN
+    assert "NULLIF(si.total_amount, 0)" in BK.SQL_PENDAPATAN and "bill_payment_allocations" in BK.SQL_BEBAN_TAGIHAN
+    assert "basis_kas" in inspect.getsource(DA.laba_rugi_kas)
     a = inspect.getsource(DB.get_dashboard_all)
     assert 'errors[label] = "gagal_hitung"' in a and 'response["errors"] = errors' in a
 
