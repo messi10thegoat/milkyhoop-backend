@@ -347,7 +347,7 @@ async def quick3(conn, tid, o):
 
 async def utama():
     pool = await SA.get_pool()
-    out = {"baru": BARU, "pen2": hasattr(SA, "daftar_akun_lawan_penyesuaian")}  # pen2 = pembeda lama/baru sejak gelombang 2 LIVE (BARU sudah True di master)
+    out = {"baru": BARU, "pen2": hasattr(SA, "daftar_akun_lawan_penyesuaian"), "pen3": hasattr(SA, "_buat_draf")}  # pen2 = pembeda lama/baru sejak gelombang 2 LIVE (BARU sudah True di master)
     async with pool.acquire() as conn:
         db = await conn.fetchval("SELECT current_database()")
         if not db.startswith("scratch_persediaan_"):

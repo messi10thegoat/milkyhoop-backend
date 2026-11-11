@@ -34,8 +34,8 @@ def sama_lama(a, b, jalur):
         cek(jalur, a == b, f"{a!r} -> {b!r}")
 
 
-assert baru["pen2"] is True and lama["pen2"] is False  # pohon baru punya akun lawan pilihan; master (gelombang 2 LIVE) belum
-for tid in (k for k in baru if k not in ("baru", "pen2", "CEK")):
+assert baru["pen3"] is True and lama["pen3"] is False  # pohon baru punya penulis dokumen bersama (quick adjust = dokumen); master (pen-2 LIVE) belum
+for tid in (k for k in baru if k not in ("baru", "pen2", "pen3", "CEK")):
     L, B = lama[tid], baru[tid]
     for k in sorted(L):
         cek(f"{tid} {k} ada di baru", k in B)
