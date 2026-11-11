@@ -1,11 +1,11 @@
 # Konfig gerbang terfokus BF-1a (impor + daftar mutasi bank, NOL jurnal; V494 sudah LIVE; tanpa migrasi).
-# Pemisah sabotase = "|", ekspresi sed memakai "@". POLA_UNIT dicari di SEMUA folder tests/ (unit, milkybook, chat) -- pelajaran cari-varian-r2.
+# Pemisah sabotase = "|", ekspresi sed memakai "@". POLA_UNIT dicari di folder unit tests/unit + tests/milkybook -- pelajaran cari-varian-r2.
 W=/root/mh-bf1a; CABANG=feat/bankfeed-bf1a-impor-r2; NAMA_JENDELA=bankfeed-1a
 POLA_UNIT='bankfeed|mutasi_bank|bank-accounts|bank_accounts|kas_bank|inventaris_rute_tulis|gate_izin|include_router|mutasi_bank_impor|ImporMutasi'
 HARNESS=scripts/ops/uji-salinan-bankfeed-1a.sh
 PENANDA_BERKAS=services/bankfeed_parser.py; PENANDA='def baca('
 A=backend/api_gateway/app
-T="backend/api_gateway/tests/unit/test_bankfeed_parser.py backend/api_gateway/tests/unit/test_bankfeed_impor.py"
+T="tests/unit/test_bankfeed_parser.py tests/unit/test_bankfeed_impor.py"
 SAB=(
  "s1 PEND tak ikut kaki Kredit lagi|$A/services/bankfeed_parser.py|s@h.urut if b.arah == \"masuk\"@h.baris if b.arah == \"masuk\"@|$T"
  "s2 pemisah koma naif|$A/services/bankfeed_parser.py|s@kolom = next(csv.reader(\[mentah\]))@kolom = mentah.split(\",\")@|$T"
