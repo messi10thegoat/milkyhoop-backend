@@ -99,10 +99,28 @@ def ukuran(varian) -> list:
     return sorted(hasil, key=_kunci_urut)
 
 
-def baris_ke_hasil(b) -> dict:
-    return {"id": str(b["id"]), "nama": b["nama"], "kode": b["kode"], "satuan": b["satuan"], "jenis": b["jenis"],
-            "harga": rupiah(b["harga"]), "ukuran": ukuran(b["varian"]), "skor": b["skor"], "mirip": b["kelas"] == 2}
+def varian_lengkap(varian) -> list:
+    """SEMUA varian aktif barang dasar -> [{id, nama, atribut, harga}] (urut nama, seperti SQL). Untuk barang >1 dimensi (ukuran x warna)
+    `ukuran` memuat ukuran ganda; FE/parser memilih ukuran lalu warna lewat atribut di sini (BUG-159 B1, 12 Nov 2026; aditif)."""
+    if isinstance(varian, str):
+        varian = json.loads(varian)
+    hasil = []
+    for v in varian or []:
+        atr = v.get("atribut")
+        if isinstance(atr, str):
+            atr = json.loads(atr or "{}")
+        hasil.append({"id": str(v["id"]), "nama": v.get("nama"), "atribut": atr or {}, "harga": rupiah(v.get("harga"))})
+    return hasil
 
 
-async def cari(conn, tenant_id: str, q: str, batas: int = 6) -> list:
-    return [baris_ke_hasil(b) for b in await conn.fetch(SQL, *parameter(tenant_id, q, batas))]
+def baris_ke_hasil(b, dengan_varian: bool = True) -> dict:
+    h = {"id": str(b["id"]), "nama": b["nama"], "kode": b["kode"], "satuan": b["satuan"], "jenis": b["jenis"],
+         "harga": rupiah(b["harga"]), "ukuran": ukuran(b["varian"]), "skor": b["skor"], "mirip": b["kelas"] == 2}
+    if dengan_varian:
+        h["varian"] = varian_lengkap(b["varian"])
+    return h
+
+
+async def cari(conn, tenant_id: str, q: str, batas: int = 6, dengan_varian: bool = True) -> list:
+    """`dengan_varian=False` untuk tool LLM (hemat token: hingga 100 varian x barang)."""
+    return [baris_ke_hasil(b, dengan_varian) for b in await conn.fetch(SQL, *parameter(tenant_id, q, batas))]

@@ -191,7 +191,7 @@ async def jalankan_tool(conn, tenant_id: str, nama: str, args: dict) -> dict:
     if nama == "search_customers":
         return {"items": await cari_pelanggan.cari(conn, tenant_id, str(args.get("q", ""))[:80], 6)}
     if nama == "search_items":
-        return {"items": await cari_barang.cari(conn, tenant_id, str(args.get("q", ""))[:80], 6)}
+        return {"items": await cari_barang.cari(conn, tenant_id, str(args.get("q", ""))[:80], 6, dengan_varian=False)}  # token: tanpa varian[]
     if nama == "open_invoices":
         cid = _uuid(args.get("customer_id"))
         if not cid or not await conn.fetchrow(SQL_PELANGGAN_ADA, cid, tenant_id):
