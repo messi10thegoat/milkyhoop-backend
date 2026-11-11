@@ -137,6 +137,12 @@ class UpdateExpenseRequest(BaseModel):
     has_receipt: Optional[bool] = None
 
 
+class VoidExpensePreviewRequest(BaseModel):
+    """B3: badan PRATINJAU batal -- `reason` OPSIONAL (kosong -> 200 + blok BIAYA_REASON_REQUIRED, pola G0f); tulis /void tetap wajib (VoidExpenseRequest)."""
+
+    reason: Optional[str] = Field(None, max_length=500, description="Alasan batal (opsional di pratinjau)")
+
+
 class VoidExpenseRequest(BaseModel):
     """Request body for voiding an expense."""
 
@@ -226,6 +232,9 @@ class ExpenseListItem(BaseModel):
     position_text: Optional[str] = None
     documents: List[Dict[str, str]] = []
     doc_count: int = 0
+    # B1 (gelombang 1 Biaya BE): keadaan + teks status dari server
+    biaya_keadaan: Optional[str] = None
+    status_text: Optional[str] = None
 
 
 class ExpenseListResponse(BaseModel):
@@ -258,6 +267,8 @@ class ExpenseDocAnchor(BaseModel):
     position_text: str
     total: str
     account_name: Optional[str] = None
+    biaya_keadaan: Optional[str] = None   # B1: sama dgn daftar/detail (biaya_daftar.keadaan)
+    status_text: Optional[str] = None
 
 
 class ExpenseDocumentsData(BaseModel):
@@ -358,6 +369,9 @@ class ExpenseSummaryData(BaseModel):
     tanpa_bukti_value: float = 0
     bulan_ini_count: int = 0
     bulan_ini_value: float = 0
+    # B4: lingkup tiap angka (teks SERVER; makna angka tak berubah)
+    period_label: Optional[str] = None
+    cakupan: Dict[str, str] = {}
 
 
 class ExpenseSummaryResponse(BaseModel):
