@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus BF-1a (impor + daftar mutasi bank, NOL jurnal; V494 sudah LIVE; tanpa migrasi).
 # Pemisah sabotase = "|", ekspresi sed memakai "@". POLA_UNIT dicari di folder unit tests/unit + tests/milkybook -- pelajaran cari-varian-r2.
-W=/root/mh-bf1a; CABANG=feat/bankfeed-bf1a-impor-r2; NAMA_JENDELA=bankfeed-1a
+W=/root/mh-bf1a; CABANG=feat/bankfeed-bf1a-impor-r3; NAMA_JENDELA=bankfeed-1a
 POLA_UNIT='bankfeed|mutasi_bank|bank-accounts|bank_accounts|kas_bank|inventaris_rute_tulis|gate_izin|include_router|mutasi_bank_impor|ImporMutasi'
 HARNESS=scripts/ops/uji-salinan-bankfeed-1a.sh
 PENANDA_BERKAS=services/bankfeed_parser.py; PENANDA='def baca('
