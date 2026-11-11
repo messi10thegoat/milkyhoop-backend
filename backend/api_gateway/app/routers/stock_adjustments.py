@@ -42,6 +42,7 @@ from ..schemas.stock_adjustments import (
     StockAdjustmentDetailResponse,
     StockAdjustmentListResponse,
     StockAdjustmentSummaryResponse,
+    PostStockAdjustmentRequest,
 )
 from ..services.resolve_account import resolve_account_id  # noqa: F401  (kept for back-compat)
 from ..services.role_resolver import (
@@ -377,6 +378,16 @@ async def get_stock_adjustments_summary(request: Request, search: Optional[str] 
 # =============================================================================
 # GET STOCK ADJUSTMENT DETAIL
 # =============================================================================
+
+
+@router.get("/counter-accounts")
+async def daftar_akun_lawan_penyesuaian(request: Request):
+    """Dropdown akun lawan jurnal penyesuaian (putusan pemilik 10 Nov #7a): HANYA akun sah (bukan persediaan/induk/nonaktif/piutang-utang/kas-bank),
+    predikat SAMA dengan validasi tulis. bawaan_id = akun peran penyesuaian persediaan."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        return {"success": True, "data": await SS.daftar_akun_lawan(conn, ctx["tenant_id"])}
 
 
 @router.get("/{adjustment_id}", response_model=StockAdjustmentDetailResponse)
@@ -731,17 +742,19 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
 
 
 @router.post("/{adjustment_id}/post/preview")
-async def preview_post_stock_adjustment(request: Request, adjustment_id: UUID):
+async def preview_post_stock_adjustment(request: Request, adjustment_id: UUID, body: Optional[PostStockAdjustmentRequest] = None):
     """Standar SO: pratinjau posting -- jurnal + gerak stok per gudang + isyarat (stok minus, harga pokok berubah sejak draf), penentu SAMA
-    dengan /post (SS.rencana_posting), READ ONLY."""
+    dengan /post (SS.rencana_posting), READ ONLY. Body opsional counter_account_id = akun lawan pilihan (penyesuaian-2)."""
     ctx = get_user_context(request)
     tid = ctx["tenant_id"]
-    return await SS.pratinjau(await get_pool(), tid, lambda c: SS.rencana_posting(c, tid, adjustment_id, Blok(True)),
-                              {"adjustment_id": str(adjustment_id)})
+    lawan = body.counter_account_id if body else None
+    return await SS.pratinjau(await get_pool(), tid, lambda c: SS.rencana_posting(c, tid, adjustment_id, Blok(True), counter_account_id=lawan),
+                              {"adjustment_id": str(adjustment_id), "counter_account_id": lawan})
 
 
 @router.post("/{adjustment_id}/post", response_model=StockAdjustmentResponse)
-async def post_stock_adjustment(request: Request, adjustment_id: UUID, response: Response = None):
+async def post_stock_adjustment(request: Request, adjustment_id: UUID, response: Response = None,
+                                body: Optional[PostStockAdjustmentRequest] = None):
     """
     Post stock adjustment to accounting.
 
@@ -749,7 +762,9 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
     For DECREASE: Dr. Penyesuaian Persediaan, Cr. Persediaan
     Penentu SS.rencana_posting (== /post/preview): baris jurnal + gerak stok di gudang penyesuaian (putusan pemilik 9 Nov: gudang dipilih,
     bawaan UTAMA). Nomor jurnal = nomor dokumen (nomor_jurnal_dokumen, putusan MASTER; data baru saja). X-Idempotency-Key opsional.
+    Body opsional counter_account_id = akun lawan jurnal pilihan pengguna (putusan pemilik 10 Nov #7a), divalidasi SS.akun_lawan.
     """
+    lawan = body.counter_account_id if body else None
     try:
         ctx = get_user_context(request)
         if not ctx["user_id"]:
@@ -766,10 +781,10 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
                     f"STOCK_ADJ:{adjustment_id}",
                 )
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "STOCK_ADJ_POST", adjustment_id,
-                                                             {}, response)
+                                                             {"counter_account_id": lawan} if lawan else {}, response)
                 if _lama is not None:
                     return _lama
-                r = await SS.rencana_posting(conn, ctx["tenant_id"], adjustment_id, Blok(False), kunci=True)
+                r = await SS.rencana_posting(conn, ctx["tenant_id"], adjustment_id, Blok(False), kunci=True, counter_account_id=lawan)
                 sa = r["sa"]
 
                 # Law 20: Create journal entry as DRAFT first

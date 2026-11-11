@@ -70,6 +70,12 @@ class UpdateStockAdjustmentRequest(BaseModel):
     items: Optional[List[StockAdjustmentItemUpdate]] = None
 
 
+class PostStockAdjustmentRequest(BaseModel):
+    """Body posting/pratinjau posting (opsional seluruhnya). counter_account_id = akun lawan jurnal pilihan pengguna (putusan pemilik 10 Nov #7a);
+    kosong = akun peran bawaan (penyesuaian persediaan). Divalidasi server (services.stok_sesuai.akun_lawan)."""
+    counter_account_id: Optional[str] = Field(None, description="Akun lawan jurnal; kosong = bawaan")
+
+
 class VoidStockAdjustmentRequest(BaseModel):
     """Request body for voiding a stock adjustment."""
     reason: str = Field(..., min_length=1, max_length=500)

@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
-from app.routers import stock_adjustments as SA, warehouses as WH  # noqa: E402
+from app.routers import items as IT, stock_adjustments as SA, warehouses as WH  # noqa: E402
 from app.schemas.stock_adjustments import CreateStockAdjustmentRequest, VoidStockAdjustmentRequest  # noqa: E402
 
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
@@ -29,6 +29,17 @@ def cek(nama, ok, info=""):
 
 def req(tid, method="GET"):
     r = Request({"type": "http", "method": method, "path": "/", "headers": []})
+    r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan-persediaan"}
+    return r
+
+
+def req_json(tid, body):
+    """POST ber-body JSON (quick adjust items.py membaca request.json())."""
+    raw = json.dumps(body).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+    r = Request({"type": "http", "method": "POST", "path": "/", "headers": [(b"content-type", b"application/json")]}, receive)
     r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan-persediaan"}
     return r
 
@@ -167,6 +178,86 @@ async def tulis(conn, tid, o):
             cek(f"{tid} tepat satu gudang utama", o["C_wh_jumlah_utama"] == 1)
 
 
+async def baris_jurnal(conn, tid, jid):
+    if not jid:
+        return None
+    return j([dict(r) for r in await conn.fetch(
+        "SELECT jl.account_id, jl.debit, jl.credit FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id "
+        "WHERE je.tenant_id = $1 AND je.id = $2 ORDER BY jl.line_number", tid, jid)])
+
+
+async def lawan(conn, tid, o):
+    """penyesuaian-2 (akun lawan pilihan): D_quick_bawaan = quick adjust TANPA pilihan (lama == baru: akun 5-50100 keras, angka sama);
+    sisanya BARU saja: dropdown tanpa akun terlarang, pilihan sah dipakai di quick adjust + dokumen (pratinjau == jurnal == pembalik),
+    pilihan terlarang (kas/persediaan) -> 422 berkode TANPA tulisan."""
+    pr = await conn.fetch(
+        """SELECT p.id FROM products p JOIN inventory_ledger il ON il.product_id = p.id AND il.tenant_id = p.tenant_id
+           WHERE p.tenant_id = $1 AND p.item_type = 'goods' GROUP BY p.id HAVING SUM(il.quantity_in) - SUM(il.quantity_out) > 1
+           ORDER BY p.id LIMIT 1""", tid)
+    if not pr:
+        o["D_lewat"] = "barang berstok < 2"
+        return
+    p = pr[0]["id"]
+    h = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI salinan bawaan"}), str(p)))
+    jid = h["hasil"].get("journal_id") if h["ok"] else None
+    o["D_quick_bawaan"] = {"ok": h["ok"], "status": h.get("status"), "jurnal": await baris_jurnal(conn, tid, jid),
+                           "hasil": {k: v for k, v in h.get("hasil", {}).items() if k != "journal_id"}}
+    if not BARU:
+        return
+    from app.schemas.stock_adjustments import PostStockAdjustmentRequest as Pos
+    dd = (await SA.daftar_akun_lawan_penyesuaian(req(tid)))["data"]
+    ids_dd = {a["id"] for a in dd["akun"]}
+    kas = await conn.fetchval("SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND is_cash AND NOT is_header ORDER BY account_code LIMIT 1", tid)
+    persed = await conn.fetchval("SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND psak_sub_category = 'INVENTORY' AND NOT is_header "
+                                 "ORDER BY account_code LIMIT 1", tid)
+    cek(f"{tid} dropdown tanpa kas/persediaan/induk", str(kas) not in ids_dd and str(persed) not in ids_dd and bool(dd["akun"]) and dd["bawaan_id"] in ids_dd)
+    sah = next((a for a in dd["akun"] if not a["bawaan"] and a["account_type"] == "EXPENSE"), None) or next((a for a in dd["akun"] if not a["bawaan"]), None)
+    if not sah or not kas:
+        o["D_lewat_pilihan"] = "tak ada akun sah/kas"
+        return
+    bawaan, sah_id = dd["bawaan_id"], sah["id"]
+
+    async def sidik2():
+        return [await conn.fetchval(f"SELECT md5(COALESCE(string_agg(x::text, '|' ORDER BY x.id), '')) FROM {t} x WHERE x.tenant_id = $1", tid)
+                for t in ("journal_entries", "inventory_ledger", "stock_adjustments")]
+
+    # quick adjust: pilihan sah dipakai (lawan = pilihan, bukan bawaan), terlarang -> 422 tanpa tulisan
+    hq = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI pilihan",
+                                                              "counter_account_id": sah_id}), str(p)))
+    akun_q = {str(b["account_id"]) for b in (await baris_jurnal(conn, tid, hq["hasil"].get("journal_id") if hq["ok"] else None) or [])}
+    cek(f"{tid} quick adjust: lawan = pilihan (bukan bawaan)", hq["ok"] and sah_id in akun_q and bawaan not in akun_q and len(akun_q) == 2, (hq, akun_q))
+    s0 = await sidik2()
+    for nama, a in (("kas", kas), ("persediaan", persed)):
+        if not a:
+            continue
+        ht = await coba(IT.create_stock_adjustment(req_json(tid, {"adjustment_type": "add", "quantity": 1, "reason": "UJI tolak",
+                                                                  "counter_account_id": str(a)}), str(p)))
+        cek(f"{tid} quick adjust tolak {nama} 422 berkode, nol tulisan", not ht["ok"] and ht["status"] == 422 and ht["code"] == "AKUN_LAWAN_DITOLAK"
+            and s0 == await sidik2(), ht)
+    # dokumen: draf -> pratinjau (pilihan sah/terlarang) -> posting terlarang ditolak -> posting pilihan -> batal (pembalik = akun yang sama)
+    body = CreateStockAdjustmentRequest(adjustment_date="2026-11-09", adjustment_type="increase", notes="UJI pilihan",
+                                        items=[{"product_id": str(p), "quantity_adjustment": 1}])
+    sa_id = (await SA.create_stock_adjustment(req(tid, "POST"), body))["data"]["id"]
+    s0 = await sidik2()
+    pp = (await SA.preview_post_stock_adjustment(req(tid, "POST"), sa_id, Pos(counter_account_id=sah_id)))["data"]
+    pk = (await SA.preview_post_stock_adjustment(req(tid, "POST"), sa_id, Pos(counter_account_id=str(kas))))["data"]
+    cek(f"{tid} pratinjau pilihan sah memakai akun pilihan", pp["ok"] and sah_id in {str(x["account_id"]) for x in pp["jurnal"]}, pp)
+    cek(f"{tid} pratinjau pilihan kas = blok AKUN_LAWAN_DITOLAK", not pk["ok"] and "AKUN_LAWAN_DITOLAK" in [b["code"] for b in pk.get("blocks", [])], pk)
+    cek(f"{tid} pratinjau pilihan nol tulis", s0 == await sidik2())
+    ht = await coba(SA.post_stock_adjustment(req(tid, "POST"), sa_id, None, Pos(counter_account_id=str(kas))))
+    cek(f"{tid} posting pilihan kas 422 berkode, nol tulisan", not ht["ok"] and ht["status"] == 422 and ht["code"] == "AKUN_LAWAN_DITOLAK" and s0 == await sidik2(), ht)
+    hp = await coba(SA.post_stock_adjustment(req(tid, "POST"), sa_id, None, Pos(counter_account_id=sah_id)))
+    e = await efek(conn, tid, sa_id)
+    cek(f"{tid} posting pilihan sah: jurnal == pratinjau", hp["ok"] and pp["ok"] and [(str(x["account_id"]), Decimal(x["debit"]), Decimal(x["credit"]))
+                                                                              for x in pp["jurnal"]]
+        == [(str(x["account_id"]), Decimal(x["debit"]), Decimal(x["credit"])) for x in e["jurnal"]], (hp, pp, e["jurnal"]))
+    hv = await coba(SA.void_stock_adjustment(req(tid, "POST"), sa_id, VoidStockAdjustmentRequest(reason="UJI pilihan")))
+    e = await efek(conn, tid, sa_id)
+    cek(f"{tid} batal: pembalik memakai akun jurnal asli (pilihan)", hv["ok"] and {str(x["account_id"]) for x in e["jurnal"]}
+        == {str(x["account_id"]) for x in e["pembalik"]} and sah_id in {str(x["account_id"]) for x in e["pembalik"]}, (hv, e))
+    o["D_pilihan"] = {"sah": sah["account_code"], "kas": True}
+
+
 async def utama():
     pool = await SA.get_pool()
     out = {"baru": BARU}
@@ -178,6 +269,7 @@ async def utama():
             o = out[tid] = {}
             await baca(conn, tid, o)
             await tulis(conn, tid, o)
+            await lawan(conn, tid, o)
     out["CEK"] = CEK
     json.dump(out, open(os.environ["KELUAR"], "w"), sort_keys=True, indent=1)
     print("[info] " + ", ".join(f"{t}: {len(out[t]['A_sal'])} penyesuaian, {len(out[t]['A_whl'])} gudang, {out[t].get('C_lewat', 'tulis jalan')}"

@@ -183,8 +183,68 @@ async def _akun(conn, tid: str, bl: Blok):
         return None, None
 
 
-async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False) -> dict:
-    """Jurnal (Dr/Cr == posting lama) + gerak stok per barang di gudang penyesuaian + isyarat (stok minus, WAC berubah)."""
+# ---------------------------------------------------------------- akun lawan (penyesuaian-2; putusan pemilik LANGSUNG 10 Nov, TESTER #7a)
+# Akun lawan jurnal penyesuaian = PILIHAN pengguna, divalidasi SERVER (ikut Accurate); bawaan = peran INVENTORY_ADJUSTMENT_EXPENSE.
+# Ditolak berkalimat: akun persediaan, induk (header), nonaktif, piutang/utang usaha, kas/bank. SATU predikat (alasan_tolak_lawan) dipakai
+# validasi tulis, pratinjau, DAN daftar dropdown (hanya akun sah), supaya dropdown tak pernah menawarkan yang ditolak tulis.
+def alasan_tolak_lawan(a, persediaan_id) -> Optional[str]:
+    """None = sah; selain itu kalimat alasan. `a` = baris chart_of_accounts (id, account_code, name, is_header, is_active, is_cash, account_type,
+    psak_sub_category); persediaan_id = id akun peran INVENTORY_MERCHANDISE (boleh None bila peran belum diatur)."""
+    n = f"{a['account_code']} {a['name']}"
+    if a["is_header"]:
+        return f"Akun {n} adalah akun induk; pilih akun rinci."
+    if a["is_active"] is False:
+        return f"Akun {n} sudah nonaktif."
+    if (persediaan_id is not None and str(a["id"]) == str(persediaan_id)) or (a["psak_sub_category"] or "") == "INVENTORY":
+        return f"Akun {n} adalah akun persediaan; lawan penyesuaian bukan persediaan itu sendiri."
+    if str(a["account_type"] or "").upper() in ("RECEIVABLE", "PAYABLE"):
+        return f"Akun {n} adalah akun piutang/utang usaha; gunakan modul pembayaran."
+    if a["is_cash"]:
+        return f"Akun {n} adalah akun kas/bank; gunakan modul Kas & Bank."
+    return None
+
+
+_SQL_AKUN = ("SELECT c.id, c.account_code, c.name, c.account_type, c.is_header, c.is_active, c.is_cash, c.psak_sub_category "
+             "FROM chart_of_accounts c WHERE c.tenant_id = $1")
+
+
+async def akun_lawan(conn, tid: str, lawan_id, bl: Blok, persediaan_id=None):
+    """Id akun lawan pilihan (UUID) bila sah; None bila tak dipilih (-> bawaan peran) atau ditolak (blok berkalimat)."""
+    if lawan_id in (None, ""):
+        return None
+    try:
+        aid = UUID(str(lawan_id))
+    except ValueError:
+        bl.galat("AKUN_LAWAN_TAK_SAH", 422, "Akun lawan tidak dikenal.")
+        return None
+    a = await conn.fetchrow(_SQL_AKUN + " AND c.id = $2", tid, aid)
+    if not a:
+        bl.galat("AKUN_LAWAN_TAK_SAH", 422, "Akun lawan tidak dikenal.")
+        return None
+    alasan = alasan_tolak_lawan(a, persediaan_id)
+    if alasan:
+        bl.galat("AKUN_LAWAN_DITOLAK", 422, alasan)
+        return None
+    return aid
+
+
+async def daftar_akun_lawan(conn, tid: str) -> dict:
+    """Dropdown: akun sah saja (predikat sama dengan validasi) + id bawaan peran (None bila belum diatur)."""
+    try:
+        persediaan = await resolve_account_id_by_role(conn, tid, AccountRole.INVENTORY_MERCHANDISE)
+        bawaan = await resolve_account_id_by_role(conn, tid, AccountRole.INVENTORY_ADJUSTMENT_EXPENSE)
+    except AccountRoleUnmappedError:
+        persediaan = bawaan = None
+    baris = await conn.fetch(_SQL_AKUN + " ORDER BY c.account_code", tid)
+    return {"bawaan_id": str(bawaan) if bawaan else None,
+            "akun": [{"id": str(a["id"]), "account_code": a["account_code"], "name": a["name"], "account_type": a["account_type"],
+                      "bawaan": bool(bawaan) and str(a["id"]) == str(bawaan)}
+                     for a in baris if alasan_tolak_lawan(a, persediaan) is None]}
+
+
+async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, counter_account_id=None) -> dict:
+    """Jurnal (Dr/Cr == posting lama) + gerak stok per barang di gudang penyesuaian + isyarat (stok minus, WAC berubah).
+    counter_account_id (opsional, putusan 10 Nov #7a): akun lawan pilihan pengguna, divalidasi akun_lawan; kosong = peran bawaan."""
     hasil = {"blocks": bl.daftar, "sa": None, "items": [], "gudang": None, "baris": [], "gerak": [], "isyarat": [], "saldo": [],
              "akun": (None, None), "total": NOL}
     sa = await muat(conn, tid, sa_id, kunci)
@@ -204,6 +264,10 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False) 
         return hasil
     g = hasil["gudang"] = await gudang(conn, tid, sa["warehouse_id"], bl)
     persediaan, penyesuaian = hasil["akun"] = await _akun(conn, tid, bl)
+    pilihan = await akun_lawan(conn, tid, counter_account_id, bl, persediaan)
+    if pilihan:
+        penyesuaian = pilihan
+        hasil["akun"] = (persediaan, penyesuaian)
     naik = sum((_d(i["total_value"]) for i in items if _d(i["quantity_adjustment"]) > 0), NOL)
     turun = sum((_d(i["total_value"]) for i in items if _d(i["quantity_adjustment"]) <= 0), NOL)
     hasil["total"] = naik + turun

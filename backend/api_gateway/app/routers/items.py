@@ -30,6 +30,8 @@ from ..services import satuan_master as SM
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
+from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
+from ..services.bayar_keluar_rencana import Blok as BlokPen
 from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -3537,6 +3539,11 @@ async def create_stock_adjustment(request: Request, item_id: str):
                 item_name = item["nama_produk"] or "Unknown"
                 item_code = item["item_code"] or ""
 
+                # penyesuaian-2 (putusan pemilik 10 Nov #7a): akun lawan jurnal = PILIHAN pengguna (counter_account_id), divalidasi sebelum tulisan
+                # apa pun (SS.akun_lawan: bukan persediaan/induk/nonaktif/piutang-utang/kas-bank); kosong = akun penyesuaian bawaan.
+                _persediaan_cek = await resolve_account_id(conn, ctx["tenant_id"], "1-10600")
+                akun_lawan_pilihan = await SS_PEN.akun_lawan(conn, ctx["tenant_id"], body.get("counter_account_id"), BlokPen(False), _persediaan_cek)
+
                 # Get current stock from inventory_ledger (Law 16)
                 old_stock_row = await conn.fetchval(
                     "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
@@ -3628,7 +3635,7 @@ async def create_stock_adjustment(request: Request, item_id: str):
                     inv_account_id = await resolve_account_id(
                         conn, ctx["tenant_id"], "1-10600"
                     )
-                    adj_account_id = await resolve_account_id(
+                    adj_account_id = akun_lawan_pilihan or await resolve_account_id(
                         conn, ctx["tenant_id"], "5-50100"
                     )
 
