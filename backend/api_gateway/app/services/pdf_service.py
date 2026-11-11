@@ -784,10 +784,15 @@ class PDFService:
         for sub_key in ["modal_disetor", "saldo_laba", "lainnya"]:
             sub = ek.get(sub_key, {})
             equity_accounts.extend(_accounts(sub.get("akun", [])))
+        laba_lalu = ek.get("laba_ditahan_lalu", 0)
+        if laba_lalu:
+            equity_accounts.append(
+                {"code": "", "name": "Laba Ditahan Tahun Sebelumnya", "balance": laba_lalu}
+            )
         laba_periode = ek.get("laba_periode", 0)
         if laba_periode:
             equity_accounts.append(
-                {"code": "", "name": "Laba Periode Berjalan", "balance": laba_periode}
+                {"code": "", "name": "Laba Tahun Berjalan", "balance": laba_periode}
             )
         equity_categories = [
             {

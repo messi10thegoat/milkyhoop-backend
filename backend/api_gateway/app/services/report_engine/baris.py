@@ -31,7 +31,8 @@ L = {
     "liabilitas_jp": "Liabilitas Jangka Pendek", "total_liabilitas_jp": "Total Liabilitas Jangka Pendek",
     "liabilitas_jpp": "Liabilitas Jangka Panjang", "total_liabilitas_jpp": "Total Liabilitas Jangka Panjang",
     "total_liabilitas": "Total Liabilitas",
-    "ekuitas": "Ekuitas", "laba_periode": "Laba Periode Berjalan", "total_ekuitas": "Total Ekuitas",
+    "ekuitas": "Ekuitas", "laba_periode": "Laba Tahun Berjalan", "laba_ditahan_lalu": "Laba Ditahan Tahun Sebelumnya",
+    "total_ekuitas": "Total Ekuitas",
     "total_liabilitas_ekuitas": "Total Liabilitas dan Ekuitas",
     # Arus Kas
     "operasi": "ARUS KAS DARI AKTIVITAS OPERASI", "investasi": "ARUS KAS DARI AKTIVITAS INVESTASI",

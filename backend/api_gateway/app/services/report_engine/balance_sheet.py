@@ -18,6 +18,7 @@ dibentuk di batas keluaran. + baris[] tampil server (report_engine.baris).
 from decimal import Decimal
 from . import baris as B
 from .ledger import compute_balance, compute_balance_detail
+from datetime import date, timedelta
 from .income_statement import hitung_laba_rugi
 
 
@@ -69,11 +70,13 @@ async def generate_balance_sheet(
     conn, tenant_id: str, as_of: str, period_start: str = None, basis: str = "accrual"
 ) -> dict:
     """
-    Balance sheet as of date. period_start used for current period P&L.
-    Defaults to Jan 1 of as_of year.
+    Neraca per as_of. SELALU akrual (putusan pemilik 10 Nov 2026: basis kas hanya Laba Rugi) dan ekuitas = ekuitas buku + SEMUA laba
+    s.d. as_of: Laba Ditahan Tahun Sebelumnya (laba sebelum 1 Jan tahun as_of yang belum ditutup ke akun) + Laba Tahun Berjalan
+    (1 Jan..as_of). `period_start` dan `basis` DITERIMA demi kompatibilitas rute tetapi TIDAK dipakai: neraca adalah posisi per
+    tanggal, awal periode Laba Rugi tak boleh membuang laba sebelumnya (dulu period_start tengah tahun -> neraca tak balance).
     """
-    if not period_start:
-        period_start = as_of[:4] + "-01-01"
+    basis = "accrual"
+    tahun_mulai = as_of[:4] + "-01-01"
 
     async def b(fp):
         return await compute_balance(conn, tenant_id, fp, end_date=as_of)
@@ -164,16 +167,17 @@ async def generate_balance_sheet(
     saldo_laba_detail = await bd({"psak_sub_category": "RETAINED_EARNINGS"})
     saldo_laba = -saldo_laba_raw
 
-    # Laba periode berjalan (derived from P&L)
-    laba_periode = (await hitung_laba_rugi(conn, tenant_id, period_start, as_of, basis=basis))["net"]  # Decimal (dulu lewat float)
+    # Laba tahun berjalan (1 Jan..as_of) + laba tahun-tahun sebelumnya yang belum ditutup ke akun ekuitas (turunan Laba Rugi akrual)
+    laba_periode = (await hitung_laba_rugi(conn, tenant_id, tahun_mulai, as_of, basis=basis))["net"]  # Decimal (dulu lewat float)
+    hari_sebelum = (date.fromisoformat(tahun_mulai) - timedelta(days=1)).isoformat()
+    laba_lalu = (await hitung_laba_rugi(conn, tenant_id, "1900-01-01", hari_sebelum, basis=basis))["net"]
 
     # Total equity from ledger (EQUITY type only)
     total_ekuitas_raw = await b({"account_type": "EQUITY"})
     total_ekuitas_ledger = -total_ekuitas_raw
 
-    # The P&L hasn't been closed to retained earnings yet, so:
-    # Total equity = ledger equity + current period P&L
-    total_ekuitas = total_ekuitas_ledger + laba_periode
+    # Laba belum ditutup ke akun ekuitas: total ekuitas = ekuitas buku + laba sebelumnya + laba tahun berjalan
+    total_ekuitas = total_ekuitas_ledger + laba_lalu + laba_periode
 
     # Other equity detail (prive, drawings, etc.)
     ekuitas_lain_filter = {
@@ -203,7 +207,9 @@ async def generate_balance_sheet(
     r.append(B.angka("total", "total_liabilitas", total_liab))
     r.append(B.judul("ekuitas", 1))
     r += [B.akun(d, 2, negasi=True) for d in modal_detail + saldo_laba_detail + ekuitas_lain_detail]
-    r.append(B.angka("akun", "laba_periode", laba_periode, 2))   # baris maya: laba berjalan (belum ditutup ke saldo laba)
+    if B.tanda(laba_lalu):
+        r.append(B.angka("akun", "laba_ditahan_lalu", laba_lalu, 2))   # baris maya: laba tahun-tahun sebelumnya (belum ditutup)
+    r.append(B.angka("akun", "laba_periode", laba_periode, 2))   # baris maya: laba tahun berjalan (belum ditutup ke saldo laba)
     r.append(B.angka("total", "total_ekuitas", total_ekuitas, 1))
     r.append(B.angka("hasil", "total_liabilitas_ekuitas", total_le))
 
@@ -239,7 +245,10 @@ async def generate_balance_sheet(
         "ekuitas": {
             "modal_disetor": _section(modal_raw, modal_detail, negate=True),
             "saldo_laba": _section(saldo_laba_raw, saldo_laba_detail, negate=True),
-            "laba_periode": float(laba_periode),
+            "laba_periode": float(laba_periode),   # = laba tahun berjalan (nama lama tetap demi FE/PDF/validasi)
+            "laba_tahun_berjalan": float(laba_periode),
+            "laba_ditahan_lalu": float(laba_lalu),
+            "tahun_mulai": tahun_mulai,
             "lainnya": _section(Decimal(str(ekuitas_lain)), ekuitas_lain_detail, negate=True),
             "total": float(total_ekuitas),
         },

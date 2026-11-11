@@ -17,9 +17,13 @@ async def validate_reports(bs: dict, pl: dict, cf: dict) -> list:
         errors.append(f"NERACA TIDAK BALANCE: gap Rp {gap:,.0f}")
 
     # Check 2: Laba P&L = Laba di Neraca
+    # Sebanding HANYA bila P&L akrual dan mulai awal tahun neraca (neraca selalu akrual, laba tahun berjalan 1 Jan..as_of);
+    # P&L basis kas / tengah tahun memang berbeda dari laba neraca menurut rancangan, bukan galat.
     pl_profit = pl.get("laba_bersih", 0)
     bs_profit = bs.get("ekuitas", {}).get("laba_periode", 0)
-    if abs(pl_profit - bs_profit) > 0.01:
+    sebanding = (pl.get("basis_applied") == "accrual"
+                 and pl.get("period", {}).get("start") == bs.get("ekuitas", {}).get("tahun_mulai"))
+    if sebanding and abs(pl_profit - bs_profit) > 0.01:
         errors.append(
             f"LABA TIDAK RECONCILE: P&L={pl_profit:,.0f}, Neraca={bs_profit:,.0f}"
         )
