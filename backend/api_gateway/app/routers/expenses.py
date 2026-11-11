@@ -18,6 +18,8 @@ import asyncpg
 from ..services import teks_galat as tg
 from ..services import kasbank_tulis as KT
 from ..services import biaya_daftar as BD
+from ..services import idem_buat
+from ..services.galat_berkode import GalatBerkode
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.expenses import (
@@ -35,6 +37,7 @@ from ..schemas.expenses import (
     ExpenseAutocompleteResponse,
     ExpenseDocumentsResponse,
     ExpenseHistoryResponse,
+    VoidExpensePreviewRequest,
 )
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
 from ..services.rekening_bawaan import paid_through_bawaan
@@ -528,6 +531,8 @@ async def get_expenses_summary(
                 "success": True,
                 "data": {
                     "period": period,
+                    "period_label": BD.period_label(period),   # B4: lingkup tiap angka dari SERVER
+                    "cakupan": BD.cakupan(period),
                     "paid_through_bawaan": bawaan,
                     **{f"{k}_{m}": (int(k_aksi[f"{k}_{m}"]) if m == "count" else float(k_aksi[f"{k}_{m}"]))
                        for k in BD.SEMUA_KUNCI for m in ("count", "value")},
@@ -740,7 +745,8 @@ async def list_expenses(
                     accounting_status,
                     reference, notes, has_receipt,
                     created_at, journal_id,
-                    (SELECT COUNT(*) FROM expense_attachments ea WHERE ea.expense_id = expenses.id AND ea.tenant_id = expenses.tenant_id) AS jumlah_bukti
+                    (SELECT COUNT(*) FROM expense_attachments ea WHERE ea.expense_id = expenses.id AND ea.tenant_id = expenses.tenant_id) AS jumlah_bukti,
+                    (SELECT cu.name FROM customers cu WHERE cu.id = expenses.billed_to_customer_id AND cu.tenant_id = expenses.tenant_id) AS billed_to_customer_name
                 FROM expenses
                 WHERE {where_clause}
                 ORDER BY {sort_column} {sort_order.upper()}, created_at DESC
@@ -775,11 +781,14 @@ async def list_expenses(
                         "billed_to_customer_id": str(row["billed_to_customer_id"])
                         if row["billed_to_customer_id"]
                         else None,
+                        "billed_to_customer_name": row["billed_to_customer_name"],  # B5c: dulu dideklarasikan tapi tak pernah diisi
                         "accounting_status": row["accounting_status"],
                         "reference": row["reference"],
                         "notes": row["notes"],
                         "created_at": row["created_at"],
                         "attachment_count": int(row["jumlah_bukti"]),
+                        "biaya_keadaan": BD.keadaan(row["status"]),
+                        "status_text": BD.status_text(row["status"]),
                         "aksi": (BD.aksi_semua(row["status"], row["jumlah_bukti"] > 0) or [None])[0],
                         "aksi_semua": BD.aksi_semua(row["status"], row["jumlah_bukti"] > 0),
                         "position_text": BD.position_text(row["status"], row["paid_through_name"], row["jumlah_bukti"] > 0),
@@ -1228,6 +1237,14 @@ async def get_expense_detail(request: Request, expense_id: UUID):
                 str(expense_id),
             )
             result["attachments"] = [dict(a) for a in attachments]
+            # B1/B5 (Biaya BE gelombang 1): teks keadaan + posisi dari SERVER (penentu SAMA dgn daftar), vendor objek, nama pelanggan penagihan
+            result["biaya_keadaan"] = BD.keadaan(expense["status"])
+            result["status_text"] = BD.status_text(expense["status"])
+            result["position_text"] = BD.position_text(expense["status"], expense["paid_through_name"], bool(result["attachments"]))
+            result["vendor"] = {"id": str(expense["vendor_id"]), "name": expense["vendor_name"]} if expense["vendor_id"] else None
+            result["billed_to_customer_name"] = (await conn.fetchval(
+                "SELECT name FROM customers WHERE id = $1 AND tenant_id = $2", expense["billed_to_customer_id"], ctx["tenant_id"])
+                if expense["billed_to_customer_id"] else None)
             from ..services.biaya_aksi import aksi_tersedia_biaya   # Biaya t2: penentu SAMA dgn post/void
             return {"success": True, "data": result, "aksi_tersedia": await aksi_tersedia_biaya(conn, ctx["tenant_id"], expense)}
 
@@ -1809,7 +1826,7 @@ async def create_expense_journal(
 # =============================================================================
 @router.patch("/{expense_id}", response_model=UpdateExpenseResponse)
 async def update_expense(
-    request: Request, expense_id: UUID, body: UpdateExpenseRequest
+    request: Request, expense_id: UUID, body: UpdateExpenseRequest, response: Response = None
 ):
     """
     Update a DRAFT expense (Unit A, 16 Sep 2026).
@@ -1838,6 +1855,11 @@ async def update_expense(
                     f"EXPENSE_UPDATE:{expense_id}",
                 )
 
+                # B5d: X-Idempotency-Key OPSIONAL (sama + isi sama = replay; isi beda = 409)
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "EXPENSE_UPDATE", expense_id,
+                                                             body.model_dump(mode="json", exclude_unset=True), response)
+                if _lama is not None:
+                    return _lama
                 existing = await conn.fetchrow(
                     "SELECT * FROM expenses WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                     str(expense_id),
@@ -2035,11 +2057,11 @@ async def update_expense(
                 expense = await conn.fetchrow(
                     "SELECT * FROM expenses WHERE id = $1", str(expense_id)
                 )
-                return {
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "EXPENSE_UPDATE", {
                     "success": True,
                     "message": "Expense updated successfully",
                     "data": dict(expense),
-                }
+                }, expense_id)
 
     except HTTPException:
         raise
@@ -2077,14 +2099,9 @@ async def delete_expense(request: Request, expense_id: UUID):
                 ctx["tenant_id"],
             )
 
-            if not existing:
-                raise HTTPException(status_code=404, detail="Expense not found")
-
-            if existing["status"] != "draft":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Only draft expenses can be deleted. Use void for posted expenses.",
-                )
+            blok = BD.blok_hapus(existing)   # B7: SATU penentu dgn POST /{id}/delete/preview
+            if blok:
+                raise GalatBerkode(blok[0], blok[1], blok[2])
 
             # Delete expense (cascade deletes items)
             await conn.execute(
@@ -2281,13 +2298,36 @@ async def preview_post_expense(request: Request, expense_id: UUID):
 
 
 @router.post("/{expense_id}/void/preview")
-async def preview_void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequest):
-    """Biaya t2: pratinjau batalkan (nol tulis) -- jurnal pembalik + cermin bank yang AKAN ditulis, atau blok berkalimat."""
-    return await _pratinjau_biaya(request, expense_id, "batalkan", lambda conn, ctx: _batal_biaya(conn, ctx, expense_id, body))
+async def preview_void_expense(request: Request, expense_id: UUID, body: Optional[VoidExpensePreviewRequest] = None):
+    """Biaya t2: pratinjau batalkan (nol tulis) -- jurnal pembalik + cermin bank yang AKAN ditulis, atau blok berkalimat.
+    B3 (gelombang 1): `reason` OPSIONAL di pratinjau: kosong -> penentu tulis dijalankan dengan alasan pengganti (blok lain tetap muncul, jurnal pembalik tetap terlihat)
+    + blok BIAYA_REASON_REQUIRED, 200 can_proceed=false (pola G0f: Enter pertama = Tinjau, alasan wajib). /void tulis tetap wajib alasan."""
+    alasan = ((body.reason if body else None) or "").strip()
+    hasil = await _pratinjau_biaya(request, expense_id, "batalkan",
+                                   lambda conn, ctx: _batal_biaya(conn, ctx, expense_id, VoidExpenseRequest(reason=alasan or "(alasan belum diisi)")))
+    if not alasan:
+        d = hasil["data"]
+        d["blocks"].append({"code": "BIAYA_REASON_REQUIRED", "message": "Isi alasan pembatalan."})
+        d["can_proceed"] = False
+    return hasil
+
+
+@router.post("/{expense_id}/delete/preview")
+async def preview_delete_expense(request: Request, expense_id: UUID):
+    """B7 (gelombang 1): pratinjau hapus draf (nol tulis; draf tanpa jurnal = hanya konfirmasi). SATU penentu dgn DELETE (BD.blok_hapus)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        existing = await conn.fetchrow("SELECT status, expense_number FROM expenses WHERE id = $1 AND tenant_id = $2", str(expense_id), ctx["tenant_id"])
+    blok = BD.blok_hapus(existing)
+    return {"success": True, "data": {"action": "hapus", "can_proceed": blok is None,
+                                      "blocks": [{"code": blok[1], "message": blok[2]}] if blok else [],
+                                      "journals": [], "bank_transactions": [], "preview": True,
+                                      "note": f"Draf {existing['expense_number']} akan dihapus." if not blok else None}}
 
 
 @router.post("/{expense_id}/post")
-async def post_expense(request: Request, expense_id: UUID):
+async def post_expense(request: Request, expense_id: UUID, response: Response = None):
     """Terbitkan beban draf: jurnal + transaksi bank, sekali dan hanya sekali.
 
     Cermin dari cabang `posted` di create_expense, tapi seluruh masukannya
@@ -2306,7 +2346,11 @@ async def post_expense(request: Request, expense_id: UUID):
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                return await _posting_biaya(conn, ctx, expense_id)
+                # B5d: X-Idempotency-Key OPSIONAL (kunci sama + isi sama = replay; isi beda = 409)
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "EXPENSE_POST", expense_id, {}, response)
+                if _lama is not None:
+                    return _lama
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "EXPENSE_POST", await _posting_biaya(conn, ctx, expense_id), expense_id)
 
     except HTTPException:
         raise
@@ -2497,7 +2541,7 @@ async def _batal_biaya(conn, ctx: dict, expense_id, body) -> dict:
 
 
 @router.post("/{expense_id}/void", response_model=VoidExpenseResponse)
-async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequest):
+async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequest, response: Response = None):
     """
     Void a posted expense.
 
@@ -2517,7 +2561,11 @@ async def void_expense(request: Request, expense_id: UUID, body: VoidExpenseRequ
             await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
 
             async with conn.transaction():
-                return await _batal_biaya(conn, ctx, expense_id, body)
+                _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "EXPENSE_VOID", expense_id,
+                                                             body.model_dump(mode="json"), response)
+                if _lama is not None:
+                    return _lama
+                return await idem_buat.simpan(conn, ctx, _kp, _sd, "EXPENSE_VOID", await _batal_biaya(conn, ctx, expense_id, body), expense_id)
 
     except HTTPException:
         raise

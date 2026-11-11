@@ -47,6 +47,44 @@ def position_text(status: Optional[str], rekening: Optional[str], ada_bukti: boo
     return teks if ada_bukti else f"{teks} · tanpa bukti"
 
 
+# ---- B1 (Biaya BE gelombang 1, 12 Nov 2026): keadaan + teks status dari SERVER (FE tak memetakan `status` mentah)
+KEADAAN_BIAYA = {"draft": "draf", "posted": "dibayar", "void": "dibatalkan"}
+STATUS_TEXT = {"draf": "Draf", "dibayar": "Dibayar", "dibatalkan": "Dibatalkan"}
+
+
+def keadaan(status: Optional[str]) -> Optional[str]:
+    """status DB -> biaya_keadaan (draf|dibayar|dibatalkan); status tak dikenal -> None (tak pernah menebak)."""
+    return KEADAAN_BIAYA.get(status or "")
+
+
+def status_text(status: Optional[str]) -> Optional[str]:
+    """Kolom Status: Draf | Dibayar | Dibatalkan (position_text tetap teks ringkas "Dibayar dari BCA · tanpa bukti")."""
+    k = keadaan(status)
+    return STATUS_TEXT[k] if k else None
+
+
+# ---- B4: lingkup tiap angka summary dinyatakan SERVER (total_* ikut period; pill/kartu = dokumen, bukan per periode) tanpa mengubah makna angka
+PERIOD_LABEL = {"week": "7 hari terakhir", "month": "Bulan ini", "quarter": "Kuartal ini", "year": "Tahun ini"}
+
+
+def period_label(period: str) -> str:
+    return PERIOD_LABEL.get(period, period)
+
+
+def cakupan(period: str) -> dict:
+    """{total: label periode, draf: Semua, tanpa_bukti: Semua, bulan_ini: Bulan ini} -- klik pill = ?aksi= global (jumlah cocok), kartu bulan_ini = bulan tanggal bisnis."""
+    return {"total": period_label(period), "draf": "Semua", "tanpa_bukti": "Semua", "bulan_ini": "Bulan ini"}
+
+
+def blok_hapus(existing) -> Optional[tuple]:
+    """B7: SATU penentu hapus draf untuk DELETE /{id} DAN POST /{id}/delete/preview -> (status HTTP, kode, kalimat) | None."""
+    if not existing:
+        return 404, "EXPENSE_TIDAK_DITEMUKAN", "Biaya tidak ditemukan."
+    if existing["status"] != "draft":
+        return 400, "BIAYA_BUKAN_DRAF", "Hanya biaya draf yang bisa dihapus; batalkan biaya yang sudah diterbitkan."
+    return None
+
+
 def documents_baris(journal_id, jumlah_bukti: int) -> list:
     """documents[{type}] baris daftar: biaya itu sendiri · jurnal (bila ada) · tiap bukti (pola kolom Dok. modul lain)."""
     return [{"type": "expense"}] + ([{"type": "journal"}] if journal_id else []) + [{"type": "attachment"}] * int(jumlah_bukti or 0)

@@ -82,7 +82,8 @@ async def dokumen_biaya(conn, tid: str, expense_id) -> Optional[dict]:
     return {
         "anchor": {"kind": "expense", "id": str(e["id"]), "number": n, "vendor": e["vendor_name"] or "", "date": _tgl(e["expense_date"]),
                    "position_text": BD.position_text(e["status"], e["paid_through_name"], bool(bukti)),
-                   "total": _uang(e["total_amount"]), "account_name": e["account_name"]},
+                   "total": _uang(e["total_amount"]), "account_name": e["account_name"],
+                   "biaya_keadaan": BD.keadaan(e["status"]), "status_text": BD.status_text(e["status"])},  # B1: SATU penentu dgn daftar/detail
         "default": {"group": "biaya", "index": 0},
         "groups": kel,
     }

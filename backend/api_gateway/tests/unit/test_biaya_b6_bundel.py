@@ -9,7 +9,7 @@ from app.schemas import expenses as S
 from app.services import biaya_riwayat as BR
 
 KUNCI_DOK = {"kind", "id", "number", "date", "amount", "paper", "sent", "batal", "status"}
-KUNCI_ANCHOR = {"kind", "id", "number", "vendor", "date", "position_text", "total", "account_name"}
+KUNCI_ANCHOR = {"kind", "id", "number", "vendor", "date", "position_text", "total", "account_name", "biaya_keadaan", "status_text"}  # B1 (gelombang 1 Biaya BE): + keadaan, status_text
 
 
 class Kon:
