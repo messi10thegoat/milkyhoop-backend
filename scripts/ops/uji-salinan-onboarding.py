@@ -17,7 +17,7 @@ from starlette.requests import Request
 sys.path.insert(0, "/app/backend/api_gateway")
 
 # ---- peniru agar create_tenant_and_user tak menyentuh prod (Prisma/Redis); keduanya memang 'non-blocking' di kode asli
-_m = types.ModuleType("backend.api_gateway.libs.milkyhoop_prisma")
+sys.path.insert(0, "/app")
 
 
 class _Prisma:
@@ -25,10 +25,11 @@ class _Prisma:
         raise RuntimeError("Prisma ditiadakan di uji salinan")
 
 
-_m.Prisma = _Prisma
-for nama in ("backend", "backend.api_gateway", "backend.api_gateway.libs"):
-    sys.modules.setdefault(nama, types.ModuleType(nama))
-sys.modules["backend.api_gateway.libs.milkyhoop_prisma"] = _m
+try:  # ganti HANYA kelas Prisma di modul asli (induk paket tak disentuh); bila modul tak bisa diimpor, kode asli sudah menelan galatnya
+    import backend.api_gateway.libs.milkyhoop_prisma as _mp
+    _mp.Prisma = _Prisma
+except Exception as _e:  # noqa: BLE001
+    print(f"[info] modul Prisma tak diimpor ({type(_e).__name__}); kode asli menelan galat registrasi perangkat", flush=True)
 _sm = types.ModuleType("app.services.session_manager")
 _sm.session_manager = SimpleNamespace(activate_mobile_device=lambda **k: None)
 sys.modules["app.services.session_manager"] = _sm
