@@ -58,8 +58,9 @@ def test_dengan_varian_dimatikan_untuk_tool_llm():
 # ---------------------------------------------------------------- (b)
 def test_tulis_barang_baru_mengunci_per_tenant_sebelum_menghitung_kode_dalam_transaksi():
     s = inspect.getsource(I.tulis_barang_baru)
-    i, j, k = s.index("async with conn.transaction():"), s.index("pg_advisory_xact_lock"), s.index("_siapkan_buat_barang(")
-    assert i < j < k and "ITEM_KODE:" in s
+    v, i, j, k = s.index("_siapkan_buat_barang("), s.index("async with conn.transaction():"), s.index("pg_advisory_xact_lock"), s.index("_kode_otomatis(")
+    assert v < i < j < k and "ITEM_KODE:" in s    # validasi TETAP sebelum transaksi; kunci + hitung ulang kode otomatis di dalam
+    assert "if not body.item_code:" in s and "_kode_otomatis(" in inspect.getsource(I._siapkan_buat_barang)
 
 
 def _uv(nama_indeks):

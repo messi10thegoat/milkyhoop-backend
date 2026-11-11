@@ -250,7 +250,11 @@ def galat_bentrok_unik(e: BaseException, body) -> Optional[HTTPException]:
     if isinstance(e, asyncpg.UniqueViolationError):
         field = INDEKS_KODE_BARANG.get(getattr(e, "constraint_name", None))
         if field:
-            return galat_kode_barang_dipakai(getattr(body, field, None) or "", field=field)
+            nilai = getattr(body, field, None)
+            if not nilai:  # kode OTOMATIS bentrok dengan penulis serentak lain (bukan salah pengguna): 409 berkode, coba lagi
+                return HTTPException(status_code=409, detail={"code": "KODE_BARANG_BENTROK", "field": field, "message":
+                                     "Kode barang otomatis bentrok dengan pembuatan barang lain yang serentak. Coba lagi."})
+            return galat_kode_barang_dipakai(nilai, field=field)
     return None
 
 
@@ -603,6 +607,43 @@ def tanpa_stok_bila_bukan_barang(body) -> None:
         body.track_inventory = False
 
 
+async def _kode_otomatis(conn, tenant_id: str, item_type: str) -> str:
+    """Kode barang otomatis BERIKUTNYA (PREFIX-NNNN = nomor terbesar + 1; termasuk yang sudah dihapus). Dipanggil sekali oleh
+    _siapkan_buat_barang (pratinjau/validasi) dan ULANG oleh tulis_barang_baru di bawah kunci per tenant (balapan kode, 12 Nov)."""
+    # Determine prefix based on item_type (Indonesian standard)
+    prefix_map = {
+        "goods": "BRG",
+        "service": "JSA",
+        "non_inventory": "NIN",
+    }
+    prefix = prefix_map.get(item_type, "ITM")
+
+    # Get next number (include soft-deleted to avoid constraint violation)
+    # Use regex to match only standard format PREFIX-NNNN (not PREFIX-XXX-NNN variants)
+    row = await conn.fetchrow(
+        """
+        SELECT item_code FROM products
+        WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
+        ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
+        """,
+        tenant_id,
+        prefix,
+    )
+
+    import re as re_module
+
+    if row and row["item_code"]:
+        match = re_module.search(r"([0-9]+)$", row["item_code"])
+        if match:
+            num = int(match.group(1)) + 1
+        else:
+            num = 1
+    else:
+        num = 1
+
+    return f"{prefix}-{num:04d}"
+
+
 async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItemRequest) -> tuple:
     """AS-G14 (Milkybook T0, 24 Okt 2026): aturan BUAT barang SATU untuk pratinjau dan POST /items (pratinjau == tulis). Baca saja;
     galat = HTTPException SAMA dengan sebelum refaktor (409 NAMA/KODE/BARCODE_BARANG_DIPAKAI, pajak, saldo awal stok). Mengisi
@@ -632,38 +673,7 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
     sku_to_use = body.sku
 
     if not item_code_to_use:
-        # Determine prefix based on item_type (Indonesian standard)
-        prefix_map = {
-            "goods": "BRG",
-            "service": "JSA",
-            "non_inventory": "NIN",
-        }
-        prefix = prefix_map.get(body.item_type, "ITM")
-
-        # Get next number (include soft-deleted to avoid constraint violation)
-        # Use regex to match only standard format PREFIX-NNNN (not PREFIX-XXX-NNN variants)
-        row = await conn.fetchrow(
-            """
-            SELECT item_code FROM products
-            WHERE tenant_id = $1 AND item_code ~ ('^' || $2 || '-[0-9]+$')
-            ORDER BY CAST(SUBSTRING(item_code FROM '[0-9]+$') AS INTEGER) DESC LIMIT 1
-            """,
-            ctx["tenant_id"],
-            prefix,
-        )
-
-        import re as re_module
-
-        if row and row["item_code"]:
-            match = re_module.search(r"([0-9]+)$", row["item_code"])
-            if match:
-                num = int(match.group(1)) + 1
-            else:
-                num = 1
-        else:
-            num = 1
-
-        item_code_to_use = f"{prefix}-{num:04d}"
+        item_code_to_use = await _kode_otomatis(conn, tenant_id, body.item_type)
 
     # SKU defaults to item_code if not provided
     if not sku_to_use:
@@ -844,6 +854,13 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
 
     # Start transaction
     async with conn.transaction():
+        if not body.item_code:
+            # Kode OTOMATIS = nomor terbesar + 1: dua penulis serentak mendapat kode SAMA -> bentrok indeks (500; terukur di salinan 12 Nov).
+            # Kunci per tenant di DALAM transaksi lalu hitung ULANG (validasi di atas tetap sebelum transaksi); lepas saat commit.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ITEM_KODE:{tenant_id}")
+            item_code_to_use = await _kode_otomatis(conn, tenant_id, body.item_type)
+            if not body.sku:
+                sku_to_use = item_code_to_use
         # Insert item
         # Parse opening_stock_date if provided
         opening_date = None
