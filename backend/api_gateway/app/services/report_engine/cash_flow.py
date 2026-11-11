@@ -78,6 +78,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
             JOIN journal_entries je ON je.id = jl.journal_id
             JOIN chart_of_accounts coa ON coa.id = jl.account_id
             WHERE je.status = 'POSTED'
+              AND is_effective_journal(je.id)   -- laporan-fix-2: SATU definisi dgn kartu arus kas dasbor (jurnal EFEKTIF; pasangan batal tak jadi aliran)
               AND je.tenant_id = $1
               AND je.journal_date >= $2
               AND je.journal_date <= $3
@@ -91,6 +92,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
                    cpj.net_cash,
                    COALESCE(counter_coa.cash_flow_category, 'OPERATING') AS flow_category,
                    counter_coa.account_type,
+                   CASE WHEN cpj.net_cash > 0 THEN 1 ELSE -1 END AS arah,   -- masuk / keluar per JURNAL (metode langsung: tak dinetokan lintas arah)
                    counter_coa.psak_sub_category,
                    counter_coa.name AS account_name,
                    ABS(counter_jl.debit - counter_jl.credit) AS line_amount,
@@ -104,11 +106,12 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         -- Step 3: Distribute net_cash proportionally across counterpart classifications
         SELECT flow_category,
                account_type,
+               arah,
                psak_sub_category,
                CASE WHEN account_type IN ('ASSET', 'LIABILITY') THEN account_name END AS account_name,
                SUM(net_cash * line_amount / NULLIF(journal_total, 0)) AS net_flow
         FROM counterpart_weights
-        GROUP BY flow_category, account_type, psak_sub_category, CASE WHEN account_type IN ('ASSET', 'LIABILITY') THEN account_name END
+        GROUP BY flow_category, account_type, arah, psak_sub_category, CASE WHEN account_type IN ('ASSET', 'LIABILITY') THEN account_name END
         HAVING ABS(SUM(net_cash * line_amount / NULLIF(journal_total, 0))) > 0.01
         ORDER BY flow_category, account_type, psak_sub_category
     """
@@ -127,7 +130,7 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
         amount = Decimal(str(r["net_flow"]))
         label = _get_label(r["account_type"], r["psak_sub_category"], r["account_name"])
 
-        item = {"label": label, "amount": amount}  # Decimal; float hanya di keluaran lama
+        item = {"label": label, "amount": amount, "arah": int(r["arah"])}  # Decimal; float hanya di keluaran lama
 
         if category == "OPERATING" or category == "NONE":
             operating_items.append(item)
@@ -145,13 +148,19 @@ async def generate_cash_flow(conn, tenant_id: str, start: str, end: str) -> dict
 
     # Merge items with same label (Decimal)
     def merge_items(items):
+        """Gabung butir berlabel SAMA DAN arah sama (Decimal). Metode langsung: penerimaan dan pembayaran TIDAK dinetokan; label yang punya dua arah
+        tampil dua baris "<label> (masuk)" / "<label> (keluar)" (laporan-fix-2, putusan MASTER 12 Nov); label satu arah tetap apa adanya."""
         merged = {}
         for item in items:
-            key = item["label"]
+            key = (item["label"], item["arah"])
             if key in merged:
                 merged[key]["amount"] += item["amount"]
             else:
-                merged[key] = {"label": key, "amount": item["amount"]}
+                merged[key] = {"label": item["label"], "amount": item["amount"], "arah": item["arah"]}
+        dua_arah = {lbl for (lbl, a) in merged if (lbl, 1) in merged and (lbl, -1) in merged}
+        for (lbl, a), v in merged.items():
+            if lbl in dua_arah:
+                v["label"] = f"{lbl} ({'masuk' if a > 0 else 'keluar'})"
         return [v for v in merged.values() if abs(v["amount"]) > Decimal("0.01")]
 
     def keluar(items):  # bentuk lama: amount float

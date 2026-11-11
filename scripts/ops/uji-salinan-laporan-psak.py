@@ -74,6 +74,16 @@ UKUR_KAS = """WITH kj AS (
            COALESCE(SUM(GREATEST(COALESCE(din, 0) - COALESCE(dout, 0), 0)), 0) AS neto_masuk,
            COALESCE(SUM(GREATEST(COALESCE(dout, 0) - COALESCE(din, 0), 0)), 0) AS neto_keluar FROM kj"""
 SALDO_AWAL = ["OPENING", "OPENING_BALANCE", "BANK_OPENING_BALANCE", "VENDOR_OPENING_BALANCE"]
+# ANOMALI data lama yang membuat rekonsiliasi arus kas (kas awal + aliran EFEKTIF vs kas akhir POSTED) selisih: jurnal PEMBALIK berstatus POSTED yang ASLINYA tidak POSTED
+# (legacy: asli dibalik jadi VOID, melanggar Law 2). Saldo POSTED memuat pembaliknya, aliran efektif membuangnya. Hitung per jurnal (n) + neto sisi kas.
+ANOM = """SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS net, COUNT(DISTINCT je.id) AS n
+    FROM journal_entries je JOIN journal_lines jl ON jl.journal_id = je.id JOIN chart_of_accounts c ON c.id = jl.account_id AND c.is_cash
+    WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND je.journal_date BETWEEN $2 AND $3 AND je.reversal_of_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.id = je.reversal_of_id AND o.tenant_id = je.tenant_id AND o.status = 'POSTED')
+      AND je.source_type <> ALL($4::text[])"""
+ANOM_SEMUA = """SELECT COUNT(*) AS n FROM journal_entries je
+    WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND je.reversal_of_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.id = je.reversal_of_id AND o.tenant_id = je.tenant_id AND o.status = 'POSTED')"""
 
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
 BARU = hasattr(PR, "_tampil")
@@ -177,6 +187,18 @@ async def fix2(conn, tid, k, basis, mulai, akhir, presisi, pl, bs, cf, nb, lb, t
             print(f"[ukur2] {tid} YTD {'EFEKTIF' if efektif else 'POSTED '}: bruto masuk/keluar {u['bruto_masuk']}/{u['bruto_keluar']} | neto-per-jurnal masuk/keluar "
                   f"{u['neto_masuk']}/{u['neto_keluar']}", flush=True)
         print(f"[ukur2] {tid} YTD dasbor {masuk}/{keluar} | laporan Σ butir {pos}/{neg}", flush=True)
+        # SATU definisi (laporan-fix-2): Σ butir masuk/keluar laporan == kartu dasbor (kedua efektif, butir dipecah per arah) -- TANPA pengecualian tenant
+        items = [v for a in ("operasi", "investasi", "pendanaan") for v in cf[a]["items"]]
+        pos_f = sum((_q(v["amount"]) for v in items if v["amount"] > 0), Decimal(0))
+        neg_f = -sum((_q(v["amount"]) for v in items if v["amount"] < 0), Decimal(0))
+        tolk = Decimal("0.005") * len(items) + Decimal("0.02")
+        cek(f"A {tid} arus kas Σ butir masuk/keluar == dasbor", abs(pos_f - masuk) <= tolk and abs(neg_f - keluar) <= tolk, (pos_f, neg_f, masuk, keluar))
+        # rekonsiliasi: selisih (kas akhir - kas awal - aliran) harus == neto kas jurnal pembalik-tanpa-asli (anomali data lama); tanpa anomali -> 0
+        an = await conn.fetchrow(ANOM, tid, d1, d2, SALDO_AWAL)
+        resid = _q(cf["kas_akhir"]) - _q(cf["kas_awal"]) - _q(cf["kenaikan_kas_bersih"])
+        cek(f"A {tid} selisih rekonsiliasi arus kas == jurnal pembalik-tanpa-asli", abs(resid - an["net"]) <= Decimal("0.02"), (resid, an["net"], an["n"]))
+        print(f"[ukur3] {tid} YTD: selisih rekonsiliasi {resid} | jurnal pembalik-POSTED-tanpa-asli bersisi kas di periode {an['n']} (neto {an['net']}) | "
+              f"semua periode {await conn.fetchval(ANOM_SEMUA, tid)}", flush=True)
 
 
 async def main():

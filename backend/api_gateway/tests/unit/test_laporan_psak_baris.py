@@ -133,18 +133,18 @@ def test_rute_pool_ro_tanpa_bocor_dan_tampil_satu_pemformat():
 
 
 def test_arus_kas_butir_gabungan_nol_disaring_dan_baris_bertanda(monkeypatch):
-    """Gabung per label dalam Decimal: +5000 dan -5000 berlabel sama -> 0 -> tak tampil (dulu float); kas neto berlabel menurut tanda."""
+    """Gabung per label DAN arah dalam Decimal: +5000 dan -5000 berlabel + arah sama -> 0 -> tak tampil (dulu float; lintas arah kini TIDAK dinetokan, lihat test_arus_kas_arah); kas neto berlabel menurut tanda."""
     async def saldo(conn, tid, filt, end_date=None):
         return Decimal("100") if end_date < "2026-11-01" else Decimal("90")
 
     class K:
         async def fetch(self, sql, *a):
             return [{"flow_category": "OPERATING", "account_type": "EXPENSE", "psak_sub_category": None, "account_name": None,
-                     "net_flow": Decimal("5000.10")},
+                     "net_flow": Decimal("5000.10"), "arah": 1},
                     {"flow_category": "OPERATING", "account_type": "EXPENSE", "psak_sub_category": None, "account_name": None,
-                     "net_flow": Decimal("-5000.10")},
+                     "net_flow": Decimal("-5000.10"), "arah": 1},
                     {"flow_category": "OPERATING", "account_type": "REVENUE", "psak_sub_category": None, "account_name": None,
-                     "net_flow": Decimal("-10")}]
+                     "net_flow": Decimal("-10"), "arah": -1}]
 
         async def fetchval(self, sql, *a):
             return Decimal("0")
