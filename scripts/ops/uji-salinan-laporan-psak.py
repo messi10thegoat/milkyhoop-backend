@@ -111,7 +111,8 @@ async def main():
                         cek(f"H {k} laba tahun berjalan neraca == laba bersih L/R", nb["laba_periode"] == lb["laba_bersih"], (nb["laba_periode"], lb["laba_bersih"]))
                     cek(f"N {k} neraca BALANCE (aset == L+E; basis/period_start tak mengubah)", abs(bs["total_aset"] - bs["total_liabilitas_ekuitas"]) < 0.01 and bs["_balanced"],
                         (bs["total_aset"], bs["total_liabilitas_ekuitas"]))
-                    cek(f"N {k} ekuitas = buku + laba lalu + laba tahun berjalan", abs(bs["ekuitas"]["laba_ditahan_lalu"] + bs["ekuitas"]["laba_periode"] - (bs["ekuitas"]["total"] - sum(
+                    if "laba_ditahan_lalu" in bs["ekuitas"]:  # hanya pohon BARU (pohon lama = master tanpa medan ini)
+                      cek(f"N {k} ekuitas = buku + laba lalu + laba tahun berjalan", abs(bs["ekuitas"]["laba_ditahan_lalu"] + bs["ekuitas"]["laba_periode"] - (bs["ekuitas"]["total"] - sum(
                         x["balance"] for s in ("modal_disetor", "saldo_laba", "lainnya") for x in bs["ekuitas"][s]["akun"]))) < 0.02, bs["ekuitas"])
                     if basis == "accrual":  # basis kas memakai saringan jurnal kas (bukan Σ saldo akun langsung)
                         await paritas(conn, tid, f"{k} L/R", pl, mulai, akhir, presisi)
