@@ -62,7 +62,7 @@ for tid in (k for k in baru if k not in ("baru", "pen2", "pen3", "CEK")):
                 cek(f"{tid} quick bawaan sisi debit/kredit sama", [(Decimal(x["debit"]) > 0, Decimal(x["credit"]) > 0) for x in ja] == [(Decimal(x["debit"]) > 0, Decimal(x["credit"]) > 0) for x in jb])
                 da, db = sum(Decimal(x["debit"]) for x in ja), sum(Decimal(x["debit"]) for x in jb)
                 cek(f"{tid} quick bawaan nilai jurnal beda < Rp1 (harga pokok bulat)", abs(da - db) < 1, (da, db))
-                cek(f"{tid} quick bawaan jumlah penyesuaian sama", str(a["hasil"].get("adjustment")) == str(b["hasil"].get("adjustment")), (a["hasil"], b["hasil"]))
+                cek(f"{tid} quick bawaan jumlah penyesuaian sama", Decimal(str(a["hasil"].get("adjustment"))) == Decimal(str(b["hasil"].get("adjustment"))), (a["hasil"], b["hasil"]))
                 sah["quick_beda"] = sah.get("quick_beda", 0) + sum(1 for f in ("old_stock", "new_stock", "unit_cost", "cost_source") if a["hasil"].get(f) != b["hasil"].get(f))
         elif k == "C_wh_jumlah_utama":
             cek(f"{tid} gudang utama baru == 1", B[k] == 1, (L[k], B[k]))
