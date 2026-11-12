@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from . import bankfeed_tebak as TB
+from . import bankfeed_tersedia as TS
 from . import teks_galat as tg
 from .nama_pengguna import nama_untuk
 from .so_posisi import BULAN
@@ -51,7 +52,7 @@ def _waktu(zona, t) -> str:
     return f"{j.day} {BULAN[j.month - 1]} {j.year} {j.hour:02d}.{j.minute:02d}"
 
 
-async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional[str], dari, sampai, limit: int, offset: int) -> dict:
+async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional[str], dari, sampai, limit: int, offset: int, user: Optional[dict] = None) -> dict:
     if not await conn.fetchrow(SQL_REKENING_ADA, rekening_id, tid):
         raise HTTPException(status_code=404, detail={"code": "REKENING_TAK_ADA", "message": "Rekening tidak ditemukan."})
     dasar, param = _syarat(rekening_id, tid, dari, sampai, q)
@@ -67,21 +68,33 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
         f"SELECT COALESCE(SUM(nominal) FILTER (WHERE arah = 'masuk'), 0) AS masuk, COALESCE(SUM(nominal) FILTER (WHERE arah = 'keluar'), 0) AS keluar, "
         f"count(*) AS n FROM mutasi_bank WHERE {saring}", *param_s)
     rows = await conn.fetch(
-        f"SELECT id, tanggal, keterangan, arah, nominal, status, cara, diputus_oleh, diputus_pada FROM mutasi_bank WHERE {saring} "
+        f"SELECT id, tanggal, keterangan, arah, nominal, status, cara, diputus_oleh, diputus_pada, rekonsiliasi_id FROM mutasi_bank WHERE {saring} "
         f"ORDER BY tanggal DESC, baris_ke DESC NULLS LAST, id LIMIT ${len(param_s) + 1} OFFSET ${len(param_s) + 2}", *param_s, limit, offset)
     peta = await TB.tebak_halaman(conn, tid, rekening_id, [{"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"],
                                                    "keterangan": r["keterangan"], "status": r["status"]} for r in rows])
     nama = await nama_untuk(conn, [r["diputus_oleh"] for r in rows]) if any(r["diputus_oleh"] for r in rows) else {}
     zona = await zona_tenant(conn, tid) if any(r["diputus_pada"] for r in rows) else None
+    izin = await TS.izin_pengguna(user, rekening_id) if rows else TS.izin_semua()       # BF-1e: SATU panggilan peran per halaman
     data = []
     for r in rows:
         diputus = None
         if r["diputus_pada"] and r["status"] in ("dicatat", "dikecualikan"):
             kata = CARA_KATA.get(r["cara"] or ("kecualikan" if r["status"] == "dikecualikan" else "catat"), "Dicatat")
             diputus = f"{kata} oleh {nama.get(str(r['diputus_oleh']), 'pengguna')} · {_waktu(zona, r['diputus_pada'])}"
+        jenis = TS.jenis_tersedia(r["arah"], izin) if r["status"] in TS.DITINJAU else []
         data.append({"id": str(r["id"]), "tanggal": r["tanggal"].isoformat(), "keterangan": r["keterangan"],
                      "keterangan_ringkas": ringkas_keterangan(r["keterangan"]), "arah": r["arah"], "nominal": str(r["nominal"]),
                      "nominal_tampil": tg.rp(r["nominal"]), "status": r["status"], "status_text": STATUS_TEKS.get(r["status"], r["status"]),
-                     "tebakan": TB.ringkas_tebakan(peta[str(r["id"])]) if str(r["id"]) in peta else dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": [], "aksi_tersedia": {}})
+                     "tebakan": TB.ringkas_tebakan(peta[str(r["id"])]) if str(r["id"]) in peta else dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": jenis, "aksi_tersedia": TS.aksi_tersedia(r, jenis, izin)})
     return {"data": data, "cacah": cacah, "total": {"masuk": str(jumlah["masuk"]), "keluar": str(jumlah["keluar"]), "jumlah": int(jumlah["n"])},
             "has_more": offset + len(data) < int(jumlah["n"])}
+
+
+async def perlu_ditinjau_per_rekening(conn, tid: str, rekening_ids) -> dict:
+    """{str(rekening_id): n baris untuk_ditinjau + mungkin_duplikat} untuk SEMUA rekening satu halaman daftar Kas & Bank: SATU GROUP BY (BF-1e, G6)."""
+    ids = list(rekening_ids)
+    if not ids:
+        return {}
+    rows = await conn.fetch("SELECT bank_account_id, count(*) AS n FROM mutasi_bank WHERE tenant_id = $1 AND status IN ('untuk_ditinjau', 'mungkin_duplikat') "
+                            "AND bank_account_id = ANY($2::uuid[]) GROUP BY bank_account_id", tid, ids)
+    return {str(r["bank_account_id"]): int(r["n"]) for r in rows}

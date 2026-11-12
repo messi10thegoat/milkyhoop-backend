@@ -44,7 +44,7 @@ async def daftar_mutasi_bank(request: Request, bank_account_id: UUID,
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return {"success": True, **await BD.daftar(conn, ctx["tenant_id"], bank_account_id, status, q, dari, sampai, limit, offset)}
+        return {"success": True, **await BD.daftar(conn, ctx["tenant_id"], bank_account_id, status, q, dari, sampai, limit, offset, request.state.user)}
 
 
 @router.get("/{bank_account_id}/mutasi-bank/{mutasi_id}/calon", response_model=CalonMutasiResponse)
