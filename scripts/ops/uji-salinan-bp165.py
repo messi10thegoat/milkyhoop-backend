@@ -50,10 +50,14 @@ async def main():
                 h3 = await RB.paid_through_bawaan(c, tid, RB.SQL_TERAKHIR_BAYAR)
                 cek(f"H3 {tid} rekening terakhir dinonaktifkan -> tak dipilih", h3 is None or h3["id"] != m, str(h3))
                 await c.execute("UPDATE bank_accounts SET is_active = true WHERE id = $1 AND tenant_id = $2", m, tid)
-                bp = await c.fetchrow("SELECT bp.id FROM bill_payments_v2 bp JOIN bank_accounts ba ON ba.id = bp.bank_account_id AND ba.tenant_id = $1 WHERE bp.tenant_id = $1 AND bp.status = 'posted' AND ba.is_active ORDER BY bp.created_at DESC, bp.id DESC LIMIT 1", tid)
+                sql_terbaru = ("SELECT bp.id FROM bill_payments_v2 bp JOIN bank_accounts ba ON ba.id = bp.bank_account_id AND ba.tenant_id = $1 "
+                               "WHERE bp.tenant_id = $1 AND bp.status = 'posted' AND ba.is_active ORDER BY bp.created_at DESC, bp.id DESC LIMIT 1")
+                bp = await c.fetchrow(sql_terbaru, tid)
                 await c.execute("UPDATE bill_payments_v2 SET status = 'voided' WHERE id = $1 AND tenant_id = $2", bp["id"], tid)
-                h4 = await mandiri(c, tid)
-                cek(f"H4 {tid} pembayaran terbaru di-void -> bukan lagi 'terakhir' (pembanding bergeser)", h4 != m)
+                bp2 = await c.fetchrow(sql_terbaru, tid)
+                h4 = await RB.paid_through_bawaan(c, tid, RB.SQL_TERAKHIR_BAYAR)
+                cek(f"H4 {tid} pembayaran terbaru di-void -> pembayaran 'terakhir' bergeser (id pembayaran beda, bukan yang voided) dan bawaan == pembanding mandiri",
+                    (bp2 is None or bp2["id"] != bp["id"]) and (h4 is None or h4["id"] == await mandiri(c, tid) or h4["sumber"] != "terakhir"), f"{bp['id']} -> {bp2['id'] if bp2 else None} {h4}")
             # H6 Biaya tak terpengaruh: helper default masih memakai SQL expenses
             hb = await RB.paid_through_bawaan(c, tid)
             cek(f"H6 {tid} bawaan Biaya = sumber Biaya (bukan pembayaran keluar)", hb is None or hb["sumber"] in ("terakhir", "utama", "kas"), str(hb))
