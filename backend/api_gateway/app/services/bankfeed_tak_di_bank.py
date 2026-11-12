@@ -14,6 +14,7 @@ from . import bankfeed_tebak as TB
 from . import kasbank_ringkas as KR
 from . import teks_galat as tg
 from .nama_pengguna import nama_untuk
+from . import bankfeed_dokumen as BDK
 from ..utils.tanggal_tenant import tanggal_dokumen
 
 LAG_KLIRING = 3          # hari di ujung akhir berkas yang belum bisa dinilai (kliring bank)
@@ -68,7 +69,7 @@ async def daftar(conn, tid: str, rekening_id, dari, sampai) -> dict:
         dobel = _mungkin_dobel(k, kand)
         umur = (hari_ini - k["tanggal"]).days
         data.append({"bt_id": k["id"], "tanggal": _tgl(k["tanggal"]), "arah": k["arah"], "nominal": str(k["nominal"]), "nominal_tampil": tg.rp(k["nominal"]),
-                     "dokumen": {"jenis": KR.LABEL_SUMBER.get(k["sumber"], k["sumber"]), "id": str(k["dokumen_id"]) if k["dokumen_id"] else None, "nomor": k["nomor"]},
+                     "dokumen": BDK.bentuk(k["sumber"], k["dokumen_id"], k["nomor"], k["id"]),
                      "kontak": {"jenis": k["kontak_jenis"], "id": str(k["kontak_id"]) if k["kontak_id"] else None, "nama": k["kontak_nama"]} if k["kontak_nama"] else None,
                      "dibuat_oleh_text": nama.get(str(k["dibuat_oleh"]), "pengguna") if k["dibuat_oleh"] else "pengguna",
                      "lampiran": {"jumlah": lampiran.get(str(k["dokumen_id"]), 0) if k["dokumen_id"] else 0}, "umur_hari": umur, "umur_text": _umur_text(umur),
