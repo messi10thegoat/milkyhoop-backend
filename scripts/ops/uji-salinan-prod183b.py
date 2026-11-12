@@ -50,9 +50,9 @@ async def wip_bersih(c, order_id, wip):
     return float(await c.fetchval(
         """SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
                   + COALESCE((SELECT SUM(jl2.debit - jl2.credit) FROM journal_lines jl2 JOIN journal_entries je2 ON je2.id = jl2.journal_id AND je2.tenant_id = $1
-                              WHERE je2.source_type = 'PRODUCTION_RECONCILE' AND je2.status = 'POSTED' AND jl2.account_id = $3 AND jl2.memo LIKE '%[' || $2::text || ']'), 0)
+                              WHERE je2.source_type = 'PRODUCTION_RECONCILE' AND je2.status = 'POSTED' AND jl2.account_id = $3 AND jl2.memo LIKE '%[' || $4::text || ']'), 0)
            FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id AND je.tenant_id = $1
-           WHERE je.source_id = $2 AND jl.account_id = $3 AND je.status = 'POSTED'""", BS, order_id, wip))
+           WHERE je.source_id = $2 AND jl.account_id = $3 AND je.status = 'POSTED'""", BS, order_id, wip, str(order_id)))
 
 
 async def bom_aktif(c, rq, ids):
