@@ -1064,6 +1064,152 @@ async def get_bill_payment(request: Request, payment_id: str):
         raise HTTPException(status_code=500, detail="Gagal memuat pembayaran.")
 
 
+async def buat_bayar_core(conn, ctx: dict, payload) -> dict:
+    """INTI POST /bill-payments (BF-1d, hasil ekstraksi dari `_op` handler; SQL dan urutan sama): penentu bersama (rencana_bayar) -> nomor -> INSERT pembayaran + alokasi ->
+    jurnal + cermin bank (efek_posting_bayar) bila bukan draf -> respons. Di transaksi PEMANGGIL; lock domain BILL_PAYMENT_CREATE dan idempotency milik pemanggil. -> dict respons rute."""
+    # PENENTU SATU dengan POST /bill-payments/preview (services/bayar_keluar_rencana, PAY-PREVIEW U1 23 Okt 2026):
+    # periode · UUID opsional · vendor · rekening · tagihan milik tenant & vendor sama (PIHAK + TENANT 13 Sep) ·
+    # alokasi ≤ total + potongan · per alokasi FOR UPDATE + sisa jurnal (Law 16). URUTAN + PESAN == kode lama;
+    # blok pertama dilempar sebagai HTTPException yang sama. Nomor pembayaran lahir SESUDAH semua cek lolos.
+    _r = await BKR.rencana_bayar(conn, ctx, payload)
+    vendor_name, bank_account_name = _r["vendor_name"], _r["bank_account_name"]
+    allocated_amount, unapplied_amount = _r["allocated_amount"], _r["unapplied_amount"]
+    payment_number = await nomor_pk(conn, ctx["tenant_id"])  # SATU seri BP- dengan /bills/{id}/payments
+
+    status = "draft" if payload.save_as_draft else "posted"
+    payment_id = uuid_module.uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO bill_payments_v2 (
+            id, tenant_id, payment_number, vendor_id, vendor_name, payment_date,
+            payment_method, bank_account_id, bank_account_name, total_amount,
+            allocated_amount, unapplied_amount, discount_amount, discount_account_id,
+            bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
+            amount_in_base_currency, check_number, check_due_date, check_bank_name,
+            source_type, source_deposit_id, reference_number, notes, tags, status,
+            created_by, created_at, updated_at, posted_at, posted_by, idempotency_key,
+            pph_tax_code_id, pph_amount
+        ) VALUES (
+            $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
+            $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
+            $29, NOW(), NOW(),
+            CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
+            CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30,
+            $31::uuid, $32
+        )""",
+        payment_id,
+        ctx["tenant_id"],
+        payment_number,
+        payload.vendor_id,
+        vendor_name,
+        payload.payment_date,
+        payload.payment_method,
+        payload.bank_account_id,
+        bank_account_name,
+        payload.total_amount,
+        allocated_amount,
+        unapplied_amount,
+        payload.discount_amount,
+        payload.discount_account_id,
+        payload.bank_fee_amount,
+        payload.bank_fee_account_id,
+        payload.currency_code,
+        payload.exchange_rate,
+        _q2(  # item 7: base = total x kurs, 0.01 HALF_UP (dulu int() memotong)
+            Decimal(str(payload.total_amount))
+            * Decimal(str(payload.exchange_rate))
+        ),
+        payload.check_number,
+        payload.check_due_date,
+        payload.check_bank_name,
+        payload.source_type,
+        payload.source_deposit_id,
+        payload.reference_number,
+        payload.notes,
+        payload.tags,
+        status,
+        ctx["user_id"],
+        payload.idempotency_key,
+        _r["pph"]["tax_code_id"],  # PPh SERVER (putusan pemilik 25 Okt 2026), bukan angka klien
+        _r["pph"]["amount"],
+    )
+
+    for _al in _r["alokasi"]:  # tagihan sudah FOR UPDATE + sisa dicek di rencana_bayar
+        await conn.execute(
+            """
+            INSERT INTO bill_payment_allocations (id, payment_id, bill_id, remaining_before, amount_applied, remaining_after, created_at)
+            VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, $5, NOW())""",
+            payment_id,
+            _al["bill_id"],
+            _al["remaining_before"],
+            _al["amount_applied"],
+            _al["remaining_after"],
+        )
+
+    # Create journal entry for posted payments
+    journal_id = None
+    journal_number = None
+    if not payload.save_as_draft:
+        journal_id, journal_number = await create_bill_payment_journal(
+            conn=conn,
+            ctx=ctx,
+            payment_id=payment_id,
+            payment_number=payment_number,
+            payment_date=payload.payment_date,
+            vendor_name=vendor_name,
+            bank_account_id=payload.bank_account_id,
+            total_amount=payload.total_amount,
+            allocated_amount=allocated_amount,
+            discount_amount=payload.discount_amount,
+            discount_account_id=payload.discount_account_id,
+            bank_fee_amount=payload.bank_fee_amount,
+            bank_fee_account_id=payload.bank_fee_account_id,
+            source_type=payload.source_type,
+            source_deposit_id=payload.source_deposit_id,
+            unapplied_amount=unapplied_amount,
+            pph_tax_code_id=_r["pph"]["tax_code_id"],
+            pph_amount=_r["pph"]["amount"],
+        )
+
+        # Update payment with journal info
+        await conn.execute(
+            """UPDATE bill_payments_v2
+               SET journal_id = $1, journal_number = $2
+               WHERE id = $3""",
+            journal_id,
+            journal_number,
+            payment_id,
+        )
+        # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+        # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+        for alloc in payload.allocations:
+            await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(str(alloc.bill_id)))
+
+        # Rekaman PPh + cermin bank = efek_posting_bayar (SATU penulis untuk buat-posted DAN posting draf, U2a 23 Okt 2026)
+        await efek_posting_bayar(
+            conn, ctx, payment_id=payment_id, payment_number=payment_number, payment_date=payload.payment_date,
+            vendor_id=payload.vendor_id, vendor_name=vendor_name, bank_account_id=payload.bank_account_id,
+            total_amount=payload.total_amount, pph_tax_code_id=_r["pph"]["tax_code_id"],
+            pph_amount=_r["pph"]["amount"], journal_id=journal_id, pph_base=_r["pph"]["base"],
+        )
+
+    # dict, BUKAN BillPaymentResponse: execute_idempotent
+    # menyimpan hasil sebagai JSON untuk di-replay.
+    return {
+        "success": True,
+        "message": (
+            f"Pembayaran {payment_number} "
+            f"{'disimpan sebagai draf.' if payload.save_as_draft else 'dibayar.'}"
+        ),
+        "data": {
+            "id": str(payment_id),
+            "payment_number": payment_number,
+            "status": status,
+        },
+    }
+
+
 @router.post("", response_model=BillPaymentResponse, status_code=201)
 async def create_bill_payment(request: Request, payload: CreateBillPaymentRequest):
     try:
@@ -1115,147 +1261,7 @@ async def create_bill_payment(request: Request, payload: CreateBillPaymentReques
                 # Law 14: bungkus seluruh operasi -> request kedua me-REPLAY hasil,
                 # bukan menerima error atas sesuatu yang sudah berhasil.
                 async def _op():
-                    # PENENTU SATU dengan POST /bill-payments/preview (services/bayar_keluar_rencana, PAY-PREVIEW U1 23 Okt 2026):
-                    # periode · UUID opsional · vendor · rekening · tagihan milik tenant & vendor sama (PIHAK + TENANT 13 Sep) ·
-                    # alokasi ≤ total + potongan · per alokasi FOR UPDATE + sisa jurnal (Law 16). URUTAN + PESAN == kode lama;
-                    # blok pertama dilempar sebagai HTTPException yang sama. Nomor pembayaran lahir SESUDAH semua cek lolos.
-                    _r = await BKR.rencana_bayar(conn, ctx, payload)
-                    vendor_name, bank_account_name = _r["vendor_name"], _r["bank_account_name"]
-                    allocated_amount, unapplied_amount = _r["allocated_amount"], _r["unapplied_amount"]
-                    payment_number = await nomor_pk(conn, ctx["tenant_id"])  # SATU seri BP- dengan /bills/{id}/payments
-
-                    status = "draft" if payload.save_as_draft else "posted"
-                    payment_id = uuid_module.uuid4()
-
-                    await conn.execute(
-                        """
-                        INSERT INTO bill_payments_v2 (
-                            id, tenant_id, payment_number, vendor_id, vendor_name, payment_date,
-                            payment_method, bank_account_id, bank_account_name, total_amount,
-                            allocated_amount, unapplied_amount, discount_amount, discount_account_id,
-                            bank_fee_amount, bank_fee_account_id, currency_code, exchange_rate,
-                            amount_in_base_currency, check_number, check_due_date, check_bank_name,
-                            source_type, source_deposit_id, reference_number, notes, tags, status,
-                            created_by, created_at, updated_at, posted_at, posted_by, idempotency_key,
-                            pph_tax_code_id, pph_amount
-                        ) VALUES (
-                            $1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid, $9, $10, $11, $12, $13, $14::uuid,
-                            $15, $16::uuid, $17, $18, $19, $20, $21, $22, $23, $24::uuid, $25, $26, $27, $28,
-                            $29, NOW(), NOW(),
-                            CASE WHEN $28::varchar = 'posted' THEN NOW() ELSE NULL END,
-                            CASE WHEN $28::varchar = 'posted' THEN $29::uuid ELSE NULL END, $30,
-                            $31::uuid, $32
-                        )""",
-                        payment_id,
-                        ctx["tenant_id"],
-                        payment_number,
-                        payload.vendor_id,
-                        vendor_name,
-                        payload.payment_date,
-                        payload.payment_method,
-                        payload.bank_account_id,
-                        bank_account_name,
-                        payload.total_amount,
-                        allocated_amount,
-                        unapplied_amount,
-                        payload.discount_amount,
-                        payload.discount_account_id,
-                        payload.bank_fee_amount,
-                        payload.bank_fee_account_id,
-                        payload.currency_code,
-                        payload.exchange_rate,
-                        _q2(  # item 7: base = total x kurs, 0.01 HALF_UP (dulu int() memotong)
-                            Decimal(str(payload.total_amount))
-                            * Decimal(str(payload.exchange_rate))
-                        ),
-                        payload.check_number,
-                        payload.check_due_date,
-                        payload.check_bank_name,
-                        payload.source_type,
-                        payload.source_deposit_id,
-                        payload.reference_number,
-                        payload.notes,
-                        payload.tags,
-                        status,
-                        ctx["user_id"],
-                        payload.idempotency_key,
-                        _r["pph"]["tax_code_id"],  # PPh SERVER (putusan pemilik 25 Okt 2026), bukan angka klien
-                        _r["pph"]["amount"],
-                    )
-
-                    for _al in _r["alokasi"]:  # tagihan sudah FOR UPDATE + sisa dicek di rencana_bayar
-                        await conn.execute(
-                            """
-                            INSERT INTO bill_payment_allocations (id, payment_id, bill_id, remaining_before, amount_applied, remaining_after, created_at)
-                            VALUES (gen_random_uuid(), $1, $2::uuid, $3, $4, $5, NOW())""",
-                            payment_id,
-                            _al["bill_id"],
-                            _al["remaining_before"],
-                            _al["amount_applied"],
-                            _al["remaining_after"],
-                        )
-
-                    # Create journal entry for posted payments
-                    journal_id = None
-                    journal_number = None
-                    if not payload.save_as_draft:
-                        journal_id, journal_number = await create_bill_payment_journal(
-                            conn=conn,
-                            ctx=ctx,
-                            payment_id=payment_id,
-                            payment_number=payment_number,
-                            payment_date=payload.payment_date,
-                            vendor_name=vendor_name,
-                            bank_account_id=payload.bank_account_id,
-                            total_amount=payload.total_amount,
-                            allocated_amount=allocated_amount,
-                            discount_amount=payload.discount_amount,
-                            discount_account_id=payload.discount_account_id,
-                            bank_fee_amount=payload.bank_fee_amount,
-                            bank_fee_account_id=payload.bank_fee_account_id,
-                            source_type=payload.source_type,
-                            source_deposit_id=payload.source_deposit_id,
-                            unapplied_amount=unapplied_amount,
-                            pph_tax_code_id=_r["pph"]["tax_code_id"],
-                            pph_amount=_r["pph"]["amount"],
-                        )
-
-                        # Update payment with journal info
-                        await conn.execute(
-                            """UPDATE bill_payments_v2
-                               SET journal_id = $1, journal_number = $2
-                               WHERE id = $3""",
-                            journal_id,
-                            journal_number,
-                            payment_id,
-                        )
-                        # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
-                        # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
-                        for alloc in payload.allocations:
-                            await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], UUID(str(alloc.bill_id)))
-
-                        # Rekaman PPh + cermin bank = efek_posting_bayar (SATU penulis untuk buat-posted DAN posting draf, U2a 23 Okt 2026)
-                        await efek_posting_bayar(
-                            conn, ctx, payment_id=payment_id, payment_number=payment_number, payment_date=payload.payment_date,
-                            vendor_id=payload.vendor_id, vendor_name=vendor_name, bank_account_id=payload.bank_account_id,
-                            total_amount=payload.total_amount, pph_tax_code_id=_r["pph"]["tax_code_id"],
-                            pph_amount=_r["pph"]["amount"], journal_id=journal_id, pph_base=_r["pph"]["base"],
-                        )
-
-                    # dict, BUKAN BillPaymentResponse: execute_idempotent
-                    # menyimpan hasil sebagai JSON untuk di-replay.
-                    return {
-                        "success": True,
-                        "message": (
-                            f"Pembayaran {payment_number} "
-                            f"{'disimpan sebagai draf.' if payload.save_as_draft else 'dibayar.'}"
-                        ),
-                        "data": {
-                            "id": str(payment_id),
-                            "payment_number": payment_number,
-                            "status": status,
-                        },
-                    }
+                    return await buat_bayar_core(conn, ctx, payload)  # BF-1d: inti hasil ekstraksi (SQL dan urutan sama dgn _op lama)
 
                 if not idem_key:  # tanpa kunci klien = tanpa dedup (putusan pemilik 22 Okt)
                     return {**(await _op()), "was_cached": False}
@@ -1414,6 +1420,177 @@ async def post_bill_payment(request: Request, payment_id: str, response: Respons
         raise HTTPException(status_code=500, detail="Gagal memposting pembayaran.")
 
 
+async def kunci_void_bayar(conn, payment_id) -> None:
+    """Law 13: kunci advisory per pembayaran untuk void, PERTAMA sesudah idempotency (sama dengan handler lama)."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BILL_PAYMENT_VOID:{payment_id}")
+
+
+async def void_bayar_core(conn, ctx: dict, payment_id, void_reason: str, r: dict) -> dict:
+    """INTI void pembayaran (BF-1d, hasil ekstraksi dari void_bill_payment; SQL dan urutan sama): jurnal PEMBALIK (DRAFT -> baris ditukar -> POSTED, asli reversed_by_id, Law 2/20/26),
+    cermin bank pembalik, tagihan di-FOR UPDATE + cache dihitung ulang, PPh void, pembayaran 'voided' + audit. `r` = BKR.rencana_batal_bayar (bukan 'ulang'). Di transaksi PEMANGGIL.
+    -> {void_journal_id}."""
+    payment = r["payment"]
+    hari_ini = r["hari_ini"]  # t10-tanggal-bisnis
+
+    # C6: Create reversal journal by iterating ALL original lines
+    void_journal_id = uuid_module.uuid4()
+
+    if payment["journal_id"]:
+        original_journal = r["jurnal_asli"]
+        original_lines = r["baris_asli"]  # penentu: kosong -> 500 "Original journal lines not found"
+
+        # Generate void journal number
+        void_journal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
+        )
+        if not void_journal_number:
+            void_journal_number = f"VD-{payment['payment_number']}"
+
+        # Law 20 Step 1: INSERT as DRAFT with reversal_of_id (Law 26)
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, reversal_of_id,
+                status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $9, $4, 'BILL_PAYMENT', $5::uuid, $6, 'DRAFT', $7, $7, $8)
+            """,
+            void_journal_id,
+            ctx["tenant_id"],
+            void_journal_number,
+            f"Void {payment['payment_number']} - {payment['vendor_name']} - {void_reason}",
+            payment_id,
+            payment["journal_id"],
+            original_journal["total_debit"],
+            ctx["user_id"],
+            hari_ini,  # t10-tanggal-bisnis
+        )
+
+        # Law 20 Step 2: INSERT reversed lines (swap debit/credit)
+        for idx, line in enumerate(original_lines, 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                uuid_module.uuid4(),
+                void_journal_id,
+                idx,
+                line["account_id"],
+                line["credit"],  # Swap: original credit -> debit
+                line["debit"],  # Swap: original debit -> credit
+                f"Reversal - {line['memo'] or ''}",
+            )
+
+        # Law 20 Step 3: UPDATE to POSTED (triggers hash chain)
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            void_journal_id,
+        )
+
+        # Law 26: Mark original journal as reversed
+        await conn.execute(
+            """
+            UPDATE journal_entries
+            SET reversed_by_id = $2
+            WHERE id = $1
+            """,
+            payment["journal_id"],
+            void_journal_id,
+        )
+
+    # C7: Bank mirror reversal (BankSync Rule 3)
+    # GP3a (23 Okt 2026): cermin dicari lewat JURNAL pembayaran + tenant (pola semua jalur void lain). Dulu
+    # reference_type 'bill_payment' + id pembayaran -> cermin pembayaran lama record_payment (BP-, ditulis
+    # reference_type 'bill' + id TAGIHAN) tak pernah ketemu: void BP- membalik jurnal tetapi cermin bank TERTINGGAL
+    # (diukur 23 Okt: grapgrap 18/18, kaos 6/6 BP- terdampak bila di-void; 0 pernah di-void). Maks 1 cermin per jurnal.
+    if payment.get("bank_account_id") and payment["journal_id"]:
+        original_btxn = r["cermin_asli"]  # penentu (lewat journal_id + tenant)
+        if original_btxn:
+            mirror_type = (
+                "deposit"
+                if original_btxn["transaction_type"] == "withdrawal"
+                else "withdrawal"
+            )
+            await conn.execute(
+                """
+                INSERT INTO bank_transactions (
+                    id, tenant_id, bank_account_id, transaction_date,
+                    transaction_type, amount, running_balance,
+                    reference_type, reference_id, reference_number,
+                    description, journal_id, status, origin_type, source_module,
+                    created_by, posted_by, posted_at
+                ) VALUES ($1, $2, $3, $11, $4, $5, 0,
+                    'bill_payment_void', $6::uuid, $7, $8, $9,
+                    'POSTED', 'SYSTEM', 'bill_payment', $10, $10, NOW())
+                """,
+                uuid_module.uuid4(),
+                ctx["tenant_id"],
+                original_btxn["bank_account_id"],
+                mirror_type,
+                -original_btxn["amount"],
+                payment_id,
+                f"VOID-{payment['payment_number']}",
+                f"Void payment - {void_reason}",
+                void_journal_id,
+                ctx["user_id"],
+                hari_ini,  # t10-tanggal-bisnis
+            )
+
+    # Reverse bill allocations (reduce paid_amount on bills)
+    allocations = await conn.fetch(
+        "SELECT bill_id, amount_applied FROM bill_payment_allocations WHERE payment_id = $1::uuid",
+        payment_id,
+    )
+
+    for alloc in allocations:
+        # Law 13: Lock bill row before update
+        # (tenant_id: jangan pernah mengunci baris tenant lain)
+        await conn.fetchrow(
+            "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+            alloc["bill_id"],
+            ctx["tenant_id"],
+        )
+        # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
+        # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
+        await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
+
+    # Fase 2.3: Void withholding_tax_records linked to this payment
+    # (22 Okt 2026) DI DALAM transaksi: dulu di luar (autocommit) -> jurnal void bisa terbalik sementara wrapper tetap posted.
+    await conn.execute(
+        """
+        UPDATE withholding_tax_records
+        SET status = 'void', updated_at = NOW()
+        WHERE payment_id = $1::uuid AND tenant_id = $2
+          AND status != 'void'
+    """,
+        payment_id,
+        ctx["tenant_id"],
+    )
+
+    # Update payment status and link void journal
+    await conn.execute(
+        """
+        UPDATE bill_payments_v2
+        SET status = 'voided',
+            void_journal_id = $1,
+            voided_at = NOW(),
+            voided_by = $2,
+            void_reason = $3,
+            updated_at = NOW()
+        WHERE id = $4::uuid
+        """,
+        void_journal_id,
+        ctx["user_id"],
+        void_reason,
+        payment_id,
+    )
+    await _ad.catat_dokumen(conn, ctx["tenant_id"], "payment_out", "voided", payment_id, payment["payment_number"],
+                            ctx["user_id"])  # AUDIT-DOKUMEN (Law 12)
+    return {"void_journal_id": void_journal_id}
+
+
 @router.post("/{payment_id}/void", response_model=BillPaymentResponse)
 async def void_bill_payment(
     request: Request, payment_id: str, payload: VoidBillPaymentRequest, response: Response = None
@@ -1446,11 +1623,8 @@ async def void_bill_payment(
                 if lama is not None:
                     return lama
 
-                # Law 13: Advisory lock on bill payment void
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BILL_PAYMENT_VOID:{payment_id}",
-                )
+                # Law 13: Advisory lock on bill payment void (BF-1d: kunci_void_bayar)
+                await kunci_void_bayar(conn, payment_id)
                 # Penentu BERSAMA dgn POST /{id}/void/preview (AS-GP3), URUTAN lama: rekon bank 409 · ada (FOR UPDATE, TOCTOU) ·
                 # sudah voided = ulang (C4) · draf · posted · periode tanggal bayar + HARI INI (C8) · baris jurnal asli ada.
                 r = await BKR.rencana_batal_bayar(conn, ctx["tenant_id"], payment_id)
@@ -1462,164 +1636,8 @@ async def void_bill_payment(
                         data={"id": payment_id, "status": "voided"},
                     )
                     return await idem_buat.simpan(conn, ctx, kp, sidik, "BP_VOID", resp, payment_id)
-                hari_ini = r["hari_ini"]  # t10-tanggal-bisnis
-
-                # C6: Create reversal journal by iterating ALL original lines
-                void_journal_id = uuid_module.uuid4()
-
-                if payment["journal_id"]:
-                    original_journal = r["jurnal_asli"]
-                    original_lines = r["baris_asli"]  # penentu: kosong -> 500 "Original journal lines not found"
-
-                    # Generate void journal number
-                    void_journal_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, 'VD')", ctx["tenant_id"]
-                    )
-                    if not void_journal_number:
-                        void_journal_number = f"VD-{payment['payment_number']}"
-
-                    # Law 20 Step 1: INSERT as DRAFT with reversal_of_id (Law 26)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $9, $4, 'BILL_PAYMENT', $5::uuid, $6, 'DRAFT', $7, $7, $8)
-                        """,
-                        void_journal_id,
-                        ctx["tenant_id"],
-                        void_journal_number,
-                        f"Void {payment['payment_number']} - {payment['vendor_name']} - {payload.void_reason}",
-                        payment_id,
-                        payment["journal_id"],
-                        original_journal["total_debit"],
-                        ctx["user_id"],
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-
-                    # Law 20 Step 2: INSERT reversed lines (swap debit/credit)
-                    for idx, line in enumerate(original_lines, 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                            """,
-                            uuid_module.uuid4(),
-                            void_journal_id,
-                            idx,
-                            line["account_id"],
-                            line["credit"],  # Swap: original credit -> debit
-                            line["debit"],  # Swap: original debit -> credit
-                            f"Reversal - {line['memo'] or ''}",
-                        )
-
-                    # Law 20 Step 3: UPDATE to POSTED (triggers hash chain)
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        void_journal_id,
-                    )
-
-                    # Law 26: Mark original journal as reversed
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET reversed_by_id = $2
-                        WHERE id = $1
-                        """,
-                        payment["journal_id"],
-                        void_journal_id,
-                    )
-
-                # C7: Bank mirror reversal (BankSync Rule 3)
-                # GP3a (23 Okt 2026): cermin dicari lewat JURNAL pembayaran + tenant (pola semua jalur void lain). Dulu
-                # reference_type 'bill_payment' + id pembayaran -> cermin pembayaran lama record_payment (BP-, ditulis
-                # reference_type 'bill' + id TAGIHAN) tak pernah ketemu: void BP- membalik jurnal tetapi cermin bank TERTINGGAL
-                # (diukur 23 Okt: grapgrap 18/18, kaos 6/6 BP- terdampak bila di-void; 0 pernah di-void). Maks 1 cermin per jurnal.
-                if payment.get("bank_account_id") and payment["journal_id"]:
-                    original_btxn = r["cermin_asli"]  # penentu (lewat journal_id + tenant)
-                    if original_btxn:
-                        mirror_type = (
-                            "deposit"
-                            if original_btxn["transaction_type"] == "withdrawal"
-                            else "withdrawal"
-                        )
-                        await conn.execute(
-                            """
-                            INSERT INTO bank_transactions (
-                                id, tenant_id, bank_account_id, transaction_date,
-                                transaction_type, amount, running_balance,
-                                reference_type, reference_id, reference_number,
-                                description, journal_id, status, origin_type, source_module,
-                                created_by, posted_by, posted_at
-                            ) VALUES ($1, $2, $3, $11, $4, $5, 0,
-                                'bill_payment_void', $6::uuid, $7, $8, $9,
-                                'POSTED', 'SYSTEM', 'bill_payment', $10, $10, NOW())
-                            """,
-                            uuid_module.uuid4(),
-                            ctx["tenant_id"],
-                            original_btxn["bank_account_id"],
-                            mirror_type,
-                            -original_btxn["amount"],
-                            payment_id,
-                            f"VOID-{payment['payment_number']}",
-                            f"Void payment - {payload.void_reason}",
-                            void_journal_id,
-                            ctx["user_id"],
-                            hari_ini,  # t10-tanggal-bisnis
-                        )
-
-                # Reverse bill allocations (reduce paid_amount on bills)
-                allocations = await conn.fetch(
-                    "SELECT bill_id, amount_applied FROM bill_payment_allocations WHERE payment_id = $1::uuid",
-                    payment_id,
-                )
-
-                for alloc in allocations:
-                    # Law 13: Lock bill row before update
-                    # (tenant_id: jangan pernah mengunci baris tenant lain)
-                    await conn.fetchrow(
-                        "SELECT id FROM bills WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
-                        alloc["bill_id"],
-                        ctx["tenant_id"],
-                    )
-                    # Cache tagihan = SATU turunan (pihak_helpers.segarkan_cache_hutang_tagihan, dari compute_ap_outstanding)
-                    # untuk SEMUA penulis — tak ada lagi aritmetika amount_paid/status sendiri (26 Sep 2026, 4b).
-                    await segarkan_cache_hutang_tagihan(conn, ctx["tenant_id"], alloc["bill_id"])
-
-                # Fase 2.3: Void withholding_tax_records linked to this payment
-                # (22 Okt 2026) DI DALAM transaksi: dulu di luar (autocommit) -> jurnal void bisa terbalik sementara wrapper tetap posted.
-                await conn.execute(
-                    """
-                    UPDATE withholding_tax_records
-                    SET status = 'void', updated_at = NOW()
-                    WHERE payment_id = $1::uuid AND tenant_id = $2
-                      AND status != 'void'
-                """,
-                    payment_id,
-                    ctx["tenant_id"],
-                )
-
-                # Update payment status and link void journal
-                await conn.execute(
-                    """
-                    UPDATE bill_payments_v2
-                    SET status = 'voided',
-                        void_journal_id = $1,
-                        voided_at = NOW(),
-                        voided_by = $2,
-                        void_reason = $3,
-                        updated_at = NOW()
-                    WHERE id = $4::uuid
-                    """,
-                    void_journal_id,
-                    ctx["user_id"],
-                    payload.void_reason,
-                    payment_id,
-                )
-                await _ad.catat_dokumen(conn, ctx["tenant_id"], "payment_out", "voided", payment_id, payment["payment_number"],
-                                        ctx["user_id"])  # AUDIT-DOKUMEN (Law 12)
+                _v = await void_bayar_core(conn, ctx, payment_id, payload.void_reason, r)  # BF-1d: inti hasil ekstraksi
+                void_journal_id = _v["void_journal_id"]
 
                 logger.info(
                     f"Bill payment voided: {payment_id}, void_journal_id: {void_journal_id}"
