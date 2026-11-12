@@ -348,9 +348,9 @@ from fastapi.exceptions import RequestValidationError as _RequestValidationError
 from .services import galat_validasi as _galat_validasi  # noqa: E402
 
 
-@app.exception_handler(_RequestValidationError)
-async def _validasi_handler(request, exc):  # noqa: ANN001
-    return _JSONResp(status_code=422, content=_galat_validasi.badan(_jsonable(exc.errors())))
+# BUG-185 (12 Nov 2026): penangan 422 = services/galat_validasi.validasi_handler (input bytes dibuang -> badan biner/multipart ke rute JSON = 422, bukan 500)
+_validasi_handler = _galat_validasi.validasi_handler  # nama lama tetap (tes/impor lain)
+app.add_exception_handler(_RequestValidationError, _validasi_handler)
 
 
 # Validate configuration on startup

@@ -80,3 +80,26 @@ def badan(errors: list) -> dict:
     if m:
         out["field"] = m
     return out
+
+
+def _aman(v):
+    """Nilai `input` galat validasi yang aman dijadikan JSON: bytes/bytearray TIDAK didecode (isi biner bisa bocor ke respons / UnicodeDecodeError -> 500), diganti penanda panjang."""
+    if isinstance(v, (bytes, bytearray)):
+        return f"<biner {len(v)} byte>"
+    if isinstance(v, dict):
+        return {k: _aman(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_aman(x) for x in v]
+    return v
+
+
+def bersihkan(errors: list) -> list:
+    """exc.errors() -> salinan dgn `input` bytes diganti penanda; loc/msg/type/ctx TETAP (BUG-185: badan biner/multipart ke rute ber-model JSON dulu = 500)."""
+    return [{**e, "input": _aman(e["input"])} if "input" in e else e for e in errors]
+
+
+async def validasi_handler(request, exc):  # noqa: ANN001
+    """Penangan RequestValidationError BERSAMA (didaftarkan app/main.py): 422 berkode, input apa pun TIDAK boleh menghasilkan 500."""
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=422, content=badan(jsonable_encoder(bersihkan(exc.errors()))))
