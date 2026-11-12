@@ -135,6 +135,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/lampiran/bank_transaction/[^/]+$", ["GET"], "kas_bank", "R"),
     (r"^/api/lampiran/bank_transfer/[^/]+$", ["GET"], "kas_bank", "R"),
     (r"^/api/lampiran/employee_advance/[^/]+$", ["GET"], "payroll", "R"),
+    (r"^/api/lampiran/expense/[^/]+$", ["GET"], "expense", "R"),   # B8b: sama dgn GET /api/expenses/{id}/attachments
     (r"^/api/purchase-orders/[^/]+/attachments$", ["POST"], "purchase_order", "U"),
     (r"^/api/purchase-orders/[^/]+/attachments$", ["GET"], "purchase_order", "R"),
     (r"^/api/purchase-orders/[^/]+/attachments/[^/]+/download$", ["GET"], "purchase_order", "R"),

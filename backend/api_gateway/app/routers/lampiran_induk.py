@@ -323,6 +323,9 @@ SPEC_PENERIMAAN = SpecLampiran("payment", "receive-payments", "receive_payments"
                                "receive_payments", rute=("unggah", "lepas"))
 SPEC_BAYAR_KELUAR = SpecLampiran("payment", "bill-payments", "bill_payments_v2", "payment_number", "Pembayaran keluar", "bill_payments_v2",
                                  rute=("unggah", "lepas"))
+# B8b (12 Nov 2026): Biaya di hub pembaca lampiran. TANPA buat_router: rute unggah/daftar/unduh/lepas Biaya sudah ada di routers/expenses.py
+# (kontrak lama + kuota); spesifikasi ini hanya dibaca hub (induk + nomor) = pagar SAMA dgn GET /api/expenses/{id}/attachments.
+SPEC_BIAYA = SpecLampiran("expense", "expenses", "expenses", "expense_number", "Biaya", "expenses")
 router_mutasi_bank = buat_router(SPEC_MUTASI_BANK)
 router_transfer_bank = buat_router(SPEC_TRANSFER_BANK)
 router_kasbon = buat_router(SPEC_KASBON)

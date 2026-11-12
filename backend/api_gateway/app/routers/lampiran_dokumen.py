@@ -4,7 +4,7 @@ GET /api/lampiran/{jenis}/{id}   jenis = sales_order | sales_invoice | receive_p
                                         | quote (LAMPIRAN-NK-QUOTE 15 Okt)
                                         | purchase_order | vendor_deposit | goods_receipt | bill | payment_out | vendor_credit (F1/F2a/F2b: keluarga
                                           Pembelian, lihat JENIS_PEMBELIAN)
-                                        | bank_transaction | bank_transfer | employee_advance (Kas&Bank + Kasbon, JENIS_TUNGGAL)
+                                        | bank_transaction | bank_transfer | employee_advance | expense (Kas&Bank + Kasbon + Biaya, JENIS_TUNGGAL)
   -> bentuk SAMA dengan GET /api/sales-orders/{id}/lampiran ({success, data[grup], jumlah}) + `sumber`:
      {"jenis", "id", "nomor", "mode": "keluarga_so" | "dokumen" | "keluarga_pembelian", "sales_order": {"id", "nomor"} | null}
 
@@ -198,6 +198,7 @@ JENIS_TUNGGAL = {
     "bank_transaction": (LI.SPEC_MUTASI_BANK, "transaction_date"),
     "bank_transfer": (LI.SPEC_TRANSFER_BANK, "transfer_date"),
     "employee_advance": (LI.SPEC_KASBON, "granted_date"),
+    "expense": (LI.SPEC_BIAYA, "expense_date"),   # B8b: Biaya; unduh/unggah/lepas tetap rute routers/expenses
 }
 
 

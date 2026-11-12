@@ -155,6 +155,7 @@ JENIS_KELUARGA = {
     "bank_transaction": ("bank-transactions", None),
     "bank_transfer": ("bank-transfers", None),
     "employee_advance": ("employee-advances", None),
+    "expense": ("expenses", None),                  # B8b: Biaya; unduh = rute routers/expenses
 }
 URUTAN_JENIS = list(JENIS_KELUARGA)
 STATUS_VOID = frozenset({"void", "voided", "cancelled", "canceled"})
