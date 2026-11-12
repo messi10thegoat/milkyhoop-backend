@@ -25,7 +25,7 @@ def test_pasang_tenant_dipanggil_hanya_sekali_di_tulis_sesudah_kunci_dan_sebelum
     assert kunci < panggilan[0][1] < penentu
     jaga = next(n for n in ast.walk(tulis) if isinstance(n, ast.If) and any(isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "pasang_tenant" for c in ast.walk(n)))
     assert "JENIS_GUC" in ast.unparse(jaga.test) and "catat" in ast.unparse(jaga.test)       # hanya aksi catat jenis penulis-pembaca-GUC
-    assert BA.JENIS_GUC == ("uang_muka_pelanggan", "terima_pembayaran")
+    assert BA.JENIS_GUC == ("uang_muka_pelanggan", "terima_pembayaran", "bayar_tagihan")
 
 
 def test_guc_tenant_hanya_dipakai_bankfeed_aksi_dan_hanya_berisi_pasang_tenant():

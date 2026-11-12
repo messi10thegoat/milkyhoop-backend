@@ -162,11 +162,10 @@ def _akun_row(kode, nama):
 
 
 # ====================================================================== CATAT: validasi
-@pytest.mark.parametrize("jenis", ["bayar_tagihan"])      # BF-1c3: transfer/uang muka/terima pembayaran kini tersedia (test_bankfeed_catat3)
-def test_jenis_yang_belum_ada_diblok_berkode_bukan_diam(jenis, monkeypatch):
+def test_jenis_tak_dikenal_diblok_berkode_bukan_diam(monkeypatch):      # BF-1d: semua jenis kini tersedia; yang tak dikenal tetap diblok
     _rencana_stub(monkeypatch)
-    h = _prev(_K(_m()), "catat", {"jenis": jenis})
-    assert _kode(h) == ["JENIS_BELUM_TERSEDIA"] and "belum" in h["blocks"][0]["message"].lower()
+    h = _prev(_K(_m()), "catat", {"jenis": "jenis_ngawur"})
+    assert _kode(h) == ["JENIS_TAK_SAH"]
 
 
 def test_jenis_harus_sesuai_arah_baris(monkeypatch):
