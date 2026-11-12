@@ -106,6 +106,10 @@ async def main():
         cek("A jurnal PRODUCTION_LABOR 475.000 + PRODUCTION_OVERHEAD 100.000", await jurnal(c, oa, "PRODUCTION_LABOR") == [475000.0] and await jurnal(c, oa, "PRODUCTION_OVERHEAD") == [100000.0],
             f"{await jurnal(c, oa, 'PRODUCTION_LABOR')} {await jurnal(c, oa, 'PRODUCTION_OVERHEAD')}")
         cek("A WIP bersih WO = 0", await wip_bersih(c, oa, wip) == 0.0, str(await wip_bersih(c, oa, wip)))
+        # tambah stok bahan di KLON (A memakai 50 kain; skenario B-D memakai 4 unit tiap WO)
+        for kunci, tambah in (("kain", "30"), ("benang", "2"), ("label", "30")):
+            await c.execute("UPDATE warehouse_stock SET quantity = quantity + $4 WHERE tenant_id = $1 AND item_id = $2 AND warehouse_id = $3",
+                            BS, str(ids[kunci]), await gudang(c, ids[kunci]), Decimal(tambah))
         # B /labor sebagian
         ob = await buat_wo(c, rq, ids, bid, "4")
         await P.record_labor(rq, ob, SP.ProductionLaborInput(operation_id=op, operation_name="Overhead Jahit", actual_hours=Decimal("1")))
