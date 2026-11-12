@@ -14,6 +14,11 @@ SQL_TERAKHIR = """SELECT ba.id, ba.account_name FROM expenses e
     JOIN bank_accounts ba ON ba.id = e.paid_through_id AND ba.tenant_id = e.tenant_id
     WHERE e.tenant_id = $1 AND e.status = 'posted' AND ba.is_active
     ORDER BY e.created_at DESC, e.id DESC LIMIT 1"""
+# BUG-165 (Bayar Tagihan/Pembayaran Keluar): sumber 'terakhir' = rekening pembayaran keluar POSTED terbaru (bukan 'voided') yang rekeningnya masih AKTIF, tersaring tenant
+SQL_TERAKHIR_BAYAR = """SELECT ba.id, ba.account_name FROM bill_payments_v2 bp
+    JOIN bank_accounts ba ON ba.id = bp.bank_account_id AND ba.tenant_id = bp.tenant_id
+    WHERE bp.tenant_id = $1 AND bp.status = 'posted' AND ba.is_active
+    ORDER BY bp.created_at DESC, bp.id DESC LIMIT 1"""
 SQL_UTAMA = """SELECT id, account_name FROM bank_accounts WHERE tenant_id = $1 AND is_active AND is_default
     ORDER BY created_at, account_name LIMIT 1"""
 SQL_KAS = """SELECT id, account_name FROM bank_accounts WHERE tenant_id = $1 AND is_active AND account_type = ANY($2::text[])
@@ -28,8 +33,9 @@ def pilih(terakhir, utama, kas) -> Optional[dict]:
     return None
 
 
-async def paid_through_bawaan(conn, tid: str) -> Optional[dict]:
-    terakhir = await conn.fetchrow(SQL_TERAKHIR, tid)
+async def paid_through_bawaan(conn, tid: str, sql_terakhir: str = SQL_TERAKHIR) -> Optional[dict]:
+    """Biaya = bawaan (sql_terakhir = SQL_TERAKHIR); Bayar Tagihan memberi SQL_TERAKHIR_BAYAR. 'utama' + 'kas' SAMA untuk keduanya."""
+    terakhir = await conn.fetchrow(sql_terakhir, tid)
     utama = None if terakhir else await conn.fetchrow(SQL_UTAMA, tid)
     kas = None if terakhir or utama else await conn.fetchrow(SQL_KAS, tid, list(TIPE_KAS))
     return pilih(terakhir, utama, kas)

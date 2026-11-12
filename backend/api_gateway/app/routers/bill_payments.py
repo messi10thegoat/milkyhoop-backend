@@ -16,6 +16,7 @@ from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.pihak_helpers import normalisasi_pihak, pastikan_pihak_sama  # noqa: F401
 from ..services import bayar_keluar_rencana as BKR
+from ..services.rekening_bawaan import SQL_TERAKHIR_BAYAR, paid_through_bawaan  # BUG-165
 from ..services.nomor_bayar_keluar import nomor_pk, perkiraan_nomor_pk
 from ..services import nomor_jurnal as NJ  # ND-JURNAL-NOMOR (1 Nov 2026): jurnal pembayaran = nomor PK
 import uuid as uuid_module
@@ -765,9 +766,13 @@ async def get_bill_payments_summary(request: Request, search: Optional[str] = Qu
                 for r in method_breakdown
             }
 
+            # BUG-165: rekening bayar bawaan = penentu SERVER (terakhir pembayaran keluar -> utama -> kas), FE tak menebak dari daftar bank
+            bawaan = await paid_through_bawaan(conn, ctx["tenant_id"], SQL_TERAKHIR_BAYAR)
+
             return BillPaymentSummaryResponse(
                 success=True,
                 data={
+                    "paid_through_bawaan": bawaan,
                     "total_paid": summary["total_paid"],
                     "total_count": summary["total_count"],
                     "by_status": {
