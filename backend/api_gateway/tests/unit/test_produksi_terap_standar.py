@@ -75,7 +75,7 @@ def test_report_output_menerapkan_standar_sebelum_hitung_biaya_satuan():
     import app.routers.production as P
     s = inspect.getsource(P.report_output)
     i_terap = s.index("PT.kekurangan_standar")
-    assert s.index("PT.terapkan_ke_wip") > i_terap and i_terap < s.index("total_actual = (")
+    assert s.index("PT.terapkan_ke_wip") > i_terap and s.index("PT.terapkan_ke_wip") < s.index("PT.nilai_fg_standar")    # 183b: terapan ke WIP lebih dulu, lalu FG pada standar
     assert s.count("PT.terapkan_ke_wip(") == 2 and "actual_labor_cost = COALESCE(actual_labor_cost, 0) + $" in s
 
 
