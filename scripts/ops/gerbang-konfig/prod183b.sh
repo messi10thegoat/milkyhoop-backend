@@ -12,4 +12,5 @@ SAB=(
  "u5 WO sudah dikuras muncul lagi|$PW|s#            saldo\[m.group(1)\] += Decimal(str(r\[\"debit\"\] or 0)) - Decimal(str(r\[\"credit\"\] or 0))#            pass#|$T"
  "u6 WO lama ber-WIP 0 tersentuh|$PW|s#if s.quantize(Q) != 0\]#if True]#|$T"
  "u7 clamp >= 0 dilepas (WO lama)|$PS|s#    return max(0, int(std + sub - Decimal(sudah_dikredit or 0)))#    return int(std + sub - Decimal(sudah_dikredit or 0))#|$T"
+ "u8 tanda arah selisih terbalik (BUG-190)|$PW|s#    if n > 0:#    if n < 0:#|tests/unit/test_month_end_arah.py"
 )
