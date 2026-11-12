@@ -98,3 +98,53 @@ def test_handler_lama_memanggil_penulis_hasil_ekstraksi_tanpa_sql_jurnal_inline(
     assert "KT.tulis_void_manual(" in b and "KT.kunci_void_manual(" in b and "INSERT INTO journal_entries" not in b and "INSERT INTO bank_transactions" not in b
     for nama in ("tulis_tx_manual", "tulis_void_manual"):
         assert "float(" not in inspect.getsource(getattr(KT, nama))
+
+
+# ---- periode tertutup pada penentu void manual (BF-1c2, permintaan MASTER): tanggal ASLI dan hari ini diperiksa; tak ada pergeseran tanggal diam-diam
+class _KV:
+    def __init__(self, tertutup):
+        self.tertutup = set(tertutup)
+
+    async def fetchrow(self, sql, *a):
+        s = " ".join(sql.split())
+        if "count(*) FILTER" in s:
+            return {"rekon": 0, "cocok": 0, "bertaut": 0}
+        if s.startswith("SELECT bt.*, ba.coa_id AS bank_coa_id"):
+            return {"id": TX, "journal_id": JE, "bank_account_id": REK, "bank_coa_id": COA_BANK, "transaction_type": "withdrawal", "amount": D(-500000), "status": "POSTED",
+                    "reconciliation_status": "UNRECONCILED", "transaction_date": date(2026, 10, 2), "asal_sah": True}
+        if s.startswith("SELECT id, journal_number, source_type"):
+            return {"id": JE, "journal_number": "MT-AB12CD34", "source_type": "BANK_TRANSACTION", "source_id": TX, "reversed_by_id": None}
+        if s.startswith("SELECT id, period_name, status FROM fiscal_periods"):
+            return {"id": 1, "period_name": "Periode uji", "status": "CLOSED" if a[1] in self.tertutup else "OPEN"}
+        if s.startswith("SELECT ba.id, ba.account_name"):
+            return {"id": REK, "account_name": "BCA UJI", "account_type": "bank", "coa_id": COA_BANK, "is_active": True, "saldo": D(1000000)}
+        raise AssertionError("fetchrow SQL tak dikenal: " + s[:80])
+
+    async def fetch(self, sql, *a):
+        return [{"account_id": LAWAN, "debit": D(500000), "credit": D(0), "memo": "m", "line_number": 1}, {"account_id": COA_BANK, "debit": D(0), "credit": D(500000), "memo": "m", "line_number": 2}]
+
+
+def _rencana_void(monkeypatch, tertutup):
+    from app.services.bayar_keluar_rencana import Blok
+
+    async def hari_ini(conn, tid):
+        return date(2026, 11, 12)
+    monkeypatch.setattr(KT, "tanggal_dokumen", hari_ini)
+    bl = Blok(True)
+    r = asyncio.run(KT.rencana_void_manual(_KV(tertutup), T, TX, "salah catat", bl))
+    return bl, r
+
+
+def test_void_manual_periode_tanggal_ASLI_tertutup_diblok_tanpa_geser_tanggal(monkeypatch):
+    bl, r = _rencana_void(monkeypatch, {date(2026, 10, 2)})
+    assert [b["code"] for b in bl.daftar] == ["PERIODE_TERTUTUP"] and "Periode uji" in bl.daftar[0]["message"]
+
+
+def test_void_manual_periode_HARI_INI_tertutup_diblok(monkeypatch):
+    bl, r = _rencana_void(monkeypatch, {date(2026, 11, 12)})
+    assert [b["code"] for b in bl.daftar] == ["PERIODE_TERTUTUP"]
+
+
+def test_void_manual_kedua_periode_terbuka_lolos_dan_baris_pembalik_menukar_debit_kredit(monkeypatch):
+    bl, r = _rencana_void(monkeypatch, set())
+    assert bl.daftar == [] and r["baris"] == [(LAWAN, D(0), D(500000), "Reversal - m"), (COA_BANK, D(500000), D(0), "Reversal - m")] and r["jumlah"] == D(500000)
