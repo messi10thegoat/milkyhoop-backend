@@ -50,7 +50,7 @@ async def galat(coro):
 async def langkah(nama, coro):
     """Jalankan langkah penyiapan; galat TAMPIL (bukan ditelan) supaya kegagalan alat/logika terlihat."""
     r = await galat(coro)
-    cek(f"siapan: {nama} berhasil", not isinstance(r, HTTPException), str(r)[:300])
+    cek(f"siapan: {nama} berhasil", not (isinstance(r, HTTPException) or (isinstance(r, str) and r.startswith("HTTP "))), str(r)[:300])
     return r
 
 
@@ -72,7 +72,7 @@ async def main():
         comps = [SB.BOMComponentInput(component_product_id=ids["kain"], quantity=Decimal("1"), unit_cost=Decimal("40000")),
                  SB.BOMComponentInput(component_product_id=ids["benang"], quantity=Decimal("0.02"), unit_cost=Decimal("15000")),
                  SB.BOMComponentInput(component_product_id=ids["label"], quantity=Decimal("1"), unit_cost=Decimal("500"))]
-        r = await B.create_bom(rq, SB.CreateBOMRequest(product_id=ids["kaos"], bom_code="UJI184-" + uuid.uuid4().hex[:6], output_quantity=Decimal("1"), output_unit="Lusin-UJI", components=comps))
+        r = await B.create_bom(rq, SB.CreateBOMRequest(product_id=ids["kaos"], bom_code="UJI184-" + uuid.uuid4().hex[:6], output_quantity=Decimal("1"), output_unit="Pcs", components=comps))
         bid = uuid.UUID(str(r["data"]["id"]))
         await B.activate_bom(rq, bid)
         wh = await gudang(c, ids["kain"])
@@ -85,9 +85,9 @@ async def main():
         async def unit_db(oid):
             return await c.fetchval("SELECT unit FROM production_orders WHERE id = $1 AND tenant_id = $2", oid, BS)
         o1 = await wo(None)
-        cek("1 create WO TANPA unit -> unit = output_unit BOM", await unit_db(o1) == "Lusin-UJI", str(await unit_db(o1)))
+        cek("1 create WO TANPA unit -> unit = output_unit BOM", await unit_db(o1) == "Pcs", str(await unit_db(o1)))
         o1b = await wo("   ")
-        cek("1b create WO unit spasi -> ikut BOM", await unit_db(o1b) == "Lusin-UJI", str(await unit_db(o1b)))
+        cek("1b create WO unit spasi -> ikut BOM", await unit_db(o1b) == "Pcs", str(await unit_db(o1b)))
         o2 = await wo("Kodi-UJI")
         cek("2 create WO DENGAN unit -> unit dari body", await unit_db(o2) == "Kodi-UJI", str(await unit_db(o2)))
         # 3 dirilis
