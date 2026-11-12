@@ -25,6 +25,7 @@ import uuid as uuid_module
 
 from ..services import teks_galat as tg
 from ..services import kasbank_daftar as KD
+from ..services import bankfeed_daftar as BFD       # BF-1e: perlu_ditinjau per rekening
 from ..services import kasbank_ringkas as KR
 from ..services import kasbank_riwayat as KRW
 from ..services import kasbank_tulis as KT
@@ -189,6 +190,7 @@ async def list_bank_accounts(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            perlu = await BFD.perlu_ditinjau_per_rekening(conn, ctx["tenant_id"], [r["id"] for r in rows])       # BF-1e: SATU GROUP BY per halaman
 
             items = [
                 {
@@ -213,6 +215,7 @@ async def list_bank_accounts(
                     "position_text": KD.position_text_rekening(row["is_active"], row["account_type"], row["ledger_balance"], row["is_default"]),
                     "aksi": (KD.aksi_semua_rekening(row["is_active"], row["account_type"], row["ledger_balance"]) or [None])[0],
                     "aksi_semua": KD.aksi_semua_rekening(row["is_active"], row["account_type"], row["ledger_balance"]),
+                    "perlu_ditinjau": perlu.get(str(row["id"]), 0),
                 }
                 for row in rows
             ]

@@ -161,6 +161,7 @@ class BankAccountListItem(BaseModel):
     position_text: Optional[str] = None
     aksi: Optional[str] = None
     aksi_semua: List[str] = []
+    perlu_ditinjau: int = 0        # Bank Feed (BF-1e): baris mutasi untuk_ditinjau + mungkin_duplikat
 
 
 class BankAccountDetail(BaseModel):
