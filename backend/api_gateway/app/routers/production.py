@@ -15,7 +15,7 @@ from typing import Optional, Literal, List
 from uuid import UUID
 from pydantic import BaseModel, Field
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import logging
 import asyncpg
 
@@ -39,6 +39,7 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import produksi_wip_sisa as PW  # BUG-183b: sisa WIP WO selesai dikuras month-end
 from ..services import produksi_terap_standar as PT  # BUG-183: terap upah/overhead ke WIP (labor + report-output)
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 
@@ -2532,66 +2533,15 @@ async def report_output(
                     await PT.terapkan_ke_wip(
                         conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), order_id=order_id, order_number=order["order_number"], jenis="overhead",
                         jumlah=_terap_oh, tanggal=hari_ini, deskripsi=f"Overhead standar BOM diterapkan saat output {_baik_kini} ({order['order_number']})")
-                total_actual = (
-                    order["actual_material_cost"]
-                    + order["actual_labor_cost"] + _terap_labor
-                    + order["actual_overhead_cost"] + _terap_oh
-                    + subcontract_cost
-                )
-                total_qty = Decimal(str(order["completed_quantity"])) + Decimal(
-                    str(body.good_quantity)
-                )
-                unit_cost = int(total_actual / total_qty) if total_qty > 0 else 0
-                total_cost = int(unit_cost * Decimal(str(body.good_quantity)))
-
-                # ── SISA WIP DIKREDIT DI OUTPUT TERAKHIR ───────────────────
-                # `unit_cost` dibulatkan ke bawah ke rupiah bulat, lalu dikali
-                # qty. Sisa pembagiannya tidak pernah ikut terkredit, jadi WIP
-                # tak pernah benar-benar nol. Terukur: WO-2026-000014,
-                # 745.000 / 15 = 49.666,67 -> int 49.666 x 15 = 744.990 ->
-                # **Rp 10 tertinggal di 1-10650 selamanya**. Nominalnya sepele;
-                # yang tidak sepele adalah WIP yang tak pernah nol mengotori
-                # SETIAP rekonsiliasi sesudahnya, dan menyamarkan sisa yang
-                # betulan.
-                #
-                # Pada output TERAKHIR (kuantitas rencana tercapai), yang
-                # dikredit adalah SISA SESUNGGUHNYA: total biaya aktual dikurangi
-                # yang sudah pernah dikredit oleh completion sebelumnya. Output
-                # yang BUKAN terakhir tidak berubah sama sekali.
-                #
-                # Sumber "sudah dikredit" = `production_completions.total_cost`,
-                # catatan aplikasi sendiri untuk tiap penerimaan FG — bukan
-                # query ke jurnal lewat kode akun. Kode akun WIP di-resolve lewat
-                # AccountRole.WIP_GENERIC, jadi mengetik '1-10650' di sini akan
-                # menciptakan sumber kebenaran kedua yang pasti menyimpang.
-                _rencana = Decimal(str(order["planned_quantity"] or 0))
-                _output_terakhir = _rencana > 0 and total_qty >= _rencana
-                if _output_terakhir:
-                    _sudah_dikredit = await conn.fetchval(
-                        """
-                        SELECT COALESCE(SUM(total_cost), 0)
-                        FROM production_completions
-                        WHERE production_order_id = $1
-                        """,
-                        order_id,
-                    )
-                    _sisa = int(
-                        Decimal(str(total_actual)) - Decimal(str(_sudah_dikredit or 0))
-                    )
-                    # Jaga-jaga: jangan pernah mengkredit negatif (mis. bila
-                    # completion lama sudah melebihi biaya aktual karena data
-                    # lama). Dalam kasus itu perilaku lama dipertahankan.
-                    if _sisa > 0:
-                        if _sisa != total_cost:
-                            logger.info(
-                                "[OUTPUT_SISA] %s: output terakhir, kredit WIP "
-                                "disesuaikan %s -> %s (selisih pembulatan %s)",
-                                order["order_number"],
-                                total_cost,
-                                _sisa,
-                                _sisa - total_cost,
-                            )
-                        total_cost = _sisa
+                # BUG-183b (putusan pemilik, persis Accurate): FG dinilai STANDAR BOM penuh x output baik kumulatif (+ subkontrak aktual proporsional),
+                # BUKAN biaya aktual. Selisih bahan/konversi tertinggal di WIP per WO; month-end-reconcile menguras WIP WO selesai ke 5-90200.
+                # Hitungan KUMULATIF (target - yang sudah dikredit): pembulatan tak melayang, tak dobel, WO lama (aktual) clamp >= 0.
+                _planned_std = Decimal(str(order["planned_material_cost"] or 0)) + Decimal(str(order["planned_labor_cost"] or 0)) + Decimal(str(order["planned_overhead_cost"] or 0))
+                _sudah_dikredit = Decimal(str(await conn.fetchval(
+                    "SELECT COALESCE(SUM(pc.total_cost), 0) FROM production_completions pc JOIN production_orders po ON po.id = pc.production_order_id AND po.tenant_id = $2 WHERE pc.production_order_id = $1",
+                    order_id, ctx["tenant_id"]) or 0))
+                total_cost = PT.nilai_fg_standar(_planned_std, planned, _baik_sebelum, _baik_kini, _sudah_dikredit, subcontract_cost)
+                unit_cost = (Decimal(total_cost) / _baik_kini).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if _baik_kini > 0 else 0
 
                 # Record completion
                 completion_id = await conn.fetchval(
@@ -3245,6 +3195,10 @@ async def month_end_reconcile(request: Request, body: dict):
                     (applied_oh != ZERO) or (actual_oh != ZERO)
                 )
 
+                # BUG-183b: sisa WIP tiap WO SELESAI (FG masuk pada STANDAR; selisih bahan/konversi tertinggal di WIP) dikuras ke 5-90200 di jurnal yang SAMA
+                _wip_id = await resolve_account_id_by_role(conn, tenant_id, AccountRole.WIP_GENERIC)
+                wip_sisa = await PW.sisa_wip_selesai(conn, tenant_id, _wip_id, p_end)
+
                 # --- DRY-RUN preview: pure read, no lock/insert/409 --------
                 # Numbers come from the IDENTICAL computation above (anti-drift).
                 # Additionally surface CURRENT effective clearing balances so the
@@ -3293,10 +3247,13 @@ async def month_end_reconcile(request: Request, body: dict):
                                 "labor_2_10430": str(clr_labor),
                                 "oh_2_10440": str(clr_oh),
                             },
+                            # BUG-183b: sisa WIP per WO SELESAI yang AKAN dikuras ke 5-90200 (sisa > 0 = debit tertinggal = merugikan)
+                            "wip_sisa": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"])} for w in wip_sisa],
+                            "wip_sisa_total": str(sum((w["sisa"] for w in wip_sisa), ZERO)),
                         },
                     }
 
-                if not labor_active and not oh_active:
+                if not labor_active and not oh_active and not wip_sisa:
                     return {
                         "success": True,
                         "message": "Nothing to reconcile for this period",
@@ -3455,6 +3412,16 @@ async def month_end_reconcile(request: Request, body: dict):
                             )
                         )
 
+                # ---- WIP leg (BUG-183b): kuras sisa WIP WO selesai ke 5-90200, memo per WO (penanda idempotensi lintas periode)
+                for w in wip_sisa:
+                    memo_w = PW.memo_kuras(w["order_number"], w["order_id"])
+                    if w["sisa"] > ZERO:      # debit WIP tertinggal (aktual > standar) -> Cr WIP / Dr varian (merugikan)
+                        lines.append((_wip_id, ZERO, w["sisa"], memo_w))
+                        lines.append((variance_id, w["sisa"], ZERO, f"Selisih bahan/konversi {w['order_number']} (unfavorable)"))
+                    else:                     # kredit WIP tertinggal -> Dr WIP / Cr varian (menguntungkan)
+                        lines.append((_wip_id, -w["sisa"], ZERO, memo_w))
+                        lines.append((variance_id, ZERO, -w["sisa"], f"Selisih bahan/konversi {w['order_number']} (favorable)"))
+
                 # --- Law 4: assert Dr == Cr before POSTED ------------------
                 total_debit = sum((ln[1] for ln in lines), ZERO).quantize(Q)
                 total_credit = sum((ln[2] for ln in lines), ZERO).quantize(Q)
@@ -3547,6 +3514,7 @@ async def month_end_reconcile(request: Request, body: dict):
                             "actual": str(actual_oh),
                             "variance": str(var_oh),
                         },
+                        "wip_dikuras": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"])} for w in wip_sisa],
                         "total_debit": str(total_debit),
                         "total_credit": str(total_credit),
                     },
