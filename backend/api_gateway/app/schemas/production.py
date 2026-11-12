@@ -181,6 +181,8 @@ class ProductionOrderListItem(BaseModel):
     planned_quantity: Decimal
     completed_quantity: Decimal
     status: str
+    status_text: Optional[str] = None  # BUG-184b
+    siap_diselesaikan: bool = False  # BUG-184b: in_progress dan output >= rencana (WO TETAP selesai lewat /complete)
     priority: int
     planned_start_date: Optional[date]
     planned_end_date: Optional[date]
@@ -230,6 +232,8 @@ class ProductionOrderDetail(BaseModel):
     actual_overhead_cost: float
     variance_amount: float
     status: str
+    status_text: Optional[str] = None  # BUG-184b
+    siap_diselesaikan: bool = False  # BUG-184b
     priority: int
     material_issue_journal_id: Optional[str]
     labor_journal_id: Optional[str]
