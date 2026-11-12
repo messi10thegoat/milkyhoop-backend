@@ -114,7 +114,8 @@ def test_create_simpan_jenis_eksplisit_menang_lalu_purpose_lalu_dp():
             "jenis = jenis_dari_purpose(purpose_pf)"]
     assert all(u in pen for u in urut), [u for u in urut if u not in pen]
     assert [pen.index(u) for u in urut] == sorted(pen.index(u) for u in urut)
-    src = _rata(CD.create_customer_deposit)
+    src = _rata(CD.buat_dp_core)       # BF-1c3: INSERT diekstrak ke inti; handler tetap memanggilnya dgn rb dari penentu
+    assert "buat_dp_core(conn, ctx, body, rb)" in _rata(CD.create_customer_deposit)
     assert 'jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]' in src
     m = re.search(r"INSERT INTO customer_deposits \((.*?)\) VALUES \((.*?)\) RETURNING", src)
     kolom = [k.strip() for k in m.group(1).split(",")]

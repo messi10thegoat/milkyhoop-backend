@@ -159,7 +159,14 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         # rencana_void_transfer (dipakai /void DAN /void/preview baca saja). Rute void mengambil lock SEBELUM penentu; di penentu,
         # cek rekon (_coba_rekon) = langkah PERTAMA sebelum baca baris; penentu tak menulis apa pun.
         nama_pen = "rencana_void_manual" if berkas == "kasbank_v2" else "rencana_void_transfer"
-        if berkas == "kasbank_v2":
+        if berkas == "bank_transfers":
+            # BF-1c3: kunci advisory dipindah ke kunci_void_transfer (fungsi modul rute; dipanggil rute SEBELUM penentu); isinya tetap kunci BANK_TRANSFER_VOID:{id}
+            # _fungsi_void menganggap fungsi berakhiran _core yang dipanggil rute sebagai "inti" (void_transfer_core); di sini yang diperiksa tetap FUNGSI RUTE
+            fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "void_bank_transfer")
+            kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "kunci_void_transfer"]
+            kf = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "kunci_void_transfer")
+            assert any(isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n) for n in ast.walk(kf)), "kunci BANK_TRANSFER_VOID: di fungsi kunci"
+        elif berkas == "kasbank_v2":
             # BF-1c2: kunci advisory dipindah ke KT.kunci_void_manual (dipanggil rute SEBELUM penentu); isinya tetap kunci BANK_TX_VOID:{id}
             kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "kunci_void_manual"]
             kt_src = open(os.path.join(APP, "services", "kasbank_tulis.py")).read()

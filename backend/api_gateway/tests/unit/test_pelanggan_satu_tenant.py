@@ -55,11 +55,17 @@ def test_pemeriksaan_satu_tenant_sebelum_tulis(berkas, nama, tulis, mode):
         pen, _ = _fungsi(berkas, "rencana_buat_dp")
         assert [c for c in ast.walk(pen) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "pelanggan_kanonik_tenant"]
         cek = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "rencana_buat_dp"]
-        assert 'pelanggan_dp = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split()) or \
-            'pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split())
-        ins = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)
+        assert ('pelanggan_dp = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split()) or 'pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"]' in " ".join(src.split())
+                or "buat_dp_core(conn, ctx, body, rb)" in " ".join(src.split()))      # BF-1c3: handler meneruskan rb ke inti
+        # BF-1c3: bila INSERT diekstrak ke inti (buat_dp_core), jaminan sama: penentu SEBELUM pemanggilan inti; INSERT dan kolom pelanggan dicek di inti
+        inti_panggil = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "buat_dp_core"]
+        fn_tulis, src_tulis = (_fungsi(berkas, "buat_dp_core") if inti_panggil else (fn, src))
+        if inti_panggil:
+            assert 'pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]' in " ".join(src_tulis.split())
+        ins = [n for n in ast.walk(fn_tulis) if isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)
                and tulis in " ".join(str(n.args[0].value).split())]
-        assert cek and ins and min(cek) < min(n.lineno for n in ins), f"{berkas}:{nama}: penentu SESUDAH '{tulis}'"
+        batas = min(inti_panggil) if inti_panggil else min(n.lineno for n in ins)
+        assert cek and ins and min(cek) < batas, f"{berkas}:{nama}: penentu SESUDAH '{tulis}'"
         assert ast.unparse(ins[0].args[3]) == "pelanggan_dp", "kolom customer_id harus pelanggan KANONIK dari penentu"
         return
     cek = [c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "pelanggan_kanonik_tenant"]

@@ -51,8 +51,10 @@ def test_posting_idem_lalu_kunci_dan_baca_for_update():
     pd = _tubuh(CD._post_deposit)
     assert pd.index("FOR UPDATE") < pd.index("UPDATE customer_deposits")
     # pemanggil lain _post_deposit (buat + auto_post) memegang kunci yang SAMA sebelum memanggil
-    c = _tubuh(CD.create_customer_deposit)
+    # BF-1c3: buat + auto_post diekstrak ke CD.buat_dp_core; jaminan sama (kunci SEBELUM _post_deposit) kini di inti, handler memanggil inti
+    c = _tubuh(CD.buat_dp_core)
     assert c.index('f"DEPOSIT_POST:{dep_id}"') < c.index("_post_deposit(conn, ctx, dep_id)")
+    assert "buat_dp_core(" in _tubuh(CD.create_customer_deposit)
 
 
 def test_hapus_idem_sebelum_kunci():
