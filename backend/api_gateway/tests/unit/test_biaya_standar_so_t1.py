@@ -32,7 +32,7 @@ def test_documents_baris():
 
 
 def test_sql_aksi_bertenant_dan_bukti_dari_lampiran():
-    assert "ea.tenant_id = expenses.tenant_id" in BD.sql_aksi("tanpa_bukti", "$2") and "has_receipt" not in BD.sql_aksi("tanpa_bukti", "$2")
+    assert "da.tenant_id = expenses.tenant_id" in BD.sql_aksi("tanpa_bukti", "$2") and "has_receipt" not in BD.sql_aksi("tanpa_bukti", "$2")
     assert "status <> 'void'" in BD.sql_aksi("bulan_ini", "$2") and "date_trunc('month', $2::date)" in BD.sql_aksi("bulan_ini", "$2")
     assert BD.SEMUA_KUNCI == ("draf", "tanpa_bukti", "bulan_ini")
 

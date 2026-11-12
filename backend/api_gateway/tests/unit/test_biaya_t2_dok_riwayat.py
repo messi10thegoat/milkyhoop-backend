@@ -37,7 +37,7 @@ class Conn:
 
     async def fetch(self, q, *a):
         self.kueri.append((q, a))
-        assert "FROM expense_attachments" in q
+        assert "FROM document_attachments" in q
         return [{"id": AID, "file_name": "struk.jpg", "uploaded_at": T0.replace(hour=3), "uploaded_by": U1}] * self.bukti
 
     async def fetchval(self, q, *a):

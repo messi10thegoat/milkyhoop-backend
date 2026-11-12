@@ -233,7 +233,7 @@ def test_detail_memuat_keadaan_posisi_vendor_objek_dan_nama_pelanggan(monkeypatc
             return exp
 
         async def fetch(s, sql, *a):
-            return [{"id": uuid.uuid4(), "file_name": "nota.jpg"}] if "expense_attachments" in sql else []
+            return [{"id": uuid.uuid4(), "file_name": "nota.jpg"}] if "document_attachments" in sql else []
 
         async def fetchval(s, sql, *a):
             assert "FROM customers WHERE id = $1 AND tenant_id = $2" in sql and a == (CID, T)    # tersaring tenant
