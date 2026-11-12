@@ -12,6 +12,7 @@ K1 kas-negatif (6 Nov 2026, putusan pemilik LANGSUNG di sesi BACKEND2 + lingkup 
 dokumen KAS KELUAR; void/koreksi tidak dikunci, pola NetSuite/SAP): SATU aturan untuk Uang Keluar, transfer, biaya, bayar tagihan,
 uang muka vendor, refund nota kredit, refund uang muka pelanggan. Tulis = kunci advisory per CoA kas (kunci_kas, `KAS_KELUAR:{tenant}:
 {coa}`) SEBELUM saldo dibaca -> dua kas keluar serentak tak bisa sama-sama lolos. Pratinjau tanpa kunci."""
+import uuid as uuid_module
 from decimal import Decimal
 from uuid import UUID
 
@@ -407,3 +408,112 @@ async def pratinjau(pool, tid: str, rencana, payload) -> dict:
         async with conn.transaction(readonly=True):
             r = await rencana(conn)
             return {"success": True, "data": await keluaran(conn, tid, r, payload)}
+
+
+# ---------------------------------------------------------------- PENULIS hasil ekstraksi (BF-1c2, 12 Nov 2026): dulu SQL ini INLINE di handler rute
+# (routers/bank_accounts.create_manual_transaction dan routers/kasbank_v2.void_transaction) sehingga Bank Feed tak bisa memakainya. Dipindah PERSIS (urutan SQL,
+# nomor jurnal, parameter); bukti identik pada DB nyata = harness uji-salinan-bankfeed-1c2 (rute lama vs baru, rekening kembar). Rute memanggil fungsi ini.
+async def kunci_tx_manual(conn, ba_id) -> None:
+    """Law 13: kunci advisory per rekening, PERTAMA sebelum membaca/menulis apa pun (sama dengan handler lama)."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TX_MANUAL:{ba_id}")
+
+
+async def tulis_tx_manual(conn, ctx: dict, ba_id, body, r: dict) -> dict:
+    """Tulis Uang Masuk/Keluar dari rencana `r` (KT.rencana_tx_manual pratinjau=False): jurnal DRAFT -> baris dari penentu -> POSTED (Law 20), bank_transaction MANUAL,
+    source_id jurnal = id bank_transaction (Law 6). Tanpa pemeriksaan: penentu sudah melemparnya. -> {bank_txn_id, journal_id, journal_number}."""
+    amount = body.amount
+    txn_amount = amount if body.direction == "in" else -amount
+    running_balance = int(r["akun"]["saldo"]) + txn_amount
+    journal_id = uuid_module.uuid4()
+    journal_number = f"MT-{uuid_module.uuid4().hex[:8].upper()}"
+    direction_label = "Uang Masuk" if body.direction == "in" else "Uang Keluar"
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $4, $5, 'BANK_TRANSACTION', $6, 'DRAFT', $7, $7, $8)
+        """,
+        journal_id, ctx["tenant_id"], journal_number, body.transaction_date, f"{direction_label} - {body.description}",
+        str(ba_id),  # source_id sementara, diganti id bank_transaction di bawah
+        amount, ctx.get("user_id"),
+    )
+    for n, (akun_id, debit, kredit, memo) in enumerate(r["baris"], 1):    # Law 4: baris jurnal dari penentu (== pratinjau)
+        await conn.execute(
+            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            uuid_module.uuid4(), journal_id, n, akun_id, debit, kredit, memo,
+        )
+    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", journal_id)    # Law 20: memicu rantai hash
+    bank_txn_id = uuid_module.uuid4()
+    txn_type = "deposit" if body.direction == "in" else "withdrawal"
+    await conn.execute(
+        """
+        INSERT INTO bank_transactions (
+            id, tenant_id, bank_account_id, transaction_date, transaction_type,
+            amount, running_balance, description, payee_payer,
+            origin_type, status, journal_id, created_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'MANUAL','POSTED',$10,$11)
+        """,
+        bank_txn_id, ctx["tenant_id"], ba_id, body.transaction_date, txn_type, txn_amount, running_balance, body.description, body.contact_name,
+        journal_id, ctx.get("user_id"),
+    )
+    await conn.execute("UPDATE journal_entries SET source_id = $1 WHERE id = $2", str(bank_txn_id), journal_id)   # Law 6
+    return {"bank_txn_id": bank_txn_id, "journal_id": journal_id, "journal_number": journal_number}
+
+
+async def kunci_void_manual(conn, transaction_id) -> None:
+    """Law 13: kunci advisory per transaksi, PERTAMA (sama dengan handler void lama)."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TX_VOID:{transaction_id}")
+
+
+async def tulis_void_manual(conn, ctx: dict, transaction_id, alasan, r: dict) -> dict:
+    """Tulis void mutasi manual dari rencana `r` (KT.rencana_void_manual kunci=True): jurnal PEMBALIK RV-<nomor asli> (DRAFT -> baris tertukar -> POSTED; asli TETAP POSTED +
+    reversed_by_id, Law 2), mirror bank_transaction (BankSync Rule 3), baris asli ditandai VOIDED. -> {reversal_journal_id, reversal_number}."""
+    tx, orig_je = r["tx"], r["je"]
+    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    reversal_journal_id = uuid_module.uuid4()
+    # BUKAN transaction_number: NULL untuk transaksi manual -> "RV-None"; nomor jurnal asli unik + maks satu pembalikan (Law 26) -> unik.
+    reversal_number = f"RV-{orig_je['journal_number']}"
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, reversal_of_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSACTION', $5, $6, 'DRAFT', $7, $7, $8)
+        """,
+        reversal_journal_id, ctx["tenant_id"], reversal_number, f"Void {orig_je['journal_number']} - {alasan}", transaction_id, tx["journal_id"],
+        r["jumlah"], ctx["user_id"], hari_ini,
+    )
+    for idx, (akun_id, debit, kredit, memo) in enumerate(r["baris"], 1):    # baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
+        await conn.execute(
+            "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            uuid_module.uuid4(), reversal_journal_id, idx, akun_id, debit, kredit, memo,
+        )
+    await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", reversal_journal_id)    # Law 20
+    await conn.execute(
+        """
+        UPDATE journal_entries
+        SET reversed_by_id = $2, reversed_at = NOW()
+        WHERE id = $1
+        """,
+        tx["journal_id"], reversal_journal_id,
+    )
+    mirror_type = "withdrawal" if tx["transaction_type"] == "deposit" else "deposit"
+    await conn.execute(
+        """
+        INSERT INTO bank_transactions (
+            id, tenant_id, bank_account_id, transaction_date, transaction_type,
+            amount, running_balance, reference_type, reference_id, reference_number,
+            description, journal_id, status, origin_type, source_module,
+            created_by, posted_by, posted_at
+        ) VALUES ($1, $2, $3, $11, $4,
+                  $5, 0, 'manual_void', $6, $7, $8, $9,
+                  'POSTED', 'SYSTEM', 'manual', $10, $10, NOW())
+        """,
+        uuid_module.uuid4(), ctx["tenant_id"], tx["bank_account_id"], mirror_type, -(tx["amount"]), transaction_id,
+        f"VOID-{orig_je['journal_number']}", f"Void - {alasan}", reversal_journal_id, ctx["user_id"], hari_ini,
+    )
+    await tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], alasan, tx_id=transaction_id)
+    return {"reversal_journal_id": reversal_journal_id, "reversal_number": reversal_number}

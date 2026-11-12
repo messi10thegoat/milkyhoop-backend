@@ -1503,90 +1503,14 @@ async def create_manual_transaction(
                     return _lama
 
                 # Law 13: Advisory lock — FIRST before any reads/writes
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BANK_TX_MANUAL:{bank_account_id}",
-                )
+                await KT.kunci_tx_manual(conn, bank_account_id)
 
                 # B8: penentu BERSAMA dengan /transactions/preview (services/kasbank_tulis); tulis = blok pertama dilempar
                 _r = await KT.rencana_tx_manual(conn, ctx["tenant_id"], bank_account_id, body, pratinjau=False)
-                bank_coa_id = _r["akun"]["coa_id"]
-                current_balance = _r["akun"]["saldo"]
-
+                # BF-1c2: penulis hasil ekstraksi (services/kasbank_tulis.tulis_tx_manual) -- SQL dan urutannya sama dgn handler lama
+                _t = await KT.tulis_tx_manual(conn, ctx, bank_account_id, body, _r)
+                bank_txn_id, journal_id, journal_number = _t["bank_txn_id"], _t["journal_id"], _t["journal_number"]
                 amount = body.amount
-                txn_amount = amount if body.direction == "in" else -amount
-                running_balance = int(current_balance) + txn_amount
-
-                # Law 20, Gate 3: Create DRAFT journal
-                journal_id = uuid_module.uuid4()
-                journal_number = f"MT-{uuid_module.uuid4().hex[:8].upper()}"
-                direction_label = (
-                    "Uang Masuk" if body.direction == "in" else "Uang Keluar"
-                )
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, 'BANK_TRANSACTION', $6, 'DRAFT', $7, $7, $8)
-                    """,
-                    journal_id,
-                    ctx["tenant_id"],
-                    journal_number,
-                    body.transaction_date,
-                    f"{direction_label} - {body.description}",
-                    str(bank_account_id),  # temp source_id, updated after bank_txn
-                    amount,
-                    ctx.get("user_id"),
-                )
-
-                # Law 4: baris jurnal dari penentu (== pratinjau)
-                for _n, (_akun, _debit, _kredit, _memo) in enumerate(_r["baris"], 1):
-                    await conn.execute(
-                        "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-                        uuid_module.uuid4(), journal_id, _n, _akun, _debit, _kredit, _memo,
-                    )
-
-                # Law 20: UPDATE to POSTED — triggers hash chain
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    journal_id,
-                )
-
-                # BankSync Rule 1: bank_transaction atomic with journal
-                # BankSync Rule 10: origin_type = 'MANUAL' (user-initiated)
-                bank_txn_id = uuid_module.uuid4()
-                txn_type = "deposit" if body.direction == "in" else "withdrawal"
-
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date, transaction_type,
-                        amount, running_balance, description, payee_payer,
-                        origin_type, status, journal_id, created_by
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'MANUAL','POSTED',$10,$11)
-                    """,
-                    bank_txn_id,
-                    ctx["tenant_id"],
-                    bank_account_id,
-                    body.transaction_date,
-                    txn_type,
-                    txn_amount,
-                    running_balance,
-                    body.description,
-                    body.contact_name,
-                    journal_id,
-                    ctx.get("user_id"),
-                )
-
-                # Law 6: Update journal source_id to actual bank_transaction id
-                await conn.execute(
-                    "UPDATE journal_entries SET source_id = $1 WHERE id = $2",
-                    str(bank_txn_id),
-                    journal_id,
-                )
 
                 logger.info(
                     f"Manual transaction created: {bank_txn_id}, "

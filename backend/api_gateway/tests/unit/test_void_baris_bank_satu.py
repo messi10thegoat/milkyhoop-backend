@@ -43,7 +43,10 @@ def test_kontrol_void_manual_per_id_kolom_sama_plus_tenant():
 
 
 def test_tiga_void_memakai_satu_penanda():
-    for fn in (KB.void_transaction, EX._batal_biaya, BT.void_bank_transfer):  # void biaya: inti _batal_biaya (tulis + pratinjau)
+    from app.services import kasbank_tulis as KT
+    # BF-1c2: void manual diekstrak ke KT.tulis_void_manual (penanda dipanggil di sana); rute hanya memanggilnya
+    assert "KT.tulis_void_manual(" in inspect.getsource(KB.void_transaction)
+    for fn in (KT.tulis_void_manual, EX._batal_biaya, BT.void_bank_transfer):  # void biaya: inti _batal_biaya (tulis + pratinjau)
         src = inspect.getsource(fn)
         assert "tandai_baris_void(" in src, fn.__name__
     for mod in (KB, EX, BT):  # tak ada salinan UPDATE ... 'VOIDED' lagi di router
