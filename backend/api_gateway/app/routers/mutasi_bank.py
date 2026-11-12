@@ -7,9 +7,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from ..schemas.bankfeed import CalonMutasiResponse, DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, PratinjauImporResponse
+from ..schemas.bankfeed import (AksiMutasiResponse, CalonMutasiResponse, CocokkanRequest, DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, KecualikanRequest,
+                                LepaskanRequest, PratinjauAksiResponse, PratinjauImporResponse, RiwayatMutasiResponse, TakDiBankResponse)
 from ..services import bankfeed_daftar as BD
+from ..services import bankfeed_aksi as BA
 from ..services import bankfeed_impor as BI
+from ..services import bankfeed_tak_di_bank as TD
 from ..services import bankfeed_tebak as TB
 from ..services import idem_buat
 
@@ -81,3 +84,83 @@ async def impor_mutasi_bank(request: Request, bank_account_id: UUID, body: Impor
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error impor mutasi bank: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal mengimpor mutasi bank.") from e
+
+
+# ---------------------------------------------------------------- BF-1c1: aksi (NOL jurnal), riwayat, laporan tak-di-bank
+@router.get("/{bank_account_id}/mutasi-bank/tak-di-bank", response_model=TakDiBankResponse)
+async def tak_di_bank(request: Request, bank_account_id: UUID, dari: Optional[date] = Query(None), sampai: Optional[date] = Query(None)):
+    """Laporan pengecualian: tercatat di MilkyHoop, tak ada di rekening koran (READ ONLY). Hanya tanggal tercakup berkas impor (-3 hari ujung) yang dinilai."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, **await TD.daftar(conn, ctx["tenant_id"], bank_account_id, dari, sampai)}
+
+
+@router.get("/{bank_account_id}/mutasi-bank/{mutasi_id}/riwayat", response_model=RiwayatMutasiResponse)
+async def riwayat_mutasi_bank(request: Request, bank_account_id: UUID, mutasi_id: UUID):
+    """Jejak keputusan satu baris (append-only): diimpor, dicocokkan, dikecualikan, dilepas."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, "data": await BA.riwayat(conn, ctx["tenant_id"], bank_account_id, mutasi_id)}
+
+
+async def _pratinjau_aksi(request: Request, bank_account_id: UUID, mutasi_id: UUID, aksi: str, body):
+    ctx = get_user_context(request)
+    return await BA.pratinjau(await get_pool(), ctx["tenant_id"], bank_account_id, mutasi_id, aksi, body.model_dump(mode="json", exclude_none=True))
+
+
+async def _tulis_aksi(request: Request, response: Response, bank_account_id: UUID, mutasi_id: UUID, aksi: str, body):
+    ctx = get_user_context(request)
+    isi = body.model_dump(mode="json", exclude_none=True)
+    prefix = f"MUTASI_{aksi.upper()}"
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), prefix, mutasi_id, lambda: isi, response)
+                if lama is not None:
+                    return lama
+                data = await BA.tulis(conn, ctx, bank_account_id, mutasi_id, aksi, isi)
+                return await idem_buat.simpan(conn, ctx, kp, sd, prefix, {"success": True, "message": data["kalimat"], "data": data}, None)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error aksi mutasi bank {aksi}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menyimpan keputusan mutasi bank.") from e
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/cocokkan/preview", response_model=PratinjauAksiResponse)
+async def pratinjau_cocokkan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: CocokkanRequest):
+    """Pratinjau cocokkan (READ ONLY): dokumen, alokasi, blok berkode; jurnal selalu kosong."""
+    return await _pratinjau_aksi(request, bank_account_id, mutasi_id, "cocokkan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/cocokkan", response_model=AksiMutasiResponse)
+async def cocokkan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: CocokkanRequest, response: Response = None):
+    """Cocokkan baris bank dengan dokumen yang sudah tercatat (NOL jurnal; X-Idempotency-Key opsional)."""
+    return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "cocokkan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan/preview", response_model=PratinjauAksiResponse)
+async def pratinjau_kecualikan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: KecualikanRequest):
+    """Pratinjau kecualikan (READ ONLY)."""
+    return await _pratinjau_aksi(request, bank_account_id, mutasi_id, "kecualikan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan", response_model=AksiMutasiResponse)
+async def kecualikan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: KecualikanRequest, response: Response = None):
+    """Kecualikan baris (duplikat / bukan transaksi / lain); NOL jurnal."""
+    return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "kecualikan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan/preview", response_model=PratinjauAksiResponse)
+async def pratinjau_lepaskan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: LepaskanRequest):
+    """Pratinjau lepaskan (READ ONLY): dokumen yang tetap tercatat."""
+    return await _pratinjau_aksi(request, bank_account_id, mutasi_id, "lepaskan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan", response_model=AksiMutasiResponse)
+async def lepaskan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: LepaskanRequest, response: Response = None):
+    """Lepaskan keputusan Bank Feed (cocok/kecualikan): tautan dilepas (tak dihapus), dokumen dan jurnal tak disentuh."""
+    return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "lepaskan", body)
