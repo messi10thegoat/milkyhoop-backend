@@ -284,16 +284,17 @@ class _KD:
 
 def test_daftar_cacah_total_status_text_dan_tebakan_kosong():
     rows = [{"id": uuid.uuid4(), "tanggal": date(2026, 8, 1), "keterangan": "TRSF 0108/FTSCY/WS95031 A", "arah": "masuk", "nominal": D("500000.00"),
-             "status": "untuk_ditinjau", "cara": None, "diputus_oleh": None, "diputus_pada": None}]
+             "status": "untuk_ditinjau", "cara": None, "diputus_oleh": None, "diputus_pada": None, "rekonsiliasi_id": None}]
     k = _KD(rows, [{"status": "untuk_ditinjau", "n": 5}, {"status": "dicatat", "n": 2}], {"masuk": D("500000.00"), "keluar": D("0"), "n": 5})
     h = asyncio.run(BD.daftar(k, T, REK, "untuk_ditinjau", None, None, None, 50, 0))
     assert h["cacah"] == {"untuk_ditinjau": 5, "mungkin_duplikat": 0, "dicatat": 2, "dikecualikan": 0}
-    assert h["total"] == {"masuk": "500000.00", "keluar": "0", "jumlah": 5} and h["has_more"] is True   # 1 dari 5 baris dimuat
+    assert {x: h["total"][x] for x in ("masuk", "keluar", "jumlah")} == {"masuk": "500000.00", "keluar": "0", "jumlah": 5} and h["has_more"] is True   # 1 dari 5 baris dimuat
+    assert h["total"]["masuk_tampil"] == "Rp 500.000" and h["total"]["keluar_tampil"]       # BF-1e: teks milik server
     r = h["data"][0]
     assert r["status_text"] == "Untuk ditinjau" and r["keterangan_ringkas"] == "TRSF A" and r["nominal_tampil"] == "Rp 500.000"
     assert r["tebakan"]["jenis"] == "kosong" and r["tebakan"]["keyakinan"] == "kurang_data" and r["tebakan"]["kalimat"] is None and r["tebakan"]["blok"] is None
     assert r["tebakan"]["layak_massal"] is False and r["diputus_text"] is None
-    assert r["jenis_tersedia"] == [] and r["aksi_tersedia"] == {}
+    assert r["jenis_tersedia"] and set(r["aksi_tersedia"]) == {"cocokkan", "catat", "kecualikan"} and r["dokumen_tertaut"] == []       # BF-1e (G1): diisi penentu
     sql_baris = [s for s, a in k.sql if "ORDER BY" in s][0]
     assert "status = $" in sql_baris
 
