@@ -213,10 +213,13 @@ class BOMListItem(BaseModel):
     product_sku: Optional[str]
     version: int
     is_current: bool
+    utama: bool = False  # BUG-189: aktif DAN is_current (is_current mentah pada draf/usang tak bermakna)
     output_quantity: Decimal
     total_cost: Decimal
     component_count: int
     status: str
+    status_text: Optional[str] = None  # BUG-189
+    label: Optional[str] = None  # BUG-189: 'v2 · Rp 52.300 · utama' (dropdown Buat WO)
     created_at: datetime
 
 
@@ -238,6 +241,8 @@ class BOMDetail(BaseModel):
     product_sku: Optional[str]
     version: int
     is_current: bool
+    utama: bool = False  # BUG-189
+    status_text: Optional[str] = None  # BUG-189
     effective_date: Optional[date]
     obsolete_date: Optional[date]
     output_quantity: Decimal

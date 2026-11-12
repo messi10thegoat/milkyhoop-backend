@@ -303,6 +303,7 @@ POST /api/bom/work-centers
 POST /api/bom/{bom_id}/activate
 POST /api/bom/{bom_id}/components
 POST /api/bom/{bom_id}/duplicate
+POST /api/bom/{bom_id}/jadikan-utama
 POST /api/bom/{bom_id}/obsolete
 POST /api/bom/{bom_id}/operations
 POST /api/bom/{bom_id}/recalculate

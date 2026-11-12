@@ -31,6 +31,8 @@ from ..schemas.bom import (
     BOMResponse,
 )
 from ..services.bom_unit_guard import resolve_component_unit
+from ..services import bom_status as BS  # BUG-189: status_text/utama/label satu peta
+from ..services.galat_berkode import GalatBerkode  # BUG-189
 from ..utils.tanggal_tenant import tanggal_dokumen
 
 logger = logging.getLogger(__name__)
@@ -527,10 +529,13 @@ async def list_boms(
                     "product_sku": row["product_sku"],
                     "version": row["version"],
                     "is_current": row["is_current"],
+                    "utama": BS.utama(row["status"], row["is_current"]),
                     "output_quantity": row["output_quantity"],
                     "total_cost": row["total_cost"],
                     "component_count": row["component_count"],
                     "status": row["status"],
+                    "status_text": BS.status_text(row["status"]),
+                    "label": BS.label(row["version"], row["total_cost"], row["status"], row["is_current"]),
                     "created_at": row["created_at"],
                 }
                 for row in rows
@@ -572,8 +577,8 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                     INSERT INTO bill_of_materials (
                         tenant_id, product_id, bom_code, bom_name, description,
                         output_quantity, output_unit, estimated_time_minutes,
-                        work_center_id, effective_date, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        work_center_id, effective_date, created_by, is_current
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false)
                     RETURNING id
                     """,
                     ctx["tenant_id"],
@@ -757,6 +762,8 @@ async def get_bom(request: Request, bom_id: UUID):
                     else None,
                     "work_center_name": bom["work_center_name"],
                     "status": bom["status"],
+                    "utama": BS.utama(bom["status"], bom["is_current"]),
+                    "status_text": BS.status_text(bom["status"]),
                     "components": [
                         {
                             "id": str(c["id"]),
@@ -1006,29 +1013,26 @@ async def activate_bom(request: Request, bom_id: UUID):
                         status_code=400, detail="Can only activate draft BOMs"
                     )
 
-                # Set all other BOMs for this product to not current
-                await conn.execute(
-                    """
-                    UPDATE bill_of_materials SET is_current = false
-                    WHERE tenant_id = $1 AND product_id = $2 AND id != $3
-                    """,
-                    ctx["tenant_id"],
-                    bom["product_id"],
-                    bom_id,
-                )
-
-                # Activate this BOM
+                # BUG-189 (putusan pemilik: ikut Accurate -- banyak BOM aktif per produk, satu UTAMA): mengaktifkan BOM baru TIDAK mengusangkan/menyentuh BOM lain.
+                # Aktivasi pertama otomatis UTAMA; bila produk sudah punya utama, BOM ini aktif tapi bukan utama (jadikan utama = aksi eksplisit).
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BOM_UTAMA:{ctx['tenant_id']}:{bom['product_id']}")
+                sudah_ada_utama = await conn.fetchval(
+                    "SELECT 1 FROM bill_of_materials WHERE tenant_id = $1 AND product_id = $2 AND id != $3 AND status = 'active' AND is_current LIMIT 1",
+                    ctx["tenant_id"], bom["product_id"], bom_id)
+                jadi_utama = not sudah_ada_utama
                 await conn.execute(
                     """
                     UPDATE bill_of_materials
-                    SET status = 'active', is_current = true, effective_date = COALESCE(effective_date, $2::date)
-                    WHERE id = $1
+                    SET status = 'active', is_current = $3, effective_date = COALESCE(effective_date, $2::date)
+                    WHERE id = $1 AND tenant_id = $4
                     """,
                     bom_id,
                     hari_ini,
+                    jadi_utama,
+                    ctx["tenant_id"],
                 )
 
-                return {"success": True, "message": "BOM activated"}
+                return {"success": True, "message": "BOM activated" + (" (utama)" if jadi_utama else " (bukan utama)"), "data": {"id": str(bom_id), "utama": jadi_utama}}
 
     except HTTPException:
         raise
@@ -1039,7 +1043,7 @@ async def activate_bom(request: Request, bom_id: UUID):
 
 @router.post("/{bom_id}/obsolete", response_model=BOMResponse)
 async def obsolete_bom(request: Request, bom_id: UUID):
-    """Mark BOM as obsolete."""
+    """Mark BOM as obsolete. BUG-189: bila yang diusangkan adalah UTAMA dan produk masih punya BOM aktif lain, BOM aktif TERBARU otomatis jadi utama (tepat satu)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1047,28 +1051,70 @@ async def obsolete_bom(request: Request, bom_id: UUID):
         async with pool.acquire() as conn:
             # #10b-3b: tanggal bisnis tenant, bukan UTC
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
-            result = await conn.execute(
-                """
-                UPDATE bill_of_materials
-                SET status = 'obsolete', is_current = false, obsolete_date = $3::date
-                WHERE tenant_id = $1 AND id = $2 AND status = 'active'
-                """,
-                ctx["tenant_id"],
-                bom_id,
-                hari_ini,
-            )
-            if result == "UPDATE 0":
-                raise HTTPException(
-                    status_code=400, detail="BOM not found or not active"
-                )
-
-            return {"success": True, "message": "BOM marked as obsolete"}
+            async with conn.transaction():
+                bom = await conn.fetchrow(
+                    "SELECT product_id, bom_code, is_current FROM bill_of_materials WHERE tenant_id = $1 AND id = $2 AND status = 'active' FOR UPDATE",
+                    ctx["tenant_id"], bom_id)
+                if not bom:
+                    raise HTTPException(status_code=400, detail="BOM not found or not active")
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BOM_UTAMA:{ctx['tenant_id']}:{bom['product_id']}")
+                await conn.execute(
+                    "UPDATE bill_of_materials SET status = 'obsolete', is_current = false, obsolete_date = $3::date WHERE tenant_id = $1 AND id = $2",
+                    ctx["tenant_id"], bom_id, hari_ini)
+                pesan = f"BOM {bom['bom_code']} diusangkan."
+                utama_baru = None
+                if bom["is_current"]:
+                    # penerus deterministik: BOM aktif TERBARU (effective_date, versi, dibuat) produk yang sama
+                    nxt = await conn.fetchrow(
+                        """SELECT id, bom_code, version FROM bill_of_materials WHERE tenant_id = $1 AND product_id = $2 AND status = 'active' AND id != $3
+                           ORDER BY effective_date DESC NULLS LAST, version DESC, created_at DESC, id LIMIT 1""",
+                        ctx["tenant_id"], bom["product_id"], bom_id)
+                    if nxt:
+                        await conn.execute("UPDATE bill_of_materials SET is_current = true WHERE tenant_id = $1 AND id = $2", ctx["tenant_id"], nxt["id"])
+                        utama_baru = str(nxt["id"])
+                        pesan += f" BOM utama sekarang: {nxt['bom_code']} (v{nxt['version']})."
+                    else:
+                        pesan += " Produk ini tidak punya BOM aktif lagi."
+                return {"success": True, "message": pesan, "data": {"id": str(bom_id), "utama_baru": utama_baru}}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error marking BOM obsolete: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to mark BOM obsolete")
+
+
+@router.post("/{bom_id}/jadikan-utama", response_model=BOMResponse)
+async def jadikan_utama(request: Request, bom_id: UUID):
+    """BUG-189: jadikan BOM AKTIF ini UTAMA produknya (utama lama diturunkan, satu transaksi). Sudah utama = tanpa perubahan."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                bom = await conn.fetchrow(
+                    "SELECT product_id, bom_code, status, is_current FROM bill_of_materials WHERE tenant_id = $1 AND id = $2 FOR UPDATE", ctx["tenant_id"], bom_id)
+                if not bom:
+                    raise GalatBerkode(404, "BOM_TIDAK_DITEMUKAN", "BOM tidak ditemukan.")
+                if bom["status"] != "active":
+                    raise GalatBerkode(400, "BOM_BUKAN_AKTIF", "Hanya BOM yang aktif yang bisa dijadikan utama.")
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BOM_UTAMA:{ctx['tenant_id']}:{bom['product_id']}")
+                sebelumnya = await conn.fetchval(
+                    "SELECT id FROM bill_of_materials WHERE tenant_id = $1 AND product_id = $2 AND id != $3 AND status = 'active' AND is_current ORDER BY created_at LIMIT 1",
+                    ctx["tenant_id"], bom["product_id"], bom_id)
+                if bom["is_current"] and sebelumnya is None:
+                    return {"success": True, "message": f"BOM {bom['bom_code']} sudah menjadi BOM utama.", "data": {"id": str(bom_id), "utama": True, "utama_sebelumnya": None}}
+                await conn.execute(
+                    "UPDATE bill_of_materials SET is_current = false WHERE tenant_id = $1 AND product_id = $2 AND id != $3 AND is_current",
+                    ctx["tenant_id"], bom["product_id"], bom_id)
+                await conn.execute("UPDATE bill_of_materials SET is_current = true WHERE tenant_id = $1 AND id = $2", ctx["tenant_id"], bom_id)
+                return {"success": True, "message": f"BOM {bom['bom_code']} kini menjadi BOM utama.",
+                        "data": {"id": str(bom_id), "utama": True, "utama_sebelumnya": str(sebelumnya) if sebelumnya else None}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error jadikan-utama BOM: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menjadikan BOM utama.")
 
 
 @router.post("/{bom_id}/duplicate", response_model=BOMResponse)
@@ -1107,11 +1153,11 @@ async def duplicate_bom(request: Request, bom_id: UUID, new_code: str = Query(..
                     INSERT INTO bill_of_materials (
                         tenant_id, product_id, bom_code, bom_name, description,
                         version, output_quantity, output_unit, estimated_time_minutes,
-                        work_center_id, status, created_by
+                        work_center_id, status, is_current, created_by
                     )
                     SELECT $1, product_id, $2, bom_name, description,
                            $3, output_quantity, output_unit, estimated_time_minutes,
-                           work_center_id, 'draft', $4
+                           work_center_id, 'draft', false, $4
                     FROM bill_of_materials WHERE id = $5
                     RETURNING id
                     """,
@@ -1638,6 +1684,7 @@ async def get_product_bom(request: Request, product_id: UUID):
                 SELECT id, bom_code, bom_name, version, total_cost
                 FROM bill_of_materials
                 WHERE tenant_id = $1 AND product_id = $2 AND is_current = true AND status = 'active'
+                ORDER BY effective_date DESC NULLS LAST, version DESC, created_at DESC LIMIT 1
                 """,
                 ctx["tenant_id"],
                 product_id,

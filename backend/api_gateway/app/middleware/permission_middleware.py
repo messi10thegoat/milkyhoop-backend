@@ -672,6 +672,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/warehouses/[^/]+", ["DELETE"], "warehouse", "D"),
     # Manufacturing
     (r"^/api/bom", ["GET"], "bom", "R"),
+    (r"^/api/bom/[^/]+/jadikan-utama$", ["POST"], "bom", "U"),   # BUG-189: izin ubah BOM (bukan C), SEBELUM pola luas di bawah
     (r"^/api/bom", ["POST"], "bom", "C"),
     (r"^/api/bom/[^/]+", ["GET"], "bom", "R"),
     (r"^/api/bom/[^/]+", ["PATCH", "PUT"], "bom", "U"),
