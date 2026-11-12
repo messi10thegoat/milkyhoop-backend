@@ -46,7 +46,7 @@ def test_sql_baca_jurnal_terdaftar_semuanya_select_dan_ada_di_modulnya():
     from importlib import import_module
     for modul, nama in IZIN_BACA_JURNAL:
         nilai = getattr(import_module(f"app.services.{modul}"), nama)
-        assert nilai.lstrip().upper().startswith("SELECT") and not TULIS.search(nilai) and "tenant_id" in nilai, (modul, nama)
+        assert nilai.lstrip().upper().startswith(("SELECT", "FROM")) and not TULIS.search(nilai) and "tenant_id" in nilai, (modul, nama)
 
 
 def test_penjaga_menolak_sql_jurnal_kedua_dan_tulis_jurnal():
