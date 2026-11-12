@@ -33,7 +33,7 @@ def _row(status="draft"):
         "vendor_id": None, "vendor_name": None, "tax_id": None, "tax_name": None,
         "pph_type": None, "currency": "IDR", "is_billable": False,
         "billed_to_customer_id": None, "reference": None, "notes": None,
-        "has_receipt": False,
+        "has_receipt": False, "expense_number": "EXP-UJI-1", "total_amount": 100000,
     }
 
 
@@ -80,7 +80,7 @@ class _Conn:
         if "SELECT * FROM expenses WHERE id = $1" in s:
             u = self.updated
             return {"id": str(EXP), "subtotal": u[15], "total_amount": u[16],
-                    "is_itemized": u[17], "account_id": u[4], "status": "draft"}
+                    "is_itemized": u[17], "account_id": u[4], "status": "draft", "expense_number": "EXP-UJI-1"}
         return None
 
     async def fetchval(self, *a, **k):

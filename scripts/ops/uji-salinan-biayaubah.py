@@ -71,7 +71,7 @@ async def main():
                 and "100.000" in diubah[0]["ringkas"] and "120.000" in diubah[0]["ringkas"], str(diubah)[:300])
             meta = await c.fetchval("SELECT metadata FROM audit_logs WHERE tenant_id = $1 AND entity_id = $2::uuid AND \"eventType\" = 'EXPENSE_UPDATED' LIMIT 1", tid, str(eid))
             cek(f"3 {tid} audit_logs: medan + total_sebelum/sesudah + user_id", meta is not None and all(k in str(meta) for k in ("medan", "total_sebelum", "total_sesudah", "user_id")), str(meta)[:300])
-            cek(f"3 {tid} baris beraktor (aktor terisi)", bool(diubah) and diubah[0].get("actor") not in (None, "") or bool(diubah) and bool(diubah[0].get("actor_name") or diubah[0].get("user")), str(diubah[0])[:300] if diubah else "")
+            cek(f"3 {tid} baris beraktor (aktor terisi: dict ber-id)", bool(diubah) and isinstance(diubah[0].get("aktor"), dict) and bool(diubah[0]["aktor"].get("id")), str(diubah[0])[:300] if diubah else "")
             # 4 PATCH kedua
             await EX.update_expense(await req(c, tid, method="PATCH"), eid, S.UpdateExpenseRequest(notes="uji catatan"))
             cek(f"4 {tid} PATCH kedua: 2 baris audit", await n_audit(c, tid, eid) == 2 and len([x for x in await riwayat(c, tid, eid) if x["jenis"] == "EXPENSE_UPDATED"]) == 2)

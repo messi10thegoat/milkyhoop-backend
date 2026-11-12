@@ -40,7 +40,7 @@ def test_tabel_event_unik_dan_entitas_dikenal_riwayat():
     assert len(nama) == len(set(nama))
     assert all(e.entitas in SR.ENTITAS_AUDIT for e in AD.EVENT.values())
     # 1 Nov 2026 tiket (a) (OK MASTER): VD_UNAPPLIED -> riwayat=False (riwayat UMP sudah punya kolom UM_DILEPAS beraktor; tanpa ganda)
-    lama = {"PO_UPDATED", "PO_RECEIVED", "VD_VOIDED", "GRN_DIBATALKAN", "BILL_UPDATED"}
+    lama = {"PO_UPDATED", "PO_RECEIVED", "VD_VOIDED", "GRN_DIBATALKAN", "BILL_UPDATED", "EXPENSE_UPDATED"}
     assert {e.nama for e in AD.EVENT.values() if e.riwayat} == lama  # hanya event lama yang tampil di riwayat
     assert AD.TANPA_RIWAYAT == frozenset(nama) - lama and "VD_UNAPPLIED" in AD.TANPA_RIWAYAT
     assert all(SR.RINGKAS_AUDIT[n] == AD.EVENT[k].ringkas for k, n in ((k, e.nama) for k, e in AD.EVENT.items()) if n in lama)
