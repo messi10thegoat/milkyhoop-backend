@@ -46,7 +46,7 @@ def test_nama_anonim_sebagian_tetap_cocok():
 def test_satu_kandidat_nama_cocok_tiga_hari_yakin():
     t = TB.putuskan(BANK, [bt("b1", date(2026, 10, 12))])
     assert t["jenis"] == "cocok" and t["keyakinan"] == "yakin" and t["bank_transaction_ids"] == ["b1"] and t["nama_cocok"] is True
-    assert t["dokumen"] == [{"jenis": "payment_received", "id": "b1", "nomor": "RCV-1"}] and "RCV-1" in t["kalimat"]
+    assert t["dokumen"] == [{"jenis": "penerimaan_pembayaran", "jenis_text": "Terima pembayaran", "sumber": "RECEIVE_PAYMENT", "id": None, "nomor": "RCV-1", "bt_id": "b1"}] and "RCV-1" in t["kalimat"]       # BF-1e: satu bentuk dokumen
 
 
 def test_satu_kandidat_empat_hari_hanya_periksa():
@@ -415,7 +415,7 @@ def test_calon_mutasi_tak_ada_404_dan_sql_bertenant_rekening():
 def test_ringkas_tebakan_bentuk_tetap():
     t = TB.ringkas_tebakan({**TB._kosong(), "layak_massal": False, "layak_massal_text": "x"})
     assert sorted(t) == sorted(["jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok", "layak_massal", "layak_massal_text",
-                                "mungkin_dobel_dengan", "mungkin_dobel_jumlah"])
+                                "mungkin_dobel_dengan", "mungkin_dobel_jumlah", "keyakinan_text", "dasar_text"])       # BF-1e: teks server
 
 
 def test_rute_calon_terdaftar_dan_izin_baca_kas_bank():

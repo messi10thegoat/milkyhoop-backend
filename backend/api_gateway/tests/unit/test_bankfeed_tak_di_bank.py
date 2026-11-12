@@ -105,7 +105,7 @@ def test_bentuk_baris_nominal_tampil_umur_lampiran_dan_pembuat(monkeypatch):
     k = _k("c", tgl=date(2026, 10, 2))
     h, _ = _jalan(monkeypatch, [k], lampiran=[{"entity_id": k["dokumen_id"], "n": 2}])
     x = h["data"][0]
-    assert x["nominal_tampil"] == "Rp 500.000" and x["dokumen"] == {"jenis": "Terima pembayaran", "id": str(k["dokumen_id"]), "nomor": "RCV-1"}
+    assert x["nominal_tampil"] == "Rp 500.000" and x["dokumen"] == {"jenis": "penerimaan_pembayaran", "jenis_text": "Terima pembayaran", "sumber": k["sumber"], "id": str(k["dokumen_id"]), "nomor": "RCV-1", "bt_id": str(k["id"])}       # BF-1e: satu bentuk dokumen
     assert x["umur_hari"] == 41 and x["umur_text"] == "41 hari lalu" and x["lampiran"] == {"jumlah": 2} and x["dibuat_oleh_text"] == "Sinta"
     assert x["alasan"] == "tak_ada_di_bank" and x["mungkin_dobel_dengan"] is None and x["kontak"]["nama"] == "PT Sumber Rejeki"
 

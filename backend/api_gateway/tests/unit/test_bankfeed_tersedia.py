@@ -143,6 +143,8 @@ class _KD:
         self.sql.append(sql)
         if "GROUP BY status" in sql:
             return [{"status": "untuk_ditinjau", "n": 1}, {"status": "dicatat", "n": 1}]
+        if "FROM mutasi_bank_tautan t" in sql:      # BF-1e: dokumen_tertaut baris dicatat
+            return []
         if "FROM mutasi_bank WHERE" in sql and "ORDER BY tanggal DESC" in sql:
             from datetime import date, datetime, timezone
             dasar = {"tanggal": date(2026, 10, 10), "keterangan": "TRSF UJI", "diputus_oleh": None, "diputus_pada": None, "rekonsiliasi_id": None}
