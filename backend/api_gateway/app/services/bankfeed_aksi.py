@@ -67,7 +67,8 @@ SQL_TAUTAN_MUTASI = ("SELECT t.id, t.bank_transaction_id, t.nominal_alokasi, bt.
 SQL_PELANGGAN = "SELECT id, nama FROM customers WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL"
 SQL_TAUTAN_JUMLAH = "SELECT count(*) FROM mutasi_bank_tautan WHERE tenant_id = $1 AND mutasi_bank_id = $2"      # termasuk yang dilepas: kunci idempotensi berurut
 SQL_BT_JURNAL = "SELECT id FROM bank_transactions WHERE tenant_id = $1 AND journal_id = $2 AND bank_account_id = $3 AND status = 'POSTED'"
-SQL_DOK_TAUTAN = ("SELECT bt.id AS bt_id, je.source_type, je.source_id, bt.reference_type, bt.reference_id FROM bank_transactions bt "
+SQL_PEMBALIK = ("SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND reversal_of_id = (SELECT journal_id FROM bank_transactions WHERE tenant_id = $1 AND id = $2)")
+SQL_DOK_TAUTAN = ("SELECT bt.id AS bt_id, je.source_type, je.source_id, je.journal_number AS nomor_jurnal, bt.reference_type, bt.reference_id FROM bank_transactions bt "
                   "JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id WHERE bt.tenant_id = $1 AND bt.id = $2")
 SQL_JURNAL_BARIS = ("SELECT jl.account_id, jl.debit, jl.credit FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id WHERE je.tenant_id = $1 "
                     "AND je.id = (SELECT journal_id FROM bank_transactions WHERE tenant_id = $1 AND id = $2) ORDER BY jl.line_number")
@@ -567,7 +568,7 @@ async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, b
     if tipe not in TIPE_DOK:
         bl.galat("JENIS_DOKUMEN_TAK_DIKENAL", 409, "Dokumen hasil catatan ini bukan jenis yang bisa dibatalkan dari Bank Feed; batalkan dari modul asalnya.")
         return h
-    h["dok"] = {"tipe": tipe, "id": str(dok["source_id"]), "nomor": tautan[0]["nomor"]}
+    h["dok"] = {"tipe": tipe, "id": str(dok["source_id"]), "nomor": dok["nomor_jurnal"] or tautan[0]["nomor"]}
     h["versi"] = _versi("batalkan", str(m["id"]), m["status"], m["cara"], h["tautan"], alasan, tipe, h["dok"]["id"])
     if tipe in IZIN_VOID and not await _izin(ctx, IZIN_VOID[tipe].format(h["dok"]["id"]), bl, "membatalkan dokumen ini"):
         return h
@@ -618,11 +619,11 @@ async def _tulis_batalkan(conn, ctx: dict, r: dict) -> dict:
         rv = await KT.rencana_void_transfer(conn, tid, did, alasan, Blok(False), kunci=True)
         await BTR.void_transfer_core(conn, ctx, did, alasan, rv)
         nomor = rv["t"]["transfer_number"]
-        pembalik = f"RV-{nomor}"
+        pembalik = await conn.fetchval(SQL_PEMBALIK, tid, r["bt_id"])
     elif tipe == "CUSTOMER_DEPOSIT":
         await CD.void_deposit_core(conn, ctx, did, VoidCustomerDepositRequest(reason=alasan))
         nomor = r["dok"]["nomor"]
-        pembalik = f"RV-{nomor}"
+        pembalik = await conn.fetchval(SQL_PEMBALIK, tid, r["bt_id"])
     else:
         rv = await RP._rencana_void_pembayaran(conn, ctx, did, alasan, wajib_alasan=False, kunci=True)
         if rv["blocks"]:
@@ -630,7 +631,7 @@ async def _tulis_batalkan(conn, ctx: dict, r: dict) -> dict:
             raise GalatBerkode(400, b["code"], b["message"])
         await RP._tulis_void_pembayaran(conn, ctx, did, alasan, rv)
         nomor = (rv.get("payment") or {}).get("payment_number") or r["dok"]["nomor"]
-        pembalik = f"RV-{nomor}"
+        pembalik = await conn.fetchval(SQL_PEMBALIK, tid, r["bt_id"])
     if not await conn.fetchrow(SQL_KEMBALI_CATAT, tid, m["id"], r["kembali_ke"]):
         raise HTTPException(status_code=409, detail={"code": "BELUM_DIPUTUS", "message": "Keputusan baris ini sudah berubah. Muat ulang daftar."})
     await catat_riwayat(conn, tid, ENTITAS, m["id"], None, EVENT["batalkan"], uid, f"Catatan {nomor} dibatalkan",
