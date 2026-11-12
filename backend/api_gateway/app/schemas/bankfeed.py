@@ -1,7 +1,7 @@
 """Skema Bank Feed (BF-1a). Respons memakai Dict[str, Any] untuk `data` (bentuk dikunci penentu + uji), tetapi DIDEKLARASIKAN supaya FastAPI tak
 membuang medan diam-diam; permintaan bersekema (bukan body mentah)."""
 from decimal import Decimal
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -89,13 +89,18 @@ class AlokasiFaktur(BaseModel):
     nominal: Decimal = Field(..., gt=0, description="Bagian pembayaran yang dialokasikan ke faktur ini")
 
 
+class AlokasiTagihan(BaseModel):
+    bill_id: UUID
+    nominal: Decimal = Field(..., gt=0, description="Bagian pembayaran yang dialokasikan ke faktur pembelian ini")
+
+
 class CatatRequest(BaseModel):
     jenis: Literal["uang_masuk", "uang_keluar", "pribadi", "bayar_tagihan", "terima_pembayaran", "transfer", "uang_muka_pelanggan"]
     akun_id: Optional[UUID] = Field(None, description="Akun lawan (uang_masuk/uang_keluar); pribadi = akun ditetapkan sistem (3-40000 Prive / 3-10100 Modal Pemilik)")
-    kontak: Optional[str] = Field(None, max_length=200, description="uang_masuk/uang_keluar: nama pihak (opsional). uang_muka_pelanggan/terima_pembayaran: ID pelanggan (wajib)")
+    kontak: Optional[str] = Field(None, max_length=200, description="uang_masuk/uang_keluar: nama pihak (opsional). uang_muka_pelanggan/terima_pembayaran: ID pelanggan (wajib). bayar_tagihan: ID vendor (wajib)")
     rekening_lawan: Optional[UUID] = Field(None, description="transfer: rekening lawan (wajib); arah ikut baris bank (keluar = ke rekening lawan, masuk = dari rekening lawan)")
     so_id: Optional[UUID] = Field(None, description="uang_muka_pelanggan: pesanan penjualan terkait (opsional)")
-    alokasi: Optional[List[AlokasiFaktur]] = Field(None, description="terima_pembayaran: faktur yang dibayar + nominal (wajib; jumlahnya <= nominal baris, kelebihan jadi uang muka pelanggan)")
+    alokasi: Optional[List[Union[AlokasiFaktur, AlokasiTagihan]]] = Field(None, description="terima_pembayaran: [{invoice_id, nominal}]; bayar_tagihan: [{bill_id, nominal}] (wajib; jumlahnya <= nominal baris; selisih = kelebihan menurut aturan modul; tanpa faktur ganda)")
     catatan: Optional[str] = Field(None, max_length=500, description="Keterangan transaksi; bawaan = keterangan baris bank")
     versi: Optional[str] = Field(None, max_length=64)
 
