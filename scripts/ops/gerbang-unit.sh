@@ -43,7 +43,10 @@ for s in "${SAB[@]}"; do
   IFS="|" read -r nama berkas ekspr tes <<< "$s"
   sed -i "$ekspr" "$berkas"
   if git diff --quiet -- "$berkas"; then tolak "$nama: sabotase tak mengubah berkas"; continue; fi
-  python3 -m py_compile "$berkas" || { tolak "$nama: tak terkompilasi"; git checkout -q -- "$berkas"; continue; }
+  # py_compile hanya untuk berkas .py (sabotase .sql/.sh tetap wajib mengubah berkas + membuat tes merah)
+  if [[ "$berkas" == *.py ]]; then
+    python3 -m py_compile "$berkas" || { tolak "$nama: tak terkompilasi"; git checkout -q -- "$berkas"; continue; }
+  fi
   hasil=$(timeout 600 scripts/jalankan_unit.sh "$W" -q -p no:cacheprovider $tes 2>&1 | grep -E "^=+ .* in " | tail -1)
   echo "$nama :: $hasil"
   echo "$hasil" | grep -qE "[0-9]+ (failed|error)" || tolak "$nama: sabotase TETAP HIJAU"
