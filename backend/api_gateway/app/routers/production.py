@@ -40,6 +40,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import produksi_terap_standar as PT  # BUG-183: terap upah/overhead ke WIP (labor + report-output)
+from ..services import wo_status as WS  # BUG-184b: teks status + siap_diselesaikan dari satu peta
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 
 logger = logging.getLogger(__name__)
@@ -400,6 +401,8 @@ async def list_production_orders(
                         "planned_quantity": row["planned_quantity"],
                         "completed_quantity": row["completed_quantity"],
                         "status": row["status"],
+                        "status_text": WS.status_text(row["status"]),  # BUG-184b: teks dari SATU peta (services/wo_status)
+                        "siap_diselesaikan": WS.siap_diselesaikan(row["status"], row["completed_quantity"], row["planned_quantity"]),
                         "priority": row["priority"],
                         "planned_start_date": row["planned_start_date"],
                         "planned_end_date": row["planned_end_date"],
@@ -751,6 +754,8 @@ async def get_production_order(request: Request, order_id: UUID):
                     "actual_overhead_cost": order["actual_overhead_cost"],
                     "variance_amount": order["variance_amount"],
                     "status": order["status"],
+                    "status_text": WS.status_text(order["status"]),  # BUG-184b
+                    "siap_diselesaikan": WS.siap_diselesaikan(order["status"], order["completed_quantity"], order["planned_quantity"]),
                     "priority": order["priority"],
                     "material_issue_journal_id": str(order["material_issue_journal_id"])
                     if order["material_issue_journal_id"]
