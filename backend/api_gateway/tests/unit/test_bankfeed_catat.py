@@ -48,6 +48,8 @@ class _K:
             return self.mutasi
         if sql.startswith("SELECT id, account_code, name FROM chart_of_accounts"):
             return self.akun
+        if sql.startswith("SELECT bt.id AS bt_id, je.source_type"):      # BF-1c3: dokumen hasil catatan dikenali menurut je.source_type
+            return {"bt_id": BT, "source_type": "BANK_TRANSACTION", "source_id": str(BT), "reference_type": None, "reference_id": None}
         if sql.startswith("UPDATE mutasi_bank SET status = $4"):
             self.urut.append("putus")
             return {"id": MID} if self.putus else None
@@ -160,7 +162,7 @@ def _akun_row(kode, nama):
 
 
 # ====================================================================== CATAT: validasi
-@pytest.mark.parametrize("jenis", ["bayar_tagihan", "terima_pembayaran", "transfer", "uang_muka_pelanggan"])
+@pytest.mark.parametrize("jenis", ["bayar_tagihan"])      # BF-1c3: transfer/uang muka/terima pembayaran kini tersedia (test_bankfeed_catat3)
 def test_jenis_yang_belum_ada_diblok_berkode_bukan_diam(jenis, monkeypatch):
     _rencana_stub(monkeypatch)
     h = _prev(_K(_m()), "catat", {"jenis": jenis})

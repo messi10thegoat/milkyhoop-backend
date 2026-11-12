@@ -1,4 +1,6 @@
 """Aksi Bank Feed BF-1c1 (KONTRAK-bf1c1): COCOKKAN · KECUALIKAN · LEPASKAN + RIWAYAT. NOL jurnal baru: aksi ini hanya MENAUTKAN/MENANDAI baris rekening koran.
+BF-1c3 (KONTRAK-bf1c3): CATAT juga untuk transfer · uang_muka_pelanggan · terima_pembayaran, lewat penulis modulnya (buat_transfer_core · buat_dp_core · buat_penerimaan);
+BATALKAN-CATATAN generik: dokumen dibatalkan oleh penulis void MODULNYA menurut je.source_type. Izin modul tujuan diperiksa di sini (rute Bank Feed beda dari rute modul).
 BF-1c2 (KONTRAK-bf1c2): CATAT (uang_masuk · uang_keluar · pribadi) dan BATALKAN-CATATAN. Jurnal HANYA lewat penulis Uang Masuk/Keluar yang ada (kasbank_tulis:
 rencana_tx_manual + tulis_tx_manual; batal = rencana_void_manual + tulis_void_manual = jurnal PEMBALIK, Law 2); aksi ini tak menulis jurnal sendiri.
 Pola B8 (sama dgn penulis lain): SATU fungsi rencana `rencana_<aksi>` dipakai pratinjau (transaksi READ ONLY) dan tulis (transaksi pemanggil); tulis = blok
@@ -18,13 +20,22 @@ from fastapi import HTTPException
 
 from . import bankfeed_daftar as BD
 from . import bankfeed_tebak as TB
+from . import guc_tenant as GUC
 from . import kasbank_ringkas as KR
 from . import kasbank_tulis as KT
 from . import teks_galat as tg
 from .bayar_keluar_rencana import Blok
+from .galat_berkode import GalatBerkode
+from .role_resolver import AccountRole, resolve_account_id_by_role
 from .nama_pengguna import nama_untuk
 from .so_riwayat import catat_riwayat
+from ..middleware.permission_middleware import izin_rute_pengguna
+from ..routers import bank_transfers as BTR
+from ..routers import customer_deposits as CD
+from ..routers import receive_payments as RP
 from ..schemas.bank_accounts import CreateManualTransactionRequest
+from ..schemas.bank_transfers import CreateBankTransferRequest
+from ..schemas.customer_deposits import VoidCustomerDepositRequest
 from ..utils.tanggal_tenant import zona_tenant
 
 SEN = Decimal("0.01")
@@ -35,12 +46,17 @@ ALASAN_KECUALI = {"duplikat": "Duplikat", "bukan_transaksi": "Bukan transaksi", 
 EVENT = {"cocokkan": "BANK_FEED_COCOKKAN", "kecualikan": "BANK_FEED_KECUALIKAN", "lepaskan": "BANK_FEED_LEPASKAN", "catat": "BANK_FEED_CATAT", "batalkan": "BANK_FEED_BATALKAN"}
 AKSI_TEKS = {"BANK_FEED_COCOKKAN": ("cocokkan", "Dicocokkan"), "BANK_FEED_KECUALIKAN": ("kecualikan", "Dikecualikan"), "BANK_FEED_LEPASKAN": ("lepaskan", "Dilepas"),
              "BANK_FEED_CATAT": ("catat", "Dicatat"), "BANK_FEED_BATALKAN": ("batalkan", "Dibatalkan")}
-JENIS_CATAT = ("uang_masuk", "uang_keluar", "pribadi")
+JENIS_CATAT = ("uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran")
+JENIS_DOK = ("transfer", "uang_muka_pelanggan", "terima_pembayaran")         # BF-1c3: dokumen dibuat penulis MODULNYA
+IZIN_BUAT = {"transfer": "/api/bank-transfers", "uang_muka_pelanggan": "/api/customer-deposits", "terima_pembayaran": "/api/receive-payments"}
+IZIN_VOID = {"BANK_TRANSFER": "/api/bank-transfers/{}/void", "CUSTOMER_DEPOSIT": "/api/customer-deposits/{}/void", "RECEIVE_PAYMENT": "/api/receive-payments/{}/void"}
+TIPE_DOK = ("BANK_TRANSACTION",) + tuple(IZIN_VOID)
 # jenis yang penulisnya belum dipanggil Bank Feed (c3 / BF-1d): diblok berkode, bukan diam
-JENIS_BELUM = ("bayar_tagihan", "terima_pembayaran", "transfer", "uang_muka_pelanggan")
+JENIS_BELUM = ("bayar_tagihan",)
 # Putusan pemilik LANGSUNG 12 Nov 2026: pribadi keluar Dr 3-40000 Prive; pribadi masuk Cr 3-10100 Modal Pemilik. Akun ditetapkan sistem (bukan pilihan pengguna).
 AKUN_PRIBADI = {"keluar": "3-40000", "masuk": "3-10100"}
-LABEL_JENIS = {"uang_masuk": "Uang masuk", "uang_keluar": "Uang keluar", "pribadi": "Pribadi"}
+LABEL_JENIS = {"uang_masuk": "Uang masuk", "uang_keluar": "Uang keluar", "pribadi": "Pribadi", "transfer": "Transfer", "uang_muka_pelanggan": "Uang muka pelanggan",
+               "terima_pembayaran": "Pembayaran pelanggan"}
 ENTITAS = "mutasi_bank"
 
 SQL_MUTASI = ("SELECT id, bank_account_id, tanggal, keterangan, arah, nominal, status, cara, alasan, diputus_oleh, diputus_pada, duplikat_dari, rekonsiliasi_id "
@@ -48,6 +64,13 @@ SQL_MUTASI = ("SELECT id, bank_account_id, tanggal, keterangan, arah, nominal, s
 SQL_TAUTAN_MUTASI = ("SELECT t.id, t.bank_transaction_id, t.nominal_alokasi, bt.transaction_number AS nomor, bt.transaction_type AS jenis, bt.is_reconciled AS rekon, "
                      "NULLIF(btrim(bt.payee_payer), '') AS kontak_nama FROM mutasi_bank_tautan t JOIN bank_transactions bt ON bt.id = t.bank_transaction_id AND bt.tenant_id = t.tenant_id "
                      "WHERE t.tenant_id = $1 AND t.mutasi_bank_id = $2 AND t.dilepas_pada IS NULL ORDER BY t.dibuat_pada, t.id")
+SQL_PELANGGAN = "SELECT id, nama FROM customers WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL"
+SQL_TAUTAN_JUMLAH = "SELECT count(*) FROM mutasi_bank_tautan WHERE tenant_id = $1 AND mutasi_bank_id = $2"      # termasuk yang dilepas: kunci idempotensi berurut
+SQL_BT_JURNAL = "SELECT id FROM bank_transactions WHERE tenant_id = $1 AND journal_id = $2 AND bank_account_id = $3 AND status = 'POSTED'"
+SQL_DOK_TAUTAN = ("SELECT bt.id AS bt_id, je.source_type, je.source_id, bt.reference_type, bt.reference_id FROM bank_transactions bt "
+                  "JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id WHERE bt.tenant_id = $1 AND bt.id = $2")
+SQL_JURNAL_BARIS = ("SELECT jl.account_id, jl.debit, jl.credit FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id WHERE je.tenant_id = $1 "
+                    "AND je.id = (SELECT journal_id FROM bank_transactions WHERE tenant_id = $1 AND id = $2) ORDER BY jl.line_number")
 SQL_TAUTAN_INSERT = ("INSERT INTO mutasi_bank_tautan (tenant_id, mutasi_bank_id, bank_transaction_id, nominal_alokasi, dibuat_oleh) VALUES ($1, $2, $3, $4, $5::uuid)")
 SQL_TAUTAN_LEPAS = ("UPDATE mutasi_bank_tautan SET dilepas_oleh = $3::uuid, dilepas_pada = now() WHERE tenant_id = $1 AND mutasi_bank_id = $2 AND dilepas_pada IS NULL")
 SQL_AKUN_KODE = ("SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = $2 AND is_active = true AND is_header = false")
@@ -128,7 +151,7 @@ def _alokasi_eksplisit(body: dict, ids: list, bl: Blok) -> dict:
     return hasil
 
 
-async def rencana_cocokkan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool) -> dict:
+async def rencana_cocokkan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool, ctx: Optional[dict] = None) -> dict:
     h = {"blocks": bl.daftar, "mutasi": None, "pasangan": [], "alokasi": [], "versi": None, "kalimat": None}
     m = await _muat(conn, tid, rekening_id, mutasi_id, bl, kunci)
     if not m:
@@ -205,7 +228,7 @@ async def _tulis_cocokkan(conn, ctx: dict, r: dict) -> dict:
 
 
 # ====================================================================== KECUALIKAN
-async def rencana_kecualikan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool) -> dict:
+async def rencana_kecualikan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool, ctx: Optional[dict] = None) -> dict:
     h = {"blocks": bl.daftar, "mutasi": None, "alasan": None, "catatan": None, "versi": None, "kalimat": None}
     m = await _muat(conn, tid, rekening_id, mutasi_id, bl, kunci)
     if not m:
@@ -237,7 +260,7 @@ async def _tulis_kecualikan(conn, ctx: dict, r: dict) -> dict:
 
 
 # ====================================================================== LEPASKAN
-async def rencana_lepaskan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool) -> dict:
+async def rencana_lepaskan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool, ctx: Optional[dict] = None) -> dict:
     h = {"blocks": bl.daftar, "mutasi": None, "tautan": [], "kembali_ke": None, "versi": None, "kalimat": None}
     m = await _muat(conn, tid, rekening_id, mutasi_id, bl, kunci)
     if not m:
@@ -281,8 +304,9 @@ def _bank_net(baris, coa_bank) -> Decimal:
     return sum((Decimal(str(d)) - Decimal(str(k)) for akun, d, k, _ in baris if str(akun) == str(coa_bank)), Decimal(0))
 
 
-async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool) -> dict:
-    h = {"blocks": bl.daftar, "mutasi": None, "jenis": None, "akun": None, "baris": [], "saldo": [], "versi": None, "kalimat": None, "body_manual": None, "rencana_bank": None, "catatan": None}
+async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool, ctx: Optional[dict] = None) -> dict:
+    h = {"blocks": bl.daftar, "mutasi": None, "jenis": None, "akun": None, "baris": [], "saldo": [], "versi": None, "kalimat": None, "body_manual": None, "rencana_bank": None, "catatan": None,
+         "dok": None, "akun_id": None}
     m = await _muat(conn, tid, rekening_id, mutasi_id, bl, kunci)
     if not m:
         return h
@@ -291,7 +315,7 @@ async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: 
         return h
     jenis = body.get("jenis")
     if jenis in JENIS_BELUM:
-        bl.galat("JENIS_BELUM_TERSEDIA", 422, "Jenis ini belum bisa dicatat dari Bank Feed. Pilih Uang masuk, Uang keluar, atau Pribadi, atau catat lewat modulnya dulu.")
+        bl.galat("JENIS_BELUM_TERSEDIA", 422, "Bayar tagihan belum bisa dicatat dari Bank Feed. Catat lewat modul Pembayaran dulu.")
         return h
     if jenis not in JENIS_CATAT:
         bl.galat("JENIS_TAK_SAH", 422, "Jenis catatan tidak dikenal.")
@@ -304,6 +328,8 @@ async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: 
     if m["nominal"] != m["nominal"].to_integral_value():
         bl.galat("NOMINAL_BERSEN", 422, f"Nominal {_rp(m['nominal'])} berkoma; Uang masuk/keluar hanya menerima rupiah bulat. Atur selisih sen lewat Pisah baris.")
         return h
+    if jenis in JENIS_DOK:
+        return await _rencana_dokumen(conn, tid, rekening_id, h, m, jenis, body, bl, kunci, ctx)
     if jenis == "pribadi":
         if body.get("akun_id"):
             bl.galat("AKUN_TETAP", 422, "Akun untuk Pribadi ditetapkan sistem (Prive untuk uang keluar, Modal Pemilik untuk setoran); tidak bisa dipilih.")
@@ -344,7 +370,162 @@ async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: 
     return h
 
 
+# ====================================================================== CATAT (BF-1c3): transfer · uang_muka_pelanggan · terima_pembayaran (penulis MODULNYA)
+async def _izin(ctx, jalur: str, bl: Blok, kata: str) -> bool:
+    """Rute Bank Feed beda dari rute modul: izin modul tujuan diperiksa DI SINI (tanpa konteks pengguna = unit orkestrasi, tak diperiksa)."""
+    user = (ctx or {}).get("user")
+    if not user:
+        return True
+    if (await izin_rute_pengguna(user, [jalur], "POST")).get(jalur):
+        return True
+    bl.galat("IZIN_DITOLAK", 403, f"Anda tidak punya izin untuk {kata}. Minta pemilik usaha membukanya.")
+    return False
+
+
+def _aduh(bl: Blok, blocks) -> None:
+    for b in blocks:
+        bl.galat(b["code"], b.get("status", 400), b["message"])
+
+
+def _total(baris):
+    return sum((Decimal(str(d)) for _, d, _, _ in baris), Decimal(0)), sum((Decimal(str(k)) for _, _, k, _ in baris), Decimal(0))
+
+
+async def _pelanggan(conn, tid: str, body: dict, bl: Blok):
+    kid = _uuid(body.get("kontak"))
+    if kid is None:
+        bl.galat("KONTAK_WAJIB", 422, "Pilih pelanggannya.")
+        return None
+    p = await conn.fetchrow(SQL_PELANGGAN, tid, kid)
+    if not p:
+        bl.galat("PELANGGAN_TAK_ADA", 422, "Pelanggan tidak ditemukan.")
+        return None
+    return p
+
+
+async def _rencana_dokumen(conn, tid: str, rekening_id, h: dict, m, jenis: str, body: dict, bl: Blok, kunci: bool, ctx) -> dict:
+    if jenis != "transfer" and m["arah"] != "masuk":
+        bl.galat("JENIS_TAK_SESUAI_ARAH", 422, f"{LABEL_JENIS[jenis]} hanya untuk uang masuk; baris ini uang keluar.")
+        return h
+    if not await _izin(ctx, IZIN_BUAT[jenis], bl, f"membuat {LABEL_JENIS[jenis].lower()}"):
+        return h
+    rek = await KT.akun(conn, tid, rekening_id)
+    if not rek:
+        bl.galat("REKENING_TAK_ADA", 404, "Rekening tidak ditemukan.")
+        return h
+    catatan = (body.get("catatan") or "").strip()
+    h["catatan"] = catatan or None
+    isi = catatan or BD.ringkas_keterangan(m["keterangan"], 200)
+    nominal, tgl = m["nominal"], m["tanggal"]
+    harap = nominal if m["arah"] == "masuk" else -nominal
+    waktu = f"({tgl.day}/{tgl.month})"
+    if jenis == "transfer":
+        lawan = _uuid(body.get("rekening_lawan"))
+        if lawan is None:
+            bl.galat("TRANSFER_LAWAN_WAJIB", 422, "Pilih rekening lawan transfernya.")
+            return h
+        if str(lawan) == str(rekening_id):
+            bl.galat("TRANSFER_LAWAN_SAMA", 422, "Rekening lawan tidak boleh sama dengan rekening ini.")
+            return h
+        dari, ke = (str(rekening_id), str(lawan)) if m["arah"] == "keluar" else (str(lawan), str(rekening_id))
+        dok = CreateBankTransferRequest(from_bank_id=dari, to_bank_id=ke, amount=int(nominal), fee_amount=0, transfer_date=tgl, ref_no=None, notes=isi[:500] or None, auto_post=True)
+        r = await KT.rencana_buat_transfer(conn, tid, dok, bl.pratinjau)
+        _aduh(bl, r["blocks"])
+        h["baris"], h["saldo"] = r["baris"], r["saldo"]
+        d, k = _total(r["baris"])
+        if d != nominal or k != nominal or _bank_net(r["baris"], rek["coa_id"]) != harap:       # nominal diverifikasi ULANG terhadap jurnal yang akan ditulis
+            bl.galat("NOMINAL_JURNAL_TAK_SAMA", 409, "Jurnal yang akan ditulis tidak sama dengan nominal baris bank; dibatalkan demi keamanan.")
+            return h
+        h["dok"], h["akun_id"] = dok, ((r["tujuan"] if m["arah"] == "keluar" else r["asal"]) or {}).get("coa_id")
+        nama_lawan = ((r["tujuan"] if m["arah"] == "keluar" else r["asal"]) or {}).get("account_name") or "rekening lawan"
+        h["kalimat"] = f"Transfer {_rp(nominal)} {waktu} {'ke' if m['arah'] == 'keluar' else 'dari'} {nama_lawan} akan dicatat. Jurnal ada di bawah. Sisi rekening lawan dicocokkan dari barisnya sendiri."
+        h["versi"] = _versi("catat", str(m["id"]), str(nominal), m["status"], jenis, dari, ke, dok.notes, [(str(a), str(dd), str(kk)) for a, dd, kk, _ in r["baris"]])
+        return h
+    p = await _pelanggan(conn, tid, body, bl) if jenis == "uang_muka_pelanggan" else None
+    if jenis == "uang_muka_pelanggan" and not p:
+        return h
+    n_lama = int(await conn.fetchval(SQL_TAUTAN_JUMLAH, tid, m["id"]) or 0)
+    kunci_idem = f"BANKFEED:{m['id']}:{n_lama + 1}"                  # berurut: dicatat ulang setelah batal tak bentrok dengan dokumen lama
+    ctx_eff = ctx or {"tenant_id": tid, "user_id": None}
+    await GUC.pasang_tenant(conn, tid)
+    metode = "cash" if rek["account_type"] == "cash" else "transfer"
+    if jenis == "uang_muka_pelanggan":
+        so = _uuid(body.get("so_id"))
+        dok = CD.CreateCustomerDepositRequest(customer_id=str(p["id"]), customer_name=p["nama"], amount=int(nominal), deposit_date=tgl, payment_method=metode,
+                                              account_id=str(rek["coa_id"]), bank_account_id=str(rek["id"]), reference=None, notes=isi[:500] or None, auto_post=True,
+                                              sales_order_id=str(so) if so else None, idempotency_key=kunci_idem)
+        rb = await CD.rencana_buat_dp(conn, ctx_eff, dok, bl.pratinjau)
+        _aduh(bl, rb["blocks"])
+        akun_dp = rb.get("akun_dp") or await resolve_account_id_by_role(conn, tid, AccountRole.CUSTOMER_DEPOSIT_LIABILITY)
+        h["baris"] = [(rek["coa_id"], nominal, Decimal(0), "Uang muka diterima"), (akun_dp, Decimal(0), nominal, "Uang muka pelanggan")]
+        h["dok"], h["rb"], h["akun_id"] = dok, rb, rek["coa_id"]
+        h["kalimat"] = f"Uang muka {_rp(nominal)} {waktu} dari {p['nama']} akan dicatat sebagai uang muka pelanggan. Jurnal ada di bawah."
+        h["versi"] = _versi("catat", str(m["id"]), str(nominal), m["status"], jenis, str(p["id"]), dok.notes, str(dok.sales_order_id), str(rek["coa_id"]), str(akun_dp))
+        return h
+    # terima_pembayaran: alokasi EKSPLISIT (Q2); kelebihan mengikuti aturan Terima Pembayaran yang ada (jadi uang muka pelanggan) dan DITAMPILKAN (Q4)
+    mentah = body.get("alokasi") or []
+    if not mentah:
+        bl.galat("ALOKASI_WAJIB", 422, "Pilih faktur yang dibayar beserta nominalnya.")
+        return h
+    alok = []
+    for a in mentah:
+        iid, n = _uuid(a.get("invoice_id")), _dec(a.get("nominal"))
+        if iid is None or n is None or n <= 0:
+            bl.galat("ALOKASI_TAK_SAH", 422, "Alokasi faktur tidak sah (faktur atau nominal salah).")
+            return h
+        alok.append(RP.AllocationInput(invoice_id=str(iid), amount_applied=n))
+    if sum((a.amount_applied for a in alok), Decimal(0)) > nominal:
+        bl.galat("ALOKASI_MELEBIHI_NOMINAL", 422, f"Jumlah alokasi melebihi nominal baris bank {_rp(nominal)}.")
+        return h
+    p = await _pelanggan(conn, tid, body, bl)
+    if not p:
+        return h
+    dok = RP.CreateReceivePaymentRequest(customer_id=str(p["id"]), customer_name=p["nama"], payment_date=tgl, payment_method="bank_transfer", bank_account_id=str(rek["coa_id"]),
+                                         bank_account_name=rek["account_name"], total_amount=nominal, source_type="cash", notes=isi[:500] or None, allocations=alok,
+                                         save_as_draft=False, idempotency_key=kunci_idem)
+    ro = await RP.rencana_penerimaan_ro(conn, ctx_eff, dok)
+    _aduh(bl, ro["blocks"])
+    sisa = Decimal(str((ro.get("cek") or {}).get("unapplied_amount") or 0))
+    h["kelebihan"] = {"jumlah": str(sisa.quantize(SEN)), "nomor": ro.get("overpayment_deposit_number")} if sisa > 0 else None
+    h["faktur_sesudah"] = ro.get("invoices") or []
+    h["jurnal_ringkas"] = [x for j in ro.get("journals") or [] for x in j["lines"]]
+    h["dok"], h["akun_id"] = dok, rek["coa_id"]
+    lebih = f" Kelebihan {_rp(sisa)} menjadi uang muka pelanggan ({ro.get('overpayment_deposit_number') or 'nomor terbit saat disimpan'})." if sisa > 0 else ""
+    h["kalimat"] = f"Pembayaran {_rp(nominal)} {waktu} dari {p['nama']} akan dialokasikan ke {len(alok)} faktur.{lebih}"
+    h["versi"] = _versi("catat", str(m["id"]), str(nominal), m["status"], jenis, str(p["id"]), [(a.invoice_id, str(a.amount_applied)) for a in alok], str(sisa), dok.notes)
+    return h
+
+
+async def _tulis_dokumen(conn, ctx: dict, r: dict) -> dict:
+    tid, uid, m, jenis, dok = ctx["tenant_id"], ctx["user_id"], r["mutasi"], r["jenis"], r["dok"]
+    if jenis == "transfer":
+        t = await BTR.buat_transfer_core(conn, ctx, dok)
+        p = t["post"]
+        bt_id = UUID(str(p["from_transaction_id"] if m["arah"] == "keluar" else p["to_transaction_id"]))       # HANYA sisi rekening ini; sisi lawan tak ditautkan
+        nomor, jurnal_id = t["transfer_number"], p["journal_id"]
+    else:
+        if jenis == "uang_muka_pelanggan":
+            d = (await CD.buat_dp_core(conn, ctx, dok, r["rb"]))["data"]
+            nomor = d["deposit_number"]
+        else:
+            d = (await RP.buat_penerimaan(conn, ctx, dok))["data"]
+            nomor = d["payment_number"]
+        jurnal_id = d["journal_id"]
+        bts = list(await conn.fetch(SQL_BT_JURNAL, tid, UUID(str(jurnal_id)), m["bank_account_id"]))
+        if len(bts) != 1:
+            raise HTTPException(status_code=409, detail={"code": "BT_HASIL_TAK_DITEMUKAN", "message": "Baris bank hasil dokumen tidak ditemukan; dibatalkan demi keamanan."})
+        bt_id = bts[0]["id"]
+    await conn.execute(SQL_TAUTAN_INSERT, tid, m["id"], bt_id, m["nominal"], str(uid))
+    if not await conn.fetchrow(SQL_PUTUS_CATAT, tid, m["id"], str(uid), "dicatat", "catat", r["catatan"], list(DITINJAU), UUID(str(r["akun_id"])) if r["akun_id"] else None):
+        raise HTTPException(status_code=409, detail={"code": "SUDAH_DIPUTUS", "message": "Baris ini sudah diputus. Muat ulang daftar."})
+    await catat_riwayat(conn, tid, ENTITAS, m["id"], None, EVENT["catat"], uid, f"Dicatat sebagai {nomor} ({jenis})",
+                        meta={"rekening_id": str(m["bank_account_id"]), "nominal": str(m["nominal"]), "jenis": jenis, "bank_transaction_id": str(bt_id), "journal_number": nomor})
+    return {"bank_transaction_id": str(bt_id), "journal_id": str(jurnal_id), "journal_number": nomor, "kalimat": f"{LABEL_JENIS[jenis]} {_rp(m['nominal'])} dicatat sebagai {nomor}."}
+
+
 async def _tulis_catat(conn, ctx: dict, r: dict) -> dict:
+    if r["jenis"] in JENIS_DOK:
+        return await _tulis_dokumen(conn, ctx, r)
     tid, uid, m = ctx["tenant_id"], ctx["user_id"], r["mutasi"]
     t = await KT.tulis_tx_manual(conn, ctx, m["bank_account_id"], r["body_manual"], r["rencana_bank"])
     await conn.execute(SQL_TAUTAN_INSERT, tid, m["id"], t["bank_txn_id"], m["nominal"], str(uid))
@@ -359,7 +540,7 @@ async def _tulis_catat(conn, ctx: dict, r: dict) -> dict:
 
 
 # ====================================================================== BATALKAN-CATATAN (BF-1c2): void lewat penulis yang ada = jurnal PEMBALIK
-async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool) -> dict:
+async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: Blok, kunci: bool, ctx: Optional[dict] = None) -> dict:
     h = {"blocks": bl.daftar, "mutasi": None, "tautan": [], "baris": [], "saldo": [], "versi": None, "kalimat": None, "kalimat_tiga": [], "bt_id": None, "alasan": None, "kembali_ke": None}
     m = await _muat(conn, tid, rekening_id, mutasi_id, bl, kunci)
     if not m:
@@ -381,15 +562,43 @@ async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, b
         return h
     h["alasan"], h["bt_id"], h["tautan"] = alasan, tautan[0]["bank_transaction_id"], [str(t["bank_transaction_id"]) for t in tautan]
     h["kembali_ke"] = "mungkin_duplikat" if m["duplikat_dari"] else "untuk_ditinjau"
-    h["versi"] = _versi("batalkan", str(m["id"]), m["status"], m["cara"], h["tautan"], alasan)
+    dok = await conn.fetchrow(SQL_DOK_TAUTAN, tid, h["bt_id"])
+    tipe = dok["source_type"] if dok else None
+    if tipe not in TIPE_DOK:
+        bl.galat("JENIS_DOKUMEN_TAK_DIKENAL", 409, "Dokumen hasil catatan ini bukan jenis yang bisa dibatalkan dari Bank Feed; batalkan dari modul asalnya.")
+        return h
+    h["dok"] = {"tipe": tipe, "id": str(dok["source_id"]), "nomor": tautan[0]["nomor"]}
+    h["versi"] = _versi("batalkan", str(m["id"]), m["status"], m["cara"], h["tautan"], alasan, tipe, h["dok"]["id"])
+    if tipe in IZIN_VOID and not await _izin(ctx, IZIN_VOID[tipe].format(h["dok"]["id"]), bl, "membatalkan dokumen ini"):
+        return h
     if not kunci:   # pratinjau: penentu void yang SAMA (READ ONLY). Tautan baris ini dilepas lebih dulu saat tulis, jadi BANK_TX_BERTAUT-nya bukan penghalang.
         bl2 = Blok(True)
-        rv = await KT.rencana_void_manual(conn, tid, h["bt_id"], alasan, bl2, kunci=False)
+        nomor, pembalik = tautan[0]["nomor"], None
+        if tipe == "BANK_TRANSACTION":
+            rv = await KT.rencana_void_manual(conn, tid, h["bt_id"], alasan, bl2, kunci=False)
+            h["baris"], h["saldo"] = rv.get("baris") or [], rv.get("saldo") or []
+            nomor = (rv.get("je") or {}).get("journal_number") or nomor
+        elif tipe == "BANK_TRANSFER":
+            rv = await KT.rencana_void_transfer(conn, tid, h["dok"]["id"], alasan, bl2, kunci=False)
+            h["baris"], h["saldo"] = rv.get("baris") or [], rv.get("saldo") or []
+            nomor = (rv.get("t") or {}).get("transfer_number") or nomor
+        else:
+            ctx_eff = ctx or {"tenant_id": tid, "user_id": None}
+            try:
+                if tipe == "CUSTOMER_DEPOSIT":
+                    bl2.daftar.extend(await CD._rencana_dp(conn, ctx_eff, h["dok"]["id"], "void", VoidCustomerDepositRequest(reason=alasan)))
+                else:
+                    rv = await RP._rencana_void_pembayaran(conn, ctx_eff, h["dok"]["id"], alasan, wajib_alasan=False, kunci=False)
+                    bl2.daftar.extend(rv["blocks"])
+                    nomor = (rv.get("payment") or {}).get("payment_number") or nomor
+            except HTTPException as e:       # penjaga lama melempar (mis. BANK_TX_BERTAUT): tampilkan sebagai blok, kecuali yang memang dilepas lebih dulu saat tulis
+                kode = getattr(e, "code", None) or (e.detail.get("code") if isinstance(e.detail, dict) else None) or "TIDAK_BISA_DIBATALKAN"
+                bl2.daftar.append({"code": kode, "message": e.detail["message"] if isinstance(e.detail, dict) else str(e.detail)})
+            # jurnal pembalik pratinjau = jurnal asli dengan debit/kredit DITUKAR (diverifikasi di harness terhadap pembalik sungguhan)
+            h["baris"] = [(x["account_id"], x["credit"], x["debit"], "Pembalik") for x in await conn.fetch(SQL_JURNAL_BARIS, tid, h["bt_id"])]
         for b in bl2.daftar:
             if b["code"] != "BANK_TX_BERTAUT":
                 bl.daftar.append(b)
-        h["baris"], h["saldo"] = rv.get("baris") or [], rv.get("saldo") or []
-        nomor = (rv.get("je") or {}).get("journal_number") or tautan[0]["nomor"]
         h["kalimat_tiga"] = [f"Dokumen {nomor} dibatalkan", f"Jurnal pembalik RV-{nomor} dibuat", f"Baris kembali ke {BD.STATUS_TEKS[h['kembali_ke']]}"]
         h["kalimat"] = "; ".join(h["kalimat_tiga"]) + "."
     return h
@@ -398,16 +607,36 @@ async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, b
 async def _tulis_batalkan(conn, ctx: dict, r: dict) -> dict:
     tid, uid, m = ctx["tenant_id"], ctx["user_id"], r["mutasi"]
     await conn.execute(SQL_TAUTAN_LEPAS, tid, m["id"], str(uid))        # tautan DILEPAS dulu: penjaga void menghitung tautan aktif (BANK_TX_BERTAUT)
-    await KT.kunci_void_manual(conn, r["bt_id"])
-    rv = await KT.rencana_void_manual(conn, tid, r["bt_id"], r["alasan"], Blok(False), kunci=True)       # blok pertama dilempar (rollback seluruh transaksi)
-    v = await KT.tulis_void_manual(conn, ctx, r["bt_id"], r["alasan"], rv)
+    tipe, did, alasan = r["dok"]["tipe"], r["dok"]["id"], r["alasan"]
+    if tipe == "BANK_TRANSACTION":
+        await KT.kunci_void_manual(conn, r["bt_id"])
+        rv = await KT.rencana_void_manual(conn, tid, r["bt_id"], alasan, Blok(False), kunci=True)       # blok pertama dilempar (rollback seluruh transaksi)
+        v = await KT.tulis_void_manual(conn, ctx, r["bt_id"], alasan, rv)
+        nomor, pembalik = rv["je"]["journal_number"], v["reversal_number"]
+    elif tipe == "BANK_TRANSFER":
+        await BTR.kunci_void_transfer(conn, did)
+        rv = await KT.rencana_void_transfer(conn, tid, did, alasan, Blok(False), kunci=True)
+        await BTR.void_transfer_core(conn, ctx, did, alasan, rv)
+        nomor = rv["t"]["transfer_number"]
+        pembalik = f"RV-{nomor}"
+    elif tipe == "CUSTOMER_DEPOSIT":
+        await CD.void_deposit_core(conn, ctx, did, VoidCustomerDepositRequest(reason=alasan))
+        nomor = r["dok"]["nomor"]
+        pembalik = f"RV-{nomor}"
+    else:
+        rv = await RP._rencana_void_pembayaran(conn, ctx, did, alasan, wajib_alasan=False, kunci=True)
+        if rv["blocks"]:
+            b = rv["blocks"][0]
+            raise GalatBerkode(400, b["code"], b["message"])
+        await RP._tulis_void_pembayaran(conn, ctx, did, alasan, rv)
+        nomor = (rv.get("payment") or {}).get("payment_number") or r["dok"]["nomor"]
+        pembalik = f"RV-{nomor}"
     if not await conn.fetchrow(SQL_KEMBALI_CATAT, tid, m["id"], r["kembali_ke"]):
         raise HTTPException(status_code=409, detail={"code": "BELUM_DIPUTUS", "message": "Keputusan baris ini sudah berubah. Muat ulang daftar."})
-    nomor = rv["je"]["journal_number"]
     await catat_riwayat(conn, tid, ENTITAS, m["id"], None, EVENT["batalkan"], uid, f"Catatan {nomor} dibatalkan",
                         meta={"rekening_id": str(m["bank_account_id"]), "nominal": str(m["nominal"]), "bank_transaction_id": str(r["bt_id"]), "alasan": r["alasan"],
-                              "jurnal_pembalik": v["reversal_number"]})
-    return {"jurnal_pembalik": v["reversal_number"], "kalimat": f"Dokumen {nomor} dibatalkan; jurnal pembalik {v['reversal_number']} dibuat; baris kembali ke {BD.STATUS_TEKS[r['kembali_ke']]}."}
+                              "jurnal_pembalik": pembalik, "tipe_dokumen": tipe})
+    return {"jurnal_pembalik": pembalik, "kalimat": f"Dokumen {nomor} dibatalkan; jurnal pembalik {pembalik} dibuat; baris kembali ke {BD.STATUS_TEKS[r['kembali_ke']]}."}
 
 
 RENCANA = {"cocokkan": rencana_cocokkan, "kecualikan": rencana_kecualikan, "lepaskan": rencana_lepaskan, "catat": rencana_catat, "batalkan": rencana_batalkan}
@@ -418,7 +647,7 @@ def _keluaran(r: dict, aksi: str, body: dict) -> dict:
     blocks = [{"code": b["code"], "message": b["message"]} for b in r["blocks"]]
     data = {"ok": not blocks, "blocks": blocks, "aksi": aksi, "mutasi": _ringkas_mutasi(r["mutasi"]) if r["mutasi"] else None, "jurnal": [], "kalimat": r["kalimat"],
             "payload": {**{k: v for k, v in body.items() if k != "versi"}, "versi": r["versi"]}}
-    for k in ("pasangan", "tautan", "kembali_ke", "alasan", "jenis", "akun", "kalimat_tiga"):
+    for k in ("pasangan", "tautan", "kembali_ke", "alasan", "jenis", "akun", "kalimat_tiga", "kelebihan", "faktur_sesudah", "jurnal_ringkas"):
         if k in r:
             data[k] = r[k]
     return data
@@ -433,11 +662,24 @@ async def _keluaran_async(conn, tid: str, r: dict, aksi: str, body: dict) -> dic
     return data
 
 
-async def pratinjau(pool, tid: str, rekening_id, mutasi_id, aksi: str, body: dict) -> dict:
+async def siapkan(pool, tid: str, aksi: str, body: dict) -> None:
+    """Prasyarat peran akun modul tujuan (butuh pool, di LUAR transaksi) -- dipanggil rute sebelum pratinjau/tulis jenis dokumen modul."""
+    if aksi != "catat":
+        return
+    if body.get("jenis") == "uang_muka_pelanggan":
+        await CD._ensure_role_preconditions(pool, tid)
+    elif body.get("jenis") == "terima_pembayaran":
+        await RP._ensure_receive_payments_role_preconditions(pool, tid)
+    elif body.get("jenis") == "transfer":
+        await BTR._ensure_bank_transfers_role_preconditions(pool, tid)
+
+
+async def pratinjau(pool, tid: str, rekening_id, mutasi_id, aksi: str, body: dict, ctx: Optional[dict] = None) -> dict:
     """Pratinjau B8: transaksi READ ONLY; penentu SAMA dengan tulis; jurnal selalu [] (NOL jurnal)."""
+    await siapkan(pool, tid, aksi, body)
     async with pool.acquire() as conn:
         async with conn.transaction(readonly=True):
-            r = await RENCANA[aksi](conn, tid, rekening_id, mutasi_id, body, Blok(True), False)
+            r = await RENCANA[aksi](conn, tid, rekening_id, mutasi_id, body, Blok(True), False, ctx)
             return {"success": True, "data": await _keluaran_async(conn, tid, r, aksi, body)}
 
 
@@ -445,7 +687,7 @@ async def tulis(conn, ctx: dict, rekening_id, mutasi_id, aksi: str, body: dict) 
     """Tulis di transaksi PEMANGGIL (idem sudah di rute): MUTASI_BANK:{id} -> penentu yang SAMA (FOR UPDATE, status dibaca ulang) -> versi -> tulis + riwayat."""
     tid = ctx["tenant_id"]
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"MUTASI_BANK:{mutasi_id}")
-    r = await RENCANA[aksi](conn, tid, rekening_id, mutasi_id, body, Blok(False), True)
+    r = await RENCANA[aksi](conn, tid, rekening_id, mutasi_id, body, Blok(False), True, ctx)
     if body.get("versi") and body["versi"] != r["versi"]:
         raise HTTPException(status_code=409, detail={"code": "RENCANA_BERUBAH", "message": "Keadaan baris atau dokumen berubah sejak pratinjau. Tinjau ulang sebelum menyimpan."})
     ekstra = await TULIS[aksi](conn, ctx, r)
