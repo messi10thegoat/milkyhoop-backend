@@ -1,4 +1,6 @@
 """Aksi Bank Feed BF-1c1 (KONTRAK-bf1c1): COCOKKAN · KECUALIKAN · LEPASKAN + RIWAYAT. NOL jurnal baru: aksi ini hanya MENAUTKAN/MENANDAI baris rekening koran.
+BF-1d (KONTRAK-bf1d): CATAT bayar_tagihan (uang keluar -> pembayaran faktur pembelian, alokasi eksplisit; TANPA PPh, diskon/biaya nol; kelebihan ikut modul + tampil) lewat buat_bayar_core;
+BATALKAN BILL_PAYMENT lewat void_bayar_core.
 BF-1c3 (KONTRAK-bf1c3): CATAT juga untuk transfer · uang_muka_pelanggan · terima_pembayaran, lewat penulis modulnya (buat_transfer_core · buat_dp_core · buat_penerimaan);
 BATALKAN-CATATAN generik: dokumen dibatalkan oleh penulis void MODULNYA menurut je.source_type. Izin modul tujuan diperiksa di sini (rute Bank Feed beda dari rute modul).
 BF-1c2 (KONTRAK-bf1c2): CATAT (uang_masuk · uang_keluar · pribadi) dan BATALKAN-CATATAN. Jurnal HANYA lewat penulis Uang Masuk/Keluar yang ada (kasbank_tulis:
@@ -20,6 +22,7 @@ from fastapi import HTTPException
 
 from . import bankfeed_daftar as BD
 from . import bankfeed_tebak as TB
+from . import bayar_keluar_rencana as BKR
 from . import guc_tenant as GUC
 from . import kasbank_ringkas as KR
 from . import kasbank_tulis as KT
@@ -31,10 +34,12 @@ from .nama_pengguna import nama_untuk
 from .so_riwayat import catat_riwayat
 from ..middleware.permission_middleware import izin_rute_pengguna
 from ..routers import bank_transfers as BTR
+from ..routers import bill_payments as BP
 from ..routers import customer_deposits as CD
 from ..routers import receive_payments as RP
 from ..schemas.bank_accounts import CreateManualTransactionRequest
 from ..schemas.bank_transfers import CreateBankTransferRequest
+from ..schemas.bill_payments import BillAllocationInput, CreateBillPaymentRequest
 from ..schemas.customer_deposits import VoidCustomerDepositRequest
 from ..utils.tanggal_tenant import zona_tenant
 
@@ -46,18 +51,18 @@ ALASAN_KECUALI = {"duplikat": "Duplikat", "bukan_transaksi": "Bukan transaksi", 
 EVENT = {"cocokkan": "BANK_FEED_COCOKKAN", "kecualikan": "BANK_FEED_KECUALIKAN", "lepaskan": "BANK_FEED_LEPASKAN", "catat": "BANK_FEED_CATAT", "batalkan": "BANK_FEED_BATALKAN"}
 AKSI_TEKS = {"BANK_FEED_COCOKKAN": ("cocokkan", "Dicocokkan"), "BANK_FEED_KECUALIKAN": ("kecualikan", "Dikecualikan"), "BANK_FEED_LEPASKAN": ("lepaskan", "Dilepas"),
              "BANK_FEED_CATAT": ("catat", "Dicatat"), "BANK_FEED_BATALKAN": ("batalkan", "Dibatalkan")}
-JENIS_CATAT = ("uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran")
-JENIS_GUC = ("uang_muka_pelanggan", "terima_pembayaran")        # penulis modul yang membaca GUC app.tenant_id (rute modulnya memasangnya); dipasang di SATU tempat: tulis()
-JENIS_DOK = ("transfer", "uang_muka_pelanggan", "terima_pembayaran")         # BF-1c3: dokumen dibuat penulis MODULNYA
-IZIN_BUAT = {"transfer": "/api/bank-transfers", "uang_muka_pelanggan": "/api/customer-deposits", "terima_pembayaran": "/api/receive-payments"}
-IZIN_VOID = {"BANK_TRANSFER": "/api/bank-transfers/{}/void", "CUSTOMER_DEPOSIT": "/api/customer-deposits/{}/void", "RECEIVE_PAYMENT": "/api/receive-payments/{}/void"}
+JENIS_CATAT = ("uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran", "bayar_tagihan")
+JENIS_GUC = ("uang_muka_pelanggan", "terima_pembayaran", "bayar_tagihan")        # penulis modul yang membaca GUC app.tenant_id (rute modulnya memasangnya); dipasang di SATU tempat: tulis()
+JENIS_DOK = ("transfer", "uang_muka_pelanggan", "terima_pembayaran", "bayar_tagihan")         # BF-1c3: dokumen dibuat penulis MODULNYA
+IZIN_BUAT = {"transfer": "/api/bank-transfers", "uang_muka_pelanggan": "/api/customer-deposits", "terima_pembayaran": "/api/receive-payments", "bayar_tagihan": "/api/bill-payments"}
+IZIN_VOID = {"BANK_TRANSFER": "/api/bank-transfers/{}/void", "CUSTOMER_DEPOSIT": "/api/customer-deposits/{}/void", "RECEIVE_PAYMENT": "/api/receive-payments/{}/void", "BILL_PAYMENT": "/api/bill-payments/{}/void"}
 TIPE_DOK = ("BANK_TRANSACTION",) + tuple(IZIN_VOID)
 # jenis yang penulisnya belum dipanggil Bank Feed (c3 / BF-1d): diblok berkode, bukan diam
-JENIS_BELUM = ("bayar_tagihan",)
+JENIS_BELUM = ()          # semua jenis kini tersedia (BF-1d)
 # Putusan pemilik LANGSUNG 12 Nov 2026: pribadi keluar Dr 3-40000 Prive; pribadi masuk Cr 3-10100 Modal Pemilik. Akun ditetapkan sistem (bukan pilihan pengguna).
 AKUN_PRIBADI = {"keluar": "3-40000", "masuk": "3-10100"}
 LABEL_JENIS = {"uang_masuk": "Uang masuk", "uang_keluar": "Uang keluar", "pribadi": "Pribadi", "transfer": "Transfer", "uang_muka_pelanggan": "Uang muka pelanggan",
-               "terima_pembayaran": "Pembayaran pelanggan"}
+               "terima_pembayaran": "Pembayaran pelanggan", "bayar_tagihan": "Pembayaran tagihan"}
 ENTITAS = "mutasi_bank"
 
 SQL_MUTASI = ("SELECT id, bank_account_id, tanggal, keterangan, arah, nominal, status, cara, alasan, diputus_oleh, diputus_pada, duplikat_dari, rekonsiliasi_id "
@@ -66,6 +71,8 @@ SQL_TAUTAN_MUTASI = ("SELECT t.id, t.bank_transaction_id, t.nominal_alokasi, bt.
                      "NULLIF(btrim(bt.payee_payer), '') AS kontak_nama FROM mutasi_bank_tautan t JOIN bank_transactions bt ON bt.id = t.bank_transaction_id AND bt.tenant_id = t.tenant_id "
                      "WHERE t.tenant_id = $1 AND t.mutasi_bank_id = $2 AND t.dilepas_pada IS NULL ORDER BY t.dibuat_pada, t.id")
 SQL_PELANGGAN = "SELECT id, nama FROM customers WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL"
+SQL_VENDOR = "SELECT id, name FROM vendors WHERE tenant_id = $1 AND id = $2"
+SQL_JURNAL_BAYAR = "SELECT journal_id FROM bill_payments_v2 WHERE tenant_id = $1 AND id = $2"
 SQL_TAUTAN_JUMLAH = "SELECT count(*) FROM mutasi_bank_tautan WHERE tenant_id = $1 AND mutasi_bank_id = $2"      # termasuk yang dilepas: kunci idempotensi berurut
 SQL_BT_JURNAL = "SELECT id FROM bank_transactions WHERE tenant_id = $1 AND journal_id = $2 AND bank_account_id = $3 AND status = 'POSTED'"
 SQL_PEMBALIK = ("SELECT journal_number FROM journal_entries WHERE tenant_id = $1 AND reversal_of_id = (SELECT journal_id FROM bank_transactions WHERE tenant_id = $1 AND id = $2)")
@@ -327,7 +334,7 @@ async def rencana_catat(conn, tid: str, rekening_id, mutasi_id, body: dict, bl: 
     if wajib_arah and m["arah"] != wajib_arah:
         bl.galat("JENIS_TAK_SESUAI_ARAH", 422, f"Baris ini {'uang masuk' if m['arah'] == 'masuk' else 'uang keluar'}; pilih jenis yang sesuai arahnya.")
         return h
-    if m["nominal"] != m["nominal"].to_integral_value():
+    if jenis != "bayar_tagihan" and m["nominal"] != m["nominal"].to_integral_value():       # pembayaran tagihan menerima sen (UangMasuk)
         bl.galat("NOMINAL_BERSEN", 422, f"Nominal {_rp(m['nominal'])} berkoma; Uang masuk/keluar hanya menerima rupiah bulat. Atur selisih sen lewat Pisah baris.")
         return h
     if jenis in JENIS_DOK:
@@ -411,8 +418,9 @@ async def _pelanggan(conn, tid: str, body: dict, bl: Blok):
 
 
 async def _rencana_dokumen(conn, tid: str, rekening_id, h: dict, m, jenis: str, body: dict, bl: Blok, kunci: bool, ctx) -> dict:
-    if jenis != "transfer" and m["arah"] != "masuk":
-        bl.galat("JENIS_TAK_SESUAI_ARAH", 422, f"{LABEL_JENIS[jenis]} hanya untuk uang masuk; baris ini uang keluar.")
+    wajib = {"transfer": None, "bayar_tagihan": "keluar"}.get(jenis, "masuk")
+    if wajib and m["arah"] != wajib:
+        bl.galat("JENIS_TAK_SESUAI_ARAH", 422, f"{LABEL_JENIS[jenis]} hanya untuk uang {wajib}; baris ini uang {m['arah']}.")
         return h
     if not await _izin(ctx, IZIN_BUAT[jenis], bl, f"membuat {LABEL_JENIS[jenis].lower()}"):
         return h
@@ -426,6 +434,8 @@ async def _rencana_dokumen(conn, tid: str, rekening_id, h: dict, m, jenis: str, 
     nominal, tgl = m["nominal"], m["tanggal"]
     harap = nominal if m["arah"] == "masuk" else -nominal
     waktu = f"({tgl.day}/{tgl.month})"
+    if jenis == "bayar_tagihan":
+        return await _rencana_bayar_tagihan(conn, tid, h, m, rek, body, bl, kunci, ctx, isi, waktu)
     if jenis == "transfer":
         lawan = _uuid(body.get("rekening_lawan"))
         if lawan is None:
@@ -502,6 +512,61 @@ async def _rencana_dokumen(conn, tid: str, rekening_id, h: dict, m, jenis: str, 
     return h
 
 
+async def _rencana_bayar_tagihan(conn, tid: str, h: dict, m, rek, body: dict, bl: Blok, kunci: bool, ctx, isi: str, waktu: str) -> dict:
+    """BF-1d: uang keluar -> pembayaran faktur pembelian lewat penentu BERSAMA (BKR.rencana_bayar) + penulis buat_bayar_core. Putusan pemilik 12 Nov: TANPA PPh (tagihan ber-PPh ditolak),
+    diskon + biaya bank NOL, kelebihan ikut modul dan DITAMPILKAN; MASTER: alokasi eksplisit, sen boleh."""
+    nominal, tgl = m["nominal"], m["tanggal"]
+    kid = _uuid(body.get("kontak"))
+    if kid is None:
+        bl.galat("KONTAK_WAJIB", 422, "Pilih vendornya.")
+        return h
+    v = await conn.fetchrow(SQL_VENDOR, tid, kid)
+    if not v:
+        bl.galat("VENDOR_TAK_ADA", 422, "Vendor tidak ditemukan.")
+        return h
+    mentah = body.get("alokasi") or []
+    if not mentah:
+        bl.galat("ALOKASI_WAJIB", 422, "Pilih faktur pembelian yang dibayar beserta nominalnya.")
+        return h
+    alok, ada = [], set()
+    for a in mentah:
+        bid, n = _uuid(a.get("bill_id")), _dec(a.get("nominal"))
+        if bid is None or n is None or n <= 0 or bid in ada:
+            bl.galat("ALOKASI_TAK_SAH", 422, "Alokasi faktur tidak sah (faktur atau nominal salah, atau faktur dipilih dua kali).")
+            return h
+        ada.add(bid)
+        alok.append(BillAllocationInput(bill_id=str(bid), amount_applied=n))
+    if sum((a.amount_applied for a in alok), Decimal(0)) > nominal:
+        bl.galat("ALOKASI_MELEBIHI_NOMINAL", 422, f"Jumlah alokasi melebihi nominal baris bank {_rp(nominal)}.")
+        return h
+    n_lama = int(await conn.fetchval(SQL_TAUTAN_JUMLAH, tid, m["id"]) or 0)
+    kunci_idem = f"BANKFEED:{m['id']}:{n_lama + 1}"                  # berurut: dicatat ulang setelah batal tak bentrok dengan dokumen lama
+    dok = CreateBillPaymentRequest(vendor_id=str(v["id"]), vendor_name=v["name"], payment_date=tgl, payment_method="cash" if rek["account_type"] == "cash" else "bank_transfer",
+                                   bank_account_id=str(rek["id"]), bank_account_name=rek["account_name"], total_amount=nominal, discount_amount=0, bank_fee_amount=0,
+                                   notes=isi[:500] or None, allocations=alok, save_as_draft=False, idempotency_key=kunci_idem)
+    if kunci:      # lock domain SAMA dengan rute buat pembayaran (per tenant + vendor), sebelum penentu yang mengunci tiap tagihan
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"BILL_PAYMENT_CREATE:{tid}:{v['id']}")
+    ctx_eff = ctx or {"tenant_id": tid, "user_id": None}
+    r = await BKR.rencana_bayar(conn, ctx_eff, dok, bl.pratinjau)
+    _aduh(bl, r["blocks"])
+    if Decimal(str((r.get("pph") or {}).get("amount") or 0)) > 0:
+        bl.galat("TAGIHAN_BER_PPH", 422, "Tagihan ini dipotong PPh. Catat pembayarannya lewat form Bayar Tagihan biasa, lalu cocokkan barisnya di Bank Feed.")
+        return h
+    bank = r.get("bank_transactions") or []
+    if bank and sum((abs(Decimal(str(x["amount"]))) for x in bank), Decimal(0)) != nominal:       # nominal diverifikasi ULANG terhadap rencana penulis
+        bl.galat("NOMINAL_JURNAL_TAK_SAMA", 409, "Pembayaran yang akan ditulis tidak sama dengan nominal baris bank; dibatalkan demi keamanan.")
+        return h
+    sisa = Decimal(str(r.get("unapplied_amount") or 0))
+    h["kelebihan"] = {"jumlah": str(sisa.quantize(SEN)), "nomor": None} if sisa > 0 else None
+    h["faktur_sesudah"] = r.get("bills") or []
+    h["jurnal_ringkas"] = [x for j in r.get("journals") or [] for x in j["lines"]]
+    h["dok"], h["akun_id"] = dok, rek["coa_id"]
+    lebih = f" Ada kelebihan {_rp(sisa)} (diperlakukan sesuai aturan Bayar Tagihan)." if sisa > 0 else ""
+    h["kalimat"] = f"Pembayaran {_rp(nominal)} {waktu} ke {v['name']} akan dialokasikan ke {len(alok)} faktur.{lebih}"
+    h["versi"] = _versi("catat", str(m["id"]), str(nominal), m["status"], "bayar_tagihan", str(v["id"]), [(a.bill_id, str(a.amount_applied)) for a in alok], str(sisa), dok.notes, str(rek["id"]))
+    return h
+
+
 async def _tulis_dokumen(conn, ctx: dict, r: dict) -> dict:
     tid, uid, m, jenis, dok = ctx["tenant_id"], ctx["user_id"], r["mutasi"], r["jenis"], r["dok"]
     if jenis == "transfer":
@@ -513,11 +578,16 @@ async def _tulis_dokumen(conn, ctx: dict, r: dict) -> dict:
         if jenis == "uang_muka_pelanggan":
             d = (await CD.buat_dp_core(conn, ctx, dok, r["rb"]))["data"]
             nomor = d["deposit_number"]
+        elif jenis == "bayar_tagihan":
+            d = (await BP.buat_bayar_core(conn, ctx, dok))["data"]
+            nomor = d["payment_number"]
+            jr = await conn.fetchrow(SQL_JURNAL_BAYAR, tid, UUID(str(d["id"])))
+            d = {**d, "journal_id": jr["journal_id"] if jr else None}
         else:
             d = (await RP.buat_penerimaan(conn, ctx, dok))["data"]
             nomor = d["payment_number"]
         jurnal_id = d["journal_id"]
-        bts = list(await conn.fetch(SQL_BT_JURNAL, tid, UUID(str(jurnal_id)), m["bank_account_id"]))
+        bts = list(await conn.fetch(SQL_BT_JURNAL, tid, UUID(str(jurnal_id)), m["bank_account_id"])) if jurnal_id else []
         if len(bts) != 1:
             raise HTTPException(status_code=409, detail={"code": "BT_HASIL_TAK_DITEMUKAN", "message": "Baris bank hasil dokumen tidak ditemukan; dibatalkan demi keamanan."})
         bt_id = bts[0]["id"]
@@ -593,6 +663,10 @@ async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, b
             try:
                 if tipe == "CUSTOMER_DEPOSIT":
                     bl2.daftar.extend(await CD._rencana_dp(conn, ctx_eff, h["dok"]["id"], "void", VoidCustomerDepositRequest(reason=alasan)))
+                elif tipe == "BILL_PAYMENT":
+                    rv = await BKR.rencana_batal_bayar(conn, tid, h["dok"]["id"], pratinjau=True)
+                    bl2.daftar.extend(rv["blocks"])
+                    nomor = (rv.get("payment") or {}).get("payment_number") or nomor
                 else:
                     rv = await RP._rencana_void_pembayaran(conn, ctx_eff, h["dok"]["id"], alasan, wajib_alasan=False, kunci=False)
                     bl2.daftar.extend(rv["blocks"])
@@ -628,6 +702,16 @@ async def _tulis_batalkan(conn, ctx: dict, r: dict) -> dict:
     elif tipe == "CUSTOMER_DEPOSIT":
         await CD.void_deposit_core(conn, ctx, did, VoidCustomerDepositRequest(reason=alasan))
         nomor = r["dok"]["nomor"]
+        pembalik = await conn.fetchval(SQL_PEMBALIK, tid, r["bt_id"])
+    elif tipe == "BILL_PAYMENT":
+        await BP.kunci_void_bayar(conn, did)
+        rv = await BKR.rencana_batal_bayar(conn, tid, did, pratinjau=False)          # blok pertama dilempar oleh penentu
+        if rv["blocks"]:
+            b = rv["blocks"][0]
+            raise GalatBerkode(400, b["code"], b["message"])
+        if not rv.get("ulang"):         # sudah dibatalkan dari modulnya: cukup lepas tautan dan kembalikan baris
+            await BP.void_bayar_core(conn, ctx, did, alasan, rv)
+        nomor = (rv.get("payment") or {}).get("payment_number") or r["dok"]["nomor"]
         pembalik = await conn.fetchval(SQL_PEMBALIK, tid, r["bt_id"])
     else:
         rv = await RP._rencana_void_pembayaran(conn, ctx, did, alasan, wajib_alasan=False, kunci=True)
@@ -678,6 +762,8 @@ async def siapkan(pool, tid: str, aksi: str, body: dict) -> None:
         await RP._ensure_receive_payments_role_preconditions(pool, tid)
     elif body.get("jenis") == "transfer":
         await BTR._ensure_bank_transfers_role_preconditions(pool, tid)
+    elif body.get("jenis") == "bayar_tagihan":
+        await BP._ensure_bill_payments_role_preconditions(pool, tid)
 
 
 async def pratinjau(pool, tid: str, rekening_id, mutasi_id, aksi: str, body: dict, ctx: Optional[dict] = None) -> dict:

@@ -356,9 +356,9 @@ def test_bayar_blok_penentu_diteruskan_dan_tulis_urutan(monkeypatch):
 
 
 # ====================================================================== JENIS yang masih belum ada
-def test_hanya_bayar_tagihan_yang_masih_belum_tersedia():
-    assert BA.JENIS_BELUM == ("bayar_tagihan",) and set(BA.JENIS_CATAT) == {"uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran"}
-    assert _kode(_prev(_K(_m()), {"jenis": "bayar_tagihan"})) == ["JENIS_BELUM_TERSEDIA"]
+def test_semua_jenis_catat_tersedia_sejak_bf1d():
+    assert BA.JENIS_BELUM == () and set(BA.JENIS_CATAT) == {"uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran", "bayar_tagihan"}
+    assert _kode(_prev(_K(_m()), {"jenis": "jenis_ngawur"})) == ["JENIS_TAK_SAH"]
 
 
 # ====================================================================== BATALKAN generik: dispatch menurut jenis dokumen
