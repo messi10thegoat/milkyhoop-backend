@@ -25,7 +25,7 @@ nilai_pytest() {  # $1 label, $2 ringkasan (DI SHELL INI, bukan pipa: tolak di s
   echo "$r" | grep -qE "^(FAILED|ERROR) | [0-9]+ (failed|error)" && tolak "$1: ada yang gagal"
   return 0
 }
-cd backend/api_gateway; F=$(grep -rlE --include="*.py" "$POLA_UNIT" tests/unit tests/milkybook | sort -u | tr "\n" " "); cd "$W"
+cd backend/api_gateway; F=$(grep -rlE --include="test_*.py" "$POLA_UNIT" tests/unit tests/milkybook | sort -u | tr "\n" " "); cd "$W"
 echo "== 1 unit ($(echo $F | wc -w) berkas) $(date +%H:%M)"
 R=$(timeout 1500 scripts/jalankan_unit.sh "$W" -q -p no:cacheprovider $F 2>&1 | ringkas); nilai_pytest "unit" "$R"
 if [ "${GERBANG_KONTROL_MERAH:-0}" = 1 ]; then  # kontrol merah: cukup langkah 1 (tanpa salinan/suite berat); WAJIB TOLAK
