@@ -3,6 +3,7 @@ Bagian MURNI (tanpa DB) ada di atas; bagian DB (`kandidat_bt`, `tebak`) di bawah
 - COCOK: bank_transactions POSTED rekening ini, arah SAMA (dari JURNAL, bukan tanda amount), nominal PERSIS, belum bertaut aktif, tak direkonsiliasi, BUKAN bagian
   pasangan batal (predikat SATU kasbank_ringkas.sql_bt_tanpa_batal), tanggal bt − tanggal bank ∈ [−90, +20] hari (P5). Satu kandidat + nama cocok + ≤3 hari → yakin;
   selain itu periksa. Dua kandidat nominal sama → periksa (tak dipilih diam). Gabungan 2–4 bt = 1 baris / 1 bt = 2–3 baris (nama cocok, ±10 hari) → HANYA periksa.
+  Yakin hanya untuk dokumen PEMBAYARAN (SUMBER_YAKIN; biaya/manual/penyesuaian/saldo awal paling tinggi periksa) DAN dokumen yang tak diperebutkan baris lain.
   Selisih biaya Rp2.500 BUKAN toleransi: tebak = nominal persis; hanya /calon yang menampilkan, selalu periksa.
 - BAWAAN BCA (putusan F2): BIAYA ADM→5-20850 Biaya Administrasi Bank · BUNGA→4-90000 Pendapatan Lain-lain · PAJAK BUNGA→5-80000 Beban Pajak; akun di-resolve runtime
   (Law 27); tak ada → blok AKUN_BAWAAN_TAK_ADA (tak membuat CoA diam-diam); keyakinan periksa.
@@ -19,9 +20,14 @@ from .bank_text_normalizer import normalize_bank_text
 MUNDUR_HARI, MAJU_HARI = 90, 20          # P5: tanggal bt − tanggal bank ∈ [−90, +20]
 YAKIN_HARI = 3                           # yakin hanya bila ≤ 3 hari
 GABUNGAN_HARI = 10
+MAKS_DOBEL = 5                           # id baris saingan yang dikirim ke FE (sisanya hanya jumlahnya)
 GABUNGAN_MAKS_BT, GABUNGAN_MAKS_BARIS = 4, 3
 GABUNGAN_MAKS_KANDIDAT = 12              # batas kombinasi (2^12 terkecil) — kandidat lebih banyak = tak digabung
 SELISIH_BI_FAST = Decimal("2500")
+# "Yakin" hanya bila dokumen kandidat adalah dokumen PEMBAYARAN yang membawa pihak jelas. Biaya (EXPENSE), entri manual (BANK_TRANSACTION), penyesuaian,
+# saldo awal dan sumber tak dikenal tetap boleh jadi kandidat tetapi paling tinggi PERIKSA (default tolak). Terukur golden: 3/3 dokumen biaya TAK punya
+# pasangan bank di jawaban benar, sedangkan 19/19 "yakin" benar berasal dari dokumen pembayaran/uang muka/penerimaan.
+SUMBER_YAKIN = frozenset({"RECEIVE_PAYMENT", "PAYMENT_RECEIVED", "CUSTOMER_DEPOSIT", "BILL_PAYMENT", "PAYMENT_BILL", "PAYMENT_MADE", "VENDOR_DEPOSIT"})
 AKUN_BAWAAN = {"admin": "5-20850", "bunga": "4-90000", "pajak_bunga": "5-80000"}
 NAMA_AKUN_BAWAAN = {"admin": "Biaya Administrasi Bank", "bunga": "Pendapatan Lain-lain", "pajak_bunga": "Beban Pajak"}
 
@@ -63,7 +69,7 @@ def bawaan_bca(keterangan, arah: str) -> Optional[dict]:
 
 def _kosong(**ekstra) -> dict:
     t = {"jenis": "kosong", "keyakinan": "kurang_data", "kalimat": None, "dasar": None, "bank_transaction_ids": [], "dokumen": [], "gabungan": False,
-         "jumlah_calon": 0, "akun": None, "kontak": None, "blok": None}
+         "jumlah_calon": 0, "akun": None, "kontak": None, "blok": None, "nama_cocok": None, "mungkin_dobel_dengan": None, "mungkin_dobel_jumlah": 0}
     t.update(ekstra)
     return t
 
@@ -87,11 +93,14 @@ def skor_calon(baris, b) -> dict:
             kal = f"Nominal beda {tg.rp(abs(selisih))} dari {b.get('nomor')} — periksa dulu."
         return {"id": b["id"], "nomor": b.get("nomor"), "tanggal": b["tanggal"], "nominal": b["nominal"], "selisih_hari": hari,
                 "selisih_nominal": selisih, "nama_cocok": cocok_nama, "keyakinan": "periksa", "kalimat": kal}
-    yakin = cocok_nama and abs(hari) <= YAKIN_HARI
+    layak = b.get("sumber") in SUMBER_YAKIN
+    yakin = cocok_nama and abs(hari) <= YAKIN_HARI and layak
     if yakin:
         kal = f"Cocok dengan {b.get('nomor')}: nominal sama, nama cocok, {abs(hari)} hari."
     elif not cocok_nama:
         kal = f"Nominal sama dengan {b.get('nomor')}, tetapi nama tidak cocok — periksa dulu."
+    elif not layak and abs(hari) <= YAKIN_HARI:
+        kal = f"Nominal, nama, dan tanggal cocok dengan {b.get('nomor')}, tetapi itu entri biaya/manual — konfirmasi dulu, periksa."
     else:
         arah_hari = "sesudah" if hari > 0 else "sebelum"
         kal = f"Nominal dan nama cocok dengan {b.get('nomor')}, tetapi {abs(hari)} hari {arah_hari} tanggal bank — periksa dulu."
@@ -121,7 +130,7 @@ def putuskan(baris, kandidat, akun: Optional[dict] = None) -> dict:
     if len(persis) == 1:
         s = skor_calon(baris, persis[0])
         return _kosong(jenis="cocok", keyakinan=s["keyakinan"], kalimat=s["kalimat"], dasar="nominal_nama_tanggal", bank_transaction_ids=[persis[0]["id"]],
-                       dokumen=_dokumen(persis), jumlah_calon=1)
+                       dokumen=_dokumen(persis), jumlah_calon=1, nama_cocok=s["nama_cocok"])
     if len(persis) > 1:
         return _kosong(jenis="cocok", keyakinan="periksa", kalimat=f"{len(persis)} dokumen bernominal sama — pilih yang benar.", dasar="nominal_ganda",
                        bank_transaction_ids=[b["id"] for b in persis], dokumen=_dokumen(persis), jumlah_calon=len(persis))
@@ -149,6 +158,30 @@ def gabungan_baris(b, barisan) -> dict:
         return {}
     return {r["id"]: _kosong(jenis="cocok", keyakinan="periksa", kalimat=f"{b.get('nomor')} = gabungan {len(sub)} baris bank — periksa dulu.", dasar="gabungan_baris",
                              bank_transaction_ids=[b["id"]], dokumen=_dokumen([b]), gabungan=True, jumlah_calon=1) for r in sub}
+
+
+def turunkan_persaingan(peta: dict, status: dict) -> dict:
+    """Dokumen yang sama dipilih >1 baris untuk_ditinjau yang SAMA-SAMA bernama cocok (cocok satu dokumen, bukan gabungan) = salah satunya pasti dobel/bayar ganda:
+    TAK satu pun yakin (turun ke periksa) dan ditandai `mungkin_dobel_dengan` (paling banyak MAKS_DOBEL id + `mungkin_dobel_jumlah`). Pembayar lain bernominal
+    sama tetapi nama tak cocok BUKAN saingan (nominal bulat sering sama). Dihitung atas SEMUA baris yang ditebak, bukan satu halaman."""
+    pilih = {}
+    for mid, t in peta.items():
+        if (status.get(mid) == "untuk_ditinjau" and t.get("jenis") == "cocok" and not t.get("gabungan") and t.get("nama_cocok")
+                and len(t.get("bank_transaction_ids") or []) == 1):
+            pilih.setdefault(t["bank_transaction_ids"][0], []).append(mid)
+    hasil = dict(peta)
+    for baris in pilih.values():
+        if len(baris) < 2:
+            continue
+        for mid in baris:
+            t = dict(hasil[mid])
+            lain = sorted(x for x in baris if x != mid)
+            t["mungkin_dobel_dengan"], t["mungkin_dobel_jumlah"] = lain[:MAKS_DOBEL], len(lain)
+            if t["keyakinan"] == "yakin":
+                t["keyakinan"] = "periksa"
+                t["kalimat"] = f"{len(baris)} baris bank bernama sama cocok dengan dokumen yang sama ({t['dokumen'][0]['nomor']}) — salah satunya mungkin ganda; periksa dulu."
+            hasil[mid] = t
+    return hasil
 
 
 def tandai_layak_massal(peta: dict, status: dict) -> dict:
@@ -189,7 +222,8 @@ from . import kasbank_ringkas as KR  # noqa: E402
 # dengan register bank). Tenant eksplisit di tiap SQL.
 SQL_KANDIDAT = f"""
 SELECT bt.id, bt.transaction_date AS tanggal, abs(j.net) AS nominal, CASE WHEN j.net > 0 THEN 'masuk' ELSE 'keluar' END AS arah,
-       dok.pihak_nama AS kontak_nama, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor, bt.transaction_type AS jenis
+       dok.pihak_nama AS kontak_nama, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor, bt.transaction_type AS jenis,
+       je.source_type AS sumber
 FROM bank_transactions bt
 JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.tenant_id = bt.tenant_id
 JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id AND je.status = 'POSTED'
@@ -209,7 +243,7 @@ BATAS_CALON = 50
 
 def _kandidat(r) -> dict:
     return {"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"], "kontak_nama": r["kontak_nama"],
-            "nomor": r["nomor"], "jenis": r["jenis"]}
+            "nomor": r["nomor"], "jenis": r["jenis"], "sumber": r["sumber"]}
 
 
 async def kandidat_bt(conn, tid: str, rekening_id, dari: date, sampai: date) -> list:
@@ -239,13 +273,14 @@ async def tebak(conn, tid: str, rekening_id, baris: list) -> dict:
         for mid, t in gabungan_baris(k, kosong).items():
             if peta[mid]["jenis"] == "kosong":
                 peta[mid] = t
-    return tandai_layak_massal(peta, {b["id"]: b["status"] for b in target})
+    status = {b["id"]: b["status"] for b in target}
+    return tandai_layak_massal(turunkan_persaingan(peta, status), status)
 
 
 def ringkas_tebakan(t: dict) -> dict:
     """Bentuk untuk respons daftar (FE hanya memformat; semua teks dari server)."""
     return {k: t.get(k) for k in ("jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok",
-                                  "layak_massal", "layak_massal_text")}
+                                  "layak_massal", "layak_massal_text", "mungkin_dobel_dengan", "mungkin_dobel_jumlah")}
 
 
 async def calon(conn, tid: str, rekening_id, mutasi_id, q: Optional[str] = None, limit: int = 20) -> dict:
