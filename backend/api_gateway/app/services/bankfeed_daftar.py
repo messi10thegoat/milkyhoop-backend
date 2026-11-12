@@ -69,7 +69,7 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
     rows = await conn.fetch(
         f"SELECT id, tanggal, keterangan, arah, nominal, status, cara, diputus_oleh, diputus_pada FROM mutasi_bank WHERE {saring} "
         f"ORDER BY tanggal DESC, baris_ke DESC NULLS LAST, id LIMIT ${len(param_s) + 1} OFFSET ${len(param_s) + 2}", *param_s, limit, offset)
-    peta = await TB.tebak(conn, tid, rekening_id, [{"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"],
+    peta = await TB.tebak_halaman(conn, tid, rekening_id, [{"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"],
                                                    "keterangan": r["keterangan"], "status": r["status"]} for r in rows])
     nama = await nama_untuk(conn, [r["diputus_oleh"] for r in rows]) if any(r["diputus_oleh"] for r in rows) else {}
     zona = await zona_tenant(conn, tid) if any(r["diputus_pada"] for r in rows) else None

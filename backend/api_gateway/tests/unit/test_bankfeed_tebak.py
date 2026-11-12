@@ -323,6 +323,35 @@ def test_tebak_tanpa_baris_ditebak_tak_menyentuh_basis_data():
     assert asyncio.run(TB.tebak(k, T_, REK, [_b(status="dicatat")])) == {} and k.sql == []
 
 
+class _KH(_KT):
+    """+ daftar SEMUA baris belum diputus (SQL_SEMUA_DITEBAK)."""
+    def __init__(self, semua=(), **k):
+        super().__init__(**k)
+        self.semua = list(semua)
+
+    async def fetch(self, sql, *a):
+        if "FROM mutasi_bank WHERE" in sql:
+            self.sql.append((sql, a))
+            return self.semua
+        return await super().fetch(sql, *a)
+
+
+def test_tebak_halaman_persaingan_dihitung_atas_semua_baris_bukan_satu_halaman():
+    # m1 di halaman; saingannya m2 (bernama sama, dokumen sama) ada di halaman LAIN -> m1 tetap tak boleh yakin
+    semua = [{**_b("m1"), "id": uuid.UUID(int=1)}, {**_b("m2"), "id": uuid.UUID(int=2)}]
+    k = _KH(semua, kand=[_k("b1")])
+    h = asyncio.run(TB.tebak_halaman(k, T_, REK, [_b(str(uuid.UUID(int=1)))]))
+    assert list(h) == [str(uuid.UUID(int=1))] and h[str(uuid.UUID(int=1))]["keyakinan"] == "periksa"
+    assert h[str(uuid.UUID(int=1))]["mungkin_dobel_dengan"] == [str(uuid.UUID(int=2))]
+    sql, a = [(s, a) for s, a in k.sql if "FROM mutasi_bank WHERE" in s][0]
+    assert "tenant_id = $1" in sql and "bank_account_id = $2" in sql and "LIMIT $3" in sql and a == (T_, REK, TB.BATAS_SEMUA)
+
+
+def test_tebak_halaman_tanpa_baris_belum_diputus_tak_menyentuh_basis_data():
+    k = _KH()
+    assert asyncio.run(TB.tebak_halaman(k, T_, REK, [_b(status="dicatat")])) == {} and k.sql == []
+
+
 def test_tebak_dua_baris_memilih_dokumen_sama_tak_ada_yang_layak_massal():
     k = _KT([_k("b1")])
     peta = asyncio.run(TB.tebak(k, T_, REK, [_b("m1"), _b("m2")]))
@@ -396,3 +425,11 @@ def test_rute_calon_terdaftar_dan_izin_baca_kas_bank():
     k = ("/{bank_account_id}/mutasi-bank/{mutasi_id}/calon", ("GET",))
     assert k in r and r[k].response_model is not None
     assert izin_untuk_jalur(f"/api/bank-accounts/{REK}/mutasi-bank/{uuid.uuid4()}/calon", "GET") == ("kas_bank", "R")
+
+
+def test_predikat_batal_mengecualikan_ASLI_dan_PEMBALIK_sekaligus():
+    # pelajaran TESTER 10 Nov: baris VD-/RV- "[VOID]" sempat terhitung uang masuk. Hanya-pembalik-dikecualikan = asli tetap jadi calon cocok -> WAJIB merah.
+    sql = KR.sql_bt_tanpa_batal("bt", "$1")
+    assert "reversed_by_id IS NULL" in KR.SARING_TANPA_BATAL and "reversal_of_id IS NULL" in KR.SARING_TANPA_BATAL
+    assert "'REVERSAL'" in KR.SARING_TANPA_BATAL and "_REVERSAL" in KR.SARING_TANPA_BATAL
+    assert KR.SARING_TANPA_BATAL in sql and "je.tenant_id = $1" in sql
