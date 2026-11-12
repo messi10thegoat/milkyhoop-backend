@@ -56,6 +56,19 @@ from ..utils.lampiran_unduh import stream_lampiran, url_lampiran_dokumen
 # lampiran di respons = documents.id (sama dengan yang dipakai DELETE).
 _EXP_ATT_MODUL_URL = "expenses"
 
+# B8a: SATU kueri daftar lampiran beban (GET /{id}/attachments + detail + hub); tenant eksplisit di da+d.
+_EXP_ATT_SQL_DAFTAR = """
+    SELECT d.id, d.file_name, d.file_size, d.file_type AS mime_type,
+           d.width, d.height, d.file_url, d.storage_type,
+           d.uploaded_at, da.display_order
+    FROM document_attachments da
+    JOIN documents d ON da.document_id = d.id
+    WHERE da.entity_type = 'expense' AND da.entity_id = $1
+      AND da.tenant_id = $2 AND d.tenant_id = $2
+      AND d.deleted_at IS NULL
+    ORDER BY da.display_order, d.uploaded_at
+"""
+
 # Pagar rute download: dokumen HARUS tertaut ke beban INI, bebannya milik
 # tenant JWT (predikat eksplisit -- gateway memakai peran BYPASSRLS), dan
 # dokumennya belum dihapus. Tak cocok -> 0 baris -> 404. Baris local -> 404
@@ -748,7 +761,7 @@ async def list_expenses(
                     accounting_status,
                     reference, notes, has_receipt,
                     created_at, journal_id,
-                    (SELECT COUNT(*) FROM expense_attachments ea WHERE ea.expense_id = expenses.id AND ea.tenant_id = expenses.tenant_id) AS jumlah_bukti,
+                    {BD.sql_jumlah_bukti("expenses")} AS jumlah_bukti,
                     (SELECT cu.name FROM customers cu WHERE cu.id = expenses.billed_to_customer_id AND cu.tenant_id = expenses.tenant_id) AS billed_to_customer_name
                 FROM expenses
                 WHERE {where_clause}
@@ -1231,15 +1244,9 @@ async def get_expense_detail(request: Request, expense_id: UUID):
                 result["items"] = []
 
             # Fetch attachments
-            attachments = await conn.fetch(
-                """
-                SELECT id, file_name, file_path, file_size, mime_type, uploaded_at
-                FROM expense_attachments
-                WHERE expense_id = $1
-            """,
-                str(expense_id),
-            )
-            result["attachments"] = [dict(a) for a in attachments]
+            # B8a: bentuk + sumber SAMA dgn GET /{id}/attachments (documents tertaut), bukan tabel mati expense_attachments
+            attachments = await conn.fetch(_EXP_ATT_SQL_DAFTAR, str(expense_id), ctx["tenant_id"])
+            result["attachments"] = _exp_lampiran_ke_respons(attachments, str(expense_id))
             # B1/B5 (Biaya BE gelombang 1): teks keadaan + posisi dari SERVER (penentu SAMA dgn daftar), vendor objek, nama pelanggan penagihan
             result["biaya_keadaan"] = BD.keadaan(expense["status"])
             result["status_text"] = BD.status_text(expense["status"])
@@ -2684,19 +2691,7 @@ async def list_expense_attachments(request: Request, expense_id: UUID):
                 raise HTTPException(status_code=404, detail="Expense not found")
 
             # Fetch attachments with document details
-            attachments = await conn.fetch(
-                """
-                SELECT d.id, d.file_name, d.file_size, d.file_type as mime_type,
-                       d.width, d.height, d.file_url, d.storage_type,
-                       d.uploaded_at, da.display_order
-                FROM document_attachments da
-                JOIN documents d ON da.document_id = d.id
-                WHERE da.entity_type = 'expense' AND da.entity_id = $1
-                AND d.deleted_at IS NULL
-                ORDER BY da.display_order, d.uploaded_at
-            """,
-                str(expense_id),
-            )
+            attachments = await conn.fetch(_EXP_ATT_SQL_DAFTAR, str(expense_id), ctx["tenant_id"])
 
             return {
                 "success": True,

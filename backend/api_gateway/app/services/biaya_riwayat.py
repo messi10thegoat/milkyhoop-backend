@@ -54,8 +54,10 @@ async def _jurnal(conn, tid: str, e):
 
 async def _bukti(conn, tid: str, expense_id):
     return await conn.fetch(
-        """SELECT id, file_name, uploaded_at, uploaded_by FROM expense_attachments
-           WHERE expense_id = $1 AND tenant_id = $2 ORDER BY uploaded_at, id""", expense_id, tid)
+        """SELECT d.id, d.file_name, d.uploaded_at, d.uploaded_by
+           FROM document_attachments da JOIN documents d ON d.id = da.document_id AND d.tenant_id = da.tenant_id
+           WHERE da.entity_type = 'expense' AND da.entity_id = $1 AND da.tenant_id = $2 AND d.deleted_at IS NULL
+           ORDER BY d.uploaded_at, d.id""", expense_id, tid)
 
 
 async def dokumen_biaya(conn, tid: str, expense_id) -> Optional[dict]:

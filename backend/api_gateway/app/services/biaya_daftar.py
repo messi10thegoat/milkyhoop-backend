@@ -4,9 +4,9 @@ hanya memformat.
 
 Kunci (saring; bukan partisi):
   draf        = status draft                                              -> PILL (hitung), desak 1
-  tanpa_bukti = status posted ∧ tak ada lampiran (expense_attachments)    -> PILL (hitung), desak 2
+  tanpa_bukti = status posted ∧ tak ada lampiran (document_attachments)    -> PILL (hitung), desak 2
   bulan_ini   = status <> void ∧ bulan expense_date == bulan tanggal bisnis tenant -> KARTU (bukan nilai `aksi` baris)
-Bukti = baris expense_attachments (kebenaran), BUKAN has_receipt (bendera saat buat; tak diturunkan saat lampiran dihapus).
+Bukti = lampiran document_attachments entity expense, belum dihapus (kebenaran), BUKAN has_receipt (bendera saat buat; tak diturunkan saat lampiran dihapus).
 Python `aksi_semua` dan SQL `sql_aksi` WAJIB setara (uji berpasangan). Nominal = total_amount dokumen (beku sesudah posted, Law 19)."""
 from typing import Optional
 
@@ -15,8 +15,18 @@ KARTU_BIAYA = ("bulan_ini",)           # kartu ringkasan, bukan pill
 SEMUA_KUNCI = AKSI_BIAYA + KARTU_BIAYA
 
 
+# B8a: SATU sumber bukti = lampiran NYATA (documents tertaut document_attachments entity 'expense', belum dihapus) --
+# sama dgn GET /expenses/{id}/attachments. Tabel expense_attachments MATI (0 baris, tanpa penulis): tak boleh dibaca.
+_BUKTI_DARI = ("document_attachments da JOIN documents d ON d.id = da.document_id AND d.tenant_id = da.tenant_id "
+               "WHERE da.entity_type = 'expense' AND da.entity_id = {a}.id AND da.tenant_id = {a}.tenant_id AND d.deleted_at IS NULL")
+
+
 def sql_ada_bukti(a: str = "expenses") -> str:
-    return f"EXISTS (SELECT 1 FROM expense_attachments ea WHERE ea.expense_id = {a}.id AND ea.tenant_id = {a}.tenant_id)"
+    return "EXISTS (SELECT 1 FROM " + _BUKTI_DARI.format(a=a) + ")"
+
+
+def sql_jumlah_bukti(a: str = "expenses") -> str:
+    return "(SELECT COUNT(*) FROM " + _BUKTI_DARI.format(a=a) + ")"
 
 
 def sql_aksi(kunci: str, p_hari: str, a: str = "expenses") -> str:
