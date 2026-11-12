@@ -121,5 +121,26 @@ async def riwayat_biaya(conn, tid: str, expense_id, limit: int = 200) -> Optiona
     for b in await _bukti(conn, tid, expense_id):
         k.tambah(b["uploaded_at"], "BUKTI_DITAMBAH", f"Bukti {b['file_name']} ditambahkan ke biaya {n}", b["uploaded_by"],
                  "expense", e["id"], n, kunci=b["id"])
-    keluar, total = await _selesaikan(conn, tid, k, {}, {}, limit)
+    keluar, total = await _selesaikan(conn, tid, k, {"expense": [e["id"]]}, {"expense": True}, limit)    # BUG-187: ikut audit_logs (ubah draf)
     return {"expense_id": str(e["id"]), "expense_number": n, "events": keluar, "total": total, "omitted": []}
+
+
+# BUG-187: label manusia untuk medan yang diubah lewat PATCH biaya draf (nama tak dikenal tampil dengan NAMA ASLINYA, tak disembunyikan)
+LABEL_MEDAN = {
+    "expense_date": "tanggal", "paid_through_id": "rekening bayar", "account_id": "akun biaya", "vendor_id": "vendor", "vendor_name": "vendor",
+    "amount": "jumlah", "line_items": "rincian", "is_itemized": "rincian", "tax_id": "pajak", "tax_rate": "pajak", "pph_type": "PPh", "pph_rate": "PPh",
+    "notes": "catatan", "reference": "referensi", "currency": "mata uang", "is_billable": "dapat ditagihkan", "billed_to_customer_id": "pelanggan penagihan",
+}
+
+
+def ringkas_ubah(nomor, medan, total_sebelum, total_sesudah) -> str:
+    """'Biaya EXP-1 diubah: jumlah, tanggal · total Rp100.000 → Rp120.000' (bagian total hanya bila berubah)."""
+    label = []
+    for m in medan:
+        t = LABEL_MEDAN.get(m, m)
+        if t not in label:
+            label.append(t)
+    total = ""
+    if total_sebelum is not None and total_sesudah is not None and Decimal(str(total_sebelum)) != Decimal(str(total_sesudah)):
+        total = f" · total {_rp(total_sebelum)} → {_rp(total_sesudah)}"
+    return f"Biaya {nomor} diubah{': ' + ', '.join(label) if label else ''}{total}"

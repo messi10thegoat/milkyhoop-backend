@@ -19,6 +19,7 @@ from ..services import teks_galat as tg
 from ..services import kasbank_tulis as KT
 from ..services import biaya_daftar as BD
 from ..services import idem_buat
+from ..services import audit_dokumen as _ad_biaya  # BUG-187: nama event audit ubah draf Biaya
 from ..services.galat_berkode import GalatBerkode
 from ..utils.idempotency import ambil_replay_klien, hash_payload, kunci_idempotensi_klien, simpan_replay_klien
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -2054,6 +2055,14 @@ async def update_expense(
                 if _lama is not None:
                     return _lama
                 _sebelum, expense = await ubah_biaya_inti(conn, ctx, expense_id, body)
+                # BUG-187 (Law 12): jejak ubah draf di transaksi YANG SAMA (gagal catat = ubah batal); BUKAN di pratinjau /edit/preview (ROLLBACK, tak menulis)
+                from ..services.biaya_riwayat import ringkas_ubah
+                from ..services.so_riwayat import catat_riwayat
+                _medan = sorted(body.model_dump(exclude_unset=True))
+                await catat_riwayat(conn, ctx["tenant_id"], "expenses", expense_id, expense["expense_number"], _ad_biaya.nama("expense", "updated"), ctx.get("user_id"),
+                                    ringkas_ubah(expense["expense_number"], _medan, _sebelum["total_amount"], expense["total_amount"]),
+                                    meta={"medan": _medan, "total_sebelum": str(_sebelum["total_amount"]), "total_sesudah": str(expense["total_amount"])},
+                                    source="api:expenses.update")
                 return await idem_buat.simpan(conn, ctx, _kp, _sd, "EXPENSE_UPDATE", {
                     "success": True,
                     "message": "Expense updated successfully",

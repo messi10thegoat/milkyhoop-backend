@@ -107,7 +107,7 @@ def test_riwayat_lengkap(tangkap):
     assert ev["BIAYA_DIBATALKAN"]["aktor_id"] == str(U2)
     assert ev["BIAYA_DIPOSTING"]["aktor_id"] == str(U2) and "Kas Toko" in ev["BIAYA_DIPOSTING"]["ringkas"]
     assert "Rp" not in ev["BIAYA_DIBUAT"]["ringkas"]  # nominal saat dibuat tak tersimpan (Law 12): tak diklaim
-    assert tangkap["ent"] == {}  # biaya tak menulis audit_logs
+    assert tangkap["ent"] == {"expense": [EID]}  # BUG-187: riwayat Biaya kini ikut audit_logs (ubah draf), dikunci sengaja
     ExpenseHistoryResponse(success=True, data=out)
 
 
