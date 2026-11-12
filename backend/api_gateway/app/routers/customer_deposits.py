@@ -1263,124 +1263,8 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
                 _guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]
 
                 # Generate deposit number
-                dep_number = await conn.fetchval(
-                    "SELECT generate_customer_deposit_number($1, 'DEP')",
-                    ctx["tenant_id"],
-                )
-
-                # Insert deposit
-                # FIX_P3_BRIDGE 2026-06-16 (a): persist spine linkage
-                # (quote_id / sales_order_id) and the create idempotency_key.
-                try:
-                    dep_id = await conn.fetchval(
-                        """
-                        INSERT INTO customer_deposits (
-                            tenant_id, deposit_number, customer_id, customer_name,
-                            amount, deposit_date, payment_method,
-                            account_id, bank_account_id, reference, notes,
-                            status, created_by,
-                            quote_id, sales_order_id, idempotency_key, proforma_id, jenis
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17)
-                        RETURNING id
-                    """,
-                        ctx["tenant_id"],
-                        dep_number,
-                        pelanggan_dp,
-                        body.customer_name,
-                        body.amount,
-                        body.deposit_date,
-                        body.payment_method,
-                        UUID(body.account_id),
-                        UUID(body.bank_account_id) if body.bank_account_id else None,
-                        body.reference,
-                        body.notes,
-                        ctx["user_id"],
-                        UUID(body.quote_id) if body.quote_id else None,
-                        UUID(body.sales_order_id) if body.sales_order_id else None,
-                        body.idempotency_key,
-                        # T200: proforma yang ditagih oleh uang masuk ini.
-                        UUID(body.proforma_id) if body.proforma_id else None,
-                        jenis_simpan,
-                    )
-                except asyncpg.exceptions.UniqueViolationError:
-                    # FIX_P3_BRIDGE 2026-06-16 (b): lost the create race on the
-                    # idempotency_key (partial UNIQUE index V179). Re-fetch and
-                    # return the row the winning txn inserted (money-in stays
-                    # single-recorded). The advisory lock above usually prevents
-                    # reaching here, but the index is the hard guarantee.
-                    winner = await conn.fetchrow(
-                        """
-                        SELECT id, deposit_number, amount, status, customer_id, customer_name,
-                               deposit_date, payment_method, account_id, bank_account_id,
-                               quote_id, sales_order_id, proforma_id,
-                               """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif
-                        FROM customer_deposits
-                        WHERE tenant_id = $1 AND idempotency_key = $2
-                        """,
-                        ctx["tenant_id"],
-                        body.idempotency_key,
-                    )
-                    if winner:
-                        _tolak_bila_maksud_beda(winner, body)
-                        return {
-                            "success": True,
-                            "message": (
-                                f"{label_jenis(winner['jenis_efektif'])} {winner['deposit_number']} "
-                                "sudah tercatat sebelumnya"
-                            ),
-                            "data": {
-                                "id": str(winner["id"]),
-                                "deposit_number": winner["deposit_number"],
-                                "amount": int(winner["amount"]),
-                                "status": winner["status"],
-                            },
-                        }
-                    raise
-
-                logger.info(f"Customer deposit created: {dep_id}, number={dep_number}")
-
-                result = {
-                    "success": True,
-                    "message": "Uang muka dibuat",
-                    "data": {
-                        "id": str(dep_id),
-                        "deposit_number": dep_number,
-                        "amount": body.amount,
-                        "status": "draft",
-                    },
-                }
-
-                # Auto post if requested
-                if body.auto_post:
-                    # FIX_P1_DEPOSIT 2026-06-16 (c): create+auto_post must hold
-                    # the SAME advisory lock as the standalone /post endpoint
-                    # (Law 13). dep_id is server-generated, so the lock is
-                    # acquired here once it is known, before _post_deposit.
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext($1))",
-                        f"DEPOSIT_POST:{dep_id}",
-                    )
-                    post_result = await _post_deposit(conn, ctx, dep_id)
-                    result["data"]["status"] = "posted"
-                    result["data"]["journal_id"] = post_result.get("journal_id")
-                    result["message"] = "Customer deposit created and posted"
-
-                # 12 Okt 2026: opsi Terbitkan SPK di Terima DP -- SATU transaksi dengan uang muka; SO tak memenuhi
-                # syarat / setelan mati / sudah berkode -> uang muka TETAP tercatat, order_code_issued false.
-                if body.terbitkan_kode_order:
-                    from ..services import kode_order as _KO
-                    result["data"]["order_code_issued"] = False
-                    if _guard_order_id:
-                        try:
-                            _h = await _KO.terbitkan_spk(conn, ctx["tenant_id"], _guard_order_id,
-                                                         await tanggal_dokumen(conn, ctx["tenant_id"]), ctx["user_id"])
-                        except _KO.KodeOrderGalat:
-                            _h = None
-                        if _h and _h["status"] == 200:
-                            result["data"]["order_code"] = _h["order_code"]
-                            result["data"]["order_code_issued"] = bool(_h["issued"])
-
-                return result
+                # BF-1c3: inti hasil ekstraksi (buat_dp_core) -- nomor, INSERT draf, pemenang idempotency, posting, kode order
+                return await buat_dp_core(conn, ctx, body, rb)
 
     except HTTPException:
         raise
@@ -1392,6 +1276,130 @@ async def create_customer_deposit(request: Request, body: CreateCustomerDepositR
 # =============================================================================
 # UPDATE CUSTOMER DEPOSIT (DRAFT ONLY)
 # =============================================================================
+
+
+async def buat_dp_core(conn, ctx: dict, body, rb: dict) -> dict:
+    """INTI buat uang muka (BF-1c3, hasil ekstraksi dari create_customer_deposit; SQL dan urutan sama): nomor -> INSERT draf (+ penanganan pemenang idempotency_key)
+    -> posting bila auto_post -> kode order bila diminta. Di transaksi PEMANGGIL; pemeriksaan awal (idempotency, rencana_buat_dp) milik pemanggil.
+    -> respons rute (dict)."""
+    _guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"], rb["pelanggan_dp"], rb["jenis"]
+    dep_number = await conn.fetchval(
+        "SELECT generate_customer_deposit_number($1, 'DEP')",
+        ctx["tenant_id"],
+    )
+
+    # Insert deposit
+    # FIX_P3_BRIDGE 2026-06-16 (a): persist spine linkage
+    # (quote_id / sales_order_id) and the create idempotency_key.
+    try:
+        dep_id = await conn.fetchval(
+            """
+            INSERT INTO customer_deposits (
+                tenant_id, deposit_number, customer_id, customer_name,
+                amount, deposit_date, payment_method,
+                account_id, bank_account_id, reference, notes,
+                status, created_by,
+                quote_id, sales_order_id, idempotency_key, proforma_id, jenis
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12, $13, $14, $15, $16, $17)
+            RETURNING id
+        """,
+            ctx["tenant_id"],
+            dep_number,
+            pelanggan_dp,
+            body.customer_name,
+            body.amount,
+            body.deposit_date,
+            body.payment_method,
+            UUID(body.account_id),
+            UUID(body.bank_account_id) if body.bank_account_id else None,
+            body.reference,
+            body.notes,
+            ctx["user_id"],
+            UUID(body.quote_id) if body.quote_id else None,
+            UUID(body.sales_order_id) if body.sales_order_id else None,
+            body.idempotency_key,
+            # T200: proforma yang ditagih oleh uang masuk ini.
+            UUID(body.proforma_id) if body.proforma_id else None,
+            jenis_simpan,
+        )
+    except asyncpg.exceptions.UniqueViolationError:
+        # FIX_P3_BRIDGE 2026-06-16 (b): lost the create race on the
+        # idempotency_key (partial UNIQUE index V179). Re-fetch and
+        # return the row the winning txn inserted (money-in stays
+        # single-recorded). The advisory lock above usually prevents
+        # reaching here, but the index is the hard guarantee.
+        winner = await conn.fetchrow(
+            """
+            SELECT id, deposit_number, amount, status, customer_id, customer_name,
+                   deposit_date, payment_method, account_id, bank_account_id,
+                   quote_id, sales_order_id, proforma_id,
+                   """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif
+            FROM customer_deposits
+            WHERE tenant_id = $1 AND idempotency_key = $2
+            """,
+            ctx["tenant_id"],
+            body.idempotency_key,
+        )
+        if winner:
+            _tolak_bila_maksud_beda(winner, body)
+            return {
+                "success": True,
+                "message": (
+                    f"{label_jenis(winner['jenis_efektif'])} {winner['deposit_number']} "
+                    "sudah tercatat sebelumnya"
+                ),
+                "data": {
+                    "id": str(winner["id"]),
+                    "deposit_number": winner["deposit_number"],
+                    "amount": int(winner["amount"]),
+                    "status": winner["status"],
+                },
+            }
+        raise
+
+    logger.info(f"Customer deposit created: {dep_id}, number={dep_number}")
+
+    result = {
+        "success": True,
+        "message": "Uang muka dibuat",
+        "data": {
+            "id": str(dep_id),
+            "deposit_number": dep_number,
+            "amount": body.amount,
+            "status": "draft",
+        },
+    }
+
+    # Auto post if requested
+    if body.auto_post:
+        # FIX_P1_DEPOSIT 2026-06-16 (c): create+auto_post must hold
+        # the SAME advisory lock as the standalone /post endpoint
+        # (Law 13). dep_id is server-generated, so the lock is
+        # acquired here once it is known, before _post_deposit.
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            f"DEPOSIT_POST:{dep_id}",
+        )
+        post_result = await _post_deposit(conn, ctx, dep_id)
+        result["data"]["status"] = "posted"
+        result["data"]["journal_id"] = post_result.get("journal_id")
+        result["message"] = "Customer deposit created and posted"
+
+    # 12 Okt 2026: opsi Terbitkan SPK di Terima DP -- SATU transaksi dengan uang muka; SO tak memenuhi
+    # syarat / setelan mati / sudah berkode -> uang muka TETAP tercatat, order_code_issued false.
+    if body.terbitkan_kode_order:
+        from ..services import kode_order as _KO
+        result["data"]["order_code_issued"] = False
+        if _guard_order_id:
+            try:
+                _h = await _KO.terbitkan_spk(conn, ctx["tenant_id"], _guard_order_id,
+                                             await tanggal_dokumen(conn, ctx["tenant_id"]), ctx["user_id"])
+            except _KO.KodeOrderGalat:
+                _h = None
+            if _h and _h["status"] == 200:
+                result["data"]["order_code"] = _h["order_code"]
+                result["data"]["order_code_issued"] = bool(_h["issued"])
+    return result
 
 
 @router.patch("/{deposit_id}", response_model=CustomerDepositResponse)

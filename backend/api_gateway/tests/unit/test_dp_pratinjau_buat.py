@@ -312,7 +312,10 @@ def test_penulis_memakai_penentu_bersama_bukan_cek_sendiri():
 
 def test_penulis_memanggil_penentu_sebelum_insert():
     src = ast.get_source_segment(Path(CD.__file__).read_text(), _fungsi(CD, "create_customer_deposit"))
-    assert src.index("rencana_buat_dp(") < src.index("INSERT INTO customer_deposits")
+    # BF-1c3: INSERT diekstrak ke buat_dp_core; jaminan sama: penentu dipanggil SEBELUM inti (yang memuat INSERT)
+    assert src.index("rencana_buat_dp(") < src.index("buat_dp_core(")
+    inti = ast.get_source_segment(Path(CD.__file__).read_text(), _fungsi(CD, "buat_dp_core"))
+    assert "INSERT INTO customer_deposits" in inti and "INSERT INTO customer_deposits" not in src
 
 
 @pytest.fixture

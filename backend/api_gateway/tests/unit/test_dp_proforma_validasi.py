@@ -99,8 +99,10 @@ def test_create_memanggil_validasi_sebelum_insert():
     assert not [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "validasi_proforma_dp"]
     r = [c for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "rencana_buat_dp"]
     assert len(r) == 1 and [ast.unparse(x) for x in r[0].args] == ["conn", "ctx", "body"] and not r[0].keywords
-    ins = min(c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and c.args
-              and isinstance(c.args[0], ast.Constant) and "INSERT INTO customer_deposits" in str(c.args[0].value))
+    # BF-1c3: INSERT diekstrak ke buat_dp_core; jaminan sama: penentu (yang memvalidasi) dipanggil SEBELUM inti yang memuat INSERT
+    ins = min(c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "buat_dp_core")
+    inti = _fn("buat_dp_core")
+    assert any(isinstance(c, ast.Call) and c.args and isinstance(c.args[0], ast.Constant) and "INSERT INTO customer_deposits" in str(c.args[0].value) for c in ast.walk(inti))
     assert r[0].lineno < ins
 
 

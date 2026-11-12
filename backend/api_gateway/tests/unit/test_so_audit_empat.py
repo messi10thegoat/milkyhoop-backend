@@ -147,11 +147,13 @@ def test_dp_tanpa_pelanggan_nama_jadi_pembeda():
 
 def test_dp_jalur_balapan_unique_violation_juga_membandingkan():
     src = open(CD.__file__).read()
+    # BF-1c3: tangkapan UniqueViolation (pemenang) kini di buat_dp_core, indentasi beda -> bandingkan dengan spasi dinormalkan
+    norm = " ".join(src.split())
     # dua titik balasan idempoten (pra-cek + tangkapan UniqueViolation) sama-sama lewat pembanding
     assert src.count("_tolak_bila_maksud_beda(existing, body)") == 1
     assert src.count("_tolak_bila_maksud_beda(winner, body)") == 1
     # PELUNASAN-TEKS/#9: SELECT idempoten kini juga membawa jenis efektif (label pesan replay) -- tetap dua kueri yang sama
-    assert src.count('quote_id, sales_order_id, proforma_id,\n                               """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif\n                        FROM customer_deposits') == 2
+    assert norm.count('quote_id, sales_order_id, proforma_id, """ + sql_jenis_efektif("customer_deposits") + """ AS jenis_efektif FROM customer_deposits') == 2
 
 
 # ------------------------------------------------------------------ 2+3. terkirim / belum dikirim

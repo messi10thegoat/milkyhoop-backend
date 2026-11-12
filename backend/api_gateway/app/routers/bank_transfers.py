@@ -452,38 +452,9 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
                 # B8: penentu BERSAMA dengan /bank-transfers/preview (asal/tujuan; + posting bila auto_post)
                 await KT.rencana_buat_transfer(conn, ctx["tenant_id"], body, pratinjau=False)
 
-                # Calculate total
-                total_amount = body.amount + body.fee_amount
-
-                # Generate transfer number
-                transfer_number = await conn.fetchval(
-                    "SELECT generate_bank_transfer_number($1, 'TRF')", ctx["tenant_id"]
-                )
-
-                # Create transfer
-                transfer_id = uuid_module.uuid4()
-
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transfers (
-                        id, tenant_id, transfer_number, from_bank_id, to_bank_id,
-                        amount, fee_amount, total_amount, transfer_date,
-                        ref_no, notes, status, created_by
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12)
-                """,
-                    transfer_id,
-                    ctx["tenant_id"],
-                    transfer_number,
-                    UUID(body.from_bank_id),
-                    UUID(body.to_bank_id),
-                    body.amount,
-                    body.fee_amount,
-                    total_amount,
-                    body.transfer_date,
-                    body.ref_no,
-                    body.notes,
-                    ctx["user_id"],
-                )
+                # BF-1c3: inti hasil ekstraksi (buat_transfer_core) -- nomor, INSERT draf, posting bila auto_post; SQL sama dgn handler lama
+                _t = await buat_transfer_core(conn, ctx, body)
+                transfer_id, transfer_number = _t["transfer_id"], _t["transfer_number"]
 
                 logger.info(
                     f"Bank transfer created: {transfer_id}, number={transfer_number}"
@@ -501,8 +472,7 @@ async def create_bank_transfer(request: Request, body: CreateBankTransferRequest
 
                 # Auto-post if requested
                 if body.auto_post:
-                    post_result = await _post_transfer(conn, ctx, transfer_id)
-                    result["data"].update(post_result)
+                    result["data"].update(_t["post"])
                     result["data"]["status"] = "posted"
                     result["message"] = "Bank transfer created and posted"
 
@@ -958,10 +928,7 @@ async def void_bank_transfer(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: Advisory lock for transfer void
-                await conn.fetchval(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BANK_TRANSFER_VOID:{transfer_id}",
-                )
+                await kunci_void_transfer(conn, transfer_id)
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TRANSFER_VOID", transfer_id,
                                                              {"reason": body.reason}, response)
                 if _lama is not None:
@@ -980,119 +947,9 @@ async def void_bank_transfer(
                         "data": {"id": str(transfer_id)},
                     }, transfer_id)
 
-                # Create reversal journal
-                reversal_journal_id = uuid_module.uuid4()
-                reversal_number = f"RV-{bt['transfer_number']}"
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, reversal_of_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSFER', $5, $6, 'DRAFT', $7, $7, $8)
-                """,
-                    reversal_journal_id,
-                    ctx["tenant_id"],
-                    reversal_number,
-                    f"Void Transfer {bt['transfer_number']} - {body.reason}",
-                    transfer_id,
-                    bt["journal_id"],
-                    bt["total_amount"],
-                    ctx["user_id"],
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-                # Baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
-                for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (
-                            id, journal_id, line_number, account_id, debit, credit, memo
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                        uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
-                    )
-
-                # Law 20: DRAFT->POSTED for hash chain
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_journal_id,
-                )
-
-                # Mark original journal as reversed
-                await conn.execute(
-                    """
-                    UPDATE journal_entries
-                    SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: status asli TETAP POSTED (lihat backend/docs/TEMUAN-rantai-nomor-ganda-20260912.md)
-                    WHERE id = $1
-                """,
-                    bt["journal_id"],
-                    reversal_journal_id,
-                )
-
-                # Create reversal bank transactions (saldo sesudah == pratinjau r["saldo"]: asal, tujuan; dibaca bersaring tenant)
-                saldo_asal, saldo_tujuan = r["saldo"]
-                # Reverse source bank (get money back)
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date, transaction_type,
-                        amount, running_balance, reference_type, reference_id, reference_number,
-                        description, journal_id, created_by
-                    ) VALUES ($1, $2, $3, $11, 'transfer_in', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
-                """,
-                    uuid_module.uuid4(),
-                    ctx["tenant_id"],
-                    bt["from_bank_id"],
-                    bt["total_amount"],  # Positive (money back)
-                    saldo_asal["sesudah"],
-                    transfer_id,
-                    f"VOID-{bt['transfer_number']}",
-                    f"Void transfer - {body.reason}",
-                    reversal_journal_id,
-                    ctx["user_id"],
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-                # Reverse destination bank (money out)
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date, transaction_type,
-                        amount, running_balance, reference_type, reference_id, reference_number,
-                        description, journal_id, created_by
-                    ) VALUES ($1, $2, $3, $11, 'transfer_out', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
-                """,
-                    uuid_module.uuid4(),
-                    ctx["tenant_id"],
-                    bt["to_bank_id"],
-                    -bt["amount"],  # Negative (money out)
-                    saldo_tujuan["sesudah"],
-                    transfer_id,
-                    f"VOID-{bt['transfer_number']}",
-                    f"Void transfer - {body.reason}",
-                    reversal_journal_id,
-                    ctx["user_id"],
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-                # BUG-116: reference_type 'transfer' = yang ditulis posting (dulu 'bank_transfer' -> 0 baris); ROW (n): + aktor + alasan
-                await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], body.reason, referensi=("transfer", transfer_id))
-
-                # Update transfer status
-                await conn.execute(
-                    """
-                    UPDATE bank_transfers
-                    SET status = 'void', voided_at = NOW(), voided_by = $2,
-                        voided_reason = $3, updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $4
-                """,
-                    transfer_id,
-                    ctx["user_id"],
-                    body.reason,
-                    ctx["tenant_id"],
-                )
+                # BF-1c3: inti hasil ekstraksi (void_transfer_core)
+                _v = await void_transfer_core(conn, ctx, transfer_id, body.reason, r)
+                reversal_journal_id = _v["reversal_journal_id"]
 
                 logger.info(f"Bank transfer voided: {transfer_id}")
 
@@ -1111,6 +968,170 @@ async def void_bank_transfer(
     except Exception as e:
         logger.error(f"Error voiding bank transfer {transfer_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to void bank transfer")
+
+
+async def buat_transfer_core(conn, ctx: dict, body) -> dict:
+    """INTI buat transfer (BF-1c3, hasil ekstraksi dari handler; SQL dan urutan sama): nomor -> INSERT draf -> posting bila auto_post. Di transaksi PEMANGGIL;
+    penentu (KT.rencana_buat_transfer) dan idempotency milik pemanggil. -> {transfer_id, transfer_number, post (hasil _post_transfer | None)}."""
+    # Calculate total
+    total_amount = body.amount + body.fee_amount
+
+    # Generate transfer number
+    transfer_number = await conn.fetchval(
+        "SELECT generate_bank_transfer_number($1, 'TRF')", ctx["tenant_id"]
+    )
+
+    # Create transfer
+    transfer_id = uuid_module.uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO bank_transfers (
+            id, tenant_id, transfer_number, from_bank_id, to_bank_id,
+            amount, fee_amount, total_amount, transfer_date,
+            ref_no, notes, status, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'draft', $12)
+    """,
+        transfer_id,
+        ctx["tenant_id"],
+        transfer_number,
+        UUID(body.from_bank_id),
+        UUID(body.to_bank_id),
+        body.amount,
+        body.fee_amount,
+        total_amount,
+        body.transfer_date,
+        body.ref_no,
+        body.notes,
+        ctx["user_id"],
+    )
+    post = await _post_transfer(conn, ctx, transfer_id) if body.auto_post else None
+    return {"transfer_id": transfer_id, "transfer_number": transfer_number, "post": post}
+
+
+async def kunci_void_transfer(conn, transfer_id) -> None:
+    """Law 13: kunci advisory per transfer untuk void, PERTAMA (sama dengan handler void lama)."""
+    await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TRANSFER_VOID:{transfer_id}")
+
+
+async def void_transfer_core(conn, ctx: dict, transfer_id, reason, r: dict) -> dict:
+    """INTI void transfer (BF-1c3, hasil ekstraksi; SQL dan urutan sama dgn handler lama): jurnal PEMBALIK (DRAFT -> baris dari penentu -> POSTED), asli ditandai
+    reversed_by_id (Law 2), dua bank_transactions pembalik, baris asli VOIDED, status transfer void. `r` = KT.rencana_void_transfer (bukan draf). -> {reversal_journal_id}."""
+    bt = r["t"]
+    # Create reversal journal
+    reversal_journal_id = uuid_module.uuid4()
+    reversal_number = f"RV-{bt['transfer_number']}"
+    hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
+    await conn.execute(
+        """
+        INSERT INTO journal_entries (
+            id, tenant_id, journal_number, journal_date,
+            description, source_type, source_id, reversal_of_id,
+            status, total_debit, total_credit, created_by
+        ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSFER', $5, $6, 'DRAFT', $7, $7, $8)
+    """,
+        reversal_journal_id,
+        ctx["tenant_id"],
+        reversal_number,
+        f"Void Transfer {bt['transfer_number']} - {reason}",
+        transfer_id,
+        bt["journal_id"],
+        bt["total_amount"],
+        ctx["user_id"],
+        hari_ini,  # t10-tanggal-bisnis
+    )
+
+    # Baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
+    for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
+        await conn.execute(
+            """
+            INSERT INTO journal_lines (
+                id, journal_id, line_number, account_id, debit, credit, memo
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+            uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
+        )
+
+    # Law 20: DRAFT->POSTED for hash chain
+    await conn.execute(
+        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+        reversal_journal_id,
+    )
+
+    # Mark original journal as reversed
+    await conn.execute(
+        """
+        UPDATE journal_entries
+        SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: status asli TETAP POSTED (lihat backend/docs/TEMUAN-rantai-nomor-ganda-20260912.md)
+        WHERE id = $1
+    """,
+        bt["journal_id"],
+        reversal_journal_id,
+    )
+
+    # Create reversal bank transactions (saldo sesudah == pratinjau r["saldo"]: asal, tujuan; dibaca bersaring tenant)
+    saldo_asal, saldo_tujuan = r["saldo"]
+    # Reverse source bank (get money back)
+    await conn.execute(
+        """
+        INSERT INTO bank_transactions (
+            id, tenant_id, bank_account_id, transaction_date, transaction_type,
+            amount, running_balance, reference_type, reference_id, reference_number,
+            description, journal_id, created_by
+        ) VALUES ($1, $2, $3, $11, 'transfer_in', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
+    """,
+        uuid_module.uuid4(),
+        ctx["tenant_id"],
+        bt["from_bank_id"],
+        bt["total_amount"],  # Positive (money back)
+        saldo_asal["sesudah"],
+        transfer_id,
+        f"VOID-{bt['transfer_number']}",
+        f"Void transfer - {reason}",
+        reversal_journal_id,
+        ctx["user_id"],
+        hari_ini,  # t10-tanggal-bisnis
+    )
+
+    # Reverse destination bank (money out)
+    await conn.execute(
+        """
+        INSERT INTO bank_transactions (
+            id, tenant_id, bank_account_id, transaction_date, transaction_type,
+            amount, running_balance, reference_type, reference_id, reference_number,
+            description, journal_id, created_by
+        ) VALUES ($1, $2, $3, $11, 'transfer_out', $4, $5, 'transfer_void', $6, $7, $8, $9, $10)
+    """,
+        uuid_module.uuid4(),
+        ctx["tenant_id"],
+        bt["to_bank_id"],
+        -bt["amount"],  # Negative (money out)
+        saldo_tujuan["sesudah"],
+        transfer_id,
+        f"VOID-{bt['transfer_number']}",
+        f"Void transfer - {reason}",
+        reversal_journal_id,
+        ctx["user_id"],
+        hari_ini,  # t10-tanggal-bisnis
+    )
+
+    # BUG-116: reference_type 'transfer' = yang ditulis posting (dulu 'bank_transfer' -> 0 baris); ROW (n): + aktor + alasan
+    await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], reason, referensi=("transfer", transfer_id))
+
+    # Update transfer status
+    await conn.execute(
+        """
+        UPDATE bank_transfers
+        SET status = 'void', voided_at = NOW(), voided_by = $2,
+            voided_reason = $3, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $4
+    """,
+        transfer_id,
+        ctx["user_id"],
+        reason,
+        ctx["tenant_id"],
+    )
+    return {"reversal_journal_id": reversal_journal_id}
 
 
 @router.get("/{transfer_id}/history")

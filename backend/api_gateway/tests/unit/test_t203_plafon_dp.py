@@ -190,10 +190,13 @@ async def test_pagar_dipanggil_di_create_sebelum_insert():
     assert [ast.unparse(k.value) for k in guard[0].keywords if k.arg == "kunci"] == ["not pratinjau"], "penulis WAJIB mengunci SO"
     cr = fn["create_customer_deposit"]
     rb = panggil(cr, "rencana_buat_dp")
-    ins = [c.lineno for c in ast.walk(cr) if isinstance(c, ast.Call) and c.args and isinstance(c.args[0], ast.Constant)
+    # BF-1c3: INSERT diekstrak ke buat_dp_core; jaminan sama: penentu (memuat pagar) SEBELUM pemanggilan inti; INSERT ada di inti
+    inti_panggil = panggil(cr, "buat_dp_core")
+    inti = fn["buat_dp_core"]
+    ins = [c.lineno for c in ast.walk(inti) if isinstance(c, ast.Call) and c.args and isinstance(c.args[0], ast.Constant)
            and "INSERT INTO customer_deposits" in str(c.args[0].value)]
-    assert rb and ins and rb[0].lineno < min(ins), "pagar harus dievaluasi SEBELUM INSERT"
-    assert '_guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"]' in " ".join(ast.get_source_segment(ROUTER_SRC, cr).split())
+    assert rb and inti_panggil and ins and rb[0].lineno < inti_panggil[0].lineno, "pagar harus dievaluasi SEBELUM INSERT"
+    assert '_guard_order_id, pelanggan_dp, jenis_simpan = rb["order_id"]' in " ".join(ast.get_source_segment(ROUTER_SRC, inti).split())
 
 
 async def test_sales_order_tidak_ada_ditolak():

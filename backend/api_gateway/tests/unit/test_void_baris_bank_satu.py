@@ -46,7 +46,9 @@ def test_tiga_void_memakai_satu_penanda():
     from app.services import kasbank_tulis as KT
     # BF-1c2: void manual diekstrak ke KT.tulis_void_manual (penanda dipanggil di sana); rute hanya memanggilnya
     assert "KT.tulis_void_manual(" in inspect.getsource(KB.void_transaction)
-    for fn in (KT.tulis_void_manual, EX._batal_biaya, BT.void_bank_transfer):  # void biaya: inti _batal_biaya (tulis + pratinjau)
+    # BF-1c3: void transfer diekstrak ke BT.void_transfer_core (penanda dipanggil di sana); rute hanya memanggilnya
+    assert "void_transfer_core(" in inspect.getsource(BT.void_bank_transfer)
+    for fn in (KT.tulis_void_manual, EX._batal_biaya, BT.void_transfer_core):  # void biaya: inti _batal_biaya (tulis + pratinjau)
         src = inspect.getsource(fn)
         assert "tandai_baris_void(" in src, fn.__name__
     for mod in (KB, EX, BT):  # tak ada salinan UPDATE ... 'VOIDED' lagi di router
