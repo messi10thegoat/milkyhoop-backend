@@ -302,6 +302,7 @@ POST /api/bom/{bom_id}/duplicate
 POST /api/bom/{bom_id}/obsolete
 POST /api/bom/{bom_id}/operations
 POST /api/bom/{bom_id}/recalculate
+POST /api/bom/{bom_id}/recalculate/preview
 POST /api/branches
 POST /api/branches/transfers
 POST /api/branches/transfers/{transfer_id}/receive

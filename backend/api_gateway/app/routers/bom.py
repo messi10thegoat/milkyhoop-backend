@@ -59,6 +59,44 @@ def get_user_context(request: Request) -> dict:
     return {"tenant_id": tenant_id, "user_id": UUID(user_id) if user_id else None}
 
 
+async def tarif_work_center(conn, tenant_id, wc_id):
+    """(labor, overhead) per jam milik Work Center di TENANT ini; None bila WC tak ada di tenant ini (BUG-179: dulu tanpa saring tenant)."""
+    r = await conn.fetchrow(
+        "SELECT labor_rate_per_hour, overhead_rate_per_hour FROM work_centers WHERE id = $1 AND tenant_id = $2", wc_id, tenant_id)
+    return None if r is None else (r["labor_rate_per_hour"] or 0, r["overhead_rate_per_hour"] or 0)
+
+
+def tarif_efektif(labor, overhead, tarif_wc):
+    """Tarif eksplisit > 0 dipertahankan (override); yang 0/kosong diisi dari Work Center (standar biaya = snapshot saat BOM didefinisikan)."""
+    if tarif_wc is None:
+        return labor or 0, overhead or 0
+    return (labor if labor and labor > 0 else tarif_wc[0]), (overhead if overhead and overhead > 0 else tarif_wc[1])
+
+
+async def segarkan_tarif_operasi(conn, tenant_id, bom_id) -> list:
+    """BOM DRAFT: isi tarif operasi yang masih 0 dari Work Center (non-maklun). Mengembalikan perubahan lama -> baru. Dipakai recalculate + pratinjaunya."""
+    ops = await conn.fetch(
+        """SELECT o.id, o.operation_number, o.operation_name, o.work_center_id, o.labor_rate_per_hour, o.overhead_rate_per_hour
+           FROM bom_operations o JOIN bill_of_materials b ON b.id = o.bom_id AND b.tenant_id = $2
+           WHERE o.bom_id = $1 AND NOT COALESCE(o.is_subcontract, false) AND o.work_center_id IS NOT NULL ORDER BY o.operation_number""",
+        bom_id, tenant_id)
+    perubahan = []
+    for o in ops:
+        tw = await tarif_work_center(conn, tenant_id, o["work_center_id"])
+        if tw is None:
+            continue
+        lab, ovh = tarif_efektif(o["labor_rate_per_hour"], o["overhead_rate_per_hour"], tw)
+        if (lab, ovh) != (o["labor_rate_per_hour"] or 0, o["overhead_rate_per_hour"] or 0):
+            await conn.execute(
+                """UPDATE bom_operations SET labor_rate_per_hour = $1, overhead_rate_per_hour = $2
+                   WHERE id = $3 AND bom_id = $4 AND bom_id IN (SELECT id FROM bill_of_materials WHERE id = $4 AND tenant_id = $5)""",
+                lab, ovh, o["id"], bom_id, tenant_id)
+            perubahan.append({"operation_number": o["operation_number"], "operation_name": o["operation_name"],
+                              "labor_rate_per_hour": {"lama": float(o["labor_rate_per_hour"] or 0), "baru": float(lab)},
+                              "overhead_rate_per_hour": {"lama": float(o["overhead_rate_per_hour"] or 0), "baru": float(ovh)}})
+    return perubahan
+
+
 # =============================================================================
 # HEALTH CHECK
 # =============================================================================
@@ -554,6 +592,9 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                 # Create operations first (components may reference them)
                 operation_ids = {}
                 for op in body.operations:
+                    op_labor, op_overhead = op.labor_rate_per_hour, op.overhead_rate_per_hour
+                    if op.work_center_id and not op.is_subcontract:   # BUG-179: tarif Work Center di-snapshot saat BOM dibuat
+                        op_labor, op_overhead = tarif_efektif(op_labor, op_overhead, await tarif_work_center(conn, ctx["tenant_id"], op.work_center_id))
                     op_id = await conn.fetchval(
                         """
                         INSERT INTO bom_operations (
@@ -572,8 +613,8 @@ async def create_bom(request: Request, body: CreateBOMRequest):
                         op.work_center_id,
                         op.setup_time_minutes,
                         op.run_time_minutes,
-                        op.labor_rate_per_hour,
-                        op.overhead_rate_per_hour,
+                        op_labor,
+                        op_overhead,
                         op.instructions,
                         op.is_subcontract,
                         op.vendor_id,
@@ -866,16 +907,12 @@ async def update_bom(request: Request, bom_id: UUID, body: UpdateBOMRequest):
                         wc_id = o.get("work_center_id")
                         # Snapshot labor + overhead rate from work_center at BOM creation time
                         # (standard costing — lock cost when BOM is defined). User can override later.
-                        labor_rate = 0
-                        overhead_rate = 0
+                        labor_rate = o.get("labor_rate_per_hour") or 0
+                        overhead_rate = o.get("overhead_rate_per_hour") or 0
                         if wc_id and not o.get("is_subcontract"):
-                            wc = await conn.fetchrow(
-                                "SELECT labor_rate_per_hour, overhead_rate_per_hour FROM work_centers WHERE id = $1",
-                                wc_id,
-                            )
-                            if wc:
-                                labor_rate = wc["labor_rate_per_hour"] or 0
-                                overhead_rate = wc["overhead_rate_per_hour"] or 0
+                            # BUG-179: saring TENANT (dulu `WHERE id = $1` membaca tarif WC tenant lain); tarif eksplisit > 0 dipertahankan
+                            labor_rate, overhead_rate = tarif_efektif(
+                                labor_rate, overhead_rate, await tarif_work_center(conn, ctx["tenant_id"], wc_id))
                         await conn.execute(
                             """
                             INSERT INTO bom_operations
@@ -1316,12 +1353,16 @@ async def recalculate_cost(request: Request, bom_id: UUID):
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")
 
-            new_cost = await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+            # BUG-179: BOM DRAFT -> tarif operasi yang masih 0 diisi dari Work Center dulu (BOM aktif TIDAK berubah diam-diam; perubahannya lewat versi baru)
+            async with conn.transaction():
+                status = await conn.fetchval("SELECT status FROM bill_of_materials WHERE tenant_id = $1 AND id = $2", ctx["tenant_id"], bom_id)
+                perubahan = await segarkan_tarif_operasi(conn, ctx["tenant_id"], bom_id) if status == "draft" else []
+                new_cost = await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
 
             return {
                 "success": True,
                 "message": "Cost recalculated",
-                "data": {"total_cost": new_cost},
+                "data": {"total_cost": new_cost, "tarif_diperbarui": perubahan},
             }
 
     except HTTPException:
@@ -1329,6 +1370,39 @@ async def recalculate_cost(request: Request, bom_id: UUID):
     except Exception as e:
         logger.error(f"Error recalculating cost: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to recalculate cost")
+
+
+class _Pratinjau(Exception):
+    """Pembatal transaksi pratinjau (jalur tulis yang sama, selalu di-ROLLBACK)."""
+
+
+@router.post("/{bom_id}/recalculate/preview", response_model=BOMResponse)
+async def recalculate_cost_preview(request: Request, bom_id: UUID):
+    """BUG-179: pratinjau recalculate = jalur tulis YANG SAMA (segarkan tarif + calculate_bom_cost) di transaksi yang SELALU di-ROLLBACK.
+    Menampilkan tarif lama -> baru per operasi dan biaya sebelum/sesudah. BOM non-draf: tarif tidak disegarkan (perubahan lewat versi baru)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sebelum = await conn.fetchrow(
+            "SELECT status, standard_cost, labor_cost, overhead_cost, total_cost FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
+            ctx["tenant_id"], bom_id)
+        if not sebelum:
+            raise HTTPException(status_code=404, detail="BOM not found")
+        hasil = {}
+        try:
+            async with conn.transaction():
+                hasil["perubahan"] = await segarkan_tarif_operasi(conn, ctx["tenant_id"], bom_id) if sebelum["status"] == "draft" else []
+                await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+                hasil["sesudah"] = await conn.fetchrow(
+                    "SELECT standard_cost, labor_cost, overhead_cost, total_cost FROM bill_of_materials WHERE tenant_id = $1 AND id = $2",
+                    ctx["tenant_id"], bom_id)
+                raise _Pratinjau()
+        except _Pratinjau:
+            pass
+    biaya = lambda r: {k: float(r[k] or 0) for k in ("standard_cost", "labor_cost", "overhead_cost", "total_cost")}
+    return {"success": True, "message": "Pratinjau recalculate", "data": {
+        "preview": True, "can_proceed": True, "bisa_segarkan_tarif": sebelum["status"] == "draft",
+        "tarif": hasil["perubahan"], "sebelum": biaya(sebelum), "sesudah": biaya(hasil["sesudah"])}}
 
 
 # =============================================================================
@@ -1460,6 +1534,9 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
                     status_code=400, detail="Can only modify draft BOMs"
                 )
 
+            op_labor, op_overhead = body.labor_rate_per_hour, body.overhead_rate_per_hour
+            if body.work_center_id and not body.is_subcontract:   # BUG-179: snapshot tarif Work Center (tenant ini)
+                op_labor, op_overhead = tarif_efektif(op_labor, op_overhead, await tarif_work_center(conn, ctx["tenant_id"], body.work_center_id))
             op_id = await conn.fetchval(
                 """
                 INSERT INTO bom_operations (
@@ -1478,8 +1555,8 @@ async def add_operation(request: Request, bom_id: UUID, body: BOMOperationInput)
                 body.work_center_id,
                 body.setup_time_minutes,
                 body.run_time_minutes,
-                body.labor_rate_per_hour,
-                body.overhead_rate_per_hour,
+                op_labor,
+                op_overhead,
                 body.instructions,
                 body.is_subcontract,
                 body.vendor_id,
