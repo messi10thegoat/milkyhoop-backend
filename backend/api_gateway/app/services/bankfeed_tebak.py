@@ -222,7 +222,7 @@ from . import kasbank_ringkas as KR  # noqa: E402
 # dengan register bank). Tenant eksplisit di tiap SQL.
 SQL_KANDIDAT = f"""
 SELECT bt.id, bt.transaction_date AS tanggal, abs(j.net) AS nominal, CASE WHEN j.net > 0 THEN 'masuk' ELSE 'keluar' END AS arah,
-       dok.pihak_nama AS kontak_nama, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor, bt.transaction_type AS jenis,
+       COALESCE(dok.pihak_nama, NULLIF(btrim(bt.payee_payer), '')) AS kontak_nama, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor, bt.transaction_type AS jenis,
        je.source_type AS sumber
 FROM bank_transactions bt
 JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.tenant_id = bt.tenant_id
@@ -237,7 +237,10 @@ SQL_AKUN = ("SELECT account_code, id, name FROM chart_of_accounts WHERE tenant_i
             "AND is_active = true AND is_header = false")
 SQL_MUTASI_SATU = ("SELECT id, tanggal, keterangan, arah, nominal, status FROM mutasi_bank WHERE tenant_id = $1 AND bank_account_id = $2 AND id = $3 "
                    "AND status <> 'dipisah'")
+SQL_SEMUA_DITEBAK = ("SELECT id, tanggal, keterangan, arah, nominal, status FROM mutasi_bank WHERE tenant_id = $1 AND bank_account_id = $2 "
+                     "AND status IN ('untuk_ditinjau', 'mungkin_duplikat') ORDER BY tanggal, baris_ke, id LIMIT $3")
 STATUS_DITEBAK = ("untuk_ditinjau", "mungkin_duplikat")
+BATAS_SEMUA = 20000
 BATAS_CALON = 50
 
 
@@ -275,6 +278,19 @@ async def tebak(conn, tid: str, rekening_id, baris: list) -> dict:
                 peta[mid] = t
     status = {b["id"]: b["status"] for b in target}
     return tandai_layak_massal(turunkan_persaingan(peta, status), status)
+
+
+async def tebak_halaman(conn, tid: str, rekening_id, halaman: list) -> dict:
+    """Tebakan untuk baris SATU halaman daftar, tetapi persaingan/K4 dihitung atas SEMUA baris yang belum diputus di rekening itu (bukan hanya halaman):
+    keyakinan satu baris tak boleh berubah hanya karena pengguna pindah halaman. BACA SAJA."""
+    if not any(b["status"] in STATUS_DITEBAK for b in halaman):
+        return {}
+    semua = [{"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"], "keterangan": r["keterangan"], "status": r["status"]}
+             for r in await conn.fetch(SQL_SEMUA_DITEBAK, tid, rekening_id, BATAS_SEMUA)]
+    ada = {b["id"] for b in semua}
+    semua += [b for b in halaman if b["id"] not in ada and b["status"] in STATUS_DITEBAK]
+    peta = await tebak(conn, tid, rekening_id, semua)
+    return {b["id"]: peta[b["id"]] for b in halaman if b["id"] in peta}
 
 
 def ringkas_tebakan(t: dict) -> dict:
