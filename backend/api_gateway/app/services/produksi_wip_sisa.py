@@ -7,6 +7,7 @@ jadi WO yang sudah dikuras (atau berWIP 0) TIDAK disentuh lagi."""
 import re
 from decimal import Decimal
 
+from . import teks_galat as tg
 from .produksi_terap_standar import wo_selesai_per
 
 AWAL_MEMO = "Kuras sisa WIP WO "
@@ -46,3 +47,18 @@ async def sisa_wip_selesai(conn, tenant_id: str, wip_id, akhir) -> list:
         if m and m.group(1) in saldo:
             saldo[m.group(1)] += Decimal(str(r["debit"] or 0)) - Decimal(str(r["credit"] or 0))
     return [{"order_id": k, "order_number": selesai[k]["order_number"], "sisa": s.quantize(Q)} for k, s in saldo.items() if s.quantize(Q) != 0]
+
+
+PENJELASAN_SELISIH = ("Selisih produksi = beban aktual − biaya yang diterapkan (labor/overhead applied) + sisa WIP WO selesai. "
+                      "Positif = merugikan (Debit akun selisih); negatif = menguntungkan (Kredit akun selisih).")
+
+
+def arah_selisih(nilai, kode_akun: str) -> dict:
+    """BUG-190: teks ARAH dari server. nilai > 0 = merugikan (Debit akun selisih); < 0 = menguntungkan (Kredit); 0 = tak ada selisih.
+    -> {nilai (bertanda, str), arah, teks}; contoh: -95000 -> 'Menguntungkan Rp 95.000 → 5-90200 Kredit'."""
+    n = Decimal(str(nilai)).quantize(Q)
+    if n > 0:
+        return {"nilai": str(n), "arah": "merugikan", "teks": f"Merugikan {tg.rp(n)} → {kode_akun} Debit"}
+    if n < 0:
+        return {"nilai": str(n), "arah": "menguntungkan", "teks": f"Menguntungkan {tg.rp(-n)} → {kode_akun} Kredit"}
+    return {"nilai": str(n), "arah": "nol", "teks": "Tidak ada selisih"}

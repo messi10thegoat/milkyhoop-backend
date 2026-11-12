@@ -3198,6 +3198,7 @@ async def month_end_reconcile(request: Request, body: dict):
                 # BUG-183b: sisa WIP tiap WO SELESAI (FG masuk pada STANDAR; selisih bahan/konversi tertinggal di WIP) dikuras ke 5-90200 di jurnal yang SAMA
                 _wip_id = await resolve_account_id_by_role(conn, tenant_id, AccountRole.WIP_GENERIC)
                 wip_sisa = await PW.sisa_wip_selesai(conn, tenant_id, _wip_id, p_end)
+                _kode_var = await conn.fetchval("SELECT account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2", variance_id, tenant_id) or "5-90200"
 
                 # --- DRY-RUN preview: pure read, no lock/insert/409 --------
                 # Numbers come from the IDENTICAL computation above (anti-drift).
@@ -3236,20 +3237,25 @@ async def month_end_reconcile(request: Request, body: dict):
                                 "applied": str(applied_labor),
                                 "actual": str(actual_labor),
                                 "variance": str(var_labor_dr),
+                                "arah": PW.arah_selisih(var_labor_dr, _kode_var),   # BUG-190: teks arah dari server
                             },
                             "overhead": {
                                 "mapped": actual_oh_id is not None,
                                 "applied": str(applied_oh),
                                 "actual": str(actual_oh),
                                 "variance": str(var_oh_dr),
+                                "arah": PW.arah_selisih(var_oh_dr, _kode_var),   # BUG-190
                             },
                             "clearing": {
                                 "labor_2_10430": str(clr_labor),
                                 "oh_2_10440": str(clr_oh),
                             },
                             # BUG-183b: sisa WIP per WO SELESAI yang AKAN dikuras ke 5-90200 (sisa > 0 = debit tertinggal = merugikan)
-                            "wip_sisa": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"])} for w in wip_sisa],
+                            "wip_sisa": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"]), "arah": PW.arah_selisih(w["sisa"], _kode_var)} for w in wip_sisa],
                             "wip_sisa_total": str(sum((w["sisa"] for w in wip_sisa), ZERO)),
+                            # BUG-190: SATU angka 'Selisih Produksi' bertanda + arah + penjelasan dari server (= selisih labor + overhead + sisa WIP WO selesai)
+                            "selisih_produksi": PW.arah_selisih(var_labor_dr + var_oh_dr + sum((w["sisa"] for w in wip_sisa), ZERO), _kode_var),
+                            "penjelasan_selisih": PW.PENJELASAN_SELISIH,
                         },
                     }
 
@@ -3507,14 +3513,18 @@ async def month_end_reconcile(request: Request, body: dict):
                             "applied": str(applied_labor),
                             "actual": str(actual_labor),
                             "variance": str(var_labor),
+                            "arah": PW.arah_selisih(var_labor, _kode_var),
                         },
                         "overhead": {
                             "mapped": actual_oh_id is not None,
                             "applied": str(applied_oh),
                             "actual": str(actual_oh),
                             "variance": str(var_oh),
+                            "arah": PW.arah_selisih(var_oh, _kode_var),
                         },
-                        "wip_dikuras": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"])} for w in wip_sisa],
+                        "wip_dikuras": [{"order_id": w["order_id"], "order_number": w["order_number"], "sisa": str(w["sisa"]), "arah": PW.arah_selisih(w["sisa"], _kode_var)} for w in wip_sisa],
+                        "selisih_produksi": PW.arah_selisih(var_labor + var_oh + sum((w["sisa"] for w in wip_sisa), ZERO), _kode_var),
+                        "penjelasan_selisih": PW.PENJELASAN_SELISIH,
                         "total_debit": str(total_debit),
                         "total_credit": str(total_credit),
                     },
