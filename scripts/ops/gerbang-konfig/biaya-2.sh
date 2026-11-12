@@ -1,5 +1,5 @@
 # Konfig gerbang unit Biaya BE gelombang 2 (B2: pratinjau buat POST /expenses/preview + ubah POST /{id}/edit/preview, SATU kalkulator, inti ubah diekstrak). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-biaya2-r2; CABANG=feat/biaya-b2-r2; NAMA_JENDELA=biaya-2
+W=/root/mh-biaya2-r3; CABANG=feat/biaya-b2-r3; NAMA_JENDELA=biaya-2
 POLA_UNIT='biaya|expense|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-biaya-gel2.sh
 PENANDA_BERKAS=routers/expenses.py; PENANDA='async def ubah_biaya_inti'
