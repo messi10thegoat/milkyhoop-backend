@@ -1,5 +1,5 @@
 # Konfig gerbang unit BUG-183b (FG standar BOM penuh persis Accurate; month-end menguras sisa WIP WO SELESAI ke 5-90200). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-prod183b; CABANG=feat/produksi-fg-standar-r2; NAMA_JENDELA=prod183b
+W=/root/mh-prod183b; CABANG=feat/produksi-fg-standar-r3; NAMA_JENDELA=prod183b
 POLA_UNIT='produksi|production|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-prod183b.sh
 PENANDA_BERKAS=services/produksi_wip_sisa.py; PENANDA='async def sisa_wip_selesai'
