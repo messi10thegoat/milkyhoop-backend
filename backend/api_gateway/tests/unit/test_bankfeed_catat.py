@@ -49,7 +49,7 @@ class _K:
         if sql.startswith("SELECT id, account_code, name FROM chart_of_accounts"):
             return self.akun
         if sql.startswith("SELECT bt.id AS bt_id, je.source_type"):      # BF-1c3: dokumen hasil catatan dikenali menurut je.source_type
-            return {"bt_id": BT, "source_type": "BANK_TRANSACTION", "source_id": str(BT), "reference_type": None, "reference_id": None}
+            return {"bt_id": BT, "source_type": "BANK_TRANSACTION", "source_id": str(BT), "nomor_jurnal": None, "reference_type": None, "reference_id": None}
         if sql.startswith("UPDATE mutasi_bank SET status = $4"):
             self.urut.append("putus")
             return {"id": MID} if self.putus else None

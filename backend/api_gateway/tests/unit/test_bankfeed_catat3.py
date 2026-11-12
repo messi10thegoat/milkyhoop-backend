@@ -57,6 +57,8 @@ class _K:
         self.sql.append((sql, a))
         if "FROM mutasi_bank_tautan WHERE tenant_id = $1 AND mutasi_bank_id = $2" in sql:
             return self.jumlah_tautan
+        if "reversal_of_id" in sql:
+            return "RV-UJI"
         raise AssertionError("fetchval SQL tak dikenal: " + sql[:80])
 
     async def fetch(self, sql, *a):
@@ -405,7 +407,7 @@ def _stub_batal(monkeypatch, blocks=None):
 
 
 def _dok(source_type, ref_id=None, source_id=None):
-    return {"bt_id": BT, "source_type": source_type, "source_id": str(source_id or BT), "reference_type": None, "reference_id": ref_id}
+    return {"bt_id": BT, "source_type": source_type, "source_id": str(source_id or BT), "nomor_jurnal": "JU-1", "reference_type": None, "reference_id": ref_id}
 
 
 def _tt():
