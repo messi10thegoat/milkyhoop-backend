@@ -5,7 +5,7 @@ POLA_UNIT='bankfeed|mutasi_bank|bank_accounts|kasbank|guc_tenant|jaga_rekonsilia
 HARNESS=scripts/ops/uji-salinan-bankfeed-1e.sh
 PENANDA_BERKAS=services/bankfeed_tersedia.py; PENANDA='def aksi_tersedia('
 A=backend/api_gateway/app
-T="tests/unit/test_bankfeed_jurnal_penjaga.py tests/unit/test_bankfeed_tersedia.py tests/unit/test_bankfeed_teks_server.py tests/unit/test_bankfeed_impor.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_tak_di_bank.py tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py"
+T="tests/unit/test_bankfeed_jurnal_penjaga.py tests/unit/test_bankfeed_perlu_ditinjau.py tests/unit/test_bankfeed_tersedia.py tests/unit/test_bankfeed_teks_server.py tests/unit/test_bankfeed_impor.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_tak_di_bank.py tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py"
 TS=$A/services/bankfeed_tersedia.py; DF=$A/services/bankfeed_daftar.py; DK=$A/services/bankfeed_dokumen.py; TB=$A/services/bankfeed_tebak.py; BAR=$A/routers/bank_accounts.py
 SAB=(
  'e1 jenis tak disaring izin C modul tujuan|'"$TS"'|s@and izin\["jenis"\].get(j, True)@and True@|'"$T"
@@ -18,7 +18,7 @@ SAB=(
  'e8 catat tetap ok walau tak ada jenis|'"$TS"'|s@"catat": _ya() if jenis else _tidak(tutup or ALASAN_TAK_ADA_JENIS),@"catat": _ya(),@|'"$T"
  'e9 perlu_ditinjau tanpa filter tenant|'"$DF"'|s@WHERE tenant_id = $1 AND status IN (.untuk_ditinjau., .mungkin_duplikat.)@WHERE status IN ('"'"'untuk_ditinjau'"'"', '"'"'mungkin_duplikat'"'"')@|'"$T"
  'e10 perlu_ditinjau menghitung status dicatat juga|'"$DF"'|s@status IN (.untuk_ditinjau., .mungkin_duplikat.)@status IN ('"'"'untuk_ditinjau'"'"', '"'"'mungkin_duplikat'"'"', '"'"'dicatat'"'"')@|'"$T"
- 'e11 dokumen_tertaut memuat tautan yang sudah dilepas|'"$DF"'|s@ AND t.dilepas_pada IS NULL@@|'"$T"
+ 'e11 dokumen_tertaut memuat tautan yang sudah dilepas|'"$DK"'|s@ AND t.dilepas_pada IS NULL@@|'"$T"
  'e12 bentuk dokumen: id memakai id bank (bukan id dokumen)|'"$DK"'|s@"id": str(dokumen_id) if dokumen_id else None@"id": str(bt_id) if bt_id else None@|'"$T"
  'e13 bentuk dokumen: kunci jenis salah (semua jadi lainnya)|'"$DK"'|s@KUNCI_SUMBER.get(sumber, KUNCI_LAIN)@KUNCI_LAIN@|'"$T"
  'e14 total masuk_tampil dihitung dari keluar|'"$DF"'|s@"masuk_tampil": tg.rp(jumlah\["masuk"\])@"masuk_tampil": tg.rp(jumlah["keluar"])@|'"$T"
