@@ -271,7 +271,7 @@ def test_dp_tulis_urutan_set_tenant_penulis_cari_bt_dari_jurnal_lalu_tautan(monk
     body["versi"] = _prev(_K(_m()), body)["versi"]
     r = _tulis(k, "catat", body)
     u = k.urut
-    assert u.index("kunci:MUTASI_BANK") < u.index("baca_mutasi") < u.index("set_tenant") < u.index("rencana_buat_dp") < u.index("buat_dp_core") < u.index("tautan") < u.index("putus") < u.index("riwayat")
+    assert u.index("kunci:MUTASI_BANK") < u.index("set_tenant") < u.index("baca_mutasi") < u.index("rencana_buat_dp") < u.index("buat_dp_core") < u.index("tautan") < u.index("putus") < u.index("riwayat")
     sql_bt, a_bt = next((s, a) for s, a in k.sql if s.startswith("SELECT id FROM bank_transactions"))
     assert a_bt[0] == T and a_bt[2] == REK and "journal_id" in sql_bt and "status = 'POSTED'" in sql_bt
     t_arg = next(a for s, a in k.sql if s.startswith("INSERT INTO mutasi_bank_tautan"))
@@ -351,7 +351,7 @@ def test_bayar_blok_penentu_diteruskan_dan_tulis_urutan(monkeypatch):
     body["versi"] = _prev(_K(_m()), body)["versi"]
     r = _tulis(k, "catat", body)
     u = k.urut
-    assert u.index("kunci:MUTASI_BANK") < u.index("baca_mutasi") < u.index("set_tenant") < u.index("buat_penerimaan") < u.index("tautan") < u.index("putus") < u.index("riwayat")
+    assert u.index("kunci:MUTASI_BANK") < u.index("set_tenant") < u.index("baca_mutasi") < u.index("buat_penerimaan") < u.index("tautan") < u.index("putus") < u.index("riwayat")
     assert "RCV-2026-0001" in r["kalimat"] and len(rekam["inti"]) == 1
 
 

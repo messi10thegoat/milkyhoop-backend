@@ -5,7 +5,7 @@ POLA_UNIT='bankfeed|mutasi_bank|bank_transfers|customer_deposits|receive_payment
 HARNESS=scripts/ops/uji-salinan-bankfeed-1c3.sh
 PENANDA_BERKAS=services/bankfeed_aksi.py; PENANDA='def _rencana_dokumen('
 A=backend/api_gateway/app
-T="tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py tests/unit/test_ekstraksi_c3.py tests/unit/test_as_g10.py tests/unit/test_deposit_jenis.py tests/unit/test_dp_pratinjau_buat.py tests/unit/test_dp_proforma_validasi.py tests/unit/test_pelanggan_satu_tenant.py tests/unit/test_so_audit_empat.py tests/unit/test_t203_plafon_dp.py tests/unit/test_void_baris_bank_satu.py tests/unit/test_void_rekon.py"
+T="tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py tests/unit/test_ekstraksi_c3.py tests/unit/test_guc_tenant_pagar.py tests/unit/test_as_g10.py tests/unit/test_deposit_jenis.py tests/unit/test_dp_pratinjau_buat.py tests/unit/test_dp_proforma_validasi.py tests/unit/test_pelanggan_satu_tenant.py tests/unit/test_so_audit_empat.py tests/unit/test_t203_plafon_dp.py tests/unit/test_void_baris_bank_satu.py tests/unit/test_void_rekon.py"
 AK=$A/services/bankfeed_aksi.py; BTF=$A/routers/bank_transfers.py; CDF=$A/routers/customer_deposits.py
 SAB=(
  's1 transfer: tautan ke bt sisi LAWAN (bukan sisi rekening ini)|'"$AK"'|s@p\["from_transaction_id"\] if m\["arah"\] == "keluar" else@p["from_transaction_id"] if m["arah"] == "masuk" else@|'"$T"
@@ -21,7 +21,7 @@ SAB=(
  's11 bayar: kelebihan tak ditampilkan di pratinjau|'"$AK"'|s@"nomor": ro.get("overpayment_deposit_number")} if sisa > 0 else None@"nomor": None} if False else None@|'"$T"
  's12 catat dokumen: bt hasil tak diperiksa tepat satu|'"$AK"'|s@if len(bts) != 1:@if False:@|'"$T"
  's13 catat dokumen: bt hasil tak ditautkan ke baris|'"$AK"'|s@await conn.execute(SQL_TAUTAN_INSERT, tid, m\["id"\], bt_id, m\["nominal"\], str(uid))@pass@|'"$T"
- 's14 catat: GUC tenant tak dipasang sebelum penulis modul|'"$AK"'|s@await GUC.pasang_tenant(conn, tid)@pass@|'"$T"
+ 's14 catat: GUC tenant tak dipasang sebelum penulis modul|'"$AK"'|s@        await GUC.pasang_tenant(conn, tid)@        pass@|'"$T"
  's15 catat: izin modul tujuan dicabut|'"$AK"'|s@if not await _izin(ctx, IZIN_BUAT\[jenis\]@if False and not await _izin(ctx, IZIN_BUAT[jenis]@|'"$T"
  's16 batalkan: izin void modul dokumen dicabut|'"$AK"'|s@if tipe in IZIN_VOID and not await _izin(@if False and not await _izin(@|'"$T"
  's17 batalkan: jenis dokumen tak dikenal lolos|'"$AK"'|s@if tipe not in TIPE_DOK:@if False:@|'"$T"
@@ -36,4 +36,6 @@ SAB=(
  's26 ekstraksi E1: transfer tak diposting walau auto_post|'"$BTF"'|s@post = await _post_transfer(conn, ctx, transfer_id) if body.auto_post else None@post = None@|'"$T"
  's27 ekstraksi E2: kunci void transfer dicabut|'"$BTF"'|s@await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext($1))", f"BANK_TRANSFER_VOID:{transfer_id}")@pass@|'"$T"
  's28 ekstraksi E3: kunci DEPOSIT_POST sebelum posting dicabut|'"$CDF"'|s@f"DEPOSIT_POST:{dep_id}",@f"DEPOSIT_POST_X:{dep_id}",@|'"$T"
+ 's29 GUC tenant dipasang juga di jalur pratinjau (di luar jalur tulis dokumen)|'"$AK"'|s@^    await siapkan(pool, tid, aksi, body)@    await siapkan(pool, tid, aksi, body)\n    async with pool.acquire() as _c:\n        await GUC.pasang_tenant(_c, tid)@|'"$T"
+ 's30 GUC tenant dipasang untuk SEMUA aksi/jenis (jaga jenis dicabut)|'"$AK"'|s@    if aksi == "catat" and body.get("jenis") in JENIS_GUC:@    if True:@|'"$T"
 )
