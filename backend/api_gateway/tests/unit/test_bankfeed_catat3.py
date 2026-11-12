@@ -484,3 +484,20 @@ def test_tanpa_konteks_pengguna_izin_tidak_diperiksa_di_unit_orkestrasi(monkeypa
     diminta = _izin(monkeypatch, set())
     assert "IZIN_DITOLAK" not in _kode(_prev(_K(_m(arah="keluar")), {"jenis": "transfer", "rekening_lawan": str(LAWAN)}))
     assert diminta == []
+
+
+def test_batalkan_pratinjau_uang_muka_menyaring_penjaga_tautan_milik_modul_yang_kodenya_beda(monkeypatch):
+    """Modul uang muka memetakan penjaga tautan jadi DEPOSIT_RECONCILED (pesan sama); pratinjau tak boleh memblok karenanya (tulis melepas tautan dulu), tapi blok lain tetap tampil."""
+    _stub_batal(monkeypatch)
+
+    async def melempar(conn, ctx, dep_id, aksi, body):
+        raise HTTPException(status_code=409, detail={"code": "DEPOSIT_RECONCILED", "message": "Transaksi ini sudah dicocokkan dengan mutasi rekening koran di Bank Feed. Lepaskan dulu."})
+    monkeypatch.setattr(CD, "_rencana_dp", melempar)
+    h = asyncio.run(BA.RENCANA["batalkan"](_K(_m(status="dicatat", cara="catat"), tautan=[_tt()], dok=_dok("CUSTOMER_DEPOSIT", None, DEP)), T, REK, MID, {"alasan": "salah"}, Blok(True), False, None))
+    assert _kode(h) == []
+
+    async def lain(conn, ctx, dep_id, aksi, body):
+        raise HTTPException(status_code=400, detail={"code": "DEPOSIT_TERPAKAI", "message": "Sudah diterapkan ke faktur."})
+    monkeypatch.setattr(CD, "_rencana_dp", lain)
+    h = asyncio.run(BA.RENCANA["batalkan"](_K(_m(status="dicatat", cara="catat"), tautan=[_tt()], dok=_dok("CUSTOMER_DEPOSIT", None, DEP)), T, REK, MID, {"alasan": "salah"}, Blok(True), False, None))
+    assert _kode(h) == ["DEPOSIT_TERPAKAI"]

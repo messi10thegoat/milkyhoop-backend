@@ -383,6 +383,11 @@ async def _izin(ctx, jalur: str, bl: Blok, kata: str) -> bool:
     return False
 
 
+def _penjaga_tautan(code, message) -> bool:
+    """Blok penjaga 'baris ini masih bertaut ke Bank Feed' (modul dokumen boleh memberi kode sendiri, mis. DEPOSIT_RECONCILED): tulis melepas tautan lebih dulu, jadi bukan penghalang."""
+    return code == "BANK_TX_BERTAUT" or "mutasi rekening koran di Bank Feed" in str(message)
+
+
 def _aduh(bl: Blok, blocks) -> None:
     for b in blocks:
         bl.galat(b["code"], b.get("status", 400), b["message"])
@@ -598,7 +603,7 @@ async def rencana_batalkan(conn, tid: str, rekening_id, mutasi_id, body: dict, b
             # jurnal pembalik pratinjau = jurnal asli dengan debit/kredit DITUKAR (diverifikasi di harness terhadap pembalik sungguhan)
             h["baris"] = [(x["account_id"], x["credit"], x["debit"], "Pembalik") for x in await conn.fetch(SQL_JURNAL_BARIS, tid, h["bt_id"])]
         for b in bl2.daftar:
-            if b["code"] != "BANK_TX_BERTAUT":
+            if not _penjaga_tautan(b["code"], b.get("message")):
                 bl.daftar.append(b)
         h["kalimat_tiga"] = [f"Dokumen {nomor} dibatalkan", f"Jurnal pembalik RV-{nomor} dibuat", f"Baris kembali ke {BD.STATUS_TEKS[h['kembali_ke']]}"]
         h["kalimat"] = "; ".join(h["kalimat_tiga"]) + "."
