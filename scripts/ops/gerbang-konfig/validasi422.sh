@@ -1,7 +1,7 @@
 # Konfig gerbang unit BUG-185 (penangan 422 BERSAMA: input bytes dibuang; main.py = kunci bersama -> gerbang PENUH). Tiap sabotase WAJIB membuat tes merah.
 W=/root/mh-v422; CABANG=feat/validasi-422-biner; NAMA_JENDELA=validasi422
 POLA_UNIT='validasi|galat|lampiran|expense|biaya|izin_rute|inventaris_rute|pagar_rute|permission'
-HARNESS=
+HARNESS=scripts/ops/uji-validasi422.sh
 PENANDA_BERKAS=services/galat_validasi.py; PENANDA='async def validasi_handler'
 A=backend/api_gateway/app; T=tests/unit/test_validasi_422_biner.py; GV=$A/services/galat_validasi.py; MN=$A/main.py
 SAB=(
