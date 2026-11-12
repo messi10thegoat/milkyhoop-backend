@@ -112,10 +112,10 @@ async def main():
                             BS, str(ids[kunci]), await gudang(c, ids[kunci]), Decimal(tambah))
         # B /labor sebagian
         ob = await buat_wo(c, rq, ids, bid, "4")
-        await P.record_labor(rq, ob, SP.ProductionLaborInput(operation_id=op, operation_name="Overhead Jahit", actual_hours=Decimal("1")))
+        await P.record_labor(rq, ob, SP.ProductionLaborInput(operation_id=op, operation_name="Overhead Jahit", actual_hours=Decimal("0.1")))
         await galat(P.report_output(rq, ob, SP.ProductionCompletionInput(good_quantity=Decimal("4"))))
         ohb = await jurnal(c, ob, "PRODUCTION_OVERHEAD")
-        cek("B /labor sebagian 1 jam lalu output 4: overhead total 8.000 (tak dobel; std 4 x 2.000)", sum(ohb) == 8000.0 and len(ohb) == 2, str(ohb))
+        cek("B /labor sebagian 0,1 jam (2.000) lalu output 4: standar menutup kekurangan 6.000 -> overhead total 8.000 (tak dobel; std 4 x 2.000)", ohb == [2000.0, 6000.0], str(ohb))
         cek("B upah standar 4 x 9.500 = 38.000", sum(await jurnal(c, ob, "PRODUCTION_LABOR")) == 38000.0, str(await jurnal(c, ob, "PRODUCTION_LABOR")))
         # C dua output
         oc = await buat_wo(c, rq, ids, bid, "4")
@@ -150,7 +150,7 @@ async def main():
             sesudah = await saldo_applied()
             print(f"INFO month-end NYATA di klon: {str(nyata)[:500]} | applied sebelum={sebelum} sesudah={sesudah}", flush=True)
             cek("E2 month-end nyata: akun applied (2-10430/2-10440) terkuras = 0", isinstance(nyata, dict) and all(v == 0.0 for v in sesudah.values()), f"{sebelum} -> {sesudah} {str(nyata)[:200]}")
-            cek("E2 WIP bersih tiap WO uji tetap 0 sesudah rekonsiliasi", all(await wip_bersih(c, o, wip) == 0.0 for o in (oa, ob, oc, od)))
+            cek("E2 WIP bersih tiap WO uji tetap 0 sesudah rekonsiliasi", all([await wip_bersih(c, o, wip) == 0.0 for o in (oa, ob, oc, od)]))
         except Exception as e:  # noqa: BLE001
             cek("E month-end-reconcile dry_run berjalan", False, f"{type(e).__name__}: {e}")
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
