@@ -80,6 +80,12 @@ POST /api/matrix-items/{item_id}/variants
 POST /api/matrix-items/{item_id}/variants/preview
 POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor
 POST /api/bank-accounts/{bank_account_id}/mutasi-bank/impor/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/cocokkan
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/cocokkan/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan/preview
 POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
