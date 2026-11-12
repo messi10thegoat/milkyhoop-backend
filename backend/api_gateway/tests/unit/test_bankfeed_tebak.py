@@ -12,8 +12,8 @@ BANK = {"id": "m1", "tanggal": date(2026, 10, 10), "nominal": D("500000.00"), "a
         "keterangan": "TRSF E-BANKING CR 1010/FTSCY/WS95031 500000.00 SUMBER REJEKI"}
 
 
-def bt(id_, tgl=date(2026, 10, 10), nominal="500000.00", arah="masuk", kontak="PT Sumber Rejeki Abadi", nomor="RCV-1"):
-    return {"id": id_, "tanggal": tgl, "nominal": D(nominal), "arah": arah, "kontak_nama": kontak, "nomor": nomor, "jenis": "payment_received"}
+def bt(id_, tgl=date(2026, 10, 10), nominal="500000.00", arah="masuk", kontak="PT Sumber Rejeki Abadi", nomor="RCV-1", sumber="RECEIVE_PAYMENT"):
+    return {"id": id_, "tanggal": tgl, "nominal": D(nominal), "arah": arah, "kontak_nama": kontak, "nomor": nomor, "jenis": "payment_received", "sumber": sumber}
 
 
 # ---------------------------------------------------------------- rentang tanggal P5
@@ -45,7 +45,7 @@ def test_nama_anonim_sebagian_tetap_cocok():
 # ---------------------------------------------------------------- putuskan: cocok
 def test_satu_kandidat_nama_cocok_tiga_hari_yakin():
     t = TB.putuskan(BANK, [bt("b1", date(2026, 10, 12))])
-    assert t["jenis"] == "cocok" and t["keyakinan"] == "yakin" and t["bank_transaction_ids"] == ["b1"]
+    assert t["jenis"] == "cocok" and t["keyakinan"] == "yakin" and t["bank_transaction_ids"] == ["b1"] and t["nama_cocok"] is True
     assert t["dokumen"] == [{"jenis": "payment_received", "id": "b1", "nomor": "RCV-1"}] and "RCV-1" in t["kalimat"]
 
 
@@ -191,6 +191,62 @@ def test_baris_dicatat_yang_sama_dokumen_tak_memblok_massal_baris_lain_tapi_untu
     assert hasil["m1"]["layak_massal"] is True
 
 
+# ---------------------------------------------------------------- sumber dokumen: yakin hanya untuk dokumen PEMBAYARAN (terukur golden: 3/3 biaya tak punya pasangan bank)
+@pytest.mark.parametrize("sumber", ["EXPENSE", "BANK_TRANSACTION", "ADJUSTMENT", "BANK_OPENING_BALANCE", None, "SUMBER_BARU_TAK_DIKENAL"])
+def test_bukan_dokumen_pembayaran_paling_tinggi_periksa_walau_nominal_nama_hari_cocok(sumber):
+    t = TB.putuskan(BANK, [bt("b1", sumber=sumber)])
+    assert t["jenis"] == "cocok" and t["keyakinan"] == "periksa" and t["bank_transaction_ids"] == ["b1"]
+    assert "biaya/manual" in t["kalimat"]
+
+
+@pytest.mark.parametrize("sumber", sorted(TB.SUMBER_YAKIN))
+def test_dokumen_pembayaran_boleh_yakin(sumber):
+    assert TB.putuskan(BANK, [bt("b1", sumber=sumber)])["keyakinan"] == "yakin"
+
+
+def test_sumber_yakin_himpunan_tetap_tanpa_biaya_atau_manual():
+    assert TB.SUMBER_YAKIN == frozenset({"RECEIVE_PAYMENT", "PAYMENT_RECEIVED", "CUSTOMER_DEPOSIT", "BILL_PAYMENT", "PAYMENT_BILL", "PAYMENT_MADE", "VENDOR_DEPOSIT"})
+
+
+# ---------------------------------------------------------------- persaingan: dokumen sama dipilih dua baris bernama sama -> tak ada yang yakin
+def _yakin(**k):
+    d = {"jenis": "cocok", "keyakinan": "yakin", "kalimat": "x", "bank_transaction_ids": ["b1"], "dokumen": [{"jenis": "j", "id": "b1", "nomor": "RCV-1"}],
+         "gabungan": False, "jumlah_calon": 1, "nama_cocok": True, "mungkin_dobel_dengan": None, "mungkin_dobel_jumlah": 0}
+    d.update(k)
+    return d
+
+
+def test_dua_baris_bernama_sama_pilih_dokumen_sama_keduanya_turun_ke_periksa():
+    st = {"m1": "untuk_ditinjau", "m2": "untuk_ditinjau"}
+    h = TB.turunkan_persaingan({"m1": _yakin(), "m2": _yakin()}, st)
+    assert h["m1"]["keyakinan"] == "periksa" and h["m2"]["keyakinan"] == "periksa"
+    assert h["m1"]["mungkin_dobel_dengan"] == ["m2"] and h["m1"]["mungkin_dobel_jumlah"] == 1 and "ganda" in h["m1"]["kalimat"]
+
+
+def test_pembayar_lain_bernominal_sama_tapi_nama_beda_bukan_saingan():
+    st = {"m1": "untuk_ditinjau", "m2": "untuk_ditinjau"}
+    h = TB.turunkan_persaingan({"m1": _yakin(), "m2": _yakin(keyakinan="periksa", nama_cocok=False)}, st)
+    assert h["m1"]["keyakinan"] == "yakin" and h["m1"]["mungkin_dobel_dengan"] is None and h["m2"]["keyakinan"] == "periksa"
+
+
+def test_saingan_yang_sudah_diputus_atau_gabungan_tak_dihitung():
+    h = TB.turunkan_persaingan({"m1": _yakin(), "m2": _yakin(), "m3": _yakin(gabungan=True)}, {"m1": "untuk_ditinjau", "m2": "dicatat", "m3": "untuk_ditinjau"})
+    assert h["m1"]["keyakinan"] == "yakin"
+
+
+def test_daftar_saingan_dipotong_tapi_jumlah_utuh():
+    banyak = {f"m{i:02d}": _yakin() for i in range(12)}
+    h = TB.turunkan_persaingan(banyak, {k: "untuk_ditinjau" for k in banyak})
+    assert len(h["m00"]["mungkin_dobel_dengan"]) == TB.MAKS_DOBEL == 5 and h["m00"]["mungkin_dobel_jumlah"] == 11
+    assert all(t["keyakinan"] == "periksa" for t in h.values())
+
+
+def test_persaingan_mengubah_massal_karena_bukan_yakin_lagi():
+    st = {"m1": "untuk_ditinjau", "m2": "untuk_ditinjau"}
+    peta = TB.turunkan_persaingan({"m1": _yakin(), "m2": _yakin()}, st)
+    assert all(not t["layak_massal"] for t in TB.tandai_layak_massal(peta, st).values())
+
+
 # ====================================================================== bagian DB (fake conn; BACA SAJA)
 import asyncio  # noqa: E402
 import inspect  # noqa: E402
@@ -224,7 +280,7 @@ class _KT:
 
 
 def _k(id_, tgl=date(2026, 10, 10), nominal="500000.00", arah="masuk", kontak="PT Sumber Rejeki Abadi", nomor="RCV-1"):
-    return {"id": id_, "tanggal": tgl, "nominal": D(nominal), "arah": arah, "kontak_nama": kontak, "nomor": nomor, "jenis": "payment_received"}
+    return {"id": id_, "tanggal": tgl, "nominal": D(nominal), "arah": arah, "kontak_nama": kontak, "nomor": nomor, "jenis": "payment_received", "sumber": "RECEIVE_PAYMENT"}
 
 
 def _b(id_="m1", tgl=date(2026, 10, 10), nominal="500000.00", arah="masuk", ket="TRSF E-BANKING CR 1010/FTSCY/WS95031 SUMBER REJEKI", status="untuk_ditinjau"):
@@ -238,7 +294,7 @@ def test_sql_kandidat_pagar_lengkap():
     assert KR.sql_bt_tanpa_batal("bt", "$1") in s                                           # predikat batal SATU (BUG-141), bukan definisi baru
     assert "mutasi_bank_tautan" in s and "dilepas_pada IS NULL" in s and "t.tenant_id = $1" in s     # belum bertaut aktif
     assert "ba.coa_id" in s and "j.net <> 0" in s and "abs(j.net)" in s                      # nominal+arah dari JURNAL, bukan tanda amount
-    assert "bt.amount" not in s
+    assert "bt.amount" not in s and "je.source_type AS sumber" in s
 
 
 def test_satu_definisi_potongan_dokumen_untuk_register_dan_penentu():
@@ -271,6 +327,7 @@ def test_tebak_dua_baris_memilih_dokumen_sama_tak_ada_yang_layak_massal():
     k = _KT([_k("b1")])
     peta = asyncio.run(TB.tebak(k, T_, REK, [_b("m1"), _b("m2")]))
     assert peta["m1"]["layak_massal"] is False and peta["m2"]["layak_massal"] is False
+    assert peta["m1"]["keyakinan"] == "periksa" and peta["m1"]["mungkin_dobel_dengan"] == ["m2"]          # persaingan: tak ada yang yakin
 
 
 def test_tebak_bawaan_bca_resolve_akun_runtime_hanya_bila_perlu():
@@ -328,7 +385,8 @@ def test_calon_mutasi_tak_ada_404_dan_sql_bertenant_rekening():
 
 def test_ringkas_tebakan_bentuk_tetap():
     t = TB.ringkas_tebakan({**TB._kosong(), "layak_massal": False, "layak_massal_text": "x"})
-    assert sorted(t) == sorted(["jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok", "layak_massal", "layak_massal_text"])
+    assert sorted(t) == sorted(["jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok", "layak_massal", "layak_massal_text",
+                                "mungkin_dobel_dengan", "mungkin_dobel_jumlah"])
 
 
 def test_rute_calon_terdaftar_dan_izin_baca_kas_bank():
