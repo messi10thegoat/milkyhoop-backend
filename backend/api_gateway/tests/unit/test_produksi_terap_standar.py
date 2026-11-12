@@ -57,8 +57,8 @@ def test_jurnal_sama_dengan_labor(monkeypatch):
     ins = [(s, a) for s, a in k.sql if s.startswith("INSERT INTO journal_entries")]
     assert [a[5] for _, a in ins] == ["PRODUCTION_LABOR", "PRODUCTION_OVERHEAD"]
     assert [a[7] for _, a in ins] == [475000, 100000]
-    nomor = [a for s, a in k.sql if "get_next_journal_number" in s]
-    assert [a[1] for a in nomor] == ["JV-LB", "JV-OH"]                       # penomoran/seri SAMA dgn /labor
+    nomor = [s for s, a in k.sql if "get_next_journal_number" in s]
+    assert ["'JV-LB'" in nomor[0], "'JV-OH'" in nomor[1]] == [True, True]    # penomoran/seri SAMA dgn /labor (awalan literal)
     baris = [a for s, a in k.sql if s.startswith("INSERT INTO journal_lines")]
     assert len(baris) == 4 and baris[0][3] == 475000 and baris[1][3] == 475000 and baris[2][3] == 100000
     assert sum(1 for s, _ in k.sql if s.startswith("UPDATE journal_entries SET status = 'POSTED'")) == 2    # DRAFT -> baris -> POSTED
@@ -83,3 +83,12 @@ def test_labor_memakai_helper_yang_sama():
     import app.routers.production as P
     s = inspect.getsource(P.record_labor)
     assert s.count("PT.terapkan_ke_wip(") == 2 and "INSERT INTO journal_entries" not in s
+
+
+def test_report_output_meneruskan_planned_upah_dan_overhead_ke_helper():
+    import app.routers.production as P
+    s = inspect.getsource(P.report_output)
+    assert 'Decimal(str(order["planned_labor_cost"] or 0)), planned, _baik_sebelum, _baik_kini' in s
+    assert 'Decimal(str(order["planned_overhead_cost"] or 0)), planned, _baik_sebelum, _baik_kini' in s
+    assert "jumlah=_terap_labor, tanggal=hari_ini" in s and "jumlah=_terap_oh, tanggal=hari_ini" in s       # kedua jurnal memakai selisih standar, bukan 0
+    assert "_terap_labor, _terap_oh" in s.split("UPDATE production_orders")[1] or "_terap_labor,\n" in s.split("UPDATE production_orders")[1]

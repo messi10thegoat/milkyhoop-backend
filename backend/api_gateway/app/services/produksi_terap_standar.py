@@ -10,8 +10,13 @@ from decimal import ROUND_HALF_UP, Decimal
 from .role_resolver import AccountRole, resolve_account_id_by_role
 
 _JENIS = {
-    "labor": ("PRODUCTION_LABOR", "JV-LB", AccountRole.MFG_LABOR_APPLIED, "labor", "MFG_LABOR_APPLIED"),
-    "overhead": ("PRODUCTION_OVERHEAD", "JV-OH", AccountRole.MFG_OVERHEAD_APPLIED, "overhead", "MFG_OVERHEAD_APPLIED"),
+    "labor": ("PRODUCTION_LABOR", AccountRole.MFG_LABOR_APPLIED, "labor", "MFG_LABOR_APPLIED"),
+    "overhead": ("PRODUCTION_OVERHEAD", AccountRole.MFG_OVERHEAD_APPLIED, "overhead", "MFG_OVERHEAD_APPLIED"),
+}
+# Awalan seri jurnal = LITERAL di SQL (penjaga test_nomor_jurnal_satu_ruang: tak boleh awalan non-literal/awalan dokumen).
+_SQL_NOMOR = {
+    "labor": "SELECT get_next_journal_number($1, 'JV-LB', $2)",
+    "overhead": "SELECT get_next_journal_number($1, 'JV-OH', $2)",
 }
 
 
@@ -27,10 +32,10 @@ async def terapkan_ke_wip(conn, *, tenant_id, user_id, order_id, order_number, j
     """Terbitkan SATU jurnal terap (labor | overhead) ke WIP; jumlah <= 0 = tak menerbitkan apa pun."""
     if not jumlah or jumlah <= 0:
         return
-    source_type, awalan, peran, kata, memo_akun = _JENIS[jenis]
+    source_type, peran, kata, memo_akun = _JENIS[jenis]
     wip_id = await resolve_account_id_by_role(conn, tenant_id, AccountRole.WIP_GENERIC)
     akun_applied = await resolve_account_id_by_role(conn, tenant_id, peran)
-    nomor = await conn.fetchval("SELECT get_next_journal_number($1, $2, $3)", tenant_id, awalan, tanggal)
+    nomor = await conn.fetchval(_SQL_NOMOR[jenis], tenant_id, tanggal)
     je = _uuid.uuid4()
     await conn.execute(
         """
