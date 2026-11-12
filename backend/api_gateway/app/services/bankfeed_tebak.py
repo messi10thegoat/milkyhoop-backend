@@ -28,8 +28,12 @@ SELISIH_BI_FAST = Decimal("2500")
 # saldo awal dan sumber tak dikenal tetap boleh jadi kandidat tetapi paling tinggi PERIKSA (default tolak). Terukur golden: 3/3 dokumen biaya TAK punya
 # pasangan bank di jawaban benar, sedangkan 19/19 "yakin" benar berasal dari dokumen pembayaran/uang muka/penerimaan.
 SUMBER_YAKIN = frozenset({"RECEIVE_PAYMENT", "PAYMENT_RECEIVED", "CUSTOMER_DEPOSIT", "BILL_PAYMENT", "PAYMENT_BILL", "PAYMENT_MADE", "VENDOR_DEPOSIT"})
-AKUN_BAWAAN = {"admin": "5-20850", "bunga": "4-90000", "pajak_bunga": "5-80000"}
-NAMA_AKUN_BAWAAN = {"admin": "Biaya Administrasi Bank", "bunga": "Pendapatan Lain-lain", "pajak_bunga": "Beban Pajak"}
+AKUN_BAWAAN = {"admin": "5-20850", "bunga": "4-90000", "pajak_bunga": "5-80000", "biaya_bifast": "5-20850"}
+NAMA_AKUN_BAWAAN = {"admin": "Biaya Administrasi Bank", "bunga": "Pendapatan Lain-lain", "pajak_bunga": "Beban Pajak", "biaya_bifast": "Biaya Administrasi Bank"}
+# Biaya BI-FAST (putusan pemilik LANGSUNG 12 Nov): hanya baris biayanya ("BI-FAST DB BIF BIAYA TXN ..."), keluar, nominal TEPAT Rp2.500 -> usulan Catat ke 5-20850,
+# status PERIKSA (bukan yakin, bukan massal). Transfer BI-FAST biasa ("... BIF TRANSFER ...") BUKAN biaya. Pola ketat: diawali, kata TXN utuh.
+NOMINAL_BIAYA_BIFAST = Decimal("2500")
+_POLA_BIFAST_BIAYA = re.compile(r"^BI-FAST DB BIF BIAYA TXN(?: .*)?$")
 
 # kata BCA/umum yang BUKAN nama (melengkapi NOISE_WORDS bank_text_normalizer); kata badan usaha juga bukan nama
 _BUKAN_NAMA = frozenset({"trsf", "e", "banking", "bank", "ftscy", "bif", "bifast", "fast", "bi", "dr", "tarikan", "kartu", "debit", "qr", "transaksi",
@@ -56,8 +60,14 @@ def nama_cocok(keterangan, nama_kontak) -> bool:
     return bool(a & b)
 
 
-def bawaan_bca(keterangan, arah: str) -> Optional[dict]:
+def bawaan_bca(keterangan, arah: str, nominal=None) -> Optional[dict]:
     s = " ".join(str(keterangan or "").upper().split())
+    if _POLA_BIFAST_BIAYA.match(s):
+        try:
+            sama = nominal is not None and Decimal(str(nominal)) == NOMINAL_BIAYA_BIFAST
+        except Exception:  # noqa: BLE001 -- nominal tak terbaca: tak menebak
+            sama = False
+        return {"kunci": "biaya_bifast", "kode": AKUN_BAWAAN["biaya_bifast"]} if arah == "keluar" and sama else None
     m = _POLA_BAWAAN.match(s)
     if not m:
         return None
@@ -139,12 +149,13 @@ def putuskan(baris, kandidat, akun: Optional[dict] = None) -> dict:
     if sub:
         return _kosong(jenis="cocok", keyakinan="periksa", kalimat=f"Gabungan {len(sub)} dokumen ({', '.join(str(b.get('nomor')) for b in sub)}) = nominal bank — periksa dulu.",
                        dasar="gabungan", bank_transaction_ids=[b["id"] for b in sub], dokumen=_dokumen(sub), gabungan=True, jumlah_calon=len(sub))
-    kunci = bawaan_bca(baris.get("keterangan"), baris["arah"])
+    kunci = bawaan_bca(baris.get("keterangan"), baris["arah"], baris.get("nominal"))
     if kunci:
         a = (akun or {}).get(kunci["kunci"])
         if not a:
             return _kosong(blok={"code": "AKUN_BAWAAN_TAK_ADA", "message": f"Akun bawaan {kunci['kode']} ({NAMA_AKUN_BAWAAN[kunci['kunci']]}) tidak ada atau nonaktif di tenant ini; tambahkan akunnya lebih dulu."})
-        return _kosong(jenis="catat", keyakinan="periksa", kalimat=f"Bawaan bank: {a.get('nama')} ({a.get('kode')}) — periksa dulu.", dasar="bawaan_bca",
+        awal = "Biaya transfer BI-FAST" if kunci["kunci"] == "biaya_bifast" else "Bawaan bank"
+        return _kosong(jenis="catat", keyakinan="periksa", kalimat=f"{awal}: {a.get('nama')} ({a.get('kode')}) — periksa dulu.", dasar="bawaan_bca",
                        akun={"id": a.get("id"), "kode": a.get("kode"), "nama": a.get("nama")})
     return _kosong()
 
@@ -272,9 +283,9 @@ async def kandidat_bt(conn, tid: str, rekening_id, dari: date, sampai: date) -> 
 
 async def akun_bawaan(conn, tid: str) -> dict:
     """{kunci: {id, kode, nama}} untuk akun bawaan BCA yang ADA, aktif, bukan header di tenant ini (Law 27: resolve runtime)."""
-    kunci_dari_kode = {v: k for k, v in AKUN_BAWAAN.items()}
-    return {kunci_dari_kode[r["account_code"]]: {"id": str(r["id"]), "kode": r["account_code"], "nama": r["name"]}
-            for r in await conn.fetch(SQL_AKUN, tid, list(AKUN_BAWAAN.values()))}
+    baris = {r["account_code"]: {"id": str(r["id"]), "kode": r["account_code"], "nama": r["name"]}
+             for r in await conn.fetch(SQL_AKUN, tid, sorted(set(AKUN_BAWAAN.values())))}
+    return {kunci: baris[kode] for kunci, kode in AKUN_BAWAAN.items() if kode in baris}          # beberapa kunci boleh berbagi satu kode (admin, biaya_bifast)
 
 
 async def tebak(conn, tid: str, rekening_id, baris: list) -> dict:
@@ -285,7 +296,7 @@ async def tebak(conn, tid: str, rekening_id, baris: list) -> dict:
         return {}
     kand = await kandidat_bt(conn, tid, rekening_id, min(b["tanggal"] for b in target) - timedelta(days=MUNDUR_HARI),
                              max(b["tanggal"] for b in target) + timedelta(days=MAJU_HARI))
-    akun = await akun_bawaan(conn, tid) if any(bawaan_bca(b["keterangan"], b["arah"]) for b in target) else {}
+    akun = await akun_bawaan(conn, tid) if any(bawaan_bca(b["keterangan"], b["arah"], b["nominal"]) for b in target) else {}
     peta = {b["id"]: putuskan(b, kand, akun) for b in target}
     terpilih = {i for t in peta.values() for i in t["bank_transaction_ids"]}
     kosong = [b for b in target if peta[b["id"]]["jenis"] == "kosong" and not peta[b["id"]]["blok"]]

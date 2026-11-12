@@ -115,7 +115,7 @@ def test_satu_bt_untuk_dua_sampai_tiga_baris_bank():
 
 # ---------------------------------------------------------------- bawaan BCA (F2)
 def test_pemetaan_akun_bawaan_terkunci_putusan_f2():
-    assert TB.AKUN_BAWAAN == {"admin": "5-20850", "bunga": "4-90000", "pajak_bunga": "5-80000"}
+    assert TB.AKUN_BAWAAN == {"admin": "5-20850", "bunga": "4-90000", "pajak_bunga": "5-80000", "biaya_bifast": "5-20850"}
 
 
 def test_bawaan_biaya_adm_keluar_ke_biaya_administrasi_bank():
@@ -433,3 +433,76 @@ def test_predikat_batal_mengecualikan_ASLI_dan_PEMBALIK_sekaligus():
     assert "reversed_by_id IS NULL" in KR.SARING_TANPA_BATAL and "reversal_of_id IS NULL" in KR.SARING_TANPA_BATAL
     assert "'REVERSAL'" in KR.SARING_TANPA_BATAL and "_REVERSAL" in KR.SARING_TANPA_BATAL
     assert KR.SARING_TANPA_BATAL in sql and "je.tenant_id = $1" in sql
+
+
+# ====================================================================== BF-1c2 (B): biaya BI-FAST 2.500 = usulan Catat -> 5-20850, status PERIKSA (putusan pemilik 12 Nov)
+BIAYA = "BI-FAST DB BIF BIAYA TXN KE 002 N048 N049 M-BCA"
+TRANSFER_BIASA = "BI-FAST DB BIF TRANSFER KE 002 N048 N049 M-BCA"
+
+
+def test_pola_biaya_bifast_ketat_dikenali_hanya_untuk_keluar_dan_nominal_2500():
+    assert TB.bawaan_bca(BIAYA, "keluar", D("2500.00")) == {"kunci": "biaya_bifast", "kode": "5-20850"}
+    assert TB.bawaan_bca(BIAYA, "keluar", D("2500")) == {"kunci": "biaya_bifast", "kode": "5-20850"}
+    assert TB.bawaan_bca("BI-FAST DB BIF BIAYA TXN", "keluar", D("2500")) == {"kunci": "biaya_bifast", "kode": "5-20850"}
+
+
+@pytest.mark.parametrize("ket,arah,nominal", [
+    (TRANSFER_BIASA, "keluar", D("2500")),                                  # transfer BI-FAST biasa (bukan baris biaya), walau nominal kebetulan 2.500
+    ("BI-FAST DB BIF TRANSFER KE 002 N048 N049 M-BCA", "keluar", D("500000")),
+    ("BI-FAST CR BIF TRANSFER DR 535 N033 N034", "masuk", D("2500")),
+    ("BI-FAST CR BIF BIAYA TXN KE 002", "masuk", D("2500")),                # arah salah
+    (BIAYA, "masuk", D("2500")),
+    (BIAYA, "keluar", D("3000")),                                           # nominal bukan 2.500 -> bukan biaya standar
+    (BIAYA, "keluar", D("2500.50")),
+    (BIAYA, "keluar", None),                                                # nominal tak diketahui -> tak menebak
+    ("XBI-FAST DB BIF BIAYA TXN KE 002", "keluar", D("2500")),             # bukan di awal keterangan
+    ("TRSF BI-FAST DB BIF BIAYA TXN", "keluar", D("2500")),
+    ("BI-FAST DB BIF BIAYA TXNX KE 002", "keluar", D("2500")),             # kata lain yang berawalan sama
+    ("BI-FAST DB BIF BIAYA", "keluar", D("2500")),
+    ("BIAYA TXN", "keluar", D("2500")),
+])
+def test_pola_biaya_bifast_tak_cocok_dengan_yang_mirip(ket, arah, nominal):
+    assert TB.bawaan_bca(ket, arah, nominal) is None
+
+
+def test_biaya_bifast_tidak_menimpa_biaya_adm_dan_sebaliknya():
+    assert TB.bawaan_bca("BIAYA ADM", "keluar", D("11000")) == {"kunci": "admin", "kode": "5-20850"}
+    assert TB.bawaan_bca(BIAYA, "keluar", D("2500"))["kunci"] == "biaya_bifast"
+
+
+def test_akun_bawaan_biaya_bifast_terkunci_ke_biaya_administrasi_bank():
+    assert TB.AKUN_BAWAAN["biaya_bifast"] == "5-20850" and TB.AKUN_BAWAAN["admin"] == "5-20850" and TB.AKUN_BAWAAN["bunga"] == "4-90000" and TB.AKUN_BAWAAN["pajak_bunga"] == "5-80000"
+    assert TB.NAMA_AKUN_BAWAAN["biaya_bifast"] == "Biaya Administrasi Bank"
+
+
+def test_biaya_bifast_putuskan_jadi_catat_status_periksa_bukan_yakin_bukan_massal():
+    baris = {**BANK, "keterangan": BIAYA, "arah": "keluar", "nominal": D("2500.00")}
+    akun = {"biaya_bifast": {"id": "a1", "kode": "5-20850", "nama": "Biaya Administrasi Bank"}}
+    t = TB.putuskan(baris, [], akun)
+    assert t["jenis"] == "catat" and t["keyakinan"] == "periksa" and t["akun"]["kode"] == "5-20850" and t["dasar"] == "bawaan_bca"
+    assert "BI-FAST" in t["kalimat"] and "periksa" in t["kalimat"].lower()
+    h = TB.tandai_layak_massal({"m1": t}, {"m1": "untuk_ditinjau"})
+    assert h["m1"]["layak_massal"] is False
+
+
+def test_transfer_bifast_biasa_dan_biaya_nominal_lain_tetap_kosong():
+    akun = {"biaya_bifast": {"id": "a1", "kode": "5-20850", "nama": "x"}, "admin": {"id": "a1", "kode": "5-20850", "nama": "x"}}
+    assert TB.putuskan({**BANK, "keterangan": TRANSFER_BIASA, "arah": "keluar", "nominal": D("2500")}, [], akun)["jenis"] == "kosong"
+    assert TB.putuskan({**BANK, "keterangan": BIAYA, "arah": "keluar", "nominal": D("3000")}, [], akun)["jenis"] == "kosong"
+
+
+def test_biaya_bifast_akun_tak_ada_blok_berkode_bukan_buat_diam():
+    t = TB.putuskan({**BANK, "keterangan": BIAYA, "arah": "keluar", "nominal": D("2500")}, [], {})
+    assert t["jenis"] == "kosong" and t["blok"]["code"] == "AKUN_BAWAAN_TAK_ADA" and "5-20850" in t["blok"]["message"]
+
+
+def test_biaya_bifast_cocok_dengan_dokumen_didahulukan_atas_bawaan():
+    baris = {**BANK, "keterangan": BIAYA, "arah": "keluar", "nominal": D("2500")}
+    t = TB.putuskan(baris, [bt("b1", nominal="2500.00", arah="keluar", kontak="BI FAST BIAYA")], {"biaya_bifast": {"id": "a", "kode": "5-20850", "nama": "x"}})
+    assert t["jenis"] == "cocok"
+
+
+def test_bawaan_lama_tetap_utuh_dengan_tanda_tangan_baru():
+    assert TB.bawaan_bca("BIAYA ADM", "keluar") == {"kunci": "admin", "kode": "5-20850"}       # nominal opsional untuk pola lama
+    assert TB.bawaan_bca("BUNGA", "masuk") == {"kunci": "bunga", "kode": "4-90000"}
+    assert TB.bawaan_bca("PAJAK BUNGA", "keluar") == {"kunci": "pajak_bunga", "kode": "5-80000"}
