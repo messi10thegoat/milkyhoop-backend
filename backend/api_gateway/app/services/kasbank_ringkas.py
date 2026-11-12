@@ -26,15 +26,9 @@ LEFT JOIN LATERAL (
 WHERE ba.tenant_id = $1 AND ba.is_active = true
 ORDER BY ba.account_type, ba.account_name"""
 
-SQL_MUTASI = """
-SELECT jl.id, je.id AS journal_id, je.journal_number, je.journal_date, je.created_at, je.source_type, je.source_id,
-       je.reversal_of_id, je.reversed_by_id, ba.id AS bank_account_id, ba.account_name,
-       jl.debit - jl.credit AS net, COALESCE(NULLIF(btrim(trf.notes), ''), NULLIF(jl.memo, ''), je.description) AS keterangan,
-       dok.nomor_dokumen, dok.pihak_jenis, dok.pihak_id, dok.pihak_nama
-FROM journal_lines jl
-JOIN journal_entries je ON je.id = jl.journal_id
-JOIN bank_accounts ba ON ba.coa_id = jl.account_id AND ba.tenant_id = je.tenant_id
-LEFT JOIN bank_transfers trf ON je.source_type = 'BANK_TRANSFER' AND trf.id = je.source_id AND trf.tenant_id = je.tenant_id
+# SATU potongan SQL "dokumen sumber + pihak" atas jurnal `je` (alias wajib: je) -- dipakai register bank (SQL_MUTASI) DAN penentu tebakan Bank Feed
+# (bankfeed_tebak.SQL_KANDIDAT); satu definisi, bukan salinan (BF-1b, "sentuh = satukan").
+SQL_JOIN_DOKUMEN = """LEFT JOIN bank_transfers trf ON je.source_type = 'BANK_TRANSFER' AND trf.id = je.source_id AND trf.tenant_id = je.tenant_id
 LEFT JOIN LATERAL (
     SELECT d.nomor_dokumen, d.pihak_jenis, d.pihak_id, d.pihak_nama FROM (
         SELECT x.deposit_number AS nomor_dokumen, 'pelanggan' AS pihak_jenis, c.id AS pihak_id, c.nama AS pihak_nama
@@ -67,7 +61,17 @@ LEFT JOIN LATERAL (
         SELECT trf.transfer_number, NULL, NULL, NULL WHERE trf.id IS NOT NULL
     ) d LIMIT 1
 ) dok ON true
-WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND ba.is_active = true
+"""
+
+SQL_MUTASI = """
+SELECT jl.id, je.id AS journal_id, je.journal_number, je.journal_date, je.created_at, je.source_type, je.source_id,
+       je.reversal_of_id, je.reversed_by_id, ba.id AS bank_account_id, ba.account_name,
+       jl.debit - jl.credit AS net, COALESCE(NULLIF(btrim(trf.notes), ''), NULLIF(jl.memo, ''), je.description) AS keterangan,
+       dok.nomor_dokumen, dok.pihak_jenis, dok.pihak_id, dok.pihak_nama
+FROM journal_lines jl
+JOIN journal_entries je ON je.id = jl.journal_id
+JOIN bank_accounts ba ON ba.coa_id = jl.account_id AND ba.tenant_id = je.tenant_id
+""" + SQL_JOIN_DOKUMEN + """WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND ba.is_active = true
 ORDER BY je.journal_date DESC, je.created_at DESC, jl.id DESC
 LIMIT $2"""
 
