@@ -32,9 +32,10 @@ def _m(**k):
 
 
 class _K:
-    def __init__(self, mutasi=None, jumlah_tautan=0, bt_jurnal=(BT,), tautan=None, dok=None, putus=True, kembali=True):
+    def __init__(self, mutasi=None, jumlah_tautan=0, bt_jurnal=(BT,), tautan=None, dok=None, putus=True, kembali=True, jbaris=()):
         self.mutasi, self.jumlah_tautan, self.bt_jurnal, self.tautan, self.dok, self.putus, self.kembali = mutasi, jumlah_tautan, list(bt_jurnal), tautan, dok, putus, kembali
         self.sql, self.urut = [], []
+        self.jbaris = list(jbaris)
 
     async def fetchrow(self, sql, *a):
         self.sql.append((sql, a))
@@ -70,7 +71,7 @@ class _K:
         if "FROM chart_of_accounts" in sql:
             return []
         if "FROM journal_lines" in sql:
-            return []
+            return self.jbaris
         raise AssertionError("fetch SQL tak dikenal: " + sql[:80])
 
     async def execute(self, sql, *a):
@@ -501,3 +502,11 @@ def test_batalkan_pratinjau_uang_muka_menyaring_penjaga_tautan_milik_modul_yang_
     monkeypatch.setattr(CD, "_rencana_dp", lain)
     h = asyncio.run(BA.RENCANA["batalkan"](_K(_m(status="dicatat", cara="catat"), tautan=[_tt()], dok=_dok("CUSTOMER_DEPOSIT", None, DEP)), T, REK, MID, {"alasan": "salah"}, Blok(True), False, None))
     assert _kode(h) == ["DEPOSIT_TERPAKAI"]
+
+
+@pytest.mark.parametrize("tipe,sid", [("CUSTOMER_DEPOSIT", DEP), ("RECEIVE_PAYMENT", PAY)])
+def test_batalkan_pratinjau_uang_muka_dan_bayar_jurnal_pembalik_adalah_jurnal_asli_ditukar(monkeypatch, tipe, sid):
+    _stub_batal(monkeypatch)
+    asli = [{"account_id": COA_BANK, "debit": D("500000"), "credit": D(0)}, {"account_id": AKUN_DP, "debit": D(0), "credit": D("500000")}]
+    h = asyncio.run(BA.RENCANA["batalkan"](_K(_m(status="dicatat", cara="catat"), tautan=[_tt()], dok=_dok(tipe, None, sid), jbaris=asli), T, REK, MID, {"alasan": "salah"}, Blok(True), False, None))
+    assert h["baris"] == [(COA_BANK, D(0), D("500000"), "Pembalik"), (AKUN_DP, D("500000"), D(0), "Pembalik")]
