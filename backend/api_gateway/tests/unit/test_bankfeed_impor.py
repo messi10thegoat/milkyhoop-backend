@@ -277,6 +277,8 @@ class _KD:
 
     async def fetch(self, sql, *a):
         self.sql.append((sql, a))
+        if "FROM bank_transactions bt" in sql or "FROM chart_of_accounts" in sql:   # penentu tebak (BF-1b): tak ada kandidat/akun pada tes ini
+            return []
         return self.cacah if "GROUP BY status" in sql else self.rows
 
 
@@ -289,7 +291,8 @@ def test_daftar_cacah_total_status_text_dan_tebakan_kosong():
     assert h["total"] == {"masuk": "500000.00", "keluar": "0", "jumlah": 5} and h["has_more"] is True   # 1 dari 5 baris dimuat
     r = h["data"][0]
     assert r["status_text"] == "Untuk ditinjau" and r["keterangan_ringkas"] == "TRSF A" and r["nominal_tampil"] == "Rp 500.000"
-    assert r["tebakan"] == {"jenis": "kosong", "keyakinan": "kurang_data", "kalimat": None} and r["diputus_text"] is None
+    assert r["tebakan"]["jenis"] == "kosong" and r["tebakan"]["keyakinan"] == "kurang_data" and r["tebakan"]["kalimat"] is None and r["tebakan"]["blok"] is None
+    assert r["tebakan"]["layak_massal"] is False and r["diputus_text"] is None
     assert r["jenis_tersedia"] == [] and r["aksi_tersedia"] == {}
     sql_baris = [s for s, a in k.sql if "ORDER BY" in s][0]
     assert "status = $" in sql_baris

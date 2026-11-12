@@ -29,3 +29,9 @@ class DaftarMutasiResponse(BaseModel):
     cacah: Dict[str, int]
     total: Dict[str, Any]
     has_more: bool
+
+
+class CalonMutasiResponse(BaseModel):
+    success: bool = True
+    data: List[Dict[str, Any]]
+    jumlah: int
