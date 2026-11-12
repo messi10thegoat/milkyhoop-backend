@@ -325,7 +325,8 @@ def test_semua_sql_bertenant_tanpa_hapus_jurnal_float_set_config_dan_kolom_rekon
     for nama, nilai in vars(BA).items():
         if nama.startswith("SQL_"):
             assert "tenant_id" in nilai, nama
-            assert "DELETE" not in nilai.upper() and "journal" not in nilai.lower() and "matched_statement_line_id" not in nilai, nama
+            # BF-1c3: kata DELETE utuh (bukan kolom deleted_at); SELECT boleh membaca journal (mencari baris bank hasil dokumen modul), tulis jurnal tetap terlarang
+            assert not re.search(r"\bDELETE\b", nilai.upper()) and (nilai.lstrip().upper().startswith("SELECT") or "journal" not in nilai.lower()) and "matched_statement_line_id" not in nilai, nama
 
 
 def test_sql_bt_pilihan_memakai_definisi_kandidat_yang_sama_dengan_tebak():
