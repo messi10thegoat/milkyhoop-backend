@@ -247,6 +247,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendors/[^/]+/edit/preview$", ["POST"], "supplier", "U"),
     (r"^/api/vendors/[^/]+/delete/preview$", ["POST"], "supplier", "D"),
     (r"^/api/bank-accounts/[^/]+/delete/preview$", ["POST"], "kas_bank", "D"),  # rek-r2: pratinjau hapus rekening = izin hapus
+    (r"^/api/bank-accounts/[^/]+/mutasi-bank/[^/]+/batalkan-catatan(/preview)?$", ["POST"], "kas_bank", "V"),  # BF-1c2: batal catatan Bank Feed = izin void Kas & Bank
     (r"^/api/vendors/[^/]+/status/preview$", ["POST"], "supplier", "U"),  # = PATCH /status
     (r"^/api/vendors/[^/]+/rename\-impact$", ["GET"], "supplier", "R"),
     (r"^/api/vendors/[^/]+/mutasi$", ["GET"], "supplier", "R"),  # mutasi hutang (buku besar pembantu, 9 Nov 2026)

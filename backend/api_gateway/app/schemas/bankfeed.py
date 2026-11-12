@@ -82,3 +82,16 @@ class TakDiBankResponse(BaseModel):
     data: List[Dict[str, Any]]
     total: Dict[str, Any]
     catatan: List[str]
+
+
+class CatatRequest(BaseModel):
+    jenis: Literal["uang_masuk", "uang_keluar", "pribadi", "bayar_tagihan", "terima_pembayaran", "transfer", "uang_muka_pelanggan"]
+    akun_id: Optional[UUID] = Field(None, description="Akun lawan (uang_masuk/uang_keluar); pribadi = akun ditetapkan sistem (3-40000 Prive / 3-10100 Modal Pemilik)")
+    kontak: Optional[str] = Field(None, max_length=200, description="Nama pihak terkait (opsional)")
+    catatan: Optional[str] = Field(None, max_length=500, description="Keterangan transaksi; bawaan = keterangan baris bank")
+    versi: Optional[str] = Field(None, max_length=64)
+
+
+class BatalkanCatatanRequest(BaseModel):
+    alasan: str = Field(..., max_length=500, description="Alasan batal (>= 3 huruf)")
+    versi: Optional[str] = Field(None, max_length=64)
