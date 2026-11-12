@@ -7,9 +7,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from ..schemas.bankfeed import DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, PratinjauImporResponse
+from ..schemas.bankfeed import CalonMutasiResponse, DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, PratinjauImporResponse
 from ..services import bankfeed_daftar as BD
 from ..services import bankfeed_impor as BI
+from ..services import bankfeed_tebak as TB
 from ..services import idem_buat
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,16 @@ async def daftar_mutasi_bank(request: Request, bank_account_id: UUID,
     pool = await get_pool()
     async with pool.acquire() as conn:
         return {"success": True, **await BD.daftar(conn, ctx["tenant_id"], bank_account_id, status, q, dari, sampai, limit, offset)}
+
+
+@router.get("/{bank_account_id}/mutasi-bank/{mutasi_id}/calon", response_model=CalonMutasiResponse)
+async def calon_mutasi_bank(request: Request, bank_account_id: UUID, mutasi_id: UUID, q: Optional[str] = Query(None, max_length=100),
+                            limit: int = Query(20, ge=1, le=50)):
+    """Calon dokumen untuk satu baris (READ ONLY; G1): nominal persis atau selisih Rp2.500 (periksa); ?q= nomor/nama/nominal melebar ke rentang -90/+20."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return {"success": True, **await TB.calon(conn, ctx["tenant_id"], bank_account_id, mutasi_id, q, limit)}
 
 
 @router.post("/{bank_account_id}/mutasi-bank/impor/preview", response_model=PratinjauImporResponse)

@@ -1,11 +1,14 @@
 """Daftar mutasi bank per rekening (BF-1a; KONTRAK-bankfeed §8): tab Untuk ditinjau / Dicatat / Dikecualikan (+ Mungkin duplikat), cacah per status
 (Σ server), total masuk/keluar Decimal, teks status/keputusan dari server (FE hanya memformat). Baris induk hasil Pisah (status `dipisah`) selalu
-tersembunyi. Tebakan/aksi/jenis_tersedia diisi sub-unit berikut (BF-1b/c): di sini `tebakan` = kosong, `aksi_tersedia`/`jenis_tersedia` = kosong."""
+tersembunyi. `tebakan` dari penentu SATU (bankfeed_tebak; BF-1b, baca saja) untuk baris untuk_ditinjau/mungkin_duplikat; baris dicatat/dikecualikan = kosong.
+`aksi_tersedia`/`jenis_tersedia` diisi BF-1c (aksinya belum ada)."""
 import re
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import HTTPException
 
+from . import bankfeed_tebak as TB
 from . import teks_galat as tg
 from .nama_pengguna import nama_untuk
 from .so_posisi import BULAN
@@ -13,7 +16,7 @@ from ..utils.tanggal_tenant import zona_tenant
 
 STATUS_TEKS = {"untuk_ditinjau": "Untuk ditinjau", "mungkin_duplikat": "Mungkin duplikat", "dicatat": "Dicatat", "dikecualikan": "Dikecualikan"}
 CARA_KATA = {"cocok": "Dicocokkan", "catat": "Dicatat", "pribadi": "Ditandai pribadi", "kecualikan": "Dikecualikan"}
-TEBAKAN_KOSONG = {"jenis": "kosong", "keyakinan": "kurang_data", "kalimat": None}
+TEBAKAN_KOSONG = TB.ringkas_tebakan({**TB._kosong(), "layak_massal": False, "layak_massal_text": None})   # bentuk SAMA dgn tebakan hidup; salinan per baris
 
 SQL_REKENING_ADA = "SELECT 1 FROM bank_accounts WHERE id = $1 AND tenant_id = $2"
 
@@ -66,6 +69,8 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
     rows = await conn.fetch(
         f"SELECT id, tanggal, keterangan, arah, nominal, status, cara, diputus_oleh, diputus_pada FROM mutasi_bank WHERE {saring} "
         f"ORDER BY tanggal DESC, baris_ke DESC NULLS LAST, id LIMIT ${len(param_s) + 1} OFFSET ${len(param_s) + 2}", *param_s, limit, offset)
+    peta = await TB.tebak(conn, tid, rekening_id, [{"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"],
+                                                   "keterangan": r["keterangan"], "status": r["status"]} for r in rows])
     nama = await nama_untuk(conn, [r["diputus_oleh"] for r in rows]) if any(r["diputus_oleh"] for r in rows) else {}
     zona = await zona_tenant(conn, tid) if any(r["diputus_pada"] for r in rows) else None
     data = []
@@ -77,6 +82,6 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
         data.append({"id": str(r["id"]), "tanggal": r["tanggal"].isoformat(), "keterangan": r["keterangan"],
                      "keterangan_ringkas": ringkas_keterangan(r["keterangan"]), "arah": r["arah"], "nominal": str(r["nominal"]),
                      "nominal_tampil": tg.rp(r["nominal"]), "status": r["status"], "status_text": STATUS_TEKS.get(r["status"], r["status"]),
-                     "tebakan": dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": [], "aksi_tersedia": {}})
+                     "tebakan": TB.ringkas_tebakan(peta[str(r["id"])]) if str(r["id"]) in peta else dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": [], "aksi_tersedia": {}})
     return {"data": data, "cacah": cacah, "total": {"masuk": str(jumlah["masuk"]), "keluar": str(jumlah["keluar"]), "jumlah": int(jumlah["n"])},
             "has_more": offset + len(data) < int(jumlah["n"])}
