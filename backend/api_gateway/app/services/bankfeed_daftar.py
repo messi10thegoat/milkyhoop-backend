@@ -8,8 +8,10 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from . import bankfeed_dokumen as BDK
 from . import bankfeed_tebak as TB
 from . import bankfeed_tersedia as TS
+from . import kasbank_ringkas as KR
 from . import teks_galat as tg
 from .nama_pengguna import nama_untuk
 from .so_posisi import BULAN
@@ -20,6 +22,14 @@ CARA_KATA = {"cocok": "Dicocokkan", "catat": "Dicatat", "pribadi": "Ditandai pri
 TEBAKAN_KOSONG = TB.ringkas_tebakan({**TB._kosong(), "layak_massal": False, "layak_massal_text": None})   # bentuk SAMA dgn tebakan hidup; salinan per baris
 
 SQL_REKENING_ADA = "SELECT 1 FROM bank_accounts WHERE id = $1 AND tenant_id = $2"
+# dokumen yang tertaut AKTIF ke baris dicatat/dicocokkan (BF-1e): satu bentuk dengan tebakan.dokumen dan tak-di-bank.dokumen; nomor/pihak dari SQL_JOIN_DOKUMEN (satu definisi dengan register bank)
+SQL_TERTAUT = f"""SELECT t.mutasi_bank_id, bt.id AS bt_id, je.source_type AS sumber, je.source_id AS dokumen_id, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor
+FROM mutasi_bank_tautan t
+JOIN bank_transactions bt ON bt.id = t.bank_transaction_id AND bt.tenant_id = t.tenant_id
+JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id
+{KR.SQL_JOIN_DOKUMEN}
+WHERE t.tenant_id = $1 AND t.mutasi_bank_id = ANY($2::uuid[]) AND t.dilepas_pada IS NULL
+ORDER BY t.dibuat_pada, t.id"""
 
 
 def ringkas_keterangan(teks, maks: int = 80) -> str:
@@ -75,6 +85,10 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
     nama = await nama_untuk(conn, [r["diputus_oleh"] for r in rows]) if any(r["diputus_oleh"] for r in rows) else {}
     zona = await zona_tenant(conn, tid) if any(r["diputus_pada"] for r in rows) else None
     izin = await TS.izin_pengguna(user, rekening_id) if rows else TS.izin_semua()       # BF-1e: SATU panggilan peran per halaman
+    ids_catat = [r["id"] for r in rows if r["status"] == "dicatat"]
+    tertaut = {}
+    for x in (await conn.fetch(SQL_TERTAUT, tid, ids_catat) if ids_catat else []):         # BF-1e: SATU query untuk seluruh halaman
+        tertaut.setdefault(str(x["mutasi_bank_id"]), []).append(BDK.bentuk(x["sumber"], x["dokumen_id"], x["nomor"], x["bt_id"]))
     data = []
     for r in rows:
         diputus = None
@@ -85,8 +99,9 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
         data.append({"id": str(r["id"]), "tanggal": r["tanggal"].isoformat(), "keterangan": r["keterangan"],
                      "keterangan_ringkas": ringkas_keterangan(r["keterangan"]), "arah": r["arah"], "nominal": str(r["nominal"]),
                      "nominal_tampil": tg.rp(r["nominal"]), "status": r["status"], "status_text": STATUS_TEKS.get(r["status"], r["status"]),
-                     "tebakan": TB.ringkas_tebakan(peta[str(r["id"])]) if str(r["id"]) in peta else dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": jenis, "aksi_tersedia": TS.aksi_tersedia(r, jenis, izin)})
-    return {"data": data, "cacah": cacah, "total": {"masuk": str(jumlah["masuk"]), "keluar": str(jumlah["keluar"]), "jumlah": int(jumlah["n"])},
+                     "tebakan": TB.ringkas_tebakan(peta[str(r["id"])]) if str(r["id"]) in peta else dict(TEBAKAN_KOSONG), "diputus_text": diputus, "jenis_tersedia": jenis, "aksi_tersedia": TS.aksi_tersedia(r, jenis, izin), "dokumen_tertaut": tertaut.get(str(r["id"]), [])})
+    return {"data": data, "cacah": cacah, "total": {"masuk": str(jumlah["masuk"]), "keluar": str(jumlah["keluar"]), "jumlah": int(jumlah["n"]),
+                     "masuk_tampil": tg.rp(jumlah["masuk"]), "keluar_tampil": tg.rp(jumlah["keluar"])},
             "has_more": offset + len(data) < int(jumlah["n"])}
 
 

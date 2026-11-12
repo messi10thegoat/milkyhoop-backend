@@ -85,7 +85,7 @@ def _kosong(**ekstra) -> dict:
 
 
 def _dokumen(bts) -> list:
-    return [{"jenis": b.get("jenis"), "id": b["id"], "nomor": b.get("nomor")} for b in bts]
+    return [BDK.bentuk(b.get("sumber"), b.get("dokumen_id"), b.get("nomor"), b["id"]) for b in bts]      # BF-1e: satu bentuk dokumen (bankfeed_dokumen)
 
 
 def _jarak(baris, b) -> int:
@@ -227,6 +227,7 @@ from datetime import timedelta  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 from . import kasbank_ringkas as KR  # noqa: E402
+from . import bankfeed_dokumen as BDK  # noqa: E402
 
 # Kandidat = bank_transactions POSTED rekening ini; arah + nominal dari JURNAL (debit−kredit pada CoA rekening; Iron Law journal-derived, bukan tanda amount);
 # predikat batal SATU (KR.sql_bt_tanpa_batal) + status POSTED + belum bertaut aktif + belum direkonsiliasi; pihak/nomor dari KR.SQL_JOIN_DOKUMEN (satu definisi
@@ -321,10 +322,18 @@ async def tebak_halaman(conn, tid: str, rekening_id, halaman: list) -> dict:
     return {b["id"]: peta[b["id"]] for b in halaman if b["id"] in peta}
 
 
+KEYAKINAN_TEKS = {"yakin": "Yakin", "periksa": "Periksa dulu", "kurang_data": "Belum ada tebakan"}
+DASAR_TEKS = {"nominal_nama_tanggal": "Nominal, nama, dan tanggal cocok", "nominal_ganda": "Beberapa dokumen bernominal sama", "gabungan": "Beberapa dokumen berjumlah sama dengan baris ini",
+              "gabungan_baris": "Beberapa baris bank untuk satu dokumen", "bawaan_bca": "Pola keterangan bank BCA"}
+
+
 def ringkas_tebakan(t: dict) -> dict:
-    """Bentuk untuk respons daftar (FE hanya memformat; semua teks dari server)."""
-    return {k: t.get(k) for k in ("jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok",
-                                  "layak_massal", "layak_massal_text", "mungkin_dobel_dengan", "mungkin_dobel_jumlah")}
+    """Bentuk untuk respons daftar (FE hanya memformat; semua teks dari server, termasuk keyakinan_text dan dasar_text -- BF-1e)."""
+    h = {k: t.get(k) for k in ("jenis", "keyakinan", "kalimat", "dasar", "bank_transaction_ids", "dokumen", "gabungan", "akun", "blok",
+                               "layak_massal", "layak_massal_text", "mungkin_dobel_dengan", "mungkin_dobel_jumlah")}
+    h["keyakinan_text"] = KEYAKINAN_TEKS.get(t.get("keyakinan"))
+    h["dasar_text"] = DASAR_TEKS.get(t.get("dasar"))
+    return h
 
 
 async def calon(conn, tid: str, rekening_id, mutasi_id, q: Optional[str] = None, limit: int = 20) -> dict:
