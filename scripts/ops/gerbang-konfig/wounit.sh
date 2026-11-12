@@ -10,4 +10,5 @@ SAB=(
  "w3 siap_diselesaikan tak memeriksa status|$WS|s#if status != \"in_progress\" or completed is None#if completed is None#|$T1"
  "w4 status_text mentah/Inggris|$WS|s#\"released\": \"Dirilis\"#\"released\": \"Released\"#|$T1"
  "w5 daftar tak mengisi status_text|$PR|s#\"status_text\": WS.status_text(row\[\"status\"\]),#\"status_text\": None,#|$T1"
+ "w6 isi satuan dari BOM tanpa cek kesetaraan|$PR|s#wo_unit = satuan_wo(body.unit, _bom_unit, _setara)#wo_unit = satuan_wo(body.unit, _bom_unit, True)#|tests/unit/test_wo_satuan_bom.py"
 )

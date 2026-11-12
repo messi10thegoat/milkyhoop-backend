@@ -77,11 +77,22 @@ async def _ensure_production_role_preconditions(pool, tenant_id=None):
     _production_precondition_checked_tenants.add(tenant_id)
 
 
-def satuan_wo(unit_body, unit_bom):
-    """Satuan WO (BUG-184a): satuan yang dikirim pemanggil; bila kosong/spasi -> satuan output BOM; keduanya kosong -> None."""
-    for u in (unit_body, unit_bom):
-        if isinstance(u, str) and u.strip():
-            return u.strip()
+async def bom_unit_setara(conn, tenant_id, product_id, unit_bom) -> bool:
+    """Satuan output BOM setara satuan dasar barang jadi? (penentu & alias SAMA dgn QTY-DASAR; barang tak dikenal / satuan kosong -> False)."""
+    if not (isinstance(unit_bom, str) and unit_bom.strip()):
+        return False
+    from ..services import satuan_dasar as SD
+    h = SD.hitung(await SD.muat(conn, tenant_id, [product_id]), product_id, unit_bom.strip(), 1, "tolak")
+    return h["blok"] is None and h["satuan_dasar"] is not None
+
+
+def satuan_wo(unit_body, unit_bom, bom_setara=False):
+    """Satuan WO (BUG-184a): satuan yang dikirim pemanggil; bila kosong/spasi -> satuan output BOM HANYA bila setara satuan dasar barang (`bom_setara`, penentu
+    services/satuan_dasar: alias yang sama dgn QTY-DASAR); selain itu None (perilaku lama: kosong = dasar; satuan non-dasar akan ditolak Penerimaan produksi, BUG-195)."""
+    if isinstance(unit_body, str) and unit_body.strip():
+        return unit_body.strip()
+    if bom_setara and isinstance(unit_bom, str) and unit_bom.strip():
+        return unit_bom.strip()
     return None
 
 
@@ -453,7 +464,10 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                 )
 
                 # BUG-184a: satuan WO = yang dikirim, bila kosong ikut satuan output BOM (dulu tersimpan NULL -> "Satuan" kosong di WO)
-                wo_unit = satuan_wo(body.unit, bom["output_unit"])
+                from ..services import satuan_dasar as _SD
+                _bom_unit = (bom["output_unit"] or "").strip()
+                _setara = await bom_unit_setara(conn, ctx["tenant_id"], bom["product_id"], _bom_unit)
+                wo_unit = satuan_wo(body.unit, _bom_unit, _setara)
 
                 # Calculate planned costs based on BOM
                 multiplier = Decimal(str(body.planned_quantity)) / Decimal(

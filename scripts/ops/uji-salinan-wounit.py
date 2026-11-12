@@ -90,6 +90,21 @@ async def main():
         cek("1b create WO unit spasi -> ikut BOM", await unit_db(o1b) == "Pcs", str(await unit_db(o1b)))
         o2 = await wo("Kodi-UJI")
         cek("2 create WO DENGAN unit -> unit dari body", await unit_db(o2) == "Kodi-UJI", str(await unit_db(o2)))
+        # 1c BOM bersatuan NON-dasar ('Lusin-UJI'): satuan WO tetap NULL (perilaku lama) dan Penerimaan produksi TETAP lolos (mitigasi BUG-195)
+        rl = await B.create_bom(rq, SB.CreateBOMRequest(product_id=ids["kaos"], bom_code="UJI184L-" + uuid.uuid4().hex[:6], output_quantity=Decimal("1"), output_unit="Lusin-UJI", components=comps))
+        bl = uuid.UUID(str(rl["data"]["id"]))
+        await B.activate_bom(rq, bl)
+        bom_lama, bid = bid, bl
+        ol = await wo("1")
+        bid = bom_lama
+        cek("1c BOM bersatuan 'Lusin-UJI' (non-dasar): satuan WO NULL (bukan 'Lusin-UJI')", await unit_db(ol) is None, str(await unit_db(ol)))
+        await P.release_order(rq, ol)
+        await langkah("issue_materials 1c", P.issue_materials(rq, ol, [SP.ProductionMaterialInput(product_id=ids["kain"], quantity=Decimal("1"), warehouse_id=wh),
+                                                                       SP.ProductionMaterialInput(product_id=ids["benang"], quantity=Decimal("0.02"), warehouse_id=await gudang(c, ids["benang"])),
+                                                                       SP.ProductionMaterialInput(product_id=ids["label"], quantity=Decimal("1"), warehouse_id=await gudang(c, ids["label"]))]))
+        await langkah("start_production 1c", P.start_production(rq, ol))
+        r1c = await langkah("report_output 1c (satuan NULL -> lolos)", P.report_output(rq, ol, SP.ProductionCompletionInput(good_quantity=Decimal("1"))))
+        cek("1c Penerimaan produksi WO satuan NULL TETAP lolos", isinstance(r1c, dict) and r1c.get("success") is True, str(r1c)[:200])
         # 3 dirilis
         nomor = await c.fetchval("SELECT order_number FROM production_orders WHERE id = $1 AND tenant_id = $2", o1, BS)
         await P.release_order(rq, o1)
