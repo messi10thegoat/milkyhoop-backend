@@ -39,6 +39,7 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import produksi_terap_standar as PT  # BUG-183: terap upah/overhead ke WIP (labor + report-output)
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
 
 logger = logging.getLogger(__name__)
@@ -2361,127 +2362,15 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                 ym_lb = f"{today_lb.year % 100:02d}{today_lb.month:02d}"
                 order_number = order["order_number"]
 
-                # ---- Journal #1 : PRODUCTION_LABOR -------------------------
-                if labor_cost_applied > 0:
-                    wip_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
-                    )
-                    labor_applied_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.MFG_LABOR_APPLIED
-                    )
-
-                    # Self-healing canonical generator (V176): emits JV-LB, bumps JV-LB counter.
-                    jnum_lb = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "JV-LB",
-                        today_lb,
-                    )
-                    je_lb = _uuid_lb.uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id,
-                            total_debit, total_credit, status, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_LABOR', $6, $7, $7, 'DRAFT', $8)
-                        """,
-                        je_lb,
-                        ctx["tenant_id"],
-                        jnum_lb,
-                        today_lb,
-                        f"Labor applied {actual_hours}h x {labor_rate_std}/h ({order_number})",
-                        order_id,
-                        labor_cost_applied,
-                        ctx.get("user_id"),
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, 1, $3, $4, 0, $5)
-                        """,
-                        _uuid_lb.uuid4(),
-                        je_lb,
-                        wip_id,
-                        labor_cost_applied,
-                        f"WIP labor applied {order_number}",
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, 2, $3, 0, $4, $5)
-                        """,
-                        _uuid_lb.uuid4(),
-                        je_lb,
-                        labor_applied_id,
-                        labor_cost_applied,
-                        f"MFG_LABOR_APPLIED {order_number}",
-                    )
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        je_lb,
-                    )
-
-                # ---- Journal #2 : PRODUCTION_OVERHEAD ----------------------
-                if oh_cost_applied > 0:
-                    wip_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
-                    )
-                    oh_applied_id = await resolve_account_id_by_role(
-                        conn, ctx["tenant_id"], AccountRole.MFG_OVERHEAD_APPLIED
-                    )
-
-                    # Self-healing canonical generator (V176): emits JV-OH, bumps JV-OH counter.
-                    jnum_oh = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "JV-OH",
-                        today_lb,
-                    )
-                    je_oh = _uuid_lb.uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id,
-                            total_debit, total_credit, status, created_by
-                        ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_OVERHEAD', $6, $7, $7, 'DRAFT', $8)
-                        """,
-                        je_oh,
-                        ctx["tenant_id"],
-                        jnum_oh,
-                        today_lb,
-                        f"OH applied {actual_hours}h x {oh_rate_std}/h ({order_number})",
-                        order_id,
-                        oh_cost_applied,
-                        ctx.get("user_id"),
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, 1, $3, $4, 0, $5)
-                        """,
-                        _uuid_lb.uuid4(),
-                        je_oh,
-                        wip_id,
-                        oh_cost_applied,
-                        f"WIP overhead applied {order_number}",
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, 2, $3, 0, $4, $5)
-                        """,
-                        _uuid_lb.uuid4(),
-                        je_oh,
-                        oh_applied_id,
-                        oh_cost_applied,
-                        f"MFG_OVERHEAD_APPLIED {order_number}",
-                    )
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        je_oh,
-                    )
+                # Jurnal terap ke WIP (satu helper dgn report-output; BUG-183): PRODUCTION_LABOR + PRODUCTION_OVERHEAD
+                await PT.terapkan_ke_wip(
+                    conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), order_id=order_id, order_number=order_number,
+                    jenis="labor", jumlah=labor_cost_applied, tanggal=today_lb,
+                    deskripsi=f"Labor applied {actual_hours}h x {labor_rate_std}/h ({order_number})")
+                await PT.terapkan_ke_wip(
+                    conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), order_id=order_id, order_number=order_number,
+                    jenis="overhead", jumlah=oh_cost_applied, tanggal=today_lb,
+                    deskripsi=f"OH applied {actual_hours}h x {oh_rate_std}/h ({order_number})")
 
                 return {
                     "success": True,
@@ -2622,10 +2511,31 @@ async def report_output(
                             status_code=409,
                             detail="Faktur subkontrak harus di-posting sebelum lapor output. Posting faktur pembelian terlebih dahulu.",
                         )
+                # BUG-183 (putusan pemilik P1 'standar otomatis'): upah + overhead STANDAR (planned per unit x output baik, kumulatif) diterapkan ke WIP
+                # untuk KEKURANGAN terhadap yang sudah tercatat (aktual /labor menang; tak dobel; output kedua tak mengulang), jurnal SAMA dgn /labor.
+                _baik_sebelum = Decimal(str(existing_totals["total_good"]))
+                _baik_kini = Decimal(str(body.good_quantity))
+                _terap_labor = PT.kekurangan_standar(
+                    Decimal(str(order["planned_labor_cost"] or 0)), planned, _baik_sebelum, _baik_kini, Decimal(str(order["actual_labor_cost"] or 0)))
+                _terap_oh = PT.kekurangan_standar(
+                    Decimal(str(order["planned_overhead_cost"] or 0)), planned, _baik_sebelum, _baik_kini, Decimal(str(order["actual_overhead_cost"] or 0)))
+                if _terap_labor > 0 or _terap_oh > 0:
+                    _fp_std = await conn.fetchrow(
+                        "SELECT status FROM fiscal_periods WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date LIMIT 1", ctx["tenant_id"], hari_ini)
+                    if (not _fp_std) or str(_fp_std["status"]).upper() in ("CLOSED", "LOCKED"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Tidak bisa menerapkan upah/overhead standar: tanggal {hari_ini} berada di periode yang sudah ditutup/dikunci atau tidak ada periode aktif.")
+                    await PT.terapkan_ke_wip(
+                        conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), order_id=order_id, order_number=order["order_number"], jenis="labor",
+                        jumlah=_terap_labor, tanggal=hari_ini, deskripsi=f"Labor standar BOM diterapkan saat output {_baik_kini} ({order['order_number']})")
+                    await PT.terapkan_ke_wip(
+                        conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), order_id=order_id, order_number=order["order_number"], jenis="overhead",
+                        jumlah=_terap_oh, tanggal=hari_ini, deskripsi=f"Overhead standar BOM diterapkan saat output {_baik_kini} ({order['order_number']})")
                 total_actual = (
                     order["actual_material_cost"]
-                    + order["actual_labor_cost"]
-                    + order["actual_overhead_cost"]
+                    + order["actual_labor_cost"] + _terap_labor
+                    + order["actual_overhead_cost"] + _terap_oh
                     + subcontract_cost
                 )
                 total_qty = Decimal(str(order["completed_quantity"])) + Decimal(
@@ -2713,12 +2623,16 @@ async def report_output(
                     UPDATE production_orders
                     SET completed_quantity = completed_quantity + $2,
                         scrapped_quantity = scrapped_quantity + $3,
+                        actual_labor_cost = COALESCE(actual_labor_cost, 0) + $4,
+                        actual_overhead_cost = COALESCE(actual_overhead_cost, 0) + $5,
                         updated_at = NOW()
                     WHERE id = $1
                     """,
                     order_id,
                     body.good_quantity,
                     body.scrap_quantity,
+                    _terap_labor,
+                    _terap_oh,
                 )
 
                 # Update total_cost to reflect all cost components
