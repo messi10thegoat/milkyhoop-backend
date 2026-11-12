@@ -1589,8 +1589,10 @@ async def create_expense_journal(
 ):
     """Create journal entry for expense."""
 
-    # Generate journal number
-    journal_number = f"JV-EXP-{expense_number}"
+    # Nomor jurnal = nomor dokumen biaya ("EXP-YYMM-NNNN") bila belum dipakai jurnal mana pun di tenant; selain itu seri cadangan "JV-EXP"
+    # (BUG-176: dulu awalan JV-EXP- ditempel ke nomor dokumen yang sudah ber-EXP -> JV-EXP-EXP-2609-0010; putusan MASTER 9/12 Nov, pola SO/penyesuaian; HANYA data baru, jurnal lama tak diubah)
+    from ..services import nomor_jurnal as _NJ
+    journal_number = await _NJ.nomor_jurnal_dokumen(conn, tenant_id, expense_number, "JV-EXP")
 
     # Total debit = subtotal + tax, total credit = same
     total_debit = subtotal + tax_amount

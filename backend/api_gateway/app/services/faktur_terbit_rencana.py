@@ -140,6 +140,30 @@ def _pesan(detail) -> str:
     return detail.get("message") if isinstance(detail, dict) and detail.get("message") else str(detail)
 
 
+def ringkas_per_akun(daftar_jurnal: list) -> tuple:
+    """BUG-169 (12 Nov 2026, putusan MASTER 'ya A'): ringkasan NETO per akun atas SEMUA jurnal yang Terbit menulis (tagihan INVOICE + pengakuan INVOICE_REVENUE +
+    penerapan uang muka), TAMPILAN SAJA (posting tak berubah; `journals` tetap rincian lengkap). Akun yang netonya 0 (mis. 2-10750 Pendapatan Diterima Dimuka:
+    dikredit lalu didebit sama besar) dibuang dari ringkasan dan dilaporkan di `akun_nol_netto` supaya FE dapat memberi catatan. Urutan = kemunculan pertama.
+    -> ([{account_code, account_name, debit, credit}], [{account_code, account_name}]); Σ debit == Σ kredit bila jurnal masukan seimbang."""
+    urut, neto, nama = [], {}, {}
+    for j in daftar_jurnal:
+        for ln in j["lines"]:
+            k = ln["account_code"] if ln["account_code"] is not None else ("?", ln["account_name"])
+            if k not in neto:
+                urut.append(k)
+                neto[k], nama[k] = NOL, (ln["account_code"], ln["account_name"])
+            neto[k] += _d(ln["debit"]) - _d(ln["credit"])
+    ringkas, nol = [], []
+    for k in urut:
+        n = neto[k].quantize(Decimal("0.01"))
+        kode, nm = nama[k]
+        if n == 0:
+            nol.append({"account_code": kode, "account_name": nm})
+        else:
+            ringkas.append({"account_code": kode, "account_name": nm, "debit": float(n) if n > 0 else 0.0, "credit": float(-n) if n < 0 else 0.0})
+    return ringkas, nol
+
+
 async def _tampil(conn, tid: str, baris: list) -> list:
     """Baris rencana -> bentuk tampil {account_code, account_name, debit, credit, memo} (akun dibaca, tanpa kunci)."""
     ids = [b["akun"] for b in baris if b["akun"] is not None]
@@ -323,6 +347,7 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
             deposit_journals.append({"journal_number": None, "source_type": "DEPOSIT_APPLICATION", "journal_date": tgl.isoformat(),
                                      "description": f"Apply Deposit {p['deposit_number']} to {inv['invoice_number']}",
                                      "lines": await _tampil(conn, tid, baris)})
+    ringkas, nol_netto = ringkas_per_akun(journals + deposit_journals)
     return {"invoice": inv, "blocks": blocks, "warnings": warnings, "notes": catatan, "complete": complete, "cabang": cabang,
             "journals": journals, "deposit_applications": deposit_apps, "deposit_application_journals": deposit_journals,
-            "deposit_plan": rencana}
+            "deposit_plan": rencana, "ringkas_per_akun": ringkas, "akun_nol_netto": nol_netto}

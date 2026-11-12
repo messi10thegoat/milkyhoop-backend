@@ -5613,6 +5613,7 @@ async def preview_post_invoice(request: Request, invoice_id: UUID,
         "status_sesudah": "posted", "complete": r["complete"], "notes": r["notes"], "warnings": r["warnings"],
         "journals": r["journals"], "deposit_applications": r["deposit_applications"],
         "deposit_application_journals": r["deposit_application_journals"], "skip_deposit_ids": _skip,
+        "ringkas_per_akun": r["ringkas_per_akun"], "akun_nol_netto": r["akun_nol_netto"],  # BUG-169: neto per akun (tampilan); journals = rincian
         "payload": None, "preview": True}}
 
 
