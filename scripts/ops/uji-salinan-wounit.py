@@ -47,6 +47,13 @@ async def galat(coro):
         return f"HTTP {e.status_code}: {e.detail}"
 
 
+async def langkah(nama, coro):
+    """Jalankan langkah penyiapan; galat TAMPIL (bukan ditelan) supaya kegagalan alat/logika terlihat."""
+    r = await galat(coro)
+    cek(f"siapan: {nama} berhasil", not isinstance(r, HTTPException), str(r)[:300])
+    return r
+
+
 async def daftar_item(rq, oid, nomor):
     out = await P.list_production_orders(rq, 0, 100, nomor, None, None, None, None, None, "order_date", "desc")
     return next((x for x in out["items"] if str(x["id"]) == str(oid)), None) if isinstance(out, dict) else None
@@ -93,13 +100,13 @@ async def main():
         await P.issue_materials(rq, o1, [SP.ProductionMaterialInput(product_id=ids["kain"], quantity=Decimal("2"), warehouse_id=wh),
                                          SP.ProductionMaterialInput(product_id=ids["benang"], quantity=Decimal("0.04"), warehouse_id=await gudang(c, ids["benang"])),
                                          SP.ProductionMaterialInput(product_id=ids["label"], quantity=Decimal("2"), warehouse_id=await gudang(c, ids["label"]))])
-        await galat(P.start_production(rq, o1))
+        await langkah("start_production", P.start_production(rq, o1))
         # 5 output sebagian
-        await galat(P.report_output(rq, o1, SP.ProductionCompletionInput(good_quantity=Decimal("1"))))
+        await langkah("report_output 1", P.report_output(rq, o1, SP.ProductionCompletionInput(good_quantity=Decimal("1"))))
         li, de = await daftar_item(rq, o1, nomor), await detail(rq, o1)
         cek("5 output sebagian (1 dari 2): siap False, status in_progress, 'Sedang Proses'", (li["status"], li["status_text"], li["siap_diselesaikan"], de["siap_diselesaikan"]) == ("in_progress", "Sedang Proses", False, False), str(li)[:240])
         # 4 output penuh
-        await galat(P.report_output(rq, o1, SP.ProductionCompletionInput(good_quantity=Decimal("1"))))
+        await langkah("report_output 2 (penuh)", P.report_output(rq, o1, SP.ProductionCompletionInput(good_quantity=Decimal("1"))))
         li, de = await daftar_item(rq, o1, nomor), await detail(rq, o1)
         cek("4 output penuh: siap_diselesaikan True di daftar DAN detail", li["siap_diselesaikan"] is True and de["siap_diselesaikan"] is True, str(li)[:240])
         cek("4 status TETAP in_progress / 'Sedang Proses' (tak ada penutupan otomatis)", (li["status"], li["status_text"], de["status"], de["status_text"]) == ("in_progress", "Sedang Proses", "in_progress", "Sedang Proses"),
