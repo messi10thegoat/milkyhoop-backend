@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from ..schemas.bankfeed import (AksiMutasiResponse, CalonMutasiResponse, CocokkanRequest, DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, KecualikanRequest,
+from ..schemas.bankfeed import (AksiMutasiResponse, BatalkanCatatanRequest, CalonMutasiResponse, CatatRequest, CocokkanRequest, DaftarMutasiResponse, ImporMutasiRequest, ImporMutasiResponse, KecualikanRequest,
                                 LepaskanRequest, PratinjauAksiResponse, PratinjauImporResponse, RiwayatMutasiResponse, TakDiBankResponse)
 from ..services import bankfeed_daftar as BD
 from ..services import bankfeed_aksi as BA
@@ -164,3 +164,28 @@ async def pratinjau_lepaskan(request: Request, bank_account_id: UUID, mutasi_id:
 async def lepaskan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: LepaskanRequest, response: Response = None):
     """Lepaskan keputusan Bank Feed (cocok/kecualikan): tautan dilepas (tak dihapus), dokumen dan jurnal tak disentuh."""
     return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "lepaskan", body)
+
+
+# ---------------------------------------------------------------- BF-1c2: catat (uang_masuk/uang_keluar/pribadi) + batalkan-catatan (jurnal lewat penulis Uang Masuk/Keluar yang ada)
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/catat/preview", response_model=PratinjauAksiResponse)
+async def pratinjau_catat(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: CatatRequest):
+    """Pratinjau catat (READ ONLY): jurnal dan saldo dari penentu Uang Masuk/Keluar yang SAMA dengan tulis."""
+    return await _pratinjau_aksi(request, bank_account_id, mutasi_id, "catat", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/catat", response_model=AksiMutasiResponse)
+async def catat(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: CatatRequest, response: Response = None):
+    """Catat baris bank sebagai Uang Masuk/Keluar/Pribadi (jurnal lewat penulis yang ada; baris bertaut ke bank_transaction hasil)."""
+    return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "catat", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/batalkan-catatan/preview", response_model=PratinjauAksiResponse)
+async def pratinjau_batalkan_catatan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: BatalkanCatatanRequest):
+    """Pratinjau batalkan catatan (READ ONLY): dokumen dibatalkan, jurnal pembalik, baris kembali."""
+    return await _pratinjau_aksi(request, bank_account_id, mutasi_id, "batalkan", body)
+
+
+@router.post("/{bank_account_id}/mutasi-bank/{mutasi_id}/batalkan-catatan", response_model=AksiMutasiResponse)
+async def batalkan_catatan(request: Request, bank_account_id: UUID, mutasi_id: UUID, body: BatalkanCatatanRequest, response: Response = None):
+    """Batalkan catatan (cara catat/pribadi): void lewat penulis yang ada = jurnal PEMBALIK (Law 2); baris kembali ke Untuk ditinjau."""
+    return await _tulis_aksi(request, response, bank_account_id, mutasi_id, "batalkan", body)

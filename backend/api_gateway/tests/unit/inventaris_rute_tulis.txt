@@ -86,6 +86,10 @@ POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan
 POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/kecualikan/preview
 POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan
 POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/lepaskan/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/catat
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/catat/preview
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/batalkan-catatan
+POST /api/bank-accounts/{bank_account_id}/mutasi-bank/{mutasi_id}/batalkan-catatan/preview
 POST /api/metode-serah
 DELETE /api/milkybook/sesi/{sesi_id}/antre/{id_pesan}
 POST /api/milkybook/kartu/{kartu_id}/setuju
