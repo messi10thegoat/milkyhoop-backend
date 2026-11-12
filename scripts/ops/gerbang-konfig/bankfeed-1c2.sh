@@ -5,7 +5,7 @@ POLA_UNIT='kasbank_ringkas|SQL_MUTASI|bankfeed|mutasi_bank|bank-accounts|kasbank
 HARNESS=scripts/ops/uji-salinan-bankfeed-1c2.sh
 PENANDA_BERKAS=services/bankfeed_aksi.py; PENANDA='def rencana_catat('
 A=backend/api_gateway/app
-T="tests/unit/test_bankfeed_catat.py tests/unit/test_kasbank_ekstraksi_c2.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_aksi.py tests/unit/test_void_rekon.py tests/unit/test_pagar_uang_muka.py tests/unit/test_void_baris_bank_satu.py"
+T="tests/unit/test_bankfeed_catat.py tests/unit/test_kasbank_ekstraksi_c2.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_aksi.py tests/unit/test_void_rekon.py tests/unit/test_pagar_uang_muka.py tests/unit/test_void_baris_bank_satu.py tests/unit/test_kas_minus_k1.py tests/unit/test_kasbank_b8.py tests/unit/test_kasbank_standar_so.py"
 TB=$A/services/bankfeed_tebak.py; AK=$A/services/bankfeed_aksi.py; KTF=$A/services/kasbank_tulis.py; PM=$A/middleware/permission_middleware.py
 SAB=(
  "s1 BI-FAST: pola cocok tetapi status jadi YAKIN (bawaan bukan lagi periksa)|$TB|s@return _kosong(jenis=\"catat\", keyakinan=\"periksa\",@return _kosong(jenis=\"catat\", keyakinan=\"yakin\",@|$T"
@@ -28,4 +28,10 @@ SAB=(
  "s18 penulis: jurnal manual tak di-POSTED (rantai hash tak terpicu)|$KTF|s@await conn.execute(\"UPDATE journal_entries SET status = 'POSTED' WHERE id = \$1\", journal_id)    # Law 20: memicu rantai hash@pass    # Law 20@|$T"
  "s19 void: jurnal asli tak ditandai dibalik|$KTF|s@SET reversed_by_id = \$2, reversed_at = NOW()@SET reversed_by_id = NULL, reversed_at = NOW()@|$T"
  "s20 izin batalkan-catatan turun jadi C (bukan V)|$PM|s@batalkan-catatan(/preview)?\$\", \[\"POST\"\], \"kas_bank\", \"V\")@batalkan-catatan(/preview)?\$\", [\"POST\"], \"kas_bank\", \"C\")@|$T"
+ "s21 PERIODE: catat di periode tertutup lolos (pemeriksaan periode penulis manual dicabut)|$KTF|s@^    await periode_terbuka(conn, tid, body.transaction_date, bl)@    pass@|$T"
+ "s22 PERIODE: batalkan catatan yang tanggal asli kini di periode tertutup lolos|$KTF|s@^    await periode_terbuka(conn, tid, tx\[\"transaction_date\"\], bl)@    pass@|$T"
+ "s23 KAS_MINUS dimatikan: uang keluar melebihi saldo kas lolos|$KTF|s@if a\[\"account_type\"\] in TIPE_KAS and _d(a\[\"saldo\"\]) - keluar < 0:@if False:@|$T"
+ "s24 batalkan: blok void tak dilempar saat tulis (jurnal pembalik tetap ditulis walau diblok)|$AK|s@Blok(False), kunci=True)       # blok pertama dilempar@Blok(True), kunci=True)       # blok pertama dilempar@|$T"
+ "s25 catat: blok penulis manual tak diteruskan ke pratinjau (KAS_MINUS/PERIODE hilang dari layar)|$AK|s@^        bl.daftar.append(b)@        pass@|$T"
+ "s26 catat: akun lawan wajib dicabut (akun bawaan diam-diam)|$AK|s@^        if lawan is None:@        if False:@|$T"
 )
