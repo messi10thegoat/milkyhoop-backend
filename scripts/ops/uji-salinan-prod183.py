@@ -65,13 +65,18 @@ async def bom_aktif(c, rq, ids):
     return bid, op
 
 
+async def gudang(c, pid):
+    return await c.fetchval("SELECT warehouse_id FROM warehouse_stock WHERE tenant_id = $1 AND item_id = $2 ORDER BY quantity DESC LIMIT 1", BS, str(pid))
+
+
 async def buat_wo(c, rq, ids, bid, qty):
-    r = await P.create_production_order(rq, SP.CreateProductionOrderRequest(product_id=ids["kaos"], bom_id=bid, planned_quantity=Decimal(qty)))
+    wh = await gudang(c, ids["kain"])
+    r = await P.create_production_order(rq, SP.CreateProductionOrderRequest(product_id=ids["kaos"], bom_id=bid, planned_quantity=Decimal(qty), warehouse_id=wh))
     oid = uuid.UUID(str(r["data"]["id"]))
     await P.release_order(rq, oid)
-    await P.issue_materials(rq, oid, [SP.ProductionMaterialInput(product_id=ids["kain"], quantity=Decimal(qty)),
-                                      SP.ProductionMaterialInput(product_id=ids["benang"], quantity=Decimal(qty) * Decimal("0.02")),
-                                      SP.ProductionMaterialInput(product_id=ids["label"], quantity=Decimal(qty))])
+    await P.issue_materials(rq, oid, [SP.ProductionMaterialInput(product_id=ids["kain"], quantity=Decimal(qty), warehouse_id=await gudang(c, ids["kain"])),
+                                      SP.ProductionMaterialInput(product_id=ids["benang"], quantity=Decimal(qty) * Decimal("0.02"), warehouse_id=await gudang(c, ids["benang"])),
+                                      SP.ProductionMaterialInput(product_id=ids["label"], quantity=Decimal(qty), warehouse_id=await gudang(c, ids["label"]))])
     return oid
 
 
