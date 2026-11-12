@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from . import bankfeed_dokumen as BDK
 from . import bankfeed_tebak as TB
 from . import bankfeed_tersedia as TS
-from . import kasbank_ringkas as KR
 from . import teks_galat as tg
 from .nama_pengguna import nama_untuk
 from .so_posisi import BULAN
@@ -22,14 +21,6 @@ CARA_KATA = {"cocok": "Dicocokkan", "catat": "Dicatat", "pribadi": "Ditandai pri
 TEBAKAN_KOSONG = TB.ringkas_tebakan({**TB._kosong(), "layak_massal": False, "layak_massal_text": None})   # bentuk SAMA dgn tebakan hidup; salinan per baris
 
 SQL_REKENING_ADA = "SELECT 1 FROM bank_accounts WHERE id = $1 AND tenant_id = $2"
-# dokumen yang tertaut AKTIF ke baris dicatat/dicocokkan (BF-1e): satu bentuk dengan tebakan.dokumen dan tak-di-bank.dokumen; nomor/pihak dari SQL_JOIN_DOKUMEN (satu definisi dengan register bank)
-SQL_TERTAUT = f"""SELECT t.mutasi_bank_id, bt.id AS bt_id, je.source_type AS sumber, je.source_id AS dokumen_id, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor
-FROM mutasi_bank_tautan t
-JOIN bank_transactions bt ON bt.id = t.bank_transaction_id AND bt.tenant_id = t.tenant_id
-JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id
-{KR.SQL_JOIN_DOKUMEN}
-WHERE t.tenant_id = $1 AND t.mutasi_bank_id = ANY($2::uuid[]) AND t.dilepas_pada IS NULL
-ORDER BY t.dibuat_pada, t.id"""
 
 
 def ringkas_keterangan(teks, maks: int = 80) -> str:
@@ -87,7 +78,7 @@ async def daftar(conn, tid: str, rekening_id, status: Optional[str], q: Optional
     izin = await TS.izin_pengguna(user, rekening_id) if rows else TS.izin_semua()       # BF-1e: SATU panggilan peran per halaman
     ids_catat = [r["id"] for r in rows if r["status"] == "dicatat"]
     tertaut = {}
-    for x in (await conn.fetch(SQL_TERTAUT, tid, ids_catat) if ids_catat else []):         # BF-1e: SATU query untuk seluruh halaman
+    for x in (await conn.fetch(BDK.SQL_TERTAUT, tid, ids_catat) if ids_catat else []):         # BF-1e: SATU query untuk seluruh halaman
         tertaut.setdefault(str(x["mutasi_bank_id"]), []).append(BDK.bentuk(x["sumber"], x["dokumen_id"], x["nomor"], x["bt_id"]))
     data = []
     for r in rows:

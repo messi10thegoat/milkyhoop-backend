@@ -89,7 +89,7 @@ async def utama():
             return await panggil(fn(req(tid), rid, mid, body, Response()))
         # keadaan: satu dicatat (transfer ke B), satu dikecualikan
         s1, h1 = await tulis(MR.catat, ids["catat"], CatatRequest(jenis="transfer", rekening_lawan=rid_b))
-        s2, h2 = await tulis(MR.kecualikan, ids["kecuali"], KecualikanRequest(alasan="lain"))
+        s2, h2 = await tulis(MR.kecualikan, ids["kecuali"], KecualikanRequest(alasan="bukan_transaksi"))
         d = await daftar()
         per = {x["id"]: x for x in d["data"]}
         tinjau = per[str(ids["tinjau_masuk"])]
@@ -111,7 +111,7 @@ async def utama():
                 if aksi == "lepaskan":
                     pv = await panggil(MR.pratinjau_lepaskan(req(tid), rid, mid, LepaskanRequest()))
                 elif aksi == "kecualikan":
-                    pv = await panggil(MR.pratinjau_kecualikan(req(tid), rid, mid, KecualikanRequest(alasan="lain")))
+                    pv = await panggil(MR.pratinjau_kecualikan(req(tid), rid, mid, KecualikanRequest(alasan="bukan_transaksi")))
                 elif aksi == "batalkan_catatan":
                     pv = await panggil(MR.pratinjau_batalkan_catatan(req(tid), rid, mid, BatalkanCatatanRequest(alasan="uji")))
                 else:

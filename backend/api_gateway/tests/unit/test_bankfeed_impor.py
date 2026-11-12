@@ -277,7 +277,7 @@ class _KD:
 
     async def fetch(self, sql, *a):
         self.sql.append((sql, a))
-        if "FROM bank_transactions bt" in sql or "FROM chart_of_accounts" in sql:   # penentu tebak (BF-1b): tak ada kandidat/akun pada tes ini
+        if "FROM bank_transactions bt" in sql or "FROM chart_of_accounts" in sql or "FROM mutasi_bank_tautan" in sql:   # penentu tebak (BF-1b): tak ada kandidat/akun pada tes ini
             return []
         return self.cacah if "GROUP BY status" in sql else self.rows
 
