@@ -103,6 +103,13 @@ async def utama():
             and dicatat["dokumen_tertaut"][0]["jenis"] == "transfer" and str(dicatat["dokumen_tertaut"][0]["nomor"]).startswith("TRF-"), f"{dicatat}")
         kec = per[str(ids["kecuali"])]
         cek(f"{tid} D3 baris dikecualikan: hanya lepaskan ok; dokumen_tertaut kosong", set(kec["aksi_tersedia"]) == {"lepaskan"} and kec["aksi_tersedia"]["lepaskan"]["ok"] and kec["dokumen_tertaut"] == [], f"{kec}")
+        # alasan "lain" tanpa catatan: DITOLAK 422 CATATAN_WAJIB (pratinjau dan tulis), baris tak berubah (uji yang memang diharapkan, bukan celah harness)
+        s_pv, h_pv = await panggil(MR.pratinjau_kecualikan(req(tid), rid, ids["cocok_uji"], KecualikanRequest(alasan="lain")))
+        s_tl, h_tl = await tulis(MR.kecualikan, ids["cocok_uji"], KecualikanRequest(alasan="lain"))
+        async with pool.acquire() as c:
+            st_lain = await c.fetchval("SELECT status FROM mutasi_bank WHERE tenant_id = $1 AND id = $2", tid, ids["cocok_uji"])
+        cek(f"{tid} D3b alasan lain tanpa catatan -> 422 CATATAN_WAJIB (pratinjau dan tulis); baris tetap untuk_ditinjau",
+            s_pv == 422 and s_tl == 422 and "CATATAN_WAJIB" in str(h_pv) and "CATATAN_WAJIB" in str(h_tl) and st_lain == "untuk_ditinjau", f"{s_pv} {s_tl} {st_lain}")
         # kesetaraan dengan pratinjau sungguhan (DB nyata): aksi ok == pratinjau tanpa blok keadaan
         salah = []
         for nama, mid in ids.items():

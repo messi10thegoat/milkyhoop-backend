@@ -5,7 +5,7 @@ POLA_UNIT='bankfeed|mutasi_bank|bank_accounts|kasbank|guc_tenant|jaga_rekonsilia
 HARNESS=scripts/ops/uji-salinan-bankfeed-1e.sh
 PENANDA_BERKAS=services/bankfeed_tersedia.py; PENANDA='def aksi_tersedia('
 A=backend/api_gateway/app
-T="tests/unit/test_bankfeed_tersedia.py tests/unit/test_bankfeed_teks_server.py tests/unit/test_bankfeed_impor.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_tak_di_bank.py tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py"
+T="tests/unit/test_bankfeed_jurnal_penjaga.py tests/unit/test_bankfeed_tersedia.py tests/unit/test_bankfeed_teks_server.py tests/unit/test_bankfeed_impor.py tests/unit/test_bankfeed_tebak.py tests/unit/test_bankfeed_tak_di_bank.py tests/unit/test_bankfeed_catat3.py tests/unit/test_bankfeed_catat.py tests/unit/test_bankfeed_aksi.py"
 TS=$A/services/bankfeed_tersedia.py; DF=$A/services/bankfeed_daftar.py; DK=$A/services/bankfeed_dokumen.py; TB=$A/services/bankfeed_tebak.py; BAR=$A/routers/bank_accounts.py
 SAB=(
  'e1 jenis tak disaring izin C modul tujuan|'"$TS"'|s@and izin\["jenis"\].get(j, True)@and True@|'"$T"
@@ -26,4 +26,7 @@ SAB=(
  'e16 dasar_text menampilkan enum mentah|'"$TB"'|s@    h\["dasar_text"\] = DASAR_TEKS.get(t.get("dasar"))@    h["dasar_text"] = t.get("dasar")@|'"$T"
  'e17 perlu_ditinjau tak dibawa di daftar Kas & Bank|'"$BAR"'|s@"perlu_ditinjau": perlu.get(str(row\["id"\]), 0),@"perlu_ditinjau": 0,@|'"$T"
  'e18 tersedia: aksi baris ditinjau tertutup walau izin ubah ada|'"$TS"'|s@        tutup = None if ubah else ALASAN_TAK_IZIN@        tutup = ALASAN_TAK_IZIN@|'"$T"
+ 'e19 SQL jurnal KEDUA di modul daftar (di luar IZIN_BACA_JURNAL)|'"$DF"'|s@^SQL_REKENING_ADA = .*@&\nSQL_JURNAL_KEDUA = "SELECT 1 FROM journal_entries WHERE tenant_id = $1"@|'"$T"
+ 'e20 SQL TULIS jurnal di modul dokumen (DELETE journal_lines)|'"$DK"'|s@^KUNCI_LAIN = "lainnya"@&\nSQL_HAPUS_JURNAL = "DELETE FROM journal_lines WHERE tenant_id = $1"@|'"$T"
+ 'e21 SQL_TERTAUT diubah jadi bukan SELECT (UPDATE bank_transactions ... FROM journal_entries)|'"$DK"'|s@^SQL_TERTAUT = f"""SELECT @SQL_TERTAUT = f"""UPDATE journal_entries SET source_type = source_type RETURNING @|'"$T"
 )
