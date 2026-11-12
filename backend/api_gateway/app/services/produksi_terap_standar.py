@@ -53,3 +53,26 @@ async def terapkan_ke_wip(conn, *, tenant_id, user_id, order_id, order_number, j
         "INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo) VALUES ($1, $2, 2, $3, 0, $4, $5)",
         _uuid.uuid4(), je, akun_applied, jumlah, f"{memo_akun} {order_number}")
     await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1", je)
+
+
+def nilai_fg_standar(planned_total, planned_qty, sudah_baik, baik, sudah_dikredit, subkon_aktual=0) -> int:
+    """BUG-183b (putusan pemilik, persis Accurate): nilai Penerimaan Produksi = STANDAR BOM (bahan + upah + overhead, planned_total) x output baik KUMULATIF
+    (+ subkontrak AKTUAL proporsional output, maks 1x) dikurangi yang SUDAH dikredit output sebelumnya; clamp >= 0 (WO lama yang output-nya tercatat pada nilai aktual tak
+    pernah menghasilkan nilai negatif). Selisih bahan/konversi TIDAK masuk FG: tertinggal di WIP lalu dikuras month-end-reconcile ke 5-90200."""
+    if not planned_qty or planned_qty <= 0:
+        return 0
+    kum = Decimal(sudah_baik) + Decimal(baik)
+    std = (Decimal(planned_total or 0) * kum / Decimal(planned_qty)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    porsi = min(kum / Decimal(planned_qty), Decimal(1))
+    sub = (Decimal(subkon_aktual or 0) * porsi).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return max(0, int(std + sub - Decimal(sudah_dikredit or 0)))
+
+
+def wo_selesai_per(status, baik_sd_akhir, planned, tgl_selesai, akhir) -> bool:
+    """SATU penentu 'WO selesai' (pengurasan WIP tutup bulan): status 'completed' (dgn tanggal selesai <= akhir periode, atau tanpa tanggal) ATAU output baik s/d akhir periode >= rencana.
+    Dibatasi periode supaya WO yang baru selesai di periode berikutnya tak dikuras sebelum waktunya. Batal tak pernah dikuras."""
+    if status == "cancelled":
+        return False
+    if status == "completed" and (tgl_selesai is None or tgl_selesai <= akhir):
+        return True
+    return planned is not None and Decimal(str(planned)) > 0 and Decimal(str(baik_sd_akhir or 0)) >= Decimal(str(planned))
