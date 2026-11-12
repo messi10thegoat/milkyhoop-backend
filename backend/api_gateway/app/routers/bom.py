@@ -684,7 +684,8 @@ async def get_bom(request: Request, bom_id: UUID):
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")
-            await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+            # BUG-188: GET TIDAK menulis. Dulu di sini `calculate_bom_cost` (UPDATE bill_of_materials, termasuk BOM AKTIF + updated_at) = "auto-heal"
+            # pra-V134; kini angka TERSIMPAN (snapshot) dipakai apa adanya. Penyegaran lewat recalculate (draf) / versi baru, bukan lewat baca.
 
             # Get BOM
             bom = await conn.fetchrow(
@@ -1185,7 +1186,7 @@ async def get_cost_breakdown(request: Request, bom_id: UUID):
             )
             if not exists:
                 raise HTTPException(status_code=404, detail="BOM not found")
-            await conn.fetchval("SELECT calculate_bom_cost($1)", bom_id)
+            # BUG-188: GET TIDAK menulis (lihat get_bom) -- rincian biaya dari angka TERSIMPAN.
 
             bom = await conn.fetchrow(
                 """
