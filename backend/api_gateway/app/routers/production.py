@@ -78,6 +78,14 @@ async def _ensure_production_role_preconditions(pool, tenant_id=None):
     _production_precondition_checked_tenants.add(tenant_id)
 
 
+def satuan_wo(unit_body, unit_bom):
+    """Satuan WO (BUG-184a): satuan yang dikirim pemanggil; bila kosong/spasi -> satuan output BOM; keduanya kosong -> None."""
+    for u in (unit_body, unit_bom):
+        if isinstance(u, str) and u.strip():
+            return u.strip()
+    return None
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get singleton connection pool (Law 32)."""
     from ..services.db_pool import get_db_pool
@@ -443,6 +451,9 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     "SELECT generate_production_order_number($1)", ctx["tenant_id"]
                 )
 
+                # BUG-184a: satuan WO = yang dikirim, bila kosong ikut satuan output BOM (dulu tersimpan NULL -> "Satuan" kosong di WO)
+                wo_unit = satuan_wo(body.unit, bom["output_unit"])
+
                 # Calculate planned costs based on BOM
                 multiplier = Decimal(str(body.planned_quantity)) / Decimal(
                     str(bom["output_quantity"])
@@ -471,7 +482,7 @@ async def create_production_order(request: Request, body: CreateProductionOrderR
                     body.product_id,
                     body.bom_id,
                     body.planned_quantity,
-                    body.unit,
+                    wo_unit,
                     body.planned_start_date,
                     body.planned_end_date,
                     body.work_center_id,
