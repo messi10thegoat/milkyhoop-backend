@@ -16,6 +16,7 @@ Endpoints:
 - GET  /items/taxes        - Get tax options
 """
 
+from ..services.cari_kata import syarat_kata
 from fastapi import APIRouter, HTTPException, Request, Query, Response, UploadFile, File
 from typing import Optional
 import logging
@@ -318,11 +319,7 @@ def get_user_context(request):
 
 def _syarat_cari(search, idx: int):
     """Cari per kata (nama/barcode), SATU predikat untuk daftar dan /summary -> (sql "AND (...)" | "", params)."""
-    words = search.strip().split() if isinstance(search, str) else []
-    if not words:
-        return "", []
-    syarat = [f"(p.nama_produk ILIKE ${idx + i} OR p.barcode ILIKE ${idx + i})" for i in range(len(words))]
-    return f"AND ({' AND '.join(syarat)})", [f"%{w}%" for w in words]
+    return syarat_kata(search, ("p.nama_produk", "p.barcode"), idx)   # BUG-181: SATU fungsi per-kata + escape (services/cari_kata)
 
 
 @router.get("/items", response_model=ItemListResponse)
@@ -2171,10 +2168,12 @@ async def autocomplete_items(
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # BUG-181: per kata (semua kata ada, urutan bebas, spasi ganda dirapikan), % _ di-escape; SATU fungsi dgn daftar barang
+            cari_sql, cari_params = syarat_kata(q, ("p.nama_produk", "p.item_code", "p.sku"), 3)
             type_filter = ""
-            params = [ctx["tenant_id"], f"%{q}%", limit]
+            params = [ctx["tenant_id"], limit, *cari_params]
             if item_type:
-                type_filter = " AND item_type = $4"
+                type_filter = f" AND item_type = ${len(params) + 1}"
                 params.append(item_type)
 
             rows = await conn.fetch(
@@ -2186,12 +2185,12 @@ async def autocomplete_items(
                 LEFT JOIN tax_codes st ON st.id = p.sales_tax_id
                 LEFT JOIN tax_codes pt ON pt.id = p.purchase_tax_id
                 WHERE p.tenant_id = $1
-                  AND (p.nama_produk ILIKE $2 OR p.item_code ILIKE $2 OR p.sku ILIKE $2)
+                  {cari_sql}
                   AND p.status = 'active'
                   AND p.deleted_at IS NULL
                   {type_filter}
                 ORDER BY name ASC
-                LIMIT $3
+                LIMIT $2
             """,
                 *params,
             )
