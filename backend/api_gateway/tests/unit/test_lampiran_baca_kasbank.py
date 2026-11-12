@@ -41,7 +41,8 @@ def test_url_grup_ke_rute_unduh_pabrik(jenis, entitas):
 
 def test_spesifikasi_sama_dengan_pabrik():
     assert {j: s for j, (s, _) in LD.JENIS_TUNGGAL.items()} == {
-        "bank_transaction": LI.SPEC_MUTASI_BANK, "bank_transfer": LI.SPEC_TRANSFER_BANK, "employee_advance": LI.SPEC_KASBON}
+        "bank_transaction": LI.SPEC_MUTASI_BANK, "bank_transfer": LI.SPEC_TRANSFER_BANK, "employee_advance": LI.SPEC_KASBON,
+        "expense": LI.SPEC_BIAYA}   # B8b: jenis Biaya ditambah sengaja (tes khusus: test_lampiran_baca_biaya.py)
     assert LD.JENIS_TUNGGAL["employee_advance"][0].pra_cek_dok is LI._kasbon_dalam_pay_group
     assert not set(LD.JENIS_TUNGGAL) & (set(LD.JENIS_DOKUMEN) | set(LD.JENIS_PEMBELIAN))
 

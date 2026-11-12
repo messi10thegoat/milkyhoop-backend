@@ -11,10 +11,9 @@ from app.middleware import permission_middleware as pm
 from app.routers import lampiran_dokumen as LD
 from app.routers import lampiran_induk as LI
 from app.routers import sales_order_lampiran as SL
-from tests.unit.test_lampiran_baca_kasbank import Kon, T, jalankan
+from tests.unit.test_lampiran_baca_kasbank import DOK, Kon, T, jalankan
 from tests.unit.test_lampiran_so_keluarga import _pemenang, baris
 
-DOK = uuid.uuid4()
 
 
 def test_izin_rute_dan_izin_grup_sama_dengan_daftar_lampiran_biaya():
