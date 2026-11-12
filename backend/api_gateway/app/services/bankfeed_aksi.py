@@ -47,6 +47,7 @@ EVENT = {"cocokkan": "BANK_FEED_COCOKKAN", "kecualikan": "BANK_FEED_KECUALIKAN",
 AKSI_TEKS = {"BANK_FEED_COCOKKAN": ("cocokkan", "Dicocokkan"), "BANK_FEED_KECUALIKAN": ("kecualikan", "Dikecualikan"), "BANK_FEED_LEPASKAN": ("lepaskan", "Dilepas"),
              "BANK_FEED_CATAT": ("catat", "Dicatat"), "BANK_FEED_BATALKAN": ("batalkan", "Dibatalkan")}
 JENIS_CATAT = ("uang_masuk", "uang_keluar", "pribadi", "transfer", "uang_muka_pelanggan", "terima_pembayaran")
+JENIS_GUC = ("uang_muka_pelanggan", "terima_pembayaran")        # penulis modul yang membaca GUC app.tenant_id (rute modulnya memasangnya); dipasang di SATU tempat: tulis()
 JENIS_DOK = ("transfer", "uang_muka_pelanggan", "terima_pembayaran")         # BF-1c3: dokumen dibuat penulis MODULNYA
 IZIN_BUAT = {"transfer": "/api/bank-transfers", "uang_muka_pelanggan": "/api/customer-deposits", "terima_pembayaran": "/api/receive-payments"}
 IZIN_VOID = {"BANK_TRANSFER": "/api/bank-transfers/{}/void", "CUSTOMER_DEPOSIT": "/api/customer-deposits/{}/void", "RECEIVE_PAYMENT": "/api/receive-payments/{}/void"}
@@ -453,7 +454,6 @@ async def _rencana_dokumen(conn, tid: str, rekening_id, h: dict, m, jenis: str, 
     n_lama = int(await conn.fetchval(SQL_TAUTAN_JUMLAH, tid, m["id"]) or 0)
     kunci_idem = f"BANKFEED:{m['id']}:{n_lama + 1}"                  # berurut: dicatat ulang setelah batal tak bentrok dengan dokumen lama
     ctx_eff = ctx or {"tenant_id": tid, "user_id": None}
-    await GUC.pasang_tenant(conn, tid)
     metode = "cash" if rek["account_type"] == "cash" else "transfer"
     if jenis == "uang_muka_pelanggan":
         so = _uuid(body.get("so_id"))
@@ -693,6 +693,8 @@ async def tulis(conn, ctx: dict, rekening_id, mutasi_id, aksi: str, body: dict) 
     """Tulis di transaksi PEMANGGIL (idem sudah di rute): MUTASI_BANK:{id} -> penentu yang SAMA (FOR UPDATE, status dibaca ulang) -> versi -> tulis + riwayat."""
     tid = ctx["tenant_id"]
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"MUTASI_BANK:{mutasi_id}")
+    if aksi == "catat" and body.get("jenis") in JENIS_GUC:        # SATU-SATUNYA pemanggil GUC.pasang_tenant (dijaga tes AST); tenant dari ctx sesi, sesudah kunci
+        await GUC.pasang_tenant(conn, tid)
     r = await RENCANA[aksi](conn, tid, rekening_id, mutasi_id, body, Blok(False), True, ctx)
     if body.get("versi") and body["versi"] != r["versi"]:
         raise HTTPException(status_code=409, detail={"code": "RENCANA_BERUBAH", "message": "Keadaan baris atau dokumen berubah sejak pratinjau. Tinjau ulang sebelum menyimpan."})
