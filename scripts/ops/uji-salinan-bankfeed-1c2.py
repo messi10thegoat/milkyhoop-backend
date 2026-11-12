@@ -322,7 +322,7 @@ async def periksa(pool, tid, fx_b, fx_j, fx_mut):
         t_pm = await UT.tanda_bt(c, tid, UUID(h_pm["data"]["bank_transaction_id"]), coa_rid)
         s_pk, s_pm = await status_mutasi(c, tid, m_pk), await c.fetchrow("SELECT status, cara, akun_id FROM mutasi_bank WHERE tenant_id = $1 AND id = $2", tid, UUID(m_pm))
         a_pk = await c.fetchval("SELECT akun_id FROM mutasi_bank WHERE tenant_id = $1 AND id = $2", tid, UUID(m_pk))
-    cek(f"{tid} D uang_masuk: jurnal Dr rekening / Cr 4-90000, bt deposit bertanda +nominal, pihak tersimpan",
+    cek(f"{tid} D uang_masuk: akun lawan = PILIHAN PENGGUNA (akun_id dikirim, bukan bawaan sistem): jurnal Dr rekening / Cr akun pilihan (4-90000), bt deposit bertanda +nominal, pihak tersimpan",
         st == 200 and t_in["garis"][0][1] == "BANK" and t_in["garis"][1][1] == "4-90000" and t_in["bt"]["transaction_type"] == "deposit" and t_in["bt"]["payee_payer"] == "Budi uji"
         and t_in["bt"]["amount"] == str(nominal_mid[m_in]), str(t_in["garis"]))
     cek(f"{tid} E pribadi KELUAR (putusan pemilik): Dr 3-40000 Prive / Cr rekening; cara pribadi; akun_id = Prive",
@@ -345,6 +345,7 @@ async def periksa(pool, tid, fx_b, fx_j, fx_mut):
         ("JENIS_BELUM_TERSEDIA", await catat(tid, rid, kos_keluar[2], "bayar_tagihan")),
         ("JENIS_TAK_SESUAI_ARAH", await catat(tid, rid, kos_keluar[2], "uang_masuk", akun_id=str(id_4_90000))),
         ("AKUN_WAJIB", await catat(tid, rid, kos_keluar[2], "uang_keluar")),
+        ("AKUN_WAJIB", await catat(tid, rid, kos_masuk[2], "uang_masuk")),      # akun bawaan HANYA untuk pribadi dan BI-FAST; uang masuk/keluar = pilihan pengguna
         ("AKUN_TETAP", await catat(tid, rid, kos_keluar[2], "pribadi", akun_id=str(id_5_20850))),
         ("SUDAH_DIPUTUS", await catat(tid, rid, adm, "uang_keluar", akun_id=str(id_5_20850))),
         ("SUDAH_DIPUTUS", await catat(tid, rid, cocok_row, "uang_keluar", akun_id=str(id_5_20850))),
@@ -355,7 +356,7 @@ async def periksa(pool, tid, fx_b, fx_j, fx_mut):
     ]
     async with pool.acquire() as c:
         pasca = await hitung2(c, tid, rid)
-    cek(f"{tid} G blok berkode lewat API: " + ", ".join(sorted({k for k, _ in ujian})), all(s != 200 and h["code"] == k for k, (s, h) in ujian), str([(k, s, h.get("code")) for k, (s, h) in ujian if s == 200 or h.get("code") != k]))
+    cek(f"{tid} G blok berkode lewat API (uang masuk/keluar tanpa akun TIDAK memakai akun bawaan): " + ", ".join(sorted({k for k, _ in ujian})), all(s != 200 and h["code"] == k for k, (s, h) in ujian), str([(k, s, h.get("code")) for k, (s, h) in ujian if s == 200 or h.get("code") != k]))
     cek(f"{tid} G blok tidak menulis jurnal/bank_transactions apa pun (selisih hanya dari cocokkan: NOL jurnal)", pasca["je"] == pra["je"] and pasca["bt"] == pra["bt"], f"{pra} -> {pasca}")
     await lepas(tid, rid, cocok_row)
 
@@ -428,6 +429,69 @@ async def periksa(pool, tid, fx_b, fx_j, fx_mut):
     async with pool.acquire() as c:
         sm = await status_mutasi(c, tid, m_pk)
     cek(f"{tid} J jalan yang benar: Batalkan catatan lewat Bank Feed melepas tautan lalu void sukses; baris kembali", sm["status"] == "untuk_ditinjau")
+
+    # ---------------------------------------------------------------- L: KAS_MINUS pada rekening KAS di klon (saldo kecil, uang keluar melebihi saldo)
+    async def mutasi_sintetik(tgl, arah, nominal, teks):
+        async with pool.acquire() as c:
+            mid = uuid.uuid4()
+            await c.execute("INSERT INTO mutasi_bank (id, tenant_id, bank_account_id, tanggal, keterangan, keterangan_normal, arah, nominal, sidik, status) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'untuk_ditinjau')", mid, tid, rid_kas, tgl, teks, teks.lower(), arah, nominal, uuid.uuid4().hex)
+            return str(mid)
+    async with pool.acquire() as c:
+        rid_kas, coa_kas = await UT.rekening_kembar(c, tid, "8888880099", tipe="cash", coa_baru=True)
+        id_5_20900 = await UT.kode_ke_id(c, tid, "5-20900")
+    await BAR.create_manual_transaction(req(tid), rid_kas, CreateManualTransactionRequest(direction="in", amount=100000, transaction_date=date(2026, 12, 1), description="modal kas uji", contra_account_id=str(id_4_90000)), Response())
+    mk1 = await mutasi_sintetik(date(2026, 12, 2), "keluar", D("500000"), "BAYAR KAS MELEBIHI SALDO")
+    async with pool.acquire() as c:
+        pra = await hitung2(c, tid, rid)
+    pv = (await MR.pratinjau_catat(req(tid), rid_kas, UUID(mk1), CatatRequest(jenis="uang_keluar", akun_id=id_5_20900)))["data"]
+    s_k, h_k = await panggil(MR.catat(req(tid), rid_kas, UUID(mk1), CatatRequest(jenis="uang_keluar", akun_id=id_5_20900), Response()))
+    async with pool.acquire() as c:
+        pasca, sm = await hitung2(c, tid, rid), await c.fetchrow("SELECT status FROM mutasi_bank WHERE tenant_id = $1 AND id = $2", tid, UUID(mk1))
+        tk = await c.fetchval("SELECT count(*) FROM mutasi_bank_tautan WHERE tenant_id = $1 AND mutasi_bank_id = $2", tid, UUID(mk1))
+    cek(f"{tid} L KAS_MINUS: rekening KAS saldo Rp100.000, uang keluar Rp500.000 -> pratinjau blok KAS_MINUS; tulis ditolak KAS_MINUS; NOL jurnal/bt, baris tetap untuk_ditinjau, tanpa tautan",
+        "KAS_MINUS" in [x["code"] for x in pv["blocks"]] and s_k == 400 and h_k["code"] == "KAS_MINUS" and pasca["je"] == pra["je"] and pasca["bt"] == pra["bt"] and sm["status"] == "untuk_ditinjau" and tk == 0, f"{s_k} {h_k} {pra}->{pasca}")
+    mk2 = await mutasi_sintetik(date(2026, 12, 3), "keluar", D("100000"), "BAYAR KAS PAS SALDO")
+    s_ok, h_ok = await panggil(MR.catat(req(tid), rid_kas, UUID(mk2), CatatRequest(jenis="uang_keluar", akun_id=id_5_20900), Response()))
+    mk3 = await mutasi_sintetik(date(2026, 12, 4), "keluar", D("1"), "BAYAR KAS SATU RUPIAH")
+    s_1, h_1 = await panggil(MR.catat(req(tid), rid_kas, UUID(mk3), CatatRequest(jenis="uang_keluar", akun_id=id_5_20900), Response()))
+    cek(f"{tid} L kontrol: uang keluar PAS saldo (Rp100.000) lolos (saldo jadi 0), lalu Rp1 lagi -> KAS_MINUS (bukan 'selalu blok')", s_ok == 200 and s_1 == 400 and h_1["code"] == "KAS_MINUS", f"{s_ok} {s_1} {h_1}")
+
+    # ---------------------------------------------------------------- M: PERIODE TERTUTUP (periode ditutup di klon; tanggal TIDAK digeser diam-diam)
+    async def periode(tgl, status):
+        async with pool.acquire() as c:
+            await c.execute("UPDATE fiscal_periods SET status = $3, closed_at = CASE WHEN $3 = 'CLOSED' THEN now() ELSE NULL END WHERE tenant_id = $1 AND start_date <= $2 AND end_date >= $2", tid, tgl, status)
+    m_pt, m_bp = kos_keluar[5], kos_keluar[6]
+    await periode(tgl_mid[m_pt], "CLOSED")
+    pv = await prev_catat(tid, rid, m_pt, "uang_keluar", akun_id=str(id_5_20850))
+    async with pool.acquire() as c:
+        pra = await hitung2(c, tid, rid)
+    s_p, h_p = await catat(tid, rid, m_pt, "uang_keluar", akun_id=str(id_5_20850))
+    async with pool.acquire() as c:
+        pasca, sm = await hitung2(c, tid, rid), await status_mutasi(c, tid, m_pt)
+        je_asing = await c.fetchval("SELECT count(*) FROM journal_entries WHERE tenant_id = $1 AND journal_date = $2 AND description LIKE '%' || $3 || '%'", tid, tgl_mid[m_pt], BDF.ringkas_keterangan(ket[m_pt], 500)[:20])
+    cek(f"{tid} M catat dengan tanggal mutasi {tgl_mid[m_pt]} di periode TERTUTUP: pratinjau blok PERIODE_TERTUTUP; tulis ditolak 403; NOL jurnal/bt; baris tetap untuk_ditinjau; tak ada jurnal bertanggal lain",
+        "PERIODE_TERTUTUP" in [x["code"] for x in pv["blocks"]] and s_p == 403 and h_p["code"] == "PERIODE_TERTUTUP" and pasca["je"] == pra["je"] and pasca["bt"] == pra["bt"] and sm["status"] == "untuk_ditinjau" and je_asing == 0, f"{s_p} {h_p}")
+    await periode(tgl_mid[m_pt], "OPEN")
+    s_ok, _ = await catat(tid, rid, m_pt, "uang_keluar", akun_id=str(id_5_20850))
+    cek(f"{tid} M kontrol: periode dibuka kembali -> catat yang sama lolos (blok memang karena periode)", s_ok == 200)
+    s_b, h_b = await catat(tid, rid, m_bp, "uang_keluar", akun_id=str(id_5_20850))
+    bt_bp = UUID(h_b["data"]["bank_transaction_id"])
+    await periode(tgl_mid[m_bp], "CLOSED")
+    pv = await prev_batalkan(tid, rid, m_bp, "batal periode tertutup")
+    async with pool.acquire() as c:
+        pra = await hitung2(c, tid, rid)
+    s_c, h_c = await batalkan(tid, rid, m_bp, "batal periode tertutup")
+    async with pool.acquire() as c:
+        pasca, sm = await hitung2(c, tid, rid), await status_mutasi(c, tid, m_bp)
+        ta = await tautan_aktif(c, tid, rid, m_bp)
+        asli = await UT.tanda_bt(c, tid, bt_bp, coa_rid)
+    cek(f"{tid} M batalkan catatan yang tanggal ASLINYA ({tgl_mid[m_bp]}) kini di periode tertutup: pratinjau blok; tulis ditolak 403 PERIODE_TERTUTUP; NOL jurnal/bt (tak ada pembalik bertanggal lain); baris tetap dicatat; tautan TETAP aktif; dokumen asli tetap POSTED",
+        s_b == 200 and "PERIODE_TERTUTUP" in [x["code"] for x in pv["blocks"]] and s_c == 403 and h_c["code"] == "PERIODE_TERTUTUP" and pasca["je"] == pra["je"] and pasca["bt"] == pra["bt"]
+        and sm["status"] == "dicatat" and sm["cara"] == "catat" and len(ta) == 1 and asli["bt"]["status"] == "POSTED" and asli["je"]["dibalik"] is False, f"{s_c} {h_c} {pra}->{pasca} tautan={len(ta)}")
+    await periode(tgl_mid[m_bp], "OPEN")
+    s_bo, _ = await batalkan(tid, rid, m_bp, "batal periode dibuka")
+    cek(f"{tid} M kontrol: periode dibuka kembali -> batalkan catatan yang sama lolos", s_bo == 200)
 
     # ---------------------------------------------------------------- K: invariants akhir
     async with pool.acquire() as c:

@@ -19,12 +19,18 @@ def norm(teks):
     return re.sub(r"(MT|RV-MT)-[0-9A-F]{8}", r"\1-*", str(teks)) if teks is not None else None
 
 
-async def rekening_kembar(c, tid, nomor):
-    coa = await c.fetchval("SELECT id FROM chart_of_accounts c WHERE tenant_id = $1 AND account_type = 'ASSET' AND NOT COALESCE(is_header, false) "
+async def rekening_kembar(c, tid, nomor, tipe="bank", coa_baru=False):
+    if coa_baru:     # akun CoA BARU bersaldo nol (saldo kas harus terkendali; akun lama bisa bersaldo besar)
+        coa, kode = uuid.uuid4(), f"1-9{uuid.uuid4().int % 10000:04d}"
+        await c.execute("INSERT INTO chart_of_accounts (id, tenant_id, account_code, name, account_type, normal_balance, is_active, is_header, is_detail, is_cash) "
+                        "VALUES ($1, $2, $3, $4, 'ASSET', 'DEBIT', true, false, true, true)", coa, tid, kode, f"Kas Uji C2 {kode}")
+    else:
+        coa = None
+    coa = coa or await c.fetchval("SELECT id FROM chart_of_accounts c WHERE tenant_id = $1 AND account_type = 'ASSET' AND NOT COALESCE(is_header, false) "
                            "AND NOT EXISTS (SELECT 1 FROM bank_accounts b WHERE b.coa_id = c.id) ORDER BY account_code LIMIT 1", tid)
     rid = uuid.uuid4()
     await c.execute("INSERT INTO bank_accounts (id, tenant_id, account_name, account_number, bank_name, coa_id, account_type, created_by) "
-                    "VALUES ($1, $2, $3, $4, 'BCA', $5, 'bank', $6::uuid)", rid, tid, f"UJI C2 {uuid.uuid4().hex[:6]}", nomor, coa, USER)
+                    "VALUES ($1, $2, $3, $4, 'BCA', $5, $7, $6::uuid)", rid, tid, f"UJI C2 {uuid.uuid4().hex[:6]}", nomor, coa, USER, tipe)
     return rid, coa
 
 
