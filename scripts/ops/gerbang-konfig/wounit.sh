@@ -5,7 +5,7 @@ HARNESS=scripts/ops/uji-salinan-wounit.sh
 PENANDA_BERKAS=services/wo_status.py; PENANDA='def siap_diselesaikan'
 A=backend/api_gateway/app; T1=tests/unit/test_wo_status_184b.py; T2=tests/unit/test_wo_satuan_bom.py; WS=$A/services/wo_status.py; PR=$A/routers/production.py
 SAB=(
- "w1 satuan BOM diabaikan|$PR|s#    for u in (unit_body, unit_bom):#    for u in (unit_body,):#|$T2"
+ "w1 satuan BOM diabaikan|$PR|s#    if bom_setara and isinstance(unit_bom, str)#    if False and isinstance(unit_bom, str)#|$T2"
  "w2 siap_diselesaikan true padahal belum >= rencana|$WS|s#Decimal(str(completed)) >= Decimal(str(planned))#Decimal(str(completed)) >= Decimal(str(planned)) - 1#|$T1"
  "w3 siap_diselesaikan tak memeriksa status|$WS|s#if status != \"in_progress\" or completed is None#if completed is None#|$T1"
  "w4 status_text mentah/Inggris|$WS|s#\"released\": \"Dirilis\"#\"released\": \"Released\"#|$T1"
