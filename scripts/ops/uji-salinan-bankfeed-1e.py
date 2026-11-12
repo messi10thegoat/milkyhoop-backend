@@ -108,8 +108,8 @@ async def utama():
         s_tl, h_tl = await tulis(MR.kecualikan, ids["cocok_uji"], KecualikanRequest(alasan="lain"))
         async with pool.acquire() as c:
             st_lain = await c.fetchval("SELECT status FROM mutasi_bank WHERE tenant_id = $1 AND id = $2", tid, ids["cocok_uji"])
-        cek(f"{tid} D3b alasan lain tanpa catatan -> 422 CATATAN_WAJIB (pratinjau dan tulis); baris tetap untuk_ditinjau",
-            s_pv == 422 and s_tl == 422 and "CATATAN_WAJIB" in str(h_pv) and "CATATAN_WAJIB" in str(h_tl) and st_lain == "untuk_ditinjau", f"{s_pv} {s_tl} {st_lain}")
+        cek(f"{tid} D3b alasan lain tanpa catatan -> pratinjau memblokir CATATAN_WAJIB, tulis 422; baris tetap untuk_ditinjau",
+            s_pv == 200 and "CATATAN_WAJIB" in [x["code"] for x in h_pv["data"]["blocks"]] and s_tl == 422 and "CATATAN_WAJIB" in str(h_tl) and st_lain == "untuk_ditinjau", f"{s_pv} {s_tl} {st_lain}")
         # kesetaraan dengan pratinjau sungguhan (DB nyata): aksi ok == pratinjau tanpa blok keadaan
         salah = []
         for nama, mid in ids.items():

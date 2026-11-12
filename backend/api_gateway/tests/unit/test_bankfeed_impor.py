@@ -307,7 +307,7 @@ def test_daftar_rekening_tak_ada_404():
 
 def test_daftar_has_more_menurut_total():
     rows = [{"id": uuid.uuid4(), "tanggal": date(2026, 8, 1), "keterangan": "A", "arah": "keluar", "nominal": D("1"), "status": "dicatat", "cara": None,
-             "diputus_oleh": None, "diputus_pada": None}]
+             "diputus_oleh": None, "diputus_pada": None, "rekonsiliasi_id": None}]
     assert asyncio.run(BD.daftar(_KD(rows, jumlah={"masuk": D("0"), "keluar": D("1"), "n": 7}), T, REK, None, None, None, None, 1, 0))["has_more"] is True
 
 
