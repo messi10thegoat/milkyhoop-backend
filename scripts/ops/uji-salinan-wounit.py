@@ -95,7 +95,7 @@ async def main():
         bl = uuid.UUID(str(rl["data"]["id"]))
         await B.activate_bom(rq, bl)
         bom_lama, bid = bid, bl
-        ol = await wo("1")
+        ol = await wo(None, "1")
         bid = bom_lama
         cek("1c BOM bersatuan 'Lusin-UJI' (non-dasar): satuan WO NULL (bukan 'Lusin-UJI')", await unit_db(ol) is None, str(await unit_db(ol)))
         await P.release_order(rq, ol)
