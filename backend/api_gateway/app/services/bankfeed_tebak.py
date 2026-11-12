@@ -220,18 +220,33 @@ from . import kasbank_ringkas as KR  # noqa: E402
 # Kandidat = bank_transactions POSTED rekening ini; arah + nominal dari JURNAL (debit−kredit pada CoA rekening; Iron Law journal-derived, bukan tanda amount);
 # predikat batal SATU (KR.sql_bt_tanpa_batal) + status POSTED + belum bertaut aktif + belum direkonsiliasi; pihak/nomor dari KR.SQL_JOIN_DOKUMEN (satu definisi
 # dengan register bank). Tenant eksplisit di tiap SQL.
-SQL_KANDIDAT = f"""
-SELECT bt.id, bt.transaction_date AS tanggal, abs(j.net) AS nominal, CASE WHEN j.net > 0 THEN 'masuk' ELSE 'keluar' END AS arah,
+_KANDIDAT_PILIH = """SELECT bt.id, bt.transaction_date AS tanggal, abs(j.net) AS nominal, CASE WHEN j.net > 0 THEN 'masuk' ELSE 'keluar' END AS arah,
        COALESCE(dok.pihak_nama, NULLIF(btrim(bt.payee_payer), '')) AS kontak_nama, COALESCE(dok.nomor_dokumen, bt.transaction_number, bt.reference_number) AS nomor, bt.transaction_type AS jenis,
-       je.source_type AS sumber
-FROM bank_transactions bt
+       je.source_type AS sumber, dok.pihak_jenis AS kontak_jenis, dok.pihak_id AS kontak_id, je.source_id AS dokumen_id, bt.created_by AS dibuat_oleh, bt.created_at AS dibuat_pada"""
+_KANDIDAT_DARI = f"""FROM bank_transactions bt
 JOIN bank_accounts ba ON ba.id = bt.bank_account_id AND ba.tenant_id = bt.tenant_id
 JOIN journal_entries je ON je.id = bt.journal_id AND je.tenant_id = bt.tenant_id AND je.status = 'POSTED'
 JOIN LATERAL (SELECT sum(jl.debit - jl.credit) AS net FROM journal_lines jl WHERE jl.journal_id = je.id AND jl.account_id = ba.coa_id) j ON j.net <> 0
-{KR.SQL_JOIN_DOKUMEN}
-WHERE bt.tenant_id = $1 AND bt.bank_account_id = $2 AND bt.status = 'POSTED' AND COALESCE(bt.is_reconciled, false) = false
-  AND bt.transaction_date BETWEEN $3 AND $4 AND {KR.sql_bt_tanpa_batal("bt", "$1")}
-  AND NOT EXISTS (SELECT 1 FROM mutasi_bank_tautan t WHERE t.tenant_id = $1 AND t.bank_transaction_id = bt.id AND t.dilepas_pada IS NULL)
+{KR.SQL_JOIN_DOKUMEN}"""
+_KANDIDAT_SYARAT = f"""WHERE bt.tenant_id = $1 AND bt.bank_account_id = $2 AND bt.status = 'POSTED' AND COALESCE(bt.is_reconciled, false) = false
+  AND {KR.sql_bt_tanpa_batal("bt", "$1")}"""
+_TAUTAN_BELUM = "AND NOT EXISTS (SELECT 1 FROM mutasi_bank_tautan t WHERE t.tenant_id = $1 AND t.bank_transaction_id = bt.id AND t.dilepas_pada IS NULL)"
+# SATU definisi "kandidat" (jurnal-derived, POSTED, tanpa pasangan batal, belum rekon) dipakai tebak (SQL_KANDIDAT), cocokkan (SQL_BT_PILIHAN) dan tak-di-bank.
+SQL_KANDIDAT = f"""
+{_KANDIDAT_PILIH}
+{_KANDIDAT_DARI}
+{_KANDIDAT_SYARAT}
+  AND bt.transaction_date BETWEEN $3 AND $4
+  {_TAUTAN_BELUM}
+ORDER BY bt.transaction_date, bt.id"""
+# Untuk COCOKKAN: bt yang DIPILIH pengguna (id), boleh sudah teralokasi sebagian (n:m: satu bt <= 3 baris, Σ alokasi <= nominal bt) -> kapasitas dihitung, bukan disaring.
+SQL_BT_PILIHAN = f"""
+{_KANDIDAT_PILIH},
+       COALESCE((SELECT sum(t.nominal_alokasi) FROM mutasi_bank_tautan t WHERE t.tenant_id = $1 AND t.bank_transaction_id = bt.id AND t.dilepas_pada IS NULL), 0) AS sudah_alokasi,
+       (SELECT count(*) FROM mutasi_bank_tautan t WHERE t.tenant_id = $1 AND t.bank_transaction_id = bt.id AND t.dilepas_pada IS NULL) AS jumlah_tautan
+{_KANDIDAT_DARI}
+{_KANDIDAT_SYARAT}
+  AND bt.id = ANY($3::uuid[])
 ORDER BY bt.transaction_date, bt.id"""
 SQL_AKUN = ("SELECT account_code, id, name FROM chart_of_accounts WHERE tenant_id = $1 AND account_code = ANY($2::text[]) "
             "AND is_active = true AND is_header = false")
@@ -246,7 +261,9 @@ BATAS_CALON = 50
 
 def _kandidat(r) -> dict:
     return {"id": str(r["id"]), "tanggal": r["tanggal"], "nominal": Decimal(str(r["nominal"])), "arah": r["arah"], "kontak_nama": r["kontak_nama"],
-            "nomor": r["nomor"], "jenis": r["jenis"], "sumber": r["sumber"]}
+            "nomor": r["nomor"], "jenis": r["jenis"], "sumber": r["sumber"],
+            "kontak_jenis": r.get("kontak_jenis"), "kontak_id": r.get("kontak_id"), "dokumen_id": r.get("dokumen_id"),
+            "dibuat_oleh": r.get("dibuat_oleh"), "dibuat_pada": r.get("dibuat_pada")}
 
 
 async def kandidat_bt(conn, tid: str, rekening_id, dari: date, sampai: date) -> list:
