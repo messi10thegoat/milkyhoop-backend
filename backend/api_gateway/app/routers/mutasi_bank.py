@@ -106,16 +106,17 @@ async def riwayat_mutasi_bank(request: Request, bank_account_id: UUID, mutasi_id
 
 
 async def _pratinjau_aksi(request: Request, bank_account_id: UUID, mutasi_id: UUID, aksi: str, body):
-    ctx = get_user_context(request)
-    return await BA.pratinjau(await get_pool(), ctx["tenant_id"], bank_account_id, mutasi_id, aksi, body.model_dump(mode="json", exclude_none=True))
+    ctx = {**get_user_context(request), "user": request.state.user}       # BF-1c3: izin modul tujuan (catat/batalkan) diperiksa di BA
+    return await BA.pratinjau(await get_pool(), ctx["tenant_id"], bank_account_id, mutasi_id, aksi, body.model_dump(mode="json", exclude_none=True), ctx)
 
 
 async def _tulis_aksi(request: Request, response: Response, bank_account_id: UUID, mutasi_id: UUID, aksi: str, body):
-    ctx = get_user_context(request)
+    ctx = {**get_user_context(request), "user": request.state.user}
     isi = body.model_dump(mode="json", exclude_none=True)
     prefix = f"MUTASI_{aksi.upper()}"
     try:
         pool = await get_pool()
+        await BA.siapkan(pool, ctx["tenant_id"], aksi, isi)       # prasyarat peran akun modul tujuan (butuh pool, di luar transaksi)
         async with pool.acquire() as conn:
             async with conn.transaction():
                 kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), prefix, mutasi_id, lambda: isi, response)
