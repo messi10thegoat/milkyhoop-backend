@@ -240,100 +240,15 @@ async def void_transaction(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Law 13: advisory lock prevents concurrent duplicate
-                await conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext($1))",
-                    f"BANK_TX_VOID:{transaction_id}",
-                )
+                await KT.kunci_void_manual(conn, transaction_id)
                 _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "BANK_TX_VOID", transaction_id,
                                                              {"reason": body.reason}, response)
                 if _lama is not None:
                     return _lama
                 r = await KT.rencana_void_manual(conn, ctx["tenant_id"], transaction_id, body.reason, Blok(False), kunci=True)
-                tx, orig_je = r["tx"], r["je"]
-                hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # t10-tanggal-bisnis
-
-                reversal_journal_id = uuid_module.uuid4()
-                # BUKAN transaction_number: NULL untuk transaksi manual -> "RV-None",
-                # dan void manual kedua melanggar uq_je_tenant_number (500).
-                # Nomor jurnal asli unik + maks satu pembalikan (Law 26) -> unik.
-                reversal_number = f"RV-{orig_je['journal_number']}"
-
-                await conn.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        id, tenant_id, journal_number, journal_date,
-                        description, source_type, source_id, reversal_of_id,
-                        status, total_debit, total_credit, created_by
-                    ) VALUES ($1, $2, $3, $9, $4, 'BANK_TRANSACTION', $5, $6, 'DRAFT', $7, $7, $8)
-                    """,
-                    reversal_journal_id,
-                    ctx["tenant_id"],
-                    reversal_number,
-                    f"Void {orig_je['journal_number']} - {body.reason}",
-                    transaction_id,
-                    tx["journal_id"],
-                    r["jumlah"],
-                    ctx["user_id"],
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-                # Baris pembalik dari penentu (== pratinjau): debit/kredit ditukar
-                for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_lines (id, journal_id, line_number, account_id, debit, credit, memo)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                        uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
-                    )
-
-                # Post the journal (triggers hash chain: Law 20)
-                await conn.execute(
-                    "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                    reversal_journal_id,
-                )
-                await conn.execute(
-                    """
-                    UPDATE journal_entries
-                    SET reversed_by_id = $2, reversed_at = NOW()  -- Law 2: asli TETAP POSTED
-                    WHERE id = $1
-                    """,
-                    tx["journal_id"],
-                    reversal_journal_id,
-                )
-
-                # BankSync Rule 3: Create mirror bank_transaction for void
-                # (trigger trg_update_bank_balance handles current_balance automatically)
-                mirror_type = (
-                    "withdrawal" if tx["transaction_type"] == "deposit" else "deposit"
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO bank_transactions (
-                        id, tenant_id, bank_account_id, transaction_date, transaction_type,
-                        amount, running_balance, reference_type, reference_id, reference_number,
-                        description, journal_id, status, origin_type, source_module,
-                        created_by, posted_by, posted_at
-                    ) VALUES ($1, $2, $3, $11, $4,
-                              $5, 0, 'manual_void', $6, $7, $8, $9,
-                              'POSTED', 'SYSTEM', 'manual', $10, $10, NOW())
-                    """,
-                    uuid_module.uuid4(),
-                    ctx["tenant_id"],
-                    tx["bank_account_id"],
-                    mirror_type,
-                    -(
-                        tx["amount"]
-                    ),  # Negate: deposit becomes negative, withdrawal becomes positive
-                    transaction_id,
-                    f"VOID-{orig_je['journal_number']}",
-                    f"Void - {body.reason}",
-                    reversal_journal_id,
-                    ctx["user_id"],
-                    hari_ini,  # t10-tanggal-bisnis
-                )
-
-                await KT.tandai_baris_void(conn, ctx["tenant_id"], ctx["user_id"], body.reason, tx_id=transaction_id)
+                # BF-1c2: penulis hasil ekstraksi (services/kasbank_tulis.tulis_void_manual) -- jurnal pembalik, mirror bt, penanda VOIDED
+                _v = await KT.tulis_void_manual(conn, ctx, transaction_id, body.reason, r)
+                reversal_journal_id = _v["reversal_journal_id"]
 
                 row = await conn.fetchrow(
                     "SELECT * FROM bank_transactions WHERE id = $1 AND tenant_id = $2", transaction_id, ctx["tenant_id"]

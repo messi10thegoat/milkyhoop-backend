@@ -159,7 +159,14 @@ def test_void_memeriksa_sesudah_lock_sebelum_tulisan(berkas, rute, kunci, var):
         # rencana_void_transfer (dipakai /void DAN /void/preview baca saja). Rute void mengambil lock SEBELUM penentu; di penentu,
         # cek rekon (_coba_rekon) = langkah PERTAMA sebelum baca baris; penentu tak menulis apa pun.
         nama_pen = "rencana_void_manual" if berkas == "kasbank_v2" else "rencana_void_transfer"
-        kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
+        if berkas == "kasbank_v2":
+            # BF-1c2: kunci advisory dipindah ke KT.kunci_void_manual (dipanggil rute SEBELUM penentu); isinya tetap kunci BANK_TX_VOID:{id}
+            kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "kunci_void_manual"]
+            kt_src = open(os.path.join(APP, "services", "kasbank_tulis.py")).read()
+            kf = next(n for n in ast.walk(ast.parse(kt_src)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "kunci_void_manual")
+            assert any(isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(kt_src, n) for n in ast.walk(kf)), "kunci BANK_TX_VOID: di penulis"
+        else:
+            kunci_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.JoinedStr) and kunci in ast.get_source_segment(src, n)]
         plan_rute = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == nama_pen]
         assert kunci_rute and plan_rute and min(kunci_rute) < min(plan_rute), "lock SEBELUM penentu"
         ssrc = open(os.path.join(APP, "services", "kasbank_tulis.py")).read()

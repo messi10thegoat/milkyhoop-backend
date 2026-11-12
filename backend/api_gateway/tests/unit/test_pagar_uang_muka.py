@@ -89,7 +89,9 @@ def test_bank_manual_memanggil_pagar_sebelum_jurnal():
     from app.services import kasbank_tulis as KT
     assert "tolak_akun_lawan_bank" in inspect.getsource(KT.rencana_tx_manual)
     src = inspect.getsource(BA.create_manual_transaction)
-    assert src.index("KT.rencana_tx_manual(") < src.index("INSERT INTO journal_entries")
+    # BF-1c2: SQL jurnal diekstrak ke KT.tulis_tx_manual; jaminan lama tetap: perencana (memuat pagar) dipanggil SEBELUM penulis jurnal
+    assert src.index("KT.rencana_tx_manual(") < src.index("KT.tulis_tx_manual(")
+    assert "INSERT INTO journal_entries" in inspect.getsource(KT.tulis_tx_manual) and "INSERT INTO journal_entries" not in src
 
 
 def test_kontrol_jurnal_sistem_tak_melewati_pagar():
