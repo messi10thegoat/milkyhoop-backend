@@ -84,10 +84,18 @@ class TakDiBankResponse(BaseModel):
     catatan: List[str]
 
 
+class AlokasiFaktur(BaseModel):
+    invoice_id: UUID
+    nominal: Decimal = Field(..., gt=0, description="Bagian pembayaran yang dialokasikan ke faktur ini")
+
+
 class CatatRequest(BaseModel):
     jenis: Literal["uang_masuk", "uang_keluar", "pribadi", "bayar_tagihan", "terima_pembayaran", "transfer", "uang_muka_pelanggan"]
     akun_id: Optional[UUID] = Field(None, description="Akun lawan (uang_masuk/uang_keluar); pribadi = akun ditetapkan sistem (3-40000 Prive / 3-10100 Modal Pemilik)")
-    kontak: Optional[str] = Field(None, max_length=200, description="Nama pihak terkait (opsional)")
+    kontak: Optional[str] = Field(None, max_length=200, description="uang_masuk/uang_keluar: nama pihak (opsional). uang_muka_pelanggan/terima_pembayaran: ID pelanggan (wajib)")
+    rekening_lawan: Optional[UUID] = Field(None, description="transfer: rekening lawan (wajib); arah ikut baris bank (keluar = ke rekening lawan, masuk = dari rekening lawan)")
+    so_id: Optional[UUID] = Field(None, description="uang_muka_pelanggan: pesanan penjualan terkait (opsional)")
+    alokasi: Optional[List[AlokasiFaktur]] = Field(None, description="terima_pembayaran: faktur yang dibayar + nominal (wajib; jumlahnya <= nominal baris, kelebihan jadi uang muka pelanggan)")
     catatan: Optional[str] = Field(None, max_length=500, description="Keterangan transaksi; bawaan = keterangan baris bank")
     versi: Optional[str] = Field(None, max_length=64)
 
