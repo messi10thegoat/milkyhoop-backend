@@ -72,7 +72,12 @@ def test_urutan_kemunculan_pertama_dan_kosong():
 
 def test_pembulatan_float_dan_akun_tanpa_kode():
     ringkas, nol = FTR.ringkas_per_akun([{"lines": [L(*AR, d=0.1), L(*AR, d=0.2), L(*JUAL, k=0.3), L(*DM, d=0.004), L(*DM, k=0.004)]}])
-    assert [(r["account_code"], r["debit"], r["credit"]) for r in ringkas] == [("1-10200", 0.3, 0.0), ("4-10100", 0.0, 0.3)] and len(nol) == 1   # derau float tak membuat baris
+    assert [(r["account_code"], r["debit"], r["credit"]) for r in ringkas] == [("1-10200", 0.3, 0.0), ("4-10100", 0.0, 0.3)] and len(nol) == 1
+    # sisa < setengah sen BUKAN baris ringkasan (neto dibulatkan ke sen): tanpa pembulatan akun 0,004 tampil sebagai baris Rp 0,00 yang menyesatkan
+    ringkas, nol = FTR.ringkas_per_akun([{"lines": [L(*DM, d=0.004), L(*JUAL, k=0.004)]}])
+    assert ringkas == [] and [n["account_code"] for n in nol] == ["2-10750", "4-10100"]
+    ringkas, nol = FTR.ringkas_per_akun([{"lines": [L(*AR, d=100.004), L(*JUAL, k=100.004)]}])
+    assert [(r["debit"], r["credit"]) for r in ringkas] == [(100.0, 0.0), (0.0, 100.0)]                      # 100,004 -> 100,00 (satuan sen)
     ringkas, nol = FTR.ringkas_per_akun([{"lines": [L(None, "Akun X", d=5), L(None, "Akun X", k=5), L(None, "Akun Y", d=2)]}])
     assert [(r["account_name"], r["debit"]) for r in ringkas] == [("Akun Y", 2.0)] and nol == [{"account_code": None, "account_name": "Akun X"}]
 
@@ -91,8 +96,17 @@ def test_properti_jurnal_seimbang_ringkasan_seimbang():
 
 
 def test_kunci_baru_di_rencana_dan_respons_post_preview_rincian_tetap(monkeypatch):
+    import ast
+    import textwrap
     src = inspect.getsource(FTR.rencana_terbit_ro)
-    assert "ringkas_per_akun(journals + deposit_journals)" in src and '"journals": journals' in src and '"deposit_application_journals": deposit_journals' in src
+    assert "ringkas_per_akun(journals + deposit_journals)" in src
+    # AST: RETURN AKHIR (yang memuat ringkas_per_akun) membawa journals = daftar jurnal ASLI (rincian utuh, Law 1) + jurnal penerapan uang muka asli
+    ret = [n for n in ast.walk(ast.parse(textwrap.dedent(src))) if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict)
+           and any(isinstance(k, ast.Constant) and k.value == "ringkas_per_akun" for k in n.value.keys)]
+    assert len(ret) == 1
+    isi = {k.value: v for k, v in zip(ret[0].value.keys, ret[0].value.values) if isinstance(k, ast.Constant)}
+    assert isinstance(isi["journals"], ast.Name) and isi["journals"].id == "journals"
+    assert isinstance(isi["deposit_application_journals"], ast.Name) and isi["deposit_application_journals"].id == "deposit_journals"
     r = {"invoice": {"invoice_number": "INV-1"}, "blocks": [], "warnings": [], "notes": [], "complete": True, "journals": [jv(10000), recog(10000)],
          "deposit_applications": [], "deposit_application_journals": []}
     r["ringkas_per_akun"], r["akun_nol_netto"] = FTR.ringkas_per_akun(r["journals"])
