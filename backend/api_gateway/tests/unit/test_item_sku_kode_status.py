@@ -81,11 +81,24 @@ class _Acq:
     async def __aexit__(self, *a): return False
 
 
+class _Tx:
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+
 class _Pool:
+    """Pool palsu: `hasil` = "UPDATE 0" -> barang tak ditemukan (fetchval None); "UPDATE 1" -> ada. Semua SQL dicatat (jaminan: ada saring
+    deleted_at + tenant_id; tulis status + riwayat di SATU transaksi)."""
     def __init__(self, hasil):
         self.hasil, self.sql = hasil, []
 
     def acquire(self): return _Acq(self)
+
+    def transaction(self): return _Tx()
+
+    async def fetchval(self, sql, *a):
+        self.sql.append(" ".join(sql.split()))
+        return 1 if self.hasil == "UPDATE 1" else None
 
     async def execute(self, sql, *a):
         self.sql.append(" ".join(sql.split()))
@@ -109,10 +122,10 @@ def test_status_menolak_baris_terhapus_404(monkeypatch):
     with pytest.raises(HTTPException) as e:
         asyncio.run(I.update_item_status(req, str(uuid.uuid4())))
     assert e.value.status_code == 404
-    assert "deleted_at IS NULL" in pool.sql[0] and "tenant_id = $3" in pool.sql[0]
+    assert "deleted_at IS NULL" in pool.sql[0] and "tenant_id = $2" in pool.sql[0] and len(pool.sql) == 1   # 404 sebelum menulis apa pun
 
 
 def test_kontrol_status_baris_biasa_jalan(monkeypatch):
     pool, req = _patch(monkeypatch, "UPDATE 1")
     out = asyncio.run(I.update_item_status(req, str(uuid.uuid4())))
-    assert out is not None and len(pool.sql) == 1
+    assert out is not None and any(q.startswith("UPDATE products SET status") and "tenant_id = $3" in q for q in pool.sql)

@@ -65,7 +65,9 @@ def test_ketiga_penulis_konversi_memakai_penentu():
     assert "SD.tolak_ubah_konversi(" in inspect.getsource(RU.set_conversion)
     assert "SD.tolak_ubah_konversi(" in inspect.getsource(RU.delete_conversion)
     s = inspect.getsource(RI.update_item)
-    assert "_SDK.tolak_ubah_konversi(" in s and s.index("_SDK.tolak_ubah_konversi(") < s.index("Deactivate all existing conversions")
+    # P3: penentu dipindah ke _periksa_konversi (PUT + pratinjau /edit/preview memakai SATU fungsi); PUT tetap memanggilnya sebelum menonaktifkan konversi
+    assert "_SDK.tolak_ubah_konversi(" in inspect.getsource(RI._periksa_konversi)
+    assert "_periksa_konversi(" in s and s.index("_periksa_konversi(") < s.index("Deactivate all existing conversions")
 
 
 class _KDasar(_K):
@@ -93,4 +95,6 @@ def test_sql_barang_terpakai_semua_tabel_dan_update_item_memanggilnya_sebelum_up
     for t, k in SD.BARIS_BERSATUAN:
         assert f"FROM {t} WHERE {k} = $1" in SD.SQL_BARANG_TERPAKAI, t
     s = inspect.getsource(RI.update_item)
-    assert "_SDK.tolak_ubah_dasar(" in s and s.index("_SDK.tolak_ubah_dasar(") < s.index("UPDATE products SET")
+    # P3: penentu dipindah ke _periksa_ubah (PUT + pratinjau /edit/preview); PUT memanggilnya sebelum UPDATE
+    assert "_SDK.tolak_ubah_dasar(" in inspect.getsource(RI._periksa_ubah)
+    assert "_periksa_ubah(" in s and s.index("_periksa_ubah(") < s.index("UPDATE products SET")

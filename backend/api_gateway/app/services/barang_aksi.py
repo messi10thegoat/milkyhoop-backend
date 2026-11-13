@@ -163,3 +163,56 @@ async def terapkan_status(conn, tenant_id: str, product_id: str, ke_aktif: bool,
            VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)""",
         product_id, tenant_id, "activated" if ke_aktif else "deactivated",
         "Barang diaktifkan" if ke_aktif else "Barang dinonaktifkan", str(actor_id) if actor_id else None, actor_name)
+
+
+_PETA_UBAH = {"name": "nama_produk", "sales_price": "sales_price", "purchase_price": "purchase_price", "base_unit": "base_unit",
+              "reorder_level": "reorder_level", "item_type": "item_type", "track_inventory": "track_inventory", "bisa_dikirim": "bisa_dikirim",
+              "kategori": "kategori", "deskripsi": "deskripsi", "barcode": "barcode", "is_returnable": "is_returnable",
+              "sales_tax": "sales_tax", "purchase_tax": "purchase_tax"}
+
+
+def _s(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, Decimal):
+        t = f"{v:f}"
+        return t.rstrip("0").rstrip(".") if "." in t else t
+    return str(int(v)) if isinstance(v, float) and v == int(v) else str(v)
+
+
+def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:
+    """Pratinjau UBAH barang: daftar perubahan {medan, dari, ke} (hanya medan terkirim yang BERBEDA). Blok penghalang datang dari penentu
+    tulis (_periksa_ubah/_periksa_konversi di router), bukan di sini. Tanpa perubahan = peringatan TANPA_PERUBAHAN (bukan blok)."""
+    if not lama:
+        return _hasil([_blok("BARANG_TAK_ADA", "Barang tidak ditemukan.")], None)
+    perubahan = []
+    for medan, kolom in _PETA_UBAH.items():
+        if medan in baru and baru[medan] is not None and _s(baru[medan]) != _s(lama.get(kolom)):
+            perubahan.append({"medan": medan, "dari": _s(lama.get(kolom)), "ke": _s(baru[medan])})
+    per = [] if perubahan else [_blok("TANPA_PERUBAHAN", "Tidak ada perubahan pada data barang.")]
+    return _hasil([], {"perubahan": perubahan, "efek": []}, per)
+
+
+async def idem_aksi(conn, ctx: dict, request, prefix: str, doc_id, isi, kerja, response=None):
+    """Idempotensi tulis barang (X-Idempotency-Key opsional): kunci sama + isi sama = respons asli (replay), isi beda = 409. WAJIB di dalam
+    transaksi. kerja() -> respons (dict); disimpan di transaksi yang sama bila berkunci."""
+    from . import idem_buat
+    kp, sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), prefix, doc_id, isi, response)
+    if _lama is not None:
+        return _lama
+    resp = await kerja()
+    return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, doc_id)
+
+
+async def catat_hapus(conn, tenant_id: str, product_id: str, nama: str, kode: Optional[str], user_id) -> None:
+    """Audit hapus permanen barang (baris item_activities ikut terhapus bersama barang -> jejak di audit_logs)."""
+    from .so_riwayat import catat_riwayat
+    await catat_riwayat(conn, tenant_id, "products", product_id, kode, "ITEM_DELETED", user_id, f"Barang {nama} dihapus",
+                        {"nama": nama}, source="api:items.delete")
+
+
+async def catat_duplikat(conn, tenant_id: str, baru_id: str, sumber_id: str, nama_sumber: str, actor_id=None, actor_name: Optional[str] = None) -> None:
+    await conn.execute(
+        """INSERT INTO item_activities (item_id, tenant_id, type, description, actor_id, actor_name)
+           VALUES ($1::uuid, $2, 'duplicated', $3, $4::uuid, $5)""",
+        baru_id, tenant_id, f"Disalin dari {nama_sumber}", str(actor_id) if actor_id else None, actor_name)

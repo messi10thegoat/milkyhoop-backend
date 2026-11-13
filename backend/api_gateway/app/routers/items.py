@@ -29,6 +29,7 @@ from decimal import Decimal
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
+from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
@@ -1199,8 +1200,93 @@ async def _alasan_tolak_ubah_tipe(conn, tenant_id, item_id, tipe_lama, lacak_lam
     return await _item_jebakan_ubah_tipe(conn, tenant_id, item_id)
 
 
+async def _periksa_ubah(conn, ctx: dict, item_id, body):
+    """SEMUA penghalang ubah barang yang dibaca sebelum menulis (ada, nama/barcode ganda, satuan dasar terkunci, ubah tipe/lacak):
+    SATU penentu untuk PUT dan pratinjau /edit/preview. Mengembalikan baris lama; menormalkan body.track_inventory."""
+    tenant_id = ctx["tenant_id"]
+    # Check item exists
+    existing = await conn.fetchrow(
+        "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
+        str(item_id),
+        tenant_id,
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Check for duplicate name (if changing)
+    if body.name:
+        duplicate = await conn.fetchrow(
+            f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3 AND deleted_at IS NULL",
+            ctx["tenant_id"],
+            body.name,
+            str(item_id),
+        )
+        if duplicate:
+            raise galat_nama_barang_dipakai(duplicate)
+
+    # Check for duplicate barcode (if changing)
+    if body.barcode:
+        duplicate_barcode = await conn.fetchrow(
+            # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
+            f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND id != $2 AND tenant_id = $3 "
+            "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
+            body.barcode,
+            str(item_id),
+            tenant_id,
+        )
+        if duplicate_barcode:
+            raise galat_barcode_barang_dipakai(duplicate_barcode)
+
+    # Fetch old values for change tracking
+    old_item = await conn.fetchrow(
+        """SELECT nama_produk, sales_price, harga_jual, purchase_price,
+                  base_unit, satuan, reorder_level, item_type, track_inventory, bisa_dikirim,
+                  kategori, deskripsi, barcode, is_returnable,
+                  sales_tax, purchase_tax, image_url,
+                  inventory_account_id, cogs_account_id
+           FROM products WHERE id = $1 AND tenant_id = $2""",
+        str(item_id),
+        tenant_id,
+    )
+
+    # Satuan dasar terkunci sesudah ada riwayat (putusan pemilik LANGSUNG 5 Nov; penentu SATU satuan_dasar)
+    from ..services import satuan_dasar as _SDK
+    if body.base_unit is not None and old_item:
+        await _SDK.tolak_ubah_dasar(conn, tenant_id, str(item_id), old_item["base_unit"] or old_item["satuan"], body.base_unit)
+
+    # Ubah tipe/pelacakan: SATU aturan per arah, sama dengan impor massal (_alasan_tolak_ubah_tipe).
+    # Pelacakan dinormalkan ke tipe (jasa/non_inventory tak pernah dilacak).
+    _tipe_lama = old_item["item_type"] if old_item else None
+    _lacak_lama = bool(old_item["track_inventory"]) if old_item else False
+    _tipe_baru = body.item_type if body.item_type is not None else _tipe_lama
+    _lacak_baru = _lacak_efektif(_tipe_baru, body.track_inventory, _tipe_lama, _lacak_lama)
+    if old_item:
+        _alasan = await _alasan_tolak_ubah_tipe(
+            conn, tenant_id, item_id, _tipe_lama, _lacak_lama, _tipe_baru, _lacak_baru
+        )
+        if _alasan:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tipe barang/jasa atau pelacakan stok tidak bisa diubah: {_alasan}.",
+            )
+        if _lacak_baru != _lacak_lama or body.track_inventory is not None:
+            body.track_inventory = _lacak_baru
+    return old_item
+
+
+async def _periksa_konversi(conn, ctx: dict, item_id, body) -> None:
+    """P1 (putusan pemilik 5 Nov): konversi aktif yang hilang / berubah faktor DAN sudah terpakai transaksi -> 409. PUT + pratinjau."""
+    if body.conversions is None:
+        return
+    from ..services import satuan_dasar as _SDK
+    await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
+        """SELECT conversion_unit, conversion_factor FROM unit_conversions
+           WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),
+        [(c.conversion_unit, c.conversion_factor) for c in body.conversions if c.is_active is not False])
+
+
 @router.put("/items/{item_id}", response_model=UpdateItemResponse)
-async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
+async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, response: Response = None):
     """Update an existing item."""
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
@@ -1210,75 +1296,13 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
     try:
         conn = await get_db_connection()
 
-        # Check item exists
-        existing = await conn.fetchrow(
-            "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
-            str(item_id),
-            tenant_id,
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Check for duplicate name (if changing)
-        if body.name:
-            duplicate = await conn.fetchrow(
-                f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND id != $3 AND deleted_at IS NULL",
-                ctx["tenant_id"],
-                body.name,
-                str(item_id),
-            )
-            if duplicate:
-                raise galat_nama_barang_dipakai(duplicate)
-
-        # Check for duplicate barcode (if changing)
-        if body.barcode:
-            duplicate_barcode = await conn.fetchrow(
-                # Sapuan tenant 26 Sep 2026: dulu lintas-tenant -> 409 palsu + oracle keberadaan.
-                f"SELECT {SQL_PEMEGANG} FROM products WHERE barcode = $1 AND id != $2 AND tenant_id = $3 "
-                "ORDER BY (deleted_at IS NULL) DESC LIMIT 1",
-                body.barcode,
-                str(item_id),
-                tenant_id,
-            )
-            if duplicate_barcode:
-                raise galat_barcode_barang_dipakai(duplicate_barcode)
-
-        # Fetch old values for change tracking
-        old_item = await conn.fetchrow(
-            """SELECT nama_produk, sales_price, harga_jual, purchase_price,
-                      base_unit, satuan, reorder_level, item_type, track_inventory, bisa_dikirim,
-                      kategori, deskripsi, barcode, is_returnable,
-                      sales_tax, purchase_tax, image_url,
-                      inventory_account_id, cogs_account_id
-               FROM products WHERE id = $1 AND tenant_id = $2""",
-            str(item_id),
-            tenant_id,
-        )
-
-        # Satuan dasar terkunci sesudah ada riwayat (putusan pemilik LANGSUNG 5 Nov; penentu SATU satuan_dasar)
-        from ..services import satuan_dasar as _SDK
-        if body.base_unit is not None and old_item:
-            await _SDK.tolak_ubah_dasar(conn, tenant_id, str(item_id), old_item["base_unit"] or old_item["satuan"], body.base_unit)
-
-        # Ubah tipe/pelacakan: SATU aturan per arah, sama dengan impor massal (_alasan_tolak_ubah_tipe).
-        # Pelacakan dinormalkan ke tipe (jasa/non_inventory tak pernah dilacak).
-        _tipe_lama = old_item["item_type"] if old_item else None
-        _lacak_lama = bool(old_item["track_inventory"]) if old_item else False
-        _tipe_baru = body.item_type if body.item_type is not None else _tipe_lama
-        _lacak_baru = _lacak_efektif(_tipe_baru, body.track_inventory, _tipe_lama, _lacak_lama)
-        if old_item:
-            _alasan = await _alasan_tolak_ubah_tipe(
-                conn, tenant_id, item_id, _tipe_lama, _lacak_lama, _tipe_baru, _lacak_baru
-            )
-            if _alasan:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Tipe barang/jasa atau pelacakan stok tidak bisa diubah: {_alasan}.",
-                )
-            if _lacak_baru != _lacak_lama or body.track_inventory is not None:
-                body.track_inventory = _lacak_baru
+        old_item = await _periksa_ubah(conn, ctx, item_id, body)
 
         async with conn.transaction():
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "ITEM_UPDATE", str(item_id),
+                                                         lambda: body.model_dump(mode="json"), response)
+            if _lama is not None:
+                return _lama
             # Build update query dynamically
             updates = []
             params = []
@@ -1407,10 +1431,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
             # Update conversions if provided
             if body.conversions is not None:
                 # P1 (putusan pemilik 5 Nov): konversi aktif yang hilang / berubah faktor DAN sudah terpakai transaksi -> 409
-                await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
-                    """SELECT conversion_unit, conversion_factor FROM unit_conversions
-                       WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),
-                    [(c.conversion_unit, c.conversion_factor) for c in body.conversions if c.is_active is not False])
+                await _periksa_konversi(conn, ctx, item_id, body)
                 # Deactivate all existing conversions
                 await conn.execute(
                     "UPDATE unit_conversions SET is_active = false WHERE product_id = $1 AND tenant_id = $2",
@@ -1564,6 +1585,9 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
                         user_name,
                     )
 
+            await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_UPDATE", {"success": True, "message": "Item berhasil diperbarui",
+                                                                          "data": {"id": str(item_id)}}, item_id)
+
         logger.info(f"Updated item {item_id} for tenant {tenant_id}")
 
         return UpdateItemResponse(
@@ -1586,6 +1610,33 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
 # =============================================================================
 # DELETE ITEM
 # =============================================================================
+
+
+@router.post("/items/{item_id}/edit/preview")
+async def preview_ubah_barang(request: Request, item_id: UUID, body: dict):
+    """Pratinjau UBAH barang: penghalang dari penentu SAMA dgn PUT (_periksa_ubah + _periksa_konversi) lalu daftar perubahan {medan, dari, ke}.
+    READ ONLY; galat skema -> blok DATA_TIDAK_SAH per medan (bukan 422)."""
+    from pydantic import ValidationError
+    from .customers import blok_dari_galat, blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        b = UpdateItemRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "peringatan": [], "rencana": None, "payload": payload}}
+
+    async def f(conn):
+        try:
+            periksa_badan_item(b, "POST /items/{id}/edit/preview")
+            lama = await _periksa_ubah(conn, ctx, item_id, b)
+            await _periksa_konversi(conn, ctx, item_id, b)
+        except HTTPException as e:
+            if e.status_code == 404:
+                return BA.rencana_ubah(None, {})
+            return {"ok": False, "blocks": [blok_dari_galat(e)], "peringatan": [], "rencana": None}
+        return BA.rencana_ubah(dict(lama), b.model_dump(exclude_unset=True))
+    r = await _baca_saja(f)
+    return {"success": True, "data": {**r, "payload": payload}}
 
 
 async def _baca_saja(fungsi):
@@ -1668,25 +1719,25 @@ async def delete_category(request: Request, name: str = Query(..., min_length=1,
     products.kategori (string bebas) TAK disentuh — item lama tetap membawa labelnya; yang
     dihapus hanya baris registry. Pencocokan case-insensitive.
     """
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
     try:
         conn = await get_db_connection()
-        n = await conn.fetchval(
-            "SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2) AND status = 'active'",
-            tenant_id,
-            name,
-        )
-        if n and n > 0:
-            raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
-        deleted = await conn.fetchval(
-            "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
-            tenant_id,
-            name,
-        )
-        if deleted is None:
-            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
-        return {"success": True, "message": f"Kategori '{name}' dihapus"}
+        async with conn.transaction():
+            async def kerja():
+                ada, n = await BA.ukur_kategori(conn, tenant_id, name)   # penentu SAMA dgn pratinjau (barang AKTIF berkategori itu)
+                if n > 0:
+                    raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
+                deleted = await conn.fetchval(
+                    "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
+                    tenant_id,
+                    name,
+                )
+                if deleted is None:
+                    raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+                return {"success": True, "message": f"Kategori '{name}' dihapus"}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_HAPUS", name.lower(), {"hapus": name.lower()}, kerja)
 
     except HTTPException:
         raise
@@ -1700,29 +1751,37 @@ async def delete_category(request: Request, name: str = Query(..., min_length=1,
 
 @router.delete("/items/{item_id}", response_model=DeleteItemResponse)
 async def delete_item(request: Request, item_id: UUID):
-    """Delete an item. Hard-deletes if no ledger footprint; else raises 400."""
+    """Delete an item. Hard-deletes if no ledger footprint; else raises 400. X-Idempotency-Key opsional; satu baris audit ITEM_DELETED."""
     from ..services.smart_delete import smart_delete
 
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
     try:
         conn = await get_db_connection()
-        result = await smart_delete(
-            conn,
-            tenant_id=tenant_id,
-            entity_id=str(item_id),
-            table="products",
-            name_column="nama_produk",
-            ledger_checks=BA.JEJAK_BARANG,
-            cascade_tables=[
-                ("item_pricing", "product_id"),
-                ("unit_conversions", "product_id"),
-            ],
-            has_footprint_error="Item '{name}' tidak bisa dihapus karena masih memiliki transaksi. Gunakan fitur Nonaktifkan.",
-            id_cast="::uuid",
-            extra_exists_filter="AND deleted_at IS NULL",
-        )
-        return DeleteItemResponse(success=True, message=result["message"])
+        async with conn.transaction():
+            async def kerja():
+                b = await BA.ukur_barang(conn, tenant_id, str(item_id))
+                result = await smart_delete(
+                    conn,
+                    tenant_id=tenant_id,
+                    entity_id=str(item_id),
+                    table="products",
+                    name_column="nama_produk",
+                    ledger_checks=BA.JEJAK_BARANG,
+                    cascade_tables=[
+                        ("item_pricing", "product_id"),
+                        ("unit_conversions", "product_id"),
+                    ],
+                    has_footprint_error="Item '{name}' tidak bisa dihapus karena masih memiliki transaksi. Gunakan fitur Nonaktifkan.",
+                    id_cast="::uuid",
+                    extra_exists_filter="AND deleted_at IS NULL",
+                )
+                if b:
+                    await BA.catat_hapus(conn, tenant_id, str(item_id), b["nama_produk"], b.get("item_code"), ctx.get("user_id"))
+                return {"success": True, "message": result["message"]}
+            r = await BA.idem_aksi(conn, ctx, request, "ITEM_DELETE", str(item_id), {"hapus": True}, kerja)
+        return DeleteItemResponse(success=True, message=r["message"])
     except HTTPException:
         raise
     except Exception as e:
@@ -2181,31 +2240,30 @@ async def list_categories(request: Request):
 async def create_category(request: Request, body: CreateCategoryRequest):
     """
     Register a new category. Categories are stored as strings on products.
-    This endpoint validates uniqueness and returns the category name.
+    This endpoint validates uniqueness and returns the category name. X-Idempotency-Key opsional.
     """
-    tenant_id = get_tenant_id(request)
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
     conn = None
 
     try:
         conn = await get_db_connection()
-
-        # Simpan ke registry item_categories. Unik case-insensitive; casing input pertama menang.
-        inserted = await conn.fetchval(
-            """INSERT INTO item_categories (tenant_id, name)
-               VALUES ($1, $2)
-               ON CONFLICT (tenant_id, lower(name)) DO NOTHING
-               RETURNING name""",
-            tenant_id,
-            body.name.strip(),
-        )
-        if inserted is None:
-            raise HTTPException(status_code=409, detail="Kategori sudah ada")
-
-        return CreateCategoryResponse(
-            success=True,
-            message=f"Kategori '{inserted}' dibuat",
-            category=inserted,
-        )
+        async with conn.transaction():
+            async def kerja():
+                # Simpan ke registry item_categories. Unik case-insensitive; casing input pertama menang.
+                inserted = await conn.fetchval(
+                    """INSERT INTO item_categories (tenant_id, name)
+                       VALUES ($1, $2)
+                       ON CONFLICT (tenant_id, lower(name)) DO NOTHING
+                       RETURNING name""",
+                    tenant_id,
+                    body.name.strip(),
+                )
+                if inserted is None:
+                    raise HTTPException(status_code=409, detail="Kategori sudah ada")
+                return {"success": True, "message": f"Kategori '{inserted}' dibuat", "category": inserted}
+            r = await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BUAT", body.name.strip().lower(), {"name": body.name.strip()}, kerja)
+        return CreateCategoryResponse(**r)
 
     except HTTPException:
         raise
@@ -2215,12 +2273,6 @@ async def create_category(request: Request, body: CreateCategoryRequest):
     finally:
         if conn:
             await conn.close()
-
-
-
-# =============================================================================
-# ACTIVITY LOG
-# =============================================================================
 
 
 @router.get("/items/autocomplete")
@@ -2620,25 +2672,25 @@ async def bulk_import_items(request: Request):
 
 @router.patch("/items/{item_id}/status")
 async def update_item_status(request: Request, item_id: str):
-    """Update item active/inactive status (+ baris riwayat; nonaktif ber-stok BOLEH, peringatannya di /items/{id}/status/preview)."""
+    """Update item active/inactive status (+ baris riwayat; nonaktif ber-stok BOLEH, peringatannya di /items/{id}/status/preview).
+    X-Idempotency-Key opsional."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         body = await request.json()
-        is_active = body.get("is_active", True)
+        is_active = bool(body.get("is_active", True))
 
         async with pool.acquire() as conn:
             async with conn.transaction():
                 ada = await conn.fetchval("SELECT 1 FROM products WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL", item_id, ctx["tenant_id"])
                 if not ada:
                     raise HTTPException(status_code=404, detail="Item not found")
-                await BA.terapkan_status(conn, ctx["tenant_id"], item_id, bool(is_active), ctx.get("user_id"),
-                                         getattr(request.state, "user", {}).get("username"))
-            return {
-                "success": True,
-                "message": "Status updated",
-                "is_active": is_active,
-            }
+
+                async def kerja():
+                    await BA.terapkan_status(conn, ctx["tenant_id"], item_id, is_active, ctx.get("user_id"),
+                                             getattr(request.state, "user", {}).get("username"))
+                    return {"success": True, "message": "Status updated", "is_active": is_active}
+                return await BA.idem_aksi(conn, ctx, request, "ITEM_STATUS", item_id, {"is_active": is_active}, kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -3407,7 +3459,7 @@ async def _nama_salinan(conn, tenant_id: str, original_name: str) -> str:
 
 
 @router.post("/items/{item_id}/duplicate", response_model=CreateItemResponse)
-async def duplicate_item(request: Request, item_id: UUID):
+async def duplicate_item(request: Request, item_id: UUID, response: Response = None):
     """Duplicate an existing item with '(Copy)' suffix. Does not copy stock or images."""
     ctx = get_user_context(request)
     tenant_id = ctx["tenant_id"]
@@ -3428,6 +3480,9 @@ async def duplicate_item(request: Request, item_id: UUID):
         copy_name = await _nama_salinan(conn, tenant_id, item_row["nama_produk"])
 
         async with conn.transaction():
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "ITEM_DUPLICATE", str(item_id), {"duplikat": True}, response)
+            if _lama is not None:
+                return CreateItemResponse(**_lama)
             # Kode/SKU baru wajib unik (putusan 13 Nov): kunci per tenant + nomor berikutnya, sama dgn POST /items
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ITEM_KODE:{tenant_id}")
             kode_baru = await _kode_otomatis(conn, tenant_id, item_row.get("item_type", "goods"))
@@ -3517,19 +3572,15 @@ async def duplicate_item(request: Request, item_id: UUID):
             # Note: No initial stock entry needed for duplicate.
             # Stock is derived from inventory_ledger movements (Law 16).
             # Duplicate starts with 0 stock until actual transactions occur.
+            await BA.catat_duplikat(conn, tenant_id, str(new_id), str(item_id), item_row["nama_produk"], ctx.get("user_id"),
+                                    getattr(request.state, "user", {}).get("username"))
+            _resp = {"success": True, "message": f"Item '{copy_name}' berhasil diduplikasi",
+                     "data": {"id": str(new_id), "name": copy_name, "item_type": item_row.get("item_type", "goods"), "source_id": str(item_id)}}
+            await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_DUPLICATE", _resp, str(item_id))
 
         logger.info(f"Duplicated item {item_id} -> {new_id} for tenant {tenant_id}")
 
-        return CreateItemResponse(
-            success=True,
-            message=f"Item '{copy_name}' berhasil diduplikasi",
-            data={
-                "id": str(new_id),
-                "name": copy_name,
-                "item_type": item_row.get("item_type", "goods"),
-                "source_id": str(item_id),
-            },
-        )
+        return CreateItemResponse(**_resp)
 
     except HTTPException:
         raise

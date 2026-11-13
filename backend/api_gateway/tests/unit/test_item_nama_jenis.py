@@ -51,7 +51,7 @@ def test_cek_nama_barang_app_sejajar_indeks_parsial():
     # 1 Nov 2026: create_item -> inti bersama tulis_barang_baru (juga Milkybook v2) -> penentu
     assert "tulis_barang_baru(" in inspect.getsource(I.create_item)
     assert "_siapkan_buat_barang(" in inspect.getsource(I.tulis_barang_baru)
-    for f in (I._siapkan_buat_barang, I.update_item, I.duplicate_item):
+    for f in (I._siapkan_buat_barang, I._periksa_ubah, I._nama_salinan):   # P3: cek nama ubah/salin = penentu bersama PUT+pratinjau / duplikat+pratinjau
         assert "nama_produk = $2" in inspect.getsource(f) and "deleted_at IS NULL" in inspect.getsource(f), f.__name__
 
 
