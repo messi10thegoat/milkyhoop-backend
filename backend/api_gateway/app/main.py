@@ -66,6 +66,7 @@ from .routers import receive_payments
 from .routers import purchase_orders
 from .routers import goods_receipts  # Penerimaan Barang (GRN) 23 Okt 2026
 from .routers import price_lists
+from .routers import bulk_price_lists
 from .routers import quotes
 from .routers import proformas
 from .routers import sales_orders
@@ -641,6 +642,7 @@ app.include_router(
 
 # Price Lists router (Daftar Harga)
 app.include_router(price_lists.router, prefix="/api/price-lists", tags=["price-lists"])
+app.include_router(bulk_price_lists.router, prefix="/api/price-lists", tags=["price-lists"])
 
 # SAK EMKM Financial Reports router
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])

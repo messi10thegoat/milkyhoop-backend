@@ -169,7 +169,7 @@ def test_rute_pembelian_ekspor_pdf_dan_bagikan():
         assert BD.MODUL_KIND[m] == kind and kind in D.JENIS_CETAK, m
         assert kind not in D.JENIS, m  # bundel Penjualan tak berubah
         assert (kind in D.JENIS_BAGIKAN) == bagi == (m in BD.MODUL_BAGIKAN), m
-    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel", "pdf", "share"}  # daftar putih TIDAK berubah
+    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel", "pdf", "share", "harga"}  # daftar putih: + "harga" (D3 Daftar Harga)
 
 
 # ---------------- (6) izin ----------------

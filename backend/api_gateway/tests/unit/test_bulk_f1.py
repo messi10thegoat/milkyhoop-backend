@@ -198,7 +198,7 @@ def test_per_item_409_kunci_terpakai_jadi_ditolak(idem, monkeypatch):
 
 # ---------------- (5) daftar putih ----------------
 def test_daftar_putih_hanya_export_dan_rute_bulk_hanya_export():
-    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel", "pdf", "share"}  # F1 export; F2 SO confirm/delete; F3 Penawaran send; F4 Proforma cancel (daftar putih eksplisit)
+    assert B.AKSI_DIIZINKAN == {"export", "confirm", "delete", "send", "cancel", "pdf", "share", "harga"}  # F1 export; F2 SO confirm/delete; F3 Penawaran send; F4 Proforma cancel (daftar putih eksplisit)
     assert set(RB.ROUTERS) == set(BE.SPEC) | set(BB.SPEC_BELI) and len(RB.ROUTERS) == 14  # B1a 28 Okt: + 6 modul Pembelian
     for modul, router in RB.ROUTERS.items():
         jalur = [(r.path, tuple(sorted(r.methods))) for r in router.routes]

@@ -51,7 +51,7 @@ PRATINJAU_NOL_TULIS = (
     "/api/purchase-orders/{po_id}/edit/preview", "/api/sales-orders/{order_id}/edit/preview",
     "/api/customer-deposits/{deposit_id}/edit/preview", "/api/vendor-deposits/{deposit_id}/edit/preview",
     "/api/price-lists/{price_list_id}/items/{line_id}/edit/preview",
-    "/api/price-lists/{price_list_id}/status/preview", "/api/price-lists/{price_list_id}/default/preview",
+    "/api/price-lists/{price_list_id}/bulk/price/preview", "/api/price-lists/{price_list_id}/status/preview", "/api/price-lists/{price_list_id}/default/preview",
     "/api/price-lists/{price_list_id}/delete/preview", "/api/price-lists/{price_list_id}/edit/preview",
     "/api/price-lists/{price_list_id}/items/{line_id}/delete/preview",
     "/api/sales-invoices/{invoice_id}/post/preview", "/api/bills/{bill_id}/post/preview",

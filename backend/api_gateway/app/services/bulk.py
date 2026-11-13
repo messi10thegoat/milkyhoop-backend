@@ -25,7 +25,7 @@ BATAS = {"tulis": 50, "csv": 500, "pdf": 25}
 
 # DAFTAR PUTIH aksi massal. Tambah aksi = sengaja, lewat putusan; aksi uang (terbit faktur, penerimaan, uang muka, refund,
 # void/apply NK, terbit proforma) TIDAK BOLEH ada di sini -- test_bulk_f1 memindai rute + impor.
-AKSI_DIIZINKAN = frozenset({"export", "confirm", "delete", "send", "cancel", "pdf", "share"})  # F2: SO confirm/delete; F3: Penawaran delete + send; F4: Proforma cancel (BUKAN terbit)
+AKSI_DIIZINKAN = frozenset({"export", "confirm", "delete", "send", "cancel", "pdf", "share", "harga"})  # D3 Daftar Harga: ubah harga massal (data induk, BUKAN jurnal; putusan pemilik 13 Nov); F2: SO confirm/delete; F3: Penawaran delete + send; F4: Proforma cancel (BUKAN terbit)
 
 _RAWAN_RUMUS = ("=", "+", "-", "@", "\t", "\r")
 

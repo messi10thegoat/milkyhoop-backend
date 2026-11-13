@@ -856,6 +856,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
     # D2 Daftar Harga (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status/bawaan = ubah
+    (r"^/api/price-lists/[^/]+/bulk/price(/preview)?$", ["POST"], "price_list", "U"),  # D3: ubah harga massal, pratinjau = huruf tulisnya
     (r"^/api/price-lists/[^/]+/status/preview$", ["POST"], "price_list", "U"),
     (r"^/api/price-lists/[^/]+/status$", ["POST"], "price_list", "U"),
     (r"^/api/price-lists/[^/]+/default/preview$", ["POST"], "price_list", "U"),
