@@ -74,6 +74,7 @@ logger = logging.getLogger(__name__)
 # Label layar alasan nota kredit (MASTER 5 Okt): nilai server tetap, FE menampilkan reason_label (sumber: teks_galat).
 from ..services.teks_galat import ALASAN_NK as LABEL_ALASAN_NK  # noqa: E402
 
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool
@@ -519,7 +520,7 @@ async def list_credit_notes(
             jumlah = {}
             if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True`
                 t = await conn.fetchrow(
-                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE {SG.sql_berlaku('credit_note', 'status')}), 0) AS sum_total,
                                COALESCE(SUM({_nkd.sql_sisa_nk()}), 0) AS sum_sisa
                         FROM credit_notes WHERE {where_clause}""", *params)
                 jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}

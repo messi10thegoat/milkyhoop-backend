@@ -107,6 +107,7 @@ def _rp_dp(x) -> str:
     return tg.rp(x)
 
 
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool
@@ -503,7 +504,7 @@ async def list_customer_deposits(
             jumlah = {}
             if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True`
                 t = await conn.fetchrow(
-                    f"""{cte}SELECT COALESCE(SUM(amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                    f"""{cte}SELECT COALESCE(SUM(amount) FILTER (WHERE {SG.sql_berlaku('customer_deposit', 'status')}), 0) AS sum_total,
                                COALESCE(SUM({_umd.sql_sisa_baris()}) FILTER (WHERE status NOT IN ('draft', 'void')), 0) AS sum_sisa
                         FROM customer_deposits WHERE {where_clause}""", *params)
                 jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}

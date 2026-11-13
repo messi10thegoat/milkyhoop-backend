@@ -109,6 +109,7 @@ async def _ensure_role_preconditions(pool, tenant_id):
 
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool (initialized on first request)
@@ -1364,7 +1365,7 @@ async def list_invoices(
                 # LISTPAGE-DATA: WHERE + parameter YANG SAMA dengan COUNT; sisa = ekspresi sisa_faktur kolom Sisa
                 # (compute_ar_outstanding, draf/void tak menyumbang) -> sum_sisa == Σ kolom Sisa seluruh hasil.
                 _j = await conn.fetchrow(
-                    f"""SELECT COALESCE(SUM(si.total_amount), 0) AS t,
+                    f"""SELECT COALESCE(SUM(si.total_amount) FILTER (WHERE {SG.sql_berlaku('sales_invoice', 'si.status')}), 0) AS t,
                                COALESCE(SUM(CASE WHEN si.status IN ('draft','void') THEN 0
                                                  ELSE COALESCE(ar_fn.outstanding, 0) END), 0) AS s
                         FROM sales_invoices si

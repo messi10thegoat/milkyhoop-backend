@@ -118,6 +118,7 @@ from ..utils.lampiran_unduh import url_unduh_lampiran  # noqa: E402
 from . import tagihan_aksi as TA  # noqa: E402  penentu aksi detail SATU (post/void/delete + pratinjau)
 from . import dokumen_nol as DN  # noqa: E402  SI-FPB-RP0
 from . import tagihan_rencana as TR  # noqa: E402  penentu hitung + blok SATU (create/update v2, /calculate, edit/preview)
+from . import sum_total_berlaku as SG  # noqa: E402  BUG-196
 from . import tagihan_daftar as TD  # noqa: E402  PEMBELIAN-SERAGAM (1): uang+keadaan tagihan dari compute_ap_rincian (V440)
 
 logger = logging.getLogger(__name__)
@@ -619,7 +620,7 @@ class BillsService:
             if with_totals is True:
                 # WHERE + parameter SAMA dengan COUNT; sum_sisa == Σ kolom outstanding_amount seluruh hasil (draf/batal tak menyumbang)
                 _j = await conn.fetchrow(
-                    f"""SELECT COALESCE(SUM(b.amount) FILTER (WHERE {TD.sql_keadaan_dok()} <> 'void'), 0) AS t,
+                    f"""SELECT COALESCE(SUM(b.amount) FILTER (WHERE {SG.sql_berlaku('bill', TD.sql_keadaan_dok())}), 0) AS t,
                                COALESCE(SUM({TD.sql_hutang()}), 0) AS s
                         FROM bills b {TD.join_rincian()} WHERE {where_clause}""", *count_params)
                 jumlah = {"sum_total": float(_j["t"]), "sum_sisa": float(_j["s"])}  # float == sales_invoices/receive_payments

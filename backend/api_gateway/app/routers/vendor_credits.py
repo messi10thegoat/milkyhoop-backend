@@ -65,6 +65,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Fase D2.2: required role mappings for vendor_credits posting path.
@@ -258,7 +259,7 @@ async def list_vendor_credits(
             jumlah = {}
             if with_totals is True:  # Query(False) truthy pada panggilan langsung -> `is True` (== NK)
                 t = await conn.fetchrow(
-                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE status <> 'void'), 0) AS sum_total,
+                    f"""SELECT COALESCE(SUM(total_amount) FILTER (WHERE {SG.sql_berlaku('vendor_credit', 'status')}), 0) AS sum_total,
                                COALESCE(SUM({ND.sql_sisa_nd()}), 0) AS sum_sisa
                         FROM vendor_credits WHERE {where_clause}""", *params)
                 jumlah = {"sum_total": float(t["sum_total"]), "sum_sisa": float(t["sum_sisa"])}

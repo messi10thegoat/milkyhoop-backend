@@ -72,6 +72,7 @@ from ..schemas.purchase_orders import (
 
 logger = logging.getLogger(__name__)
 
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool
@@ -328,7 +329,7 @@ async def list_purchase_orders(
             hasil = {"items": items, "total": total, "has_more": (_offset + _limit) < total}
             if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dengan COUNT (bukan halaman)
                 t = await conn.fetchrow(
-                    f"""SELECT COALESCE(SUM(po.total_amount) FILTER (WHERE po.status <> 'cancelled'), 0) AS sum_total,
+                    f"""SELECT COALESCE(SUM(po.total_amount) FILTER (WHERE {SG.sql_berlaku('purchase_order', 'po.status')}), 0) AS sum_total,
                                COALESCE(SUM({PD.sql_sisa_ditagih()}), 0) AS sum_sisa
                         {dari} WHERE {where_clause}""", *params)
                 hasil["sum_total"] = float(PD.r2(t["sum_total"]))

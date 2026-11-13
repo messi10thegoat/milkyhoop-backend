@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 so_router = APIRouter()  # dipasang di /api/sales-orders
 
@@ -443,7 +444,7 @@ async def list_proformas(
             if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dgn COUNT
                 _tr = await conn.fetch(f"SELECT p.id, p.sales_order_id, p.status, p.amount FROM proformas p WHERE p.tenant_id = $1{extra}", *params)
                 _kls = await kelas_bayar_terbit(conn, ctx["tenant_id"], _tr)
-                jumlah = {"sum_total": float(sum((Decimal(str(r["amount"] or 0)) for r in _tr if r["status"] != "cancelled"), Decimal("0"))),
+                jumlah = {"sum_total": float(sum((Decimal(str(r["amount"] or 0)) for r in _tr if SG.berlaku("proforma", r["status"])), Decimal("0"))),
                           "sum_sisa": float(sum((max(Decimal("0"), nom - bayar) for _, nom, bayar in _kls.values()), Decimal("0")))}
 
             rows = await conn.fetch(

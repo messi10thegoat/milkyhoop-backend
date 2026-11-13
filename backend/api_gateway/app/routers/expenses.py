@@ -128,6 +128,7 @@ import uuid as _uuid_post  # noqa: E402  (dipakai post_expense)
 from types import SimpleNamespace  # noqa: E402
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Fase D2.1: required role mappings for expenses posting path.
@@ -747,7 +748,7 @@ async def list_expenses(
             sum_total = None
             if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
                 sum_total = float(await conn.fetchval(
-                    f"SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE {where_clause} AND expenses.status <> 'void'", *params))
+                    f"SELECT COALESCE(SUM(total_amount), 0) FROM expenses WHERE {where_clause} AND {SG.sql_berlaku('expense', 'expenses.status')}", *params))
 
             # Fetch expenses
             query = f"""

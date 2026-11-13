@@ -95,6 +95,7 @@ async def _ensure_bill_payments_role_preconditions(pool, tenant_id=None):
 
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 
@@ -654,7 +655,7 @@ async def list_bill_payments(
             if with_totals is True:  # WHERE + parameter SAMA dgn COUNT; sum_total tanpa voided (uang tak keluar), sum_sisa = Σ belum_dialokasikan
                 _t = await conn.fetchrow(count_query.replace(
                     "SELECT COUNT(*) FROM joined q",
-                    "SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE q.status <> 'voided'), 0) AS st, "
+                    f"SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE {SG.sql_berlaku('bill_payment', 'q.status')}), 0) AS st, "
                     f"COALESCE(SUM(q.belum) FILTER (WHERE q.belum > {_pk.TOLERANSI}), 0) AS ss FROM joined q", 1), *params)
                 jumlah = {"sum_total": float(_t["st"]), "sum_sisa": float(_t["ss"])}
 

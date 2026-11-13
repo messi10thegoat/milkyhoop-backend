@@ -48,6 +48,7 @@ from ..schemas.quotes import (
 )
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool
@@ -365,7 +366,7 @@ async def list_quotes(
             jumlah = {}
             if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dgn COUNT
                 jumlah = {"sum_total": float(await conn.fetchval(
-                    f"SELECT COALESCE(SUM(total_amount), 0) FROM quotes WHERE {where_clause}", *params))}
+                    f"SELECT COALESCE(SUM(total_amount), 0) FROM quotes WHERE {where_clause} AND {SG.sql_berlaku('quote', 'status', f'${len(params) + 1}')}", *params, hari_ini))}
 
             # List
             list_query = f"""

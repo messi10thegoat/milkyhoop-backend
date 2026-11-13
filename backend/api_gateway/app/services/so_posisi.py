@@ -414,8 +414,8 @@ async def sisa_per_so(conn, tenant_id: str, rows: list) -> dict:
 
 async def jumlah_daftar(conn, tenant_id: str, rows: list) -> dict:
     """LISTPAGE-DATA (16 Okt 2026): agregat baris total daftar atas SEMUA SO yang cocok filter (bukan halaman).
-    rows = {id, total_amount, status} dari WHERE yang SAMA dengan COUNT. sum_total = Σ total_amount (semua status, =
-    Σ kolom Total); sum_sisa = Σ sisa_per_so (draf/batal tak menyumbang, = Σ kolom Sisa)."""
+    rows = {id, total_amount, status} dari WHERE yang SAMA dengan COUNT. sum_total = Σ total_amount (tanpa batal; draf ikut, BUG-196); sum_sisa = Σ sisa_per_so (draf/batal tak menyumbang, = Σ kolom Sisa)."""
     sisa = await sisa_per_so(conn, tenant_id, rows)
-    return {"sum_total": float(sum((Decimal(str(r["total_amount"] or 0)) for r in rows), NOL)),
+    from .sum_total_berlaku import berlaku  # BUG-196: batal tak ikut Σ (draf tetap)
+    return {"sum_total": float(sum((Decimal(str(r["total_amount"] or 0)) for r in rows if berlaku("sales_order", r["status"])), NOL)),
             "sum_sisa": float(sum((v for v in sisa.values() if v is not None), NOL))}

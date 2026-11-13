@@ -89,6 +89,7 @@ from ..services.bank_sync import (
 )
 
 logger = logging.getLogger(__name__)
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 # Connection pool
@@ -784,7 +785,7 @@ async def list_receive_payments(
             if with_totals is True:  # agregat atas WHERE yang SAMA dgn COUNT; sum_total tanpa voided (uang tak masuk)
                 _tot = await conn.fetchrow(count_query.replace(
                     "SELECT COUNT(*) FROM unified q",
-                    f"SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE q.status <> 'voided'), 0) AS st, COALESCE(SUM({_BD}), 0) AS ss FROM unified q", 1),
+                    f"SELECT COALESCE(SUM(q.total_amount) FILTER (WHERE {SG.sql_berlaku('receive_payment', 'q.status')}), 0) AS st, COALESCE(SUM({_BD}), 0) AS ss FROM unified q", 1),
                     *count_params)
                 hasil["sum_total"], hasil["sum_sisa"] = float(_tot["st"] or 0), float(_tot["ss"] or 0)
             if not incl_void:

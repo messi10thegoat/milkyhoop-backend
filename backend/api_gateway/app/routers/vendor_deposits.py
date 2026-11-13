@@ -50,6 +50,7 @@ from ..services.bank_sync import (
     create_reversal_bank_transaction,
 )
 
+from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
 router = APIRouter()
 
 
@@ -212,7 +213,7 @@ async def list_vendor_deposits(
         hasil = {"items": items, "total": total, "has_more": (_offset + _limit) < total}
         if with_totals is True:  # panggilan langsung (uji) = objek Query -> mati; agregat atas WHERE yang SAMA dengan COUNT
             t = await conn.fetchrow(
-                f"""SELECT COALESCE(SUM(vd.amount) FILTER (WHERE vd.status <> 'void'), 0) AS sum_total,
+                f"""SELECT COALESCE(SUM(vd.amount) FILTER (WHERE {SG.sql_berlaku('vendor_deposit', 'vd.status')}), 0) AS sum_total,
                            COALESCE(SUM(ag.sisa) FILTER (WHERE vd.status NOT IN ('draft', 'void')), 0) AS sum_sisa
                     {dari} WHERE {where_sql}""", *params)
             hasil["sum_total"] = float(PD.r2(t["sum_total"]))
