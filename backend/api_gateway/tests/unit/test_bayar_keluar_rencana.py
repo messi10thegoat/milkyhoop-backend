@@ -124,7 +124,8 @@ def test_penulis_memakai_penentu_yang_sama():
     bp = (APP / "routers/bill_payments.py").read_text()
     fn = bp[bp.index("async def create_bill_payment_journal"):bp.index("# === Journal Preview")]
     assert "await BKR.baris_jurnal_bayar(" in fn and fn.count("INSERT INTO journal_lines") == 1
-    buat = bp[bp.index("async def create_bill_payment(request"):bp.index("async def delete_bill_payment")]
+    buat = bp[bp.index("async def buat_bayar_core("):bp.index('@router.post("", response_model=BillPaymentResponse, status_code=201)')]   # BF-1d: badan buat pindah ke inti bersama buat_bayar_core
+    assert "return await buat_bayar_core(conn, ctx, payload)" in bp[bp.index("async def create_bill_payment(request"):bp.index("async def delete_bill_payment")]
     assert "_r = await BKR.rencana_bayar(conn, ctx, payload)" in buat
     assert buat.index("BKR.rencana_bayar(") < buat.index("nomor_pk(")  # nomor lahir SESUDAH semua cek
     assert 'for _al in _r["alokasi"]' in buat and "await efek_posting_bayar(" in buat  # U2a: cermin bank lewat penulis efek bersama

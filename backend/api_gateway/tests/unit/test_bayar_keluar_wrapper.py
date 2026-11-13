@@ -68,10 +68,13 @@ def test_void_status_di_dalam_transaksi():
     src = inspect.getsource(BP.void_bill_payment).split("\n")
     trx = next(i for i, l in enumerate(src) if "async with conn.transaction():" in l)
     ind_trx = len(src[trx]) - len(src[trx].lstrip())
+    # BF-1d: badan void pindah ke void_bayar_core; ia dipanggil DI DALAM transaksi penulis dan tak membuka/menutup transaksi sendiri
+    pj = next(i for i, l in enumerate(src) if "await void_bayar_core(" in l)
+    assert pj > trx and len(src[pj]) - len(src[pj].lstrip()) > ind_trx
+    core = inspect.getsource(BP.void_bayar_core)
+    assert "conn.transaction()" not in core
     for kunci in ("UPDATE withholding_tax_records", "UPDATE bill_payments_v2"):
-        i = next(i for i, l in enumerate(src) if kunci in l)
-        eks = next(j for j in range(i, 0, -1) if "await conn.execute(" in src[j])
-        assert len(src[eks]) - len(src[eks].lstrip()) > ind_trx, kunci
+        assert kunci in core, kunci
 
 
 def test_record_payment_mengisi_cache_alokasi():

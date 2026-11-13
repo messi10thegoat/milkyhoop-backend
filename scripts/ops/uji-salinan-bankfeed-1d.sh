@@ -5,7 +5,7 @@ set -u
 D="$(dirname "$0")"
 python3 "$D/cek-saring-tenant.py" "$0" "$D/uji-salinan-bankfeed-1d.py" "$D/uji-salinan-bankfeed-1d-lama.py" "$D/uji_c3_tanda.py" "$D/uji_1d_tanda.py" || { echo "rc=3 (SQL tanpa saring tenant)"; exit 3; }
 P=milkyhoop-dev-postgres-1; S=scratch_bf1d_$(date +%s); POHON=${POHON:-/root/mh-bf1d}; LAMA=/root/mh-lama-1d
-LAMA_SHA=${LAMA_SHA:-c7b83d28f}
+LAMA_SHA=${LAMA_SHA:-e98daaec9}      # induk commit ekstraksi di cabang -r2 (= 1e); basis SAMA agar hanya ekstraksi yang dibandingkan
 [ -d "$LAMA" ] || git -C /root/milkyhoop-dev worktree add -q --detach "$LAMA" "$LAMA_SHA" || { echo "rc=5 (pohon LAMA gagal)"; exit 5; }
 git -C "$LAMA" reset -q --hard "$LAMA_SHA"
 SIG=$(mktemp -d /tmp/sig1d.XXXXXX); chmod 777 "$SIG"

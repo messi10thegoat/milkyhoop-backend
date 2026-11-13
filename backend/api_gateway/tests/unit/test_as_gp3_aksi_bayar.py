@@ -179,6 +179,9 @@ def test_penulis_idem_lalu_kunci_lalu_penentu_lalu_simpan(mulai, akhir, penentu,
         inti = _fn(BP, "async def hapus_draf_bayar_core(", '@router.delete("/{payment_id}"')
         assert i_idem < f.index("hapus_draf_bayar_core(conn, ctx, payment_id)")
         assert inti.index("pg_advisory_xact_lock") < inti.index(penentu) < inti.index("DELETE FROM bill_payments_v2")
+    elif awalan == "BP_VOID":  # BF-1d: kunci advisory pindah ke kunci_void_bayar (dipanggil penulis PERTAMA sesudah idempotency; penulis kini dipakai bersama Bank Feed)
+        kunci = _fn(BP, "async def kunci_void_bayar(", "async def void_bayar_core(")
+        assert i_idem < f.index("await kunci_void_bayar(conn, payment_id)") < f.index(penentu) and "pg_advisory_xact_lock" in kunci
     else:
         assert i_idem < f.index("pg_advisory_xact_lock") < f.index(penentu)
     assert f.count(f'idem_buat.simpan(conn, ctx, kp, sidik, "{awalan}"') >= 1
@@ -188,9 +191,11 @@ def test_penulis_idem_lalu_kunci_lalu_penentu_lalu_simpan(mulai, akhir, penentu,
 
 def test_void_penulis_tak_lagi_punya_cek_sendiri():
     f = _fn(BP, "async def void_bill_payment(", "@router.get(\"/vendors/{vendor_id}/open-bills\"")
+    core = _fn(BP, "async def void_bayar_core(", "@router.post(\"/{payment_id}/void\"")     # BF-1d: badan void pindah ke inti bersama
+    assert "await void_bayar_core(conn, ctx, payment_id, payload.void_reason, r)" in f
     for lama in ("tolak_void_bila_terekonsiliasi(", "Cannot void draft payment", 'detail="Baris jurnal asal tidak ditemukan."', "check_period_is_open("):
-        assert lama not in f, lama
-    assert 'original_btxn = r["cermin_asli"]' in f
+        assert lama not in f and lama not in core, lama
+    assert 'original_btxn = r["cermin_asli"]' in core
 
 
 def test_pratinjau_aksi_read_only_tanpa_kunci():

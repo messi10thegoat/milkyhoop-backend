@@ -19,7 +19,8 @@ def test_satu_penulis_efek_posting():
     efek = _fungsi(BP, "async def efek_posting_bayar(", "# === Journal Preview")
     assert efek.count("INSERT INTO withholding_tax_records") == 1 and efek.count("INSERT INTO bank_transactions") == 1
     assert "BKR.cermin_bank(" in efek
-    buat = _fungsi(BP, "async def create_bill_payment(request", "async def delete_bill_payment")
+    buat = _fungsi(BP, "async def buat_bayar_core(", '@router.post("", response_model=BillPaymentResponse, status_code=201)')   # BF-1d: inti bersama
+    assert "return await buat_bayar_core(conn, ctx, payload)" in _fungsi(BP, "async def create_bill_payment(request", "async def delete_bill_payment")
     posting = _fungsi(BP, "async def post_bill_payment(", "async def void_bill_payment(")
     for f in (buat, posting):
         assert f.count("await efek_posting_bayar(") == 1
