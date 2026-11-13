@@ -68,28 +68,34 @@ async def main():
                           and d.ada_stok_minus == (n_min > 0))
                 cek(f"B {tid} detail gudang {g.code} == daftar (nilai_stok, aksi, aksi_semua, ada_stok_minus); barang_minus {len(d.barang_minus or [])} == SQL {n_min}", tmp and ok_min,
                     f"detail={(d.nilai_stok, d.aksi, d.aksi_semua, d.ada_stok_minus)} daftar={(g.nilai_stok, g.aksi, g.aksi_semua, g.ada_stok_minus)}")
-            # C minus nyata
-            nol = await c.fetchval("/* tenant_id */ SELECT p.id FROM products p WHERE p.tenant_id = $1 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true) AND NOT EXISTS (SELECT 1 FROM inventory_ledger l WHERE l.tenant_id = p.tenant_id AND l.product_id = p.id) ORDER BY p.created_at LIMIT 1", tid)
-            if nol is None:
-                print(f"CATATAN C {tid}: tak ada barang tanpa riwayat ledger di klon; minus nyata tak terukur (unit memakai tiruan)", flush=True)
+            # C minus nyata: barang yang SUDAH punya baris warehouse_stock di gudang utama (jalur UPDATE trigger cache dipotong 0; jalur INSERT baris baru bernilai negatif
+            # melanggar chk_ws_quantity), dikurangi MELEBIHI saldo ledger gudang itu -> saldo ledger < 0 sementara cache tetap 0
+            utama = next((g for g in await daftar(rq) if g.is_default), None) or (await daftar(rq))[0]
+            cand = await c.fetchrow("""/* tenant_id */ SELECT ws.item_id, ws.quantity AS q FROM warehouse_stock ws JOIN products p ON p.id = ws.item_id AND p.tenant_id = ws.tenant_id
+                WHERE ws.tenant_id = $1 AND ws.warehouse_id = $2 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true)
+                  AND NOT COALESCE(p.track_batches, false) AND NOT COALESCE(p.track_serial, false) ORDER BY ws.quantity LIMIT 1""", tid, utama.id)
+            if cand is None:
+                print(f"CATATAN C {tid}: tak ada barang berbaris warehouse_stock di gudang utama (klon); minus nyata tak terukur (unit memakai tiruan)", flush=True)
                 continue
-            await c.execute("UPDATE products SET purchase_price = 0 WHERE tenant_id = $1 AND id = $2", tid, nol)
+            nol = cand["item_id"]
+            led = D(str(await c.fetchval("/* tenant_id */ SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $3", tid, nol, utama.id)))
+            kurang = max(D(str(cand["q"])), led) + 2
+            sesudah = led - kurang
             body = S.CreateStockAdjustmentRequest(adjustment_date=date.today(), adjustment_type="decrease", notes="UJIGUD", items=[
-                S.StockAdjustmentItemCreate(product_id=str(nol), quantity_adjustment=D("-2"), physical_quantity=None, reason_detail="ujigud")])
+                S.StockAdjustmentItemCreate(product_id=str(nol), quantity_adjustment=-kurang, physical_quantity=None, reason_detail="ujigud")])
             r = await SA.create_stock_adjustment(rq, body)
             sid = uuid.UUID(str(r["data"]["id"]))
             await SA.post_stock_adjustment(rq, sid)
-            utama = next((g for g in await daftar(rq) if g.is_default), None) or (await daftar(rq))[0]
             minus_pill = await daftar(rq, aksi="stok_minus")
             dd = (await WH.get_warehouse(rq, utama.id)).data
-            ada = any(b["item_id"] == str(nol) and b["saldo"] == -2.0 for b in (dd.barang_minus or []))
-            cek(f"C {tid} minus nyata: pill stok_minus memuat gudang, detail gudang memuat barangnya (saldo -2)", any(g.id == utama.id for g in minus_pill) and dd.ada_stok_minus is True and ada,
+            ada = any(b["item_id"] == str(nol) and D(str(b["saldo"])) == sesudah for b in (dd.barang_minus or []))
+            cek(f"C {tid} minus nyata: pill stok_minus memuat gudang, detail gudang memuat barangnya (saldo ledger {sesudah})", any(g.id == utama.id for g in minus_pill) and dd.ada_stok_minus is True and ada,
                 f"pill={[g.code for g in minus_pill]} barang_minus={dd.barang_minus}")
             item = (await IT.get_item(rq, nol)).data
             spg = item["stok_per_gudang"]
             tot = sum(D(str(x["saldo"])) for x in spg)
-            cek(f"C {tid} detail Barang: stok_per_gudang menandai minus, Σ saldo == current_stock, ada_stok_minus_gudang", item["ada_stok_minus_gudang"] is True
-                and any(x["minus"] and x["saldo"] == -2.0 for x in spg) and tot == D(str(item["current_stock"])), f"spg={spg} stok={item['current_stock']}")
+            cek(f"C {tid} detail Barang: stok_per_gudang menandai minus ({sesudah}), Σ saldo == current_stock, ada_stok_minus_gudang", item["ada_stok_minus_gudang"] is True
+                and any(x["minus"] and D(str(x["saldo"])) == sesudah for x in spg) and tot == D(str(item["current_stock"])), f"spg={spg} stok={item['current_stock']}")
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
 
