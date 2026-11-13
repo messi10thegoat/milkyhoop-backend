@@ -94,6 +94,7 @@ async def _detail(conn, tenant_id: str, transfer_id: UUID) -> StockTransferDetai
     items = await conn.fetch(
         "SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number ASC", transfer_id
     )
+    items = await pd2.terapkan_diterima(conn, tenant_id, transfer_id, row["status"], items)   # kolom DB beku sesudah Kirim -> diterima dari ledger
     dikirim = sum(float(i["quantity_shipped"] or 0) for i in items)
     diterima = sum(float(i["quantity_received"] or 0) for i in items)
     return StockTransferDetailData(**dict(row), items=[StockTransferItemData(**dict(i)) for i in items],
@@ -443,6 +444,7 @@ async def get_stock_transfer(request: Request, transfer_id: UUID):
             transfer_id,
         )
 
+        items = await pd2.terapkan_diterima(conn, ctx["tenant_id"], transfer_id, row["status"], items)   # K8: diterima dari ledger
         _dik = sum(float(i["quantity_shipped"] or 0) for i in items)
         _dit = sum(float(i["quantity_received"] or 0) for i in items)
         data = StockTransferDetailData(

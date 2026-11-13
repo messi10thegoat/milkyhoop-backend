@@ -35,8 +35,38 @@ def _blok(kode: str, pesan: str, status: int = 409, item_id=None) -> dict:
     return {"code": kode, "message": pesan, "status": status, "item_id": str(item_id) if item_id is not None else None}
 
 
-async def _item_baris(conn, transfer_id):
-    return await conn.fetch("SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number, id", transfer_id)
+# TRIGGER DB (diukur 14 Nov): prevent_st_modification menolak UPDATE header berstatus in_transit/received kecuali status/received_by/received_date berubah, dan
+# trg_update_st_totals memperbarui header (updated_at) pada SETIAP UPDATE baris item -> baris item & header TAK BOLEH ditulis sesudah Kirim. Maka jumlah DITERIMA
+# per barang DITURUNKAN dari ledger (Law 1/11; sumber kebenaran), BUKAN dari kolom stock_transfer_items.quantity_received (beku di 0 sesudah Kirim).
+SQL_DITERIMA = ("SELECT il.product_id, COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il "
+                "WHERE il.tenant_id = $1 AND il.source_type = $2 AND il.source_id = $3 GROUP BY il.product_id")
+
+
+async def diterima_per_barang(conn, tid: str, transfer_id) -> dict:
+    return {r["product_id"]: _d(r["diterima"]) for r in await conn.fetch(SQL_DITERIMA, tid, SUMBER_TERIMA, transfer_id)}
+
+
+async def item_baris(conn, tid: str, transfer_id) -> list:
+    """Baris item (dict) + quantity_received/quantity_variance DITURUNKAN dari ledger."""
+    ada = await diterima_per_barang(conn, tid, transfer_id)
+    hasil = []
+    for i in await conn.fetch("SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number, id", transfer_id):
+        d = dict(i)
+        d["quantity_received"] = ada.get(d["item_id"], _NOL)
+        d["quantity_variance"] = _d(d["quantity_shipped"]) - d["quantity_received"]
+        hasil.append(d)
+    return hasil
+
+
+async def terapkan_diterima(conn, tid: str, transfer_id, status: str, items: list) -> list:
+    """Untuk detail: pemindahan yang sudah dikirim -> quantity_received/variance dari ledger (kolom DB beku); selain itu apa adanya."""
+    items = [dict(i) for i in items]
+    if status in ("in_transit", "received"):
+        ada = await diterima_per_barang(conn, tid, transfer_id)
+        for d in items:
+            d["quantity_received"] = float(ada.get(d["item_id"], _NOL))
+            d["quantity_variance"] = float(_d(d["quantity_shipped"]) - ada.get(d["item_id"], _NOL))
+    return items
 
 
 # ============================================================================
@@ -60,7 +90,7 @@ async def rencana_kirim(conn, tid: str, h, items, kunci: bool = False) -> dict:
 async def pratinjau_kirim(conn, ctx: dict, transfer_id) -> dict:
     tid = ctx["tenant_id"]
     h = await pb._header(conn, tid, transfer_id)
-    r = await rencana_kirim(conn, tid, h, await _item_baris(conn, transfer_id), kunci=False)
+    r = await rencana_kirim(conn, tid, h, await item_baris(conn, tid, transfer_id), kunci=False)
     r["ok"] = not r["blocks"]
     r["transfer_number"] = h["transfer_number"]
     r["lokasi_transit"] = GT.NAMA
@@ -72,7 +102,7 @@ async def pratinjau_kirim(conn, ctx: dict, transfer_id) -> dict:
 async def kirim(conn, ctx: dict, transfer_id) -> dict:
     tid, uid = ctx["tenant_id"], ctx.get("user_id")
     h = await pb._draf_terkunci(conn, tid, transfer_id)
-    items = await _item_baris(conn, transfer_id)
+    items = await item_baris(conn, tid, transfer_id)
     if h["status"] == "in_transit":
         return {"ulang": True}
     rencana = await rencana_kirim(conn, tid, h, items, kunci=True)
@@ -165,7 +195,7 @@ async def rencana_terima(conn, tid: str, h, items, baris: Optional[List[dict]], 
 async def pratinjau_terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]]) -> dict:
     tid = ctx["tenant_id"]
     h = await pb._header(conn, tid, transfer_id)
-    r = await rencana_terima(conn, tid, h, await _item_baris(conn, transfer_id), baris, kunci=False)
+    r = await rencana_terima(conn, tid, h, await item_baris(conn, tid, transfer_id), baris, kunci=False)
     r["ok"] = not r["blocks"]
     r["transfer_number"] = h["transfer_number"]
     r["bawaan_semua_tertunda"] = not baris
@@ -176,7 +206,7 @@ async def pratinjau_terima(conn, ctx: dict, transfer_id, baris: Optional[List[di
 async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = None) -> dict:
     tid, uid = ctx["tenant_id"], ctx.get("user_id")
     h = await pb._draf_terkunci(conn, tid, transfer_id)
-    items = await _item_baris(conn, transfer_id)
+    items = await item_baris(conn, tid, transfer_id)
     if h["status"] == "received" and not baris:
         return {"ulang": True, "catatan_fase": None}
     rencana = await rencana_terima(conn, tid, h, items, baris, kunci=True)
@@ -201,13 +231,10 @@ async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = Non
                                catatan=f"Terima di {tujuan['name']} (keluar Transit)", **kw)
         await pb._tulis_ledger(conn, tid, uid, tipe=TERIMA_MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
                                catatan=f"Terima dari {asal_nama} (via Transit)", **kw)
-        await conn.execute("UPDATE stock_transfer_items SET quantity_received = quantity_received + $2 WHERE id = $1", it["id"], a)
         total += nilai
-    if rencana["tuntas"]:
-        await conn.execute("UPDATE stock_transfers SET status = 'received', received_date = $3, received_by = $4, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
+    if rencana["tuntas"]:   # satu-satunya tulisan header sesudah Kirim yang diizinkan trigger (status berubah + received_date/by)
+        await conn.execute("UPDATE stock_transfers SET status = 'received', received_date = $3, received_by = $4 WHERE id = $1 AND tenant_id = $2",
                            transfer_id, tid, hari, uid)
-    else:
-        await conn.execute("UPDATE stock_transfers SET updated_at = NOW() WHERE id = $1 AND tenant_id = $2", transfer_id, tid)
     await catat_riwayat(conn, tid, "stock_transfers", transfer_id, h["transfer_number"], "PEMINDAHAN_BARANG_DITERIMA", uid,
                         f"Pemindahan {h['transfer_number']} diterima di {tujuan['name']}"
                         f"{'' if rencana['tuntas'] else ' (sebagian; sisa masih di Transit)'}",
@@ -221,7 +248,7 @@ async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = Non
 # ============================================================================
 async def rencana_void_kirim(conn, tid: str, h, kunci: bool) -> dict:
     blocks: list = []
-    items = await _item_baris(conn, h["id"])
+    items = await item_baris(conn, tid, h["id"])
     asli = []
     if h["status"] == "received":
         blocks.append(_blok("PB_DUA_LANGKAH_SUDAH_DITERIMA", f"Pemindahan {h['transfer_number']} sudah diterima; buat pemindahan balik untuk mengembalikan barangnya."))

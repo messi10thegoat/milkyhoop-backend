@@ -670,9 +670,17 @@ GTR = uuid.uuid4()   # id gudang Transit uji
 
 
 class KonekD(Konek):
-    def __init__(self, transit_ada=True, **kw):
+    def __init__(self, transit_ada=True, diterima=None, **kw):
         super().__init__(**kw)
         self.transit_ada, self.transit_dibuat = transit_ada, 0
+        self.diterima = diterima or {}      # jumlah DITERIMA per barang dari LEDGER (kolom item beku oleh trigger DB sesudah Kirim)
+
+    async def fetch(self, sql, *a):
+        s = " ".join(sql.split())
+        if "COALESCE(SUM(il.quantity_in), 0) AS diterima" in s:
+            self.log.append(s)
+            return [{"product_id": k, "diterima": v} for k, v in self.diterima.items()]
+        return await super().fetch(sql, *a)
 
     async def fetchval(self, sql, *a):
         s = " ".join(sql.split())
@@ -748,7 +756,7 @@ def test_k8_terima_semua_keluar_transit_masuk_tujuan_status_received(_pasang_d2)
     assert jalan(D2.terima(k, ctx(), U, None))["ulang"] is False
     assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
         [(GTR, 10, 0, "RELOKASI_TERIMA"), (GB, 0, 10, "RELOKASI_TERIMA")]
-    assert _upd(k, "quantity_received = quantity_received +") and _upd(k, "SET status = 'received'")
+    assert not _upd(k, "stock_transfer_items") and _upd(k, "SET status = 'received'") and len(_upd(k, "UPDATE stock_transfers")) == 1   # trigger DB: hanya transisi status
     assert ("PEMINDAHAN_BARANG_DITERIMA", "ST-2610-0001") in _pasang_d2 and not any("journal" in s for s in k.log)
 
 
@@ -756,7 +764,8 @@ def test_k8_terima_sebagian_lalu_sisa_status_turunan_dan_tuntas():
     k = KonekD(header=draf(status="in_transit"), items=[b8()], stok={(GTR, P1): Decimal("10")})
     jalan(D2.terima(k, ctx(), U, [{"item_id": P1, "qty": Decimal("4")}]))
     assert [r["quantity_out"] + r["quantity_in"] for r in k.ledger] == [4, 4] and not _upd(k, "SET status = 'received'")   # sebagian: tetap in_transit
-    k2 = KonekD(header=draf(status="in_transit"), items=[b8(terima="4")], stok={(GTR, P1): Decimal("6")})
+    assert not _upd(k, "UPDATE stock_transfers") and not _upd(k, "stock_transfer_items")       # trigger DB menolak tulis header/item sesudah Kirim: NOL tulisan di penerimaan sebagian
+    k2 = KonekD(header=draf(status="in_transit"), items=[b8()], diterima={P1: Decimal("4")}, stok={(GTR, P1): Decimal("6")})
     jalan(D2.terima(k2, ctx(), U, None))                                                      # semua tertunda = 6
     assert [r["quantity_out"] + r["quantity_in"] for r in k2.ledger] == [6, 6] and _upd(k2, "SET status = 'received'")
 
@@ -780,7 +789,7 @@ def test_k8_terima_blok_tanpa_tulis(baris_, hdr, kw, harap):
 
 
 def test_k8_terima_sudah_received_tanpa_baris_idempoten():
-    k = KonekD(header=draf(status="received"), items=[b8(terima="10")])
+    k = KonekD(header=draf(status="received"), items=[b8()], diterima={P1: Decimal("10")})
     assert jalan(D2.terima(k, ctx(), U, None)) == {"ulang": True, "catatan_fase": None} and k.ledger == []
 
 
@@ -810,14 +819,14 @@ def test_k8_void_kirim_balik_dari_transit_ke_asal_status_voided():
     assert _upd(k, "SET status = 'voided'") and not any("journal" in s for s in k.log)
 
 
-@pytest.mark.parametrize("hdr,items,asli,harap", [
-    ({}, [b8(terima="4")], None, "PB_SUDAH_ADA_PENERIMAAN"),
-    ({"status": "received"}, [b8(terima="10")], None, "PB_DUA_LANGKAH_SUDAH_DITERIMA"),
-    ({}, [b8()], [], "PB_LEDGER_TAK_ADA"),
-    ({"status": "draft"}, [b8()], None, "PB_STATUS_TIDAK_BOLEH"),
+@pytest.mark.parametrize("hdr,dit,asli,harap", [
+    ({}, {P1: Decimal("4")}, None, "PB_SUDAH_ADA_PENERIMAAN"),
+    ({"status": "received"}, {P1: Decimal("10")}, None, "PB_DUA_LANGKAH_SUDAH_DITERIMA"),
+    ({}, {}, [], "PB_LEDGER_TAK_ADA"),
+    ({"status": "draft"}, {}, None, "PB_STATUS_TIDAK_BOLEH"),
 ])
-def test_k8_void_kirim_blok(hdr, items, asli, harap):
-    k = KonekD(header=draf(**{"status": "in_transit", **hdr}), items=items, asli=_asli_kirim() if asli is None else asli)
+def test_k8_void_kirim_blok(hdr, dit, asli, harap):
+    k = KonekD(header=draf(**{"status": "in_transit", **hdr}), items=[b8()], diterima=dit, asli=_asli_kirim() if asli is None else asli)
     with pytest.raises(HTTPException) as e:
         jalan(D2.void_kirim(k, ctx(), U, "x"))
     assert kode(e) == harap and k.ledger == []
@@ -957,3 +966,15 @@ def test_k8_transit_sistem_kode_dan_idempoten():
 def test_k8_detail_memuat_teks_status_turunan():
     assert "pd2.teks_status(" in inspect.getsource(RT._detail) and "diterima_sebagian" in inspect.getsource(RT._detail)
     assert "pd2.teks_status(" in inspect.getsource(RT.get_stock_transfer)
+
+
+def test_k8_diterima_diturunkan_dari_ledger_bukan_kolom_beku():
+    k = KonekD(items=[b8(terima="0")], diterima={P1: Decimal("4")})            # kolom item = 0 (beku), ledger = 4
+    baris_ = jalan(D2.item_baris(k, T, U))
+    assert baris_[0]["quantity_received"] == 4 and baris_[0]["quantity_variance"] == 6
+    sql = [x for x in k.log if "AS diterima" in x][0]
+    assert "il.tenant_id = $1" in sql and "il.source_type = $2" in sql and "GROUP BY il.product_id" in sql
+    ek = jalan(D2.terapkan_diterima(k, T, U, "in_transit", [{"item_id": P1, "quantity_shipped": Decimal("10"), "quantity_received": Decimal("0"), "quantity_variance": Decimal("10")}]))
+    assert ek[0]["quantity_received"] == 4.0 and ek[0]["quantity_variance"] == 6.0
+    mentah = [{"item_id": P1, "quantity_shipped": None, "quantity_received": Decimal("0"), "quantity_variance": None}]
+    assert jalan(D2.terapkan_diterima(k, T, U, "draft", mentah)) == mentah                   # draf: apa adanya
