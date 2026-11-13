@@ -3,6 +3,7 @@
 dan per baris harga unit_text ("<satuan dasar>" bila unit kosong) + berlaku_text ("Ikut daftar" bila kosong), SATU penentu (services/harga_daftar)."""
 import pathlib
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,3 +112,57 @@ def test_baris_harga_memuat_teks_di_detail_dan_respons_tulis():
 
 def test_izin_summary_baca():
     assert PM.PermissionMiddleware(lambda *a: None, False)._find_permission("/api/price-lists/summary", "GET") == ("price_list", "R")
+
+
+class _CS:
+    def __init__(self):
+        self.sql = []
+
+    async def fetchrow(self, sql, *a):
+        self.sql.append(sql)
+        return {**{f"{k}_count": 0 for k in HD.SEMUA_KUNCI}, "total_count": 0}
+
+    async def fetchval(self, sql, *a):
+        self.sql.append(sql)
+        return 0
+
+    async def fetch(self, sql, *a):
+        self.sql.append(sql)
+        return []
+
+
+class _Kolam:
+    def __init__(self, c):
+        self.c = c
+
+    def acquire(self):
+        c = self.c
+
+        class _A:
+            async def __aenter__(s):
+                return c
+
+            async def __aexit__(s, *a):
+                return False
+        return _A()
+
+
+@pytest.mark.asyncio
+async def test_summary_dan_daftar_memakai_predikat_aksi_yang__sama(monkeypatch):
+    from app.routers import price_lists as PL
+    c = _CS()
+
+    async def gp():
+        return _Kolam(c)
+
+    async def hari(conn, tid):
+        return date(2026, 11, 13)
+    monkeypatch.setattr(PL, "get_pool", gp)
+    monkeypatch.setattr(PL, "tanggal_dokumen", hari)
+    req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": "t1", "user_id": None}))
+    await PL.price_lists_summary(req)
+    for k in HD.SEMUA_KUNCI:
+        assert f"FILTER (WHERE {HD.sql_aksi(k, 'p', '$2')}) AS {k}_count" in c.sql[0], k     # predikat summary == ?aksi= (tanpa tambahan)
+    c.sql.clear()
+    await PL.list_price_lists(req, skip=0, limit=20, search=None, is_active=None, aksi="kedaluwarsa")
+    assert any(HD.sql_aksi("kedaluwarsa", "p", "$2") in q for q in c.sql)
