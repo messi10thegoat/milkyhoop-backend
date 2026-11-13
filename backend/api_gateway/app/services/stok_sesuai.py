@@ -139,10 +139,22 @@ async def periode(conn, tid: str, tgl, bl: Blok) -> None:
 
 
 # ---------------------------------------------------------------- buat / ubah (baris draf)
-async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok) -> list:
-    """Baris draf: stok sebelum PER gudang, selisih (hitung ulang: fisik − sistem), nilai = |selisih| × harga pokok saat ini (dibekukan)."""
+# BUG-204 (putusan pemilik LANGSUNG 13 Nov 2026): SATU penentu aturan baris untuk pratinjau DAN tulis. JENIS menentukan arah (Penambahan +; Pengurangan/Rusak/
+# Kedaluwarsa −; Hitung ulang = stok fisik); ditolak: tanda tak cocok jenis, barang non-stok, selisih 0, barang ganda, fisik wajib/negatif (hitung ulang).
+# Harga pokok 0 = ISYARAT (boleh lanjut). Dokumen lama yang melanggar TIDAK diubah (aturan hanya untuk penulisan baru).
+ARAH_JENIS = {"increase": 1, "decrease": -1, "damaged": -1, "expired": -1}     # recount: arah turunan (fisik - sistem)
+
+
+def barang_bertstok(p) -> bool:
+    """Barang yang melacak stok: item_type goods dan track_inventory bukan False (penentu SAMA dgn posting :gerak)."""
+    return bool(p and p["item_type"] == "goods" and (p["track_inventory"] if p["track_inventory"] is not None else True))
+
+
+async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isyarat: Optional[list] = None) -> list:
+    """Baris draf: stok sebelum PER gudang, selisih (hitung ulang: fisik − sistem), nilai = |selisih| × harga pokok saat ini (dibekukan).
+    BUG-204: + aturan jenis/tanda/non-stok/selisih 0/ganda/fisik (blok berkode) dan isyarat harga pokok 0 (ke `isyarat` bila diberikan)."""
     from ..routers.stock_adjustments import get_product_info
-    hasil = []
+    hasil, terlihat = [], set()
     for idx, item in enumerate(items or [], 1):
         try:
             pid = UUID(str(item.product_id))
@@ -152,14 +164,38 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok) -> 
         if not p:
             bl.galat("BARANG_TIDAK_DITEMUKAN", 400, f"Barang baris {idx} tidak ditemukan.")
             continue
+        nama = p["name"]
+        tipe_brg = await conn.fetchrow("SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", pid, tid)
+        if not barang_bertstok(tipe_brg):
+            bl.galat("PENYESUAIAN_BARANG_NON_STOK", 409, f"{nama} tidak melacak stok; penyesuaian stok hanya untuk barang ber-stok.")
+            continue
+        if pid in terlihat:
+            bl.galat("PENYESUAIAN_BARANG_GANDA", 409, f"{nama} muncul lebih dari sekali di dokumen ini (baris {idx}); gabungkan jadi satu baris.")
+            continue
+        terlihat.add(pid)
         sebelum = await stok_gudang(conn, tid, pid, gudang_id) if gudang_id else NOL
         ubah = _d(item.quantity_adjustment)
         sistem = fisik = None
-        if tipe == "recount" and item.physical_quantity is not None:
+        if tipe == "recount":
+            if item.physical_quantity is None:
+                bl.galat("PENYESUAIAN_FISIK_WAJIB", 422, f"Isi stok fisik {nama} untuk hitung ulang.")
+                continue
+            if _d(item.physical_quantity) < 0:
+                bl.galat("PENYESUAIAN_FISIK_NEGATIF", 422, f"Stok fisik {nama} tidak boleh negatif.")
+                continue
             fisik, sistem = _d(item.physical_quantity), sebelum
             ubah = fisik - sistem
+        elif ARAH_JENIS.get(tipe) and ubah != 0 and (ubah > 0) != (ARAH_JENIS[tipe] > 0):
+            bl.galat("PENYESUAIAN_TANDA_TIDAK_COCOK", 422,
+                     f"Jumlah {nama}: jenis {jenis_text(tipe)} harus {'positif (menambah stok)' if ARAH_JENIS[tipe] > 0 else 'negatif (mengurangi stok)'}.")
+            continue
+        if ubah == 0:
+            bl.galat("PENYESUAIAN_SELISIH_NOL", 422, f"Selisih {nama} nol; tak ada yang disesuaikan.")
+            continue
         harga = Decimal(int(p["unit_cost"] or 0))
-        hasil.append({"product_id": pid, "product_code": p["code"], "product_name": p["name"], "unit": p["unit"],
+        if harga == 0 and isyarat is not None:
+            isyarat.append(f"Barang {nama} belum punya harga pokok; nilai Rp 0.")
+        hasil.append({"product_id": pid, "product_code": p["code"], "product_name": nama, "unit": p["unit"],
                       "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
                       "reason_detail": item.reason_detail, "system_quantity": sistem, "physical_quantity": fisik, "line_number": idx})
@@ -168,8 +204,9 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok) -> 
 
 async def rencana_buat(conn, tid: str, body, bl: Blok) -> dict:
     g = await gudang(conn, tid, getattr(body, "warehouse_id", None), bl)
-    baris = await susun_baris(conn, tid, body.items, body.adjustment_type, g["id"] if g else None, bl)
-    return {"blocks": bl.daftar, "gudang": g, "baris_draf": baris, "baris": [], "saldo": []}
+    isyarat: list = []
+    baris = await susun_baris(conn, tid, body.items, body.adjustment_type, g["id"] if g else None, bl, isyarat)
+    return {"blocks": bl.daftar, "gudang": g, "baris_draf": baris, "baris": [], "saldo": [], "isyarat": isyarat}
 
 
 async def muat(conn, tid: str, sa_id, kunci: bool = False):
@@ -178,7 +215,7 @@ async def muat(conn, tid: str, sa_id, kunci: bool = False):
 
 
 async def rencana_ubah(conn, tid: str, sa_id, body, bl: Blok) -> dict:
-    hasil = {"blocks": bl.daftar, "sa": None, "gudang": None, "baris_draf": None, "baris": [], "saldo": []}
+    hasil = {"blocks": bl.daftar, "sa": None, "gudang": None, "baris_draf": None, "baris": [], "saldo": [], "isyarat": []}
     sa = await muat(conn, tid, sa_id)
     if not sa:
         bl.galat("PENYESUAIAN_TIDAK_DITEMUKAN", 404, "Penyesuaian stok tidak ditemukan.")
@@ -190,7 +227,7 @@ async def rencana_ubah(conn, tid: str, sa_id, body, bl: Blok) -> dict:
     wid = body.warehouse_id if getattr(body, "warehouse_id", None) is not None else sa["warehouse_id"]
     g = hasil["gudang"] = await gudang(conn, tid, wid, bl)
     if body.items is not None:
-        hasil["baris_draf"] = await susun_baris(conn, tid, body.items, body.adjustment_type or sa["adjustment_type"], g["id"] if g else None, bl)
+        hasil["baris_draf"] = await susun_baris(conn, tid, body.items, body.adjustment_type or sa["adjustment_type"], g["id"] if g else None, bl, hasil["isyarat"])
     return hasil
 
 
