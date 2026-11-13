@@ -489,6 +489,13 @@ POST /api/price-lists/resolve/{modul}
 POST /api/price-lists/{price_list_id}/items
 POST /api/price-lists/{price_list_id}/items/preview
 POST /api/price-lists/{price_list_id}/items/{line_id}/edit/preview
+POST /api/price-lists/{price_list_id}/status/preview
+POST /api/price-lists/{price_list_id}/status
+POST /api/price-lists/{price_list_id}/default/preview
+POST /api/price-lists/{price_list_id}/default
+POST /api/price-lists/{price_list_id}/delete/preview
+POST /api/price-lists/{price_list_id}/edit/preview
+POST /api/price-lists/{price_list_id}/items/{line_id}/delete/preview
 POST /api/product-djp-mapping
 POST /api/product-djp-mapping/bulk
 POST /api/production
