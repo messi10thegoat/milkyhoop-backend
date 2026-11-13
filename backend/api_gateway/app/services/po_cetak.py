@@ -44,6 +44,15 @@ def alamat_gudang(w) -> str | None:
     return "\n".join(baris) or None
 
 
+def termin_syarat(hari) -> str | None:
+    """Syarat bayar PO dari termin vendor (None = vendor tanpa data termin -> baris tak dicetak). Kalimat = termin_text kontak (BUG-026: tanpa "Net"):
+    0 -> "Tunai", N -> "N hari". Penentu jatuh tempo tagihan membaca kolom yang SAMA (termin_bayar.tentukan_jatuh_tempo_tagihan)."""
+    if hari is None:
+        return None
+    from .kontak_detail import termin_text
+    return termin_text(hari)
+
+
 def label_pajak(tax_rate) -> str:
     try:
         t = float(tax_rate or 0)
@@ -64,13 +73,16 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
         raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
     vendor = await kontak_vendor(conn, tid, po["vendor_id"])
     items = await conn.fetch(
-        """SELECT description, item_code, quantity, unit, unit_price, discount_percent, discount_amount, subtotal, total
-           FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number, created_at, id""", po["id"])
+        """SELECT i.description, COALESCE(NULLIF(i.item_code, ''), pr.item_code) AS item_code, i.quantity, i.unit, i.unit_price, i.discount_percent,
+                  i.discount_amount, i.subtotal, i.total, i.tax_rate, i.tax_amount
+           FROM purchase_order_items i LEFT JOIN products pr ON pr.id = i.item_id AND pr.tenant_id = $2
+           WHERE i.po_id = $1 ORDER BY i.line_number, i.created_at, i.id""", po["id"], tid)   # BUG-202: kode barang cadangan = SKU master; pajak per baris
     baris = []
     for i in items:
         neto = (i["subtotal"] or 0) - (i["discount_amount"] or 0)
         baris.append({"description": i["description"], "item_code": i["item_code"], "quantity": i["quantity"], "unit": i["unit"],
-                      "unit_price": i["unit_price"], "discount_percent": i["discount_percent"], "line_total": neto})
+                      "unit_price": i["unit_price"], "discount_percent": i["discount_percent"], "line_total": neto,
+                      "tax_rate": i.get("tax_rate"), "tax_amount": i.get("tax_amount")})
     uang = [po["subtotal"], po["discount_amount"], po["tax_amount"], po["total_amount"]] + \
            [b["unit_price"] for b in baris] + [b["line_total"] for b in baris]
     po_data = {
@@ -88,4 +100,8 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
         "tax_amount": po["tax_amount"], "label_pajak": label_pajak(po["tax_rate"]), "total_amount": po["total_amount"],
         "has_cents": PDFService.money_has_cents(*uang),
     }
-    return {"po_data": po_data, "tenant_info": await muat_kop(conn, tid)}
+    kop = await muat_kop(conn, tid)
+    vt = await conn.fetchrow("SELECT payment_terms_days FROM vendors WHERE id = $1 AND tenant_id = $2", po["vendor_id"], tid) if po["vendor_id"] else None
+    po_data["syarat_bayar"] = termin_syarat(vt.get("payment_terms_days") if vt else None)   # BUG-202: syarat bayar PO = termin vendor (kolom sama dgn jatuh tempo tagihan)
+    po_data["kop_kosong"] = not (kop.get("address") or kop.get("npwp"))     # BUG-202: petunjuk "Lengkapi profil perusahaan" (hanya tampil di layar, bukan di PDF)
+    return {"po_data": po_data, "tenant_info": kop}

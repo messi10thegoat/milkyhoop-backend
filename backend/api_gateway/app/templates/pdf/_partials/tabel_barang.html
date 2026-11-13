@@ -3,6 +3,7 @@
   Qty + satuan satu sel; diskon baris = persen, atau nominal bila hanya nominal; batch/exp/bonus = baris kecil.
   k = nama medan per dokumen: {desk: [kunci...] (yang pertama terisi), qty, harga, jumlah: satu kunci}. Opsional (FPB pola Accurate,
   4 Nov 2026): kode = kunci SKU (kolom Kode HANYA bila ada baris ber-SKU) · judul = {desk, qty, harga, jumlah} · diskon_selalu · harga_dulu (@Harga sebelum Diskon).
+  k.pajak = {tarif, jumlah} kunci pajak PER BARIS (opt-in; BUG-202 PO): baris kecil "Pajak 11% · Rp 1.100" di bawah nama barang, hanya bila > 0.
   k.kelas = kelas tabel tambahan (bingkai Penjualan invoice.css: "items-table"; Nota Kredit 4 Nov 2026).
   Tanpa opsional = tampilan Penawaran/PO: kolom Diskon HANYA bila ada baris berdiskon ("-" bila kosong).
   Dokumen GUDANG (Surat Jalan; GRN menyusul): TANPA k.harga -> tanpa kolom uang; k.kolom = [{judul, kunci, qty?}] sesudah Kts.
@@ -36,6 +37,7 @@
         {%- if item.batch_no %}{% set _ = rinci.append('Batch ' ~ item.batch_no) %}{% endif -%}
         {%- if item.exp_date %}{% set _ = rinci.append('Exp ' ~ (item.exp_date if item.exp_date is string else item.exp_date | date_short)) %}{% endif -%}
         {%- if item.bonus_qty and item.bonus_qty|float > 0 %}{% set _ = rinci.append('Bonus ' ~ (item.bonus_qty | qty)) %}{% endif -%}
+        {%- if k.pajak and item[k.pajak.jumlah] and item[k.pajak.jumlah]|float > 0 %}{% set _ = rinci.append('Pajak ' ~ ("%g" % (item[k.pajak.tarif]|float)) ~ '% · Rp ' ~ (item[k.pajak.jumlah] | rupiah(uang))) %}{% endif -%}
         {% if rinci %}<div class="dt">{{ rinci | join(' · ') }}</div>{% endif %}</td>
       <td class="r">{{ item[k.qty] | qty }}{% if item.unit %} {{ item.unit }}{% endif %}</td>
       {% for x in kolom %}{% set v = item[x.kunci] %}

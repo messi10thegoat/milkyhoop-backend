@@ -226,12 +226,12 @@ def test_po_keluarga(tangkap):
     ps.tulis_pdf(ps.render_purchase_order(m["po_data"], m["tenant_info"]))
     h = tangkap["isi"]
     # PO = TURUNAN FPB pola Accurate (4 Nov 2026): kop usaha, Kepada vendor + Kirim ke gudang, meta No. PO, tabel konfigurasi FPB, TTD Pemesan
-    for teks in ('<div class="kop">', "<b>Vendor</b>", '<b class="kirim">Kirim ke</b>', "<b>No. PO</b>", "<b>Jadwal terima</b>", "Jl. Pelabuhan 3",
+    for teks in ('<div class="kop">', "<b>Vendor</b>", '<b class="kirim">Kirim ke</b>', "<b>No. PO</b>", "<b>Tanggal kirim</b>", "Jl. Pelabuhan 3",
                  "NPWP 02.345.678.9-012.000", "Seratus Rupiah", "Pemesan,", '<div class="garis">Bagian Pembelian</div>',
                  "<th>Nama Barang</th>", '<th class="r">Kts.</th>', '<th class="r">Diskon</th>'):
         assert teks in h, teks
     assert h.index("@Harga</th>") < h.index("Diskon</th>") and "<th>Kode</th>" not in h
-    for tak in ("Purchase Order", "Tanggal kirim", "Syarat bayar", "<b>Nomor</b>", "<b>Kepada</b>"):
+    for tak in ("Purchase Order", "<b>Nomor</b>", "<b>Kepada</b>"):   # BUG-202 (permintaan pemilik via MASTER 13 Nov): "Tanggal kirim" dan "Syarat bayar" kini SENGAJA dicetak (dulu dilarang)
         assert tak not in h, tak
 
 

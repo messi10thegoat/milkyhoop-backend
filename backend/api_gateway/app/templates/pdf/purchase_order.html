@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html lang="id">
-<head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title></head>
+<head><meta charset="UTF-8"><title>Pesanan Pembelian {{ po.po_number or '-' }}</title>
+<style>.petunjuk-kop{display:none}@media screen{.petunjuk-kop{display:block;margin:6px 0 10px;padding:6px 10px;border:1px dashed #b45309;color:#b45309;font-size:12px}}</style></head>
 {#
   PDF Pesanan Pembelian -- TURUNAN Faktur Pembelian pola Accurate (4 Nov 2026, putusan pemilik: FPB acuan, dokumen Pembelian lain
   diturunkan). Kop usaha (_partials/kop_usaha) di kanan judul; PO DIKIRIM ke vendor -> "Kepada" vendor (+ "Kirim ke" bila gudang /
   alamat kirim) | meta No. PO, Tanggal, Jadwal terima, Referensi; tabel konfigurasi FPB; Catatan + TTD Pemesan | ringkasan.
-  Syarat bayar BELUM (purchase_orders tanpa kolom termin -- tiket). Stempel DRAF (belum dikirim) / DIBATALKAN (_tanda_batal).
+  Syarat bayar (BUG-202) = termin VENDOR (tanpa kolom baru di PO). Stempel DRAF (belum dikirim) / DIBATALKAN (_tanda_batal).
   Konteks = services/po_cetak.muat_pdf_po.
 #}
 <body>
@@ -21,6 +22,7 @@
   {{ kop_usaha(t, t.logo_base64) }}
 </header>
 
+{% if po.kop_kosong %}<div class="petunjuk-kop">Lengkapi profil perusahaan (alamat, NPWP, logo) supaya tampil di kop dokumen ini. Petunjuk ini tidak ikut tercetak di PDF.</div>{% endif %}
 <div class="atas">
   <div>
     <b>Vendor</b>
@@ -37,14 +39,16 @@
   <div class="meta">
     <b>No. PO</b><span>{{ po.po_number or '-' }}</span>
     <b>Tanggal</b><span>{{ po.po_date | date_id }}</span>
-    {% if po.expected_date %}<b>Jadwal terima</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
+    {% if po.expected_date %}<b>Tanggal kirim</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
+    {% if po.syarat_bayar %}<b>Syarat bayar</b><span>{{ po.syarat_bayar }}</span>{% endif %}
     {% if po.ref_no %}<b>Referensi</b><span>{{ po.ref_no }}</span>{% endif %}
   </div>
 </div>
 
 {% from "_partials/tabel_barang.html" import tabel_barang %}
 {{ tabel_barang(po["items"], {"desk": ["description"], "qty": "quantity", "harga": "unit_price", "jumlah": "line_total", "kode": "item_code",
-                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true}, po.has_cents) }}
+                "judul": {"desk": "Nama Barang", "qty": "Kts.", "harga": "@Harga", "jumlah": "Total"}, "diskon_selalu": true, "harga_dulu": true,
+                "pajak": {"tarif": "tax_rate", "jumlah": "tax_amount"}}, po.has_cents) }}
 
 <div class="akhir">
   <div class="bawah">
