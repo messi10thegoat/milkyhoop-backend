@@ -36,5 +36,5 @@ SAB=(
  "s27 keadaan hilang di daftar|$A/routers/items.py|s@keadaan=BA.keadaan(row), keadaan_text=BA.keadaan_text(row),@@|$T"
  "s28 perubahan ubah tak dihitung|$A/services/barang_aksi.py|s@_s(baru\[medan\]) != _s(lama.get(kolom))@False@|$T"
  "s29 duplikat menyalin item_pricing yatim|$A/routers/items.py|s@INSERT INTO price_list_items (price_list_id@INSERT INTO item_pricing (price_list_id@|$T"
- "s30 pratinjau hitung dari item_pricing|$A/routers/items.py|s@SELECT count(*) FROM price_list_items pli JOIN@SELECT count(*) FROM item_pricing pli JOIN@|$T"
+ "s30 pratinjau hitung dari item_pricing|$A/routers/items.py|s@SELECT count(\*) FROM price_list_items pli JOIN@SELECT count(\*) FROM item_pricing pli JOIN@|$T"
 )
