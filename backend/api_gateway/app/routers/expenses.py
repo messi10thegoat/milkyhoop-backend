@@ -2152,24 +2152,15 @@ async def _posting_biaya(conn, ctx: dict, expense_id) -> dict:
     )
 
     if not exp:
-        raise HTTPException(status_code=404, detail="Expense not found")
+        raise GalatBerkode(404, "EXPENSE_TIDAK_DITEMUKAN", "Biaya tidak ditemukan.")
 
     if exp["status"] != "draft":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only draft expenses can be posted "
-                f"(status: {exp['status']})."
-            ),
-        )
+        raise GalatBerkode(400, "BIAYA_BUKAN_DRAF", "Hanya biaya draf yang bisa diterbitkan.")
 
     # Sabuk kedua: tautan jurnal yang sudah ada = jangan pernah
     # menjurnal dua kali, meski status-nya entah bagaimana 'draft'.
     if exp["journal_id"]:
-        raise HTTPException(
-            status_code=409,
-            detail="Expense already has a journal",
-        )
+        raise GalatBerkode(409, "BIAYA_SUDAH_BERJURNAL", "Biaya ini sudah berjurnal.")
 
     # Law 5
     await check_period_is_open(
@@ -2279,12 +2270,24 @@ async def _efek_jurnal(conn, tid: str, expense_id, aksi_nama: str) -> tuple:
     return jurnal, bank
 
 
+async def _keadaan_sesudah(conn, tenant_id, expense_id) -> dict:
+    """BUG-193: keadaan + teks posisi SESUDAH aksi, dibaca dari baris biaya di transaksi pratinjau (sebelum ROLLBACK) lewat penentu yang SAMA dgn detail/daftar (BD)."""
+    r = await conn.fetchrow(
+        f"SELECT status, paid_through_name, {BD.sql_jumlah_bukti('expenses')} AS jb FROM expenses WHERE id = $1 AND tenant_id = $2",
+        str(expense_id), tenant_id)
+    if not r:
+        return {"biaya_keadaan_sesudah": None, "position_text_sesudah": None}
+    return {"biaya_keadaan_sesudah": BD.keadaan(r["status"]),
+            "position_text_sesudah": BD.position_text(r["status"], r["paid_through_name"], r["jb"] > 0)}
+
+
 async def _pratinjau_biaya(request: Request, expense_id: UUID, aksi_nama: str, jalankan) -> dict:
     """Biaya t2: pratinjau = jalur tulis YANG SAMA di transaksi yang SELALU di-ROLLBACK -> blok/jurnal/transaksi bank identik."""
     ctx = get_user_context(request)
     pool = await get_pool()
     await _ensure_role_preconditions(pool, ctx["tenant_id"])
     blok, jurnal, bank = [], [], []
+    sesudah = {"biaya_keadaan_sesudah": None, "position_text_sesudah": None}
     async with pool.acquire() as conn:
         await conn.execute(f"SET app.tenant_id = '{ctx['tenant_id']}'")
         tr = conn.transaction()
@@ -2294,14 +2297,15 @@ async def _pratinjau_biaya(request: Request, expense_id: UUID, aksi_nama: str, j
                 await jalankan(conn, ctx)
             except HTTPException as e:
                 d = e.detail
-                blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or f"HTTP_{e.status_code}",
+                blok.append({"code": (d.get("code") if isinstance(d, dict) else None) or getattr(e, "code", None) or f"HTTP_{e.status_code}",
                              "message": (d.get("message") or str(d)) if isinstance(d, dict) else str(d)})
             if not blok:
                 jurnal, bank = await _efek_jurnal(conn, ctx["tenant_id"], expense_id, aksi_nama)
+                sesudah = await _keadaan_sesudah(conn, ctx["tenant_id"], expense_id)
         finally:
             await tr.rollback()   # SELALU: pratinjau tak pernah menulis
     return {"success": True, "data": {"action": aksi_nama, "can_proceed": not blok, "blocks": blok, "journals": jurnal,
-                                      "bank_transactions": bank, "preview": True}}
+                                      "bank_transactions": bank, "preview": True, **sesudah}}
 
 
 @router.post("/{expense_id}/post/preview")
@@ -2322,6 +2326,7 @@ async def preview_void_expense(request: Request, expense_id: UUID, body: Optiona
         d = hasil["data"]
         d["blocks"].append({"code": "BIAYA_REASON_REQUIRED", "message": "Isi alasan pembatalan."})
         d["can_proceed"] = False
+        d["biaya_keadaan_sesudah"] = d["position_text_sesudah"] = None  # ditolak -> tak ada keadaan sesudah
     return hasil
 
 
@@ -2463,24 +2468,16 @@ async def _batal_biaya(conn, ctx: dict, expense_id, body) -> dict:
     )
 
     if not expense:
-        raise HTTPException(status_code=404, detail="Expense not found")
+        raise GalatBerkode(404, "EXPENSE_TIDAK_DITEMUKAN", "Biaya tidak ditemukan.")
 
     if expense["status"] == "void":
-        raise HTTPException(
-            status_code=400, detail="Expense already voided"
-        )
+        raise GalatBerkode(400, "BIAYA_SUDAH_BATAL", "Biaya ini sudah dibatalkan.")
 
     # Draf tak punya jurnal untuk dibalik; draf DIHAPUS, bukan
     # di-void. Tanpa penjaga ini, void draf akan mencoba
     # membalik jurnal yang tak pernah ada.
     if expense["status"] != "posted":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only posted expenses can be voided "
-                "(draft: gunakan DELETE)."
-            ),
-        )
+        raise GalatBerkode(400, "BIAYA_BUKAN_TERBIT", "Hanya biaya yang sudah diterbitkan yang bisa dibatalkan; draf dihapus.")
 
     # Law 5: Check accounting period is open
     await check_period_is_open(
