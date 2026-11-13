@@ -215,7 +215,7 @@ async def _create_pos_inventory_and_journals(
                     pos_warehouse = await conn.fetchval(
                         """
                         SELECT id FROM warehouses
-                        WHERE tenant_id = $1 AND is_active = true
+                        WHERE tenant_id = $1 AND is_active = true AND NOT is_system
                         ORDER BY is_default DESC, created_at ASC
                         LIMIT 1
                         """,

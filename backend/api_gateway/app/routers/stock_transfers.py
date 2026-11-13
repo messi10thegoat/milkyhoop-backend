@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, Depends
 from pydantic import BaseModel, Field
 
 from ..services import pemindahan_barang as pb
+from ..services import pemindahan_dua_langkah as pd2  # K8: Kirim/Terima dua langkah (Transit), tanpa jurnal
 from ..services import idem_buat
 from ..services.so_riwayat import riwayat_pemindahan
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -68,16 +69,7 @@ async def _butuh_flag(request: Request):
         await pb.pastikan_aktif(conn, ctx["tenant_id"])
 
 
-async def _dua_langkah_belum():
-    raise HTTPException(
-        status_code=409,
-        detail={"code": "STOCK_TRANSFER_DUA_LANGKAH_BELUM_TERSEDIA",
-                "message": "Pemindahan dua langkah (kirim lalu terima) belum tersedia; gunakan Selesaikan (satu langkah)."},
-    )
-
-
 _TAHAN = [Depends(_butuh_flag)]
-_DUA_LANGKAH = [Depends(_butuh_flag), Depends(_dua_langkah_belum)]
 
 
 # ============================================================================
@@ -102,7 +94,11 @@ async def _detail(conn, tenant_id: str, transfer_id: UUID) -> StockTransferDetai
     items = await conn.fetch(
         "SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number ASC", transfer_id
     )
-    return StockTransferDetailData(**dict(row), items=[StockTransferItemData(**dict(i)) for i in items])
+    dikirim = sum(float(i["quantity_shipped"] or 0) for i in items)
+    diterima = sum(float(i["quantity_received"] or 0) for i in items)
+    return StockTransferDetailData(**dict(row), items=[StockTransferItemData(**dict(i)) for i in items],
+                                   status_text=pd2.teks_status(row["status"], dikirim, diterima),             # K8: diterima sebagian = turunan
+                                   diterima_sebagian=(row["status"] == "in_transit" and diterima > 0))
 
 
 @router.get("", response_model=StockTransferListResponse)
@@ -292,7 +288,7 @@ def _pv(r: dict) -> dict:
     """Bentuk JSON pratinjau (Decimal -> float, UUID -> str)."""
     def baris(ln):
         return {k: (str(v) if isinstance(v, UUID) else _f(v)) for k, v in ln.items()}
-    return {
+    out = {
         "ok": r["ok"],
         "blocks": [{"code": b["code"], "message": b["message"], "item_id": b.get("item_id")} for b in r["blocks"]],
         "lines": [baris(ln) for ln in r["lines"]],
@@ -301,6 +297,10 @@ def _pv(r: dict) -> dict:
         "sales_order": r.get("sales_order"), "catatan_fase": r.get("catatan_fase"),
         "transfer_number": r.get("transfer_number"), "ulang": bool(r.get("ulang")), "payload": r.get("payload"),
     }
+    for k in ("status_sesudah", "tuntas", "status_text_sesudah", "catatan", "lokasi_transit", "bawaan_semua_tertunda", "tujuan"):  # K8: pratinjau dua langkah
+        if k in r:
+            out[k] = r[k]
+    return out
 
 
 class AlasanIn(BaseModel):
@@ -377,7 +377,11 @@ async def preview_void_stock_transfer(request: Request, transfer_id: UUID, body:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-        return {"success": True, "data": _pv(await pb.pratinjau_void(conn, ctx, transfer_id, body.reason if body else None))}
+        _h = await pb._header(conn, ctx["tenant_id"], transfer_id)
+        _alasan = body.reason if body else None
+        _r = await (pd2.pratinjau_void_kirim(conn, ctx, transfer_id, _alasan) if _h["status"] == "in_transit"   # K8
+                    else pb.pratinjau_void(conn, ctx, transfer_id, _alasan))
+        return {"success": True, "data": _pv(_r)}
 
 
 @router.post("/{transfer_id}/cancel/preview", dependencies=_TAHAN)
@@ -439,8 +443,11 @@ async def get_stock_transfer(request: Request, transfer_id: UUID):
             transfer_id,
         )
 
+        _dik = sum(float(i["quantity_shipped"] or 0) for i in items)
+        _dit = sum(float(i["quantity_received"] or 0) for i in items)
         data = StockTransferDetailData(
-            **dict(row), items=[StockTransferItemData(**dict(item)) for item in items]
+            **dict(row), items=[StockTransferItemData(**dict(item)) for item in items],
+            status_text=pd2.teks_status(row["status"], _dik, _dit), diterima_sebagian=(row["status"] == "in_transit" and _dit > 0)
         )
 
         return StockTransferDetailResponse(data=data)
@@ -531,22 +538,61 @@ async def void_stock_transfer(request: Request, transfer_id: UUID, body: VoidTra
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
-            hasil = await pb.void(conn, ctx, transfer_id, body.reason)
+            _h = await pb._header(conn, ctx["tenant_id"], transfer_id)
+            hasil = await (pd2.void_kirim(conn, ctx, transfer_id, body.reason) if _h["status"] == "in_transit"   # K8: void kirim (masih di Transit)
+                           else pb.void(conn, ctx, transfer_id, body.reason))
             return CompleteTransferResponse(
                 data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Pemindahan barang di-void",
                 ulang=hasil["ulang"], catatan_fase=hasil["catatan_fase"])
 
 
-@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse, dependencies=_DUA_LANGKAH)
+def _baris_terima(body) -> Optional[list]:
+    """Badan /receive -> [{item_id, qty}] atau None (= semua tertunda)."""
+    return [{"item_id": i.item_id, "qty": i.quantity_received} for i in body.items] if body and body.items else None
+
+
+@router.post("/{transfer_id}/ship/preview", dependencies=_TAHAN)
+async def preview_ship_stock_transfer(request: Request, transfer_id: UUID):
+    """K8: pratinjau KIRIM dua langkah (penentu SAMA dgn /ship): barang keluar gudang asal -> lokasi Transit, tanpa jurnal."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        return {"success": True, "data": _pv(await pd2.pratinjau_kirim(conn, ctx, transfer_id))}
+
+
+@router.post("/{transfer_id}/receive/preview", dependencies=_TAHAN)
+async def preview_receive_stock_transfer(request: Request, transfer_id: UUID, body: ReceiveTransferRequest = None):
+    """K8: pratinjau TERIMA (penentu SAMA dgn /receive): badan kosong = semua tertunda; menyebut tertunda sesudah + status sesudah."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        return {"success": True, "data": _pv(await pd2.pratinjau_terima(conn, ctx, transfer_id, _baris_terima(body)))}
+
+
+@router.post("/{transfer_id}/ship", response_model=ShipTransferResponse, dependencies=_TAHAN)
 async def ship_stock_transfer(request: Request, transfer_id: UUID, body: ShipTransferRequest = None):
-    """Dua langkah belum tersedia (putusan P5): selalu 409 sebelum badan jalan."""
-    raise HTTPException(status_code=409, detail="dua langkah belum tersedia")
+    """K8: KIRIM (draf -> in_transit): kaki keluar asal + masuk Transit, TANPA jurnal. Idempoten (sudah dikirim -> 200 tanpa tulis kedua)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await pd2.kirim(conn, ctx, transfer_id)
+            return ShipTransferResponse(data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Pemindahan barang dikirim (dalam Transit)")
 
 
-@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse, dependencies=_DUA_LANGKAH)
+@router.post("/{transfer_id}/receive", response_model=ReceiveTransferResponse, dependencies=_TAHAN)
 async def receive_stock_transfer(request: Request, transfer_id: UUID, body: ReceiveTransferRequest = None):
-    """Dua langkah belum tersedia (putusan P5): selalu 409 sebelum badan jalan."""
-    raise HTTPException(status_code=409, detail="dua langkah belum tersedia")
+    """K8: TERIMA (in_transit -> received bila tuntas): kaki keluar Transit + masuk gudang tujuan, TANPA jurnal. Boleh sebagian dan berulang."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            await pd2.terima(conn, ctx, transfer_id, _baris_terima(body))
+            return ReceiveTransferResponse(data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Barang pemindahan diterima")
 
 
 @router.post("/{transfer_id}/cancel", response_model=CancelTransferResponse, dependencies=_TAHAN)

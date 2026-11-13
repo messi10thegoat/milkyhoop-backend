@@ -100,14 +100,14 @@ async def gudang(conn, tid: str, warehouse_id, bl: Blok):
             wid = UUID(str(warehouse_id))
         except (ValueError, TypeError):
             wid = None
-        g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", wid, tid) if wid else None
+        g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", wid, tid) if wid else None
         if not g:
             bl.galat("GUDANG_TIDAK_DITEMUKAN", 400, "Gudang tidak ditemukan di usaha ini.")
             return None
         if not g["is_active"]:
             bl.galat("GUDANG_NONAKTIF", 400, f"Gudang {g['name']} nonaktif.")
         return g
-    g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active "
+    g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active AND NOT is_system "
                             "ORDER BY is_default DESC, created_at LIMIT 1", tid)
     if not g:
         bl.galat("GUDANG_TIDAK_ADA", 400, "Belum ada gudang aktif. Buat gudang dulu.")

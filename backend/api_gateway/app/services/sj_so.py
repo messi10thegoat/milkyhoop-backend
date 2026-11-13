@@ -145,7 +145,7 @@ async def _gudang_default(conn, tid: str, diminta, so_gudang):
     """-> (gudang|None, sumber) ; sumber 'diminta' | 'so' | 'default' (pola /fulfill; FE tak menebak)."""
     for kandidat, sumber in ((diminta, "diminta"), (so_gudang, "so")):
         if kandidat is not None:
-            g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", kandidat, tid)
+            g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", kandidat, tid)
             return g, sumber
     return await gudang_bawaan.bawaan(conn, tid), "default"  # GUDANG-NONSTOK: satu aktif / satu is_default, selain itu None
 

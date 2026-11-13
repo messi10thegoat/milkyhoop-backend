@@ -28,6 +28,7 @@ SELECT il.product_id,
 FROM inventory_ledger il
 WHERE il.tenant_id = $1 AND il.product_id = ANY($2::uuid[])
   AND ($4::uuid IS NULL OR il.warehouse_id = $4)
+  AND (il.warehouse_id IS NULL OR NOT EXISTS (SELECT 1 FROM warehouses ws WHERE ws.id = il.warehouse_id AND ws.is_system))  -- K8: Transit bukan stok yang bisa dijual
   AND (il.source_id IS NULL OR il.source_id <> ALL($5::uuid[]))
 GROUP BY il.product_id"""
 

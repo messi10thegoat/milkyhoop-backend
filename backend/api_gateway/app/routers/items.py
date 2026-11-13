@@ -1011,7 +1011,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
                 ob_warehouse = await conn.fetchval(
                     """
                     SELECT id FROM warehouses
-                    WHERE tenant_id = $1 AND is_active = true
+                    WHERE tenant_id = $1 AND is_active = true AND NOT is_system
                     ORDER BY is_default DESC, created_at ASC
                     LIMIT 1
                     """,

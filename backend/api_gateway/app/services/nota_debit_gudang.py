@@ -63,7 +63,7 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
     if kunci and asal_id:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ND_RETUR_TAGIHAN:{asal_id}")
     bawaan = await conn.fetchval(  # == bills_service: FPB memasukkan stok ke gudang is_default
-        "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1", tid)
+        "SELECT id FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1", tid)
     keluar, butuh, asal_cache = [], {}, {}
     for it in items:
         if not it["item_id"]:

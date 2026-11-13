@@ -146,6 +146,8 @@ class StockTransferData(BaseModel):
     created_by: Optional[UUID] = None
     shipped_by: Optional[UUID] = None
     received_by: Optional[UUID] = None
+    status_text: Optional[str] = None  # K8: teks status dari server ("Dikirim · diterima sebagian" = turunan)
+    diterima_sebagian: Optional[bool] = None
 
 
 class StockTransferDetailData(StockTransferData):

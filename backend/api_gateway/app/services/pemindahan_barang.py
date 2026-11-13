@@ -151,7 +151,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         if gid is None:
             blok(f"PB_GUDANG_{peran.upper()}_WAJIB", f"Gudang {peran} wajib dipilih.", 422)
             return None
-        g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", gid, tid)
+        g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", gid, tid)
         if not g:
             blok("PB_GUDANG_TAK_ADA", f"Gudang {peran} tidak ditemukan di usaha ini.", 404)
             return None

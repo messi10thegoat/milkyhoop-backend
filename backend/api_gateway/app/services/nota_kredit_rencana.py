@@ -421,7 +421,7 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
         else:
             avg = await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tid, product["id"])
             unit_cost = Decimal(str(avg)) if avg else Decimal("0")
-            if not await conn.fetchval("SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1", tid):
+            if not await conn.fetchval("SELECT id FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY created_at LIMIT 1", tid):
                 continue
         line_cost = qty * unit_cost
         if line_cost <= 0:

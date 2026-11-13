@@ -2197,7 +2197,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             )
             unit_cost_val = Decimal(str(avg_cost)) if avg_cost else Decimal("0")
             wh_id = await conn.fetchval(
-                "SELECT id FROM warehouses WHERE tenant_id = $1 ORDER BY created_at LIMIT 1",
+                "SELECT id FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY created_at LIMIT 1",
                 ctx["tenant_id"],
             )
             if not wh_id:
