@@ -56,6 +56,7 @@ ENTITAS_AUDIT = {
     "stock_transfers": "stock_transfer", "stock_transfer": "stock_transfer",
     "purchase_orders": "purchase_order", "purchase_order": "purchase_order",  # 22 Okt 2026: riwayat PO (services/po_riwayat)
     "expenses": "expense", "expense": "expense",  # BUG-187: ubah draf Biaya masuk riwayat (services/biaya_riwayat)
+    "stock_adjustments": "stock_adjustment", "stock_adjustment": "stock_adjustment",  # BUG-197: ubah/hapus draf Penyesuaian masuk riwayat (services/stok_sesuai)
     "bills": "bill", "bill": "bill",  # 22 Okt 2026: riwayat faktur pembelian (services/tagihan_riwayat)
     "bill_payments": "payment_out", "bill_payments_v2": "payment_out", "payment_out": "payment_out",  # riwayat pembayaran keluar
     "vendor_deposits": "vendor_deposit", "vendor_deposit": "vendor_deposit",  # 22 Okt 2026: riwayat uang muka pembelian (um_vendor_riwayat)

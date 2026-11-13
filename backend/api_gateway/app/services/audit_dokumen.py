@@ -35,6 +35,9 @@ EVENT = {
     ("bill", "updated"): Ev("BILL_UPDATED", "bills", "Faktur pembelian diubah", True),
     # BUG-187 (12 Nov 2026): ubah draf Biaya (PATCH) TAK punya kolom beraktor -> riwayat=True (satu-satunya jejak); metadata += medan, total_sebelum, total_sesudah (pola BUG-058)
     ("expense", "updated"): Ev("EXPENSE_UPDATED", "expenses", "Biaya diubah", True),
+    # BUG-197 (13 Nov 2026, standar SO Penyesuaian): ubah + hapus draf penyesuaian stok TAK punya kolom beraktor -> riwayat=True (satu-satunya jejak); pola BUG-187
+    ("stock_adjustment", "updated"): Ev("STOCK_ADJUSTMENT_UPDATED", "stock_adjustments", "Penyesuaian stok diubah", True),
+    ("stock_adjustment", "deleted"): Ev("STOCK_ADJUSTMENT_DELETED", "stock_adjustments", "Draf penyesuaian stok dihapus", True),
     ("bill", "voided"): Ev("BILL_VOIDED", "bills", "Faktur pembelian dibatalkan (void)", False),
     ("payment_out", "posted"): Ev("PAYMENT_OUT_POSTED", "bill_payments_v2", "Pembayaran keluar diposting", False),
     ("payment_out", "voided"): Ev("PAYMENT_OUT_VOIDED", "bill_payments_v2", "Pembayaran keluar dibatalkan (void)", False),

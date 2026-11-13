@@ -62,6 +62,35 @@ def documents_baris(status: Optional[str], journal_id) -> list:
     return [{"type": "stock_adjustment"}, {"type": "journal"}] + ([{"type": "journal"}] if status == "void" else [])
 
 
+def syarat_cari(search, mulai: int, a: str = "stock_adjustments") -> tuple:
+    """(predikat, parameter) ?search= daftar DAN /summary?search= (SATU predikat, BUG-197): tiap kata wajib cocok salah satu: nomor penyesuaian, catatan,
+    nama/kode(SKU) barang pada baris. Baris dibatasi lewat induk (`a`, sudah bersaring tenant). Tanpa kata -> (None, [])."""
+    kata = search.strip().split() if isinstance(search, str) else []
+    if not kata:
+        return None, []
+    s = [(f"({a}.adjustment_number ILIKE ${mulai + i} OR {a}.notes ILIKE ${mulai + i} OR EXISTS (SELECT 1 FROM stock_adjustment_items i "
+          f"WHERE i.stock_adjustment_id = {a}.id AND (i.product_name ILIKE ${mulai + i} OR i.product_code ILIKE ${mulai + i})))") for i in range(len(kata))]
+    return (s[0] if len(s) == 1 else f"({' AND '.join(s)})"), [f"%{w}%" for w in kata]
+
+
+LABEL_MEDAN = {"adjustment_date": "tanggal", "adjustment_type": "jenis", "storage_location_id": "lokasi", "warehouse_id": "gudang",
+               "reference_no": "referensi", "notes": "catatan", "items": "barang"}
+
+
+def ringkas_ubah(nomor, medan, total_sebelum, total_sesudah) -> str:
+    """'Penyesuaian stok SA-1 diubah: tanggal, barang · total Rp 100.000 → Rp 120.000' (bagian total hanya bila berubah)."""
+    from .so_riwayat import _rp
+    label = []
+    for m in medan:
+        t = LABEL_MEDAN.get(m, m)
+        if t not in label:
+            label.append(t)
+    total = ""
+    if total_sebelum is not None and total_sesudah is not None and _d(total_sebelum) != _d(total_sesudah):
+        total = f" · total {_rp(total_sebelum)} → {_rp(total_sesudah)}"
+    return f"Penyesuaian stok {nomor} diubah{': ' + ', '.join(label) if label else ''}{total}"
+
+
 # ---------------------------------------------------------------- gudang + stok + periode
 async def gudang(conn, tid: str, warehouse_id, bl: Blok):
     """Gudang penyesuaian (putusan 2): yang dipilih (milik tenant, aktif) atau bawaan UTAMA, cadangan gudang tertua."""
@@ -412,10 +441,18 @@ async def dokumen(conn, tid: str, sa_id) -> Optional[dict]:
 
 async def riwayat(conn, tid: str, sa_id, limit: int = 200) -> Optional[dict]:
     """dibuat · diposting · dibatalkan (kolom beraktor stock_adjustments). Ubah/hapus draf tak tercatat (Law 34: tak diklaim lengkap)."""
+    from . import audit_dokumen as _AD
     from .so_riwayat import _Kumpul, _rp, _selesaikan
     sa = await muat(conn, tid, sa_id)
     if not sa:
-        return None
+        # BUG-197: draf yang DIHAPUS tak punya baris dokumen; riwayatnya tinggal dari audit_logs (tenant + event hapus), selain itu 404
+        nomor = await conn.fetchval(
+            """SELECT entity_number FROM audit_logs WHERE tenant_id = $1 AND entity_id = $2::uuid AND entity_type = 'stock_adjustments'
+               AND "eventType" = $3 ORDER BY "createdAt" DESC LIMIT 1""", tid, str(sa_id), _AD.nama("stock_adjustment", "deleted"))
+        if nomor is None:
+            return None
+        keluar, total = await _selesaikan(conn, tid, _Kumpul(), {"stock_adjustment": [sa_id]}, {"stock_adjustment": True}, limit)
+        return {"adjustment_id": str(sa_id), "adjustment_number": nomor, "events": keluar, "total": total, "omitted": [], "dihapus": True}
     n, k = sa["adjustment_number"], _Kumpul()
     k.tambah(sa["created_at"], "PENYESUAIAN_DIBUAT", f"Penyesuaian stok {n} ({jenis_text(sa['adjustment_type']).lower()}) dibuat",
              sa["created_by"], "stock_adjustment", sa["id"], n)
@@ -424,5 +461,5 @@ async def riwayat(conn, tid: str, sa_id, limit: int = 200) -> Optional[dict]:
     alasan = f": {sa['voided_reason']}" if sa["voided_reason"] else ""
     k.tambah(sa["voided_at"], "PENYESUAIAN_DIBATALKAN", f"Penyesuaian stok {n} dibatalkan (void){alasan}", sa["voided_by"],
              "stock_adjustment", sa["id"], n)
-    keluar, total = await _selesaikan(conn, tid, k, {}, {}, limit)
+    keluar, total = await _selesaikan(conn, tid, k, {"stock_adjustment": [sa["id"]]}, {"stock_adjustment": True}, limit)    # BUG-197: ikut audit_logs (ubah/hapus draf)
     return {"adjustment_id": str(sa["id"]), "adjustment_number": n, "events": keluar, "total": total, "omitted": []}

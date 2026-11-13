@@ -33,11 +33,14 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import idem_buat
 from ..services import nomor_jurnal as NJ
 from ..services import stok_sesuai as SS
+from ..services import audit_dokumen as _ad_sa  # BUG-197: nama event audit ubah/hapus draf
+from ..services.galat_berkode import GalatBerkode
 from ..services.bayar_keluar_rencana import Blok
 from ..schemas.stock_adjustments import (
     CreateStockAdjustmentRequest,
     UpdateStockAdjustmentRequest,
     VoidStockAdjustmentRequest,
+    VoidStockAdjustmentPreviewRequest,
     StockAdjustmentResponse,
     StockAdjustmentDetailResponse,
     StockAdjustmentListResponse,
@@ -181,7 +184,7 @@ async def list_stock_adjustments(
     adjustment_type: Optional[
         Literal["increase", "decrease", "recount", "damaged", "expired"]
     ] = Query(None),
-    search: Optional[str] = Query(None, description="Search by number"),
+    search: Optional[str] = Query(None, description="Cari: nomor, catatan, nama/SKU barang di baris (semua kata wajib cocok)"),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
@@ -213,20 +216,12 @@ async def list_stock_adjustments(
                 params.append(adjustment_type)
                 param_idx += 1
 
-            if search:
-                words = search.strip().split()
-                if len(words) == 1:
-                    conditions.append(f"adjustment_number ILIKE ${param_idx}")
-                    params.append(f"%{words[0]}%")
-                    param_idx += 1
-                else:
-                    word_conds = []
-                    for word in words:
-                        word_conds.append(f"adjustment_number ILIKE ${param_idx}")
-                        params.append(f"%{word}%")
-                        param_idx += 1
-                    conditions.append(f"({' AND '.join(word_conds)})")
-                # 26 Sep 2026: TANPA param_idx += 1 tambahan di sini — tiap cabang di atas sudah menaikkan (dulu ganda -> placeholder melompat -> 500 saat ?search)
+            if search:  # BUG-197: SATU predikat daftar + /summary (nomor, catatan, nama/SKU barang di baris); sum_total memakai WHERE yang sama
+                _c, _p = SS.syarat_cari(search, param_idx)
+                if _c:
+                    conditions.append(_c)
+                    params.extend(_p)
+                    param_idx += len(_p)
 
             if date_from:
                 conditions.append(f"adjustment_date >= ${param_idx}")
@@ -336,11 +331,8 @@ async def get_stock_adjustments_summary(request: Request, search: Optional[str] 
                 WHERE tenant_id = $1
             """
             row = await conn.fetchrow(query, ctx["tenant_id"])
-            cari, par_cari = "", []
-            if isinstance(search, str) and search.strip():
-                for n, kata in enumerate(search.strip().split(), 3):  # predikat cari SAMA dgn daftar (nomor penyesuaian)
-                    cari += f" AND adjustment_number ILIKE ${n}"
-                    par_cari.append(f"%{kata}%")
+            _pc, par_cari = SS.syarat_cari(search, 3)  # predikat cari SAMA dgn daftar (BUG-197: nomor, catatan, nama/SKU barang)
+            cari = f" AND {_pc}" if _pc else ""
             k_aksi = await conn.fetchrow(
                 "SELECT " + ", ".join(
                     f"COUNT(*) FILTER (WHERE {SS.sql_aksi(k, '$2')}) AS {k}_count, "
@@ -411,9 +403,7 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
             )
 
             if not sa:
-                raise HTTPException(
-                    status_code=404, detail="Stock adjustment not found"
-                )
+                raise GalatBerkode(404, "PENYESUAIAN_TIDAK_DITEMUKAN", "Penyesuaian stok tidak ditemukan.")
 
             items = await conn.fetch(
                 """
@@ -677,6 +667,17 @@ async def update_stock_adjustment(
                     )
                     await _tulis_baris_draf(conn, adjustment_id, r["baris_draf"])
 
+                # BUG-197 (Law 12): jejak ubah draf di transaksi YANG SAMA (gagal catat = ubah batal); BUKAN di pratinjau /edit/preview (read only)
+                _medan = sorted(body.model_dump(exclude_unset=True))
+                if _medan:
+                    from ..services.so_riwayat import catat_riwayat
+                    _sesudah = await conn.fetchval("SELECT total_value FROM stock_adjustments WHERE id = $1 AND tenant_id = $2", adjustment_id, ctx["tenant_id"])
+                    await catat_riwayat(conn, ctx["tenant_id"], "stock_adjustments", adjustment_id, r["sa"]["adjustment_number"],
+                                        _ad_sa.nama("stock_adjustment", "updated"), ctx.get("user_id"),
+                                        SS.ringkas_ubah(r["sa"]["adjustment_number"], _medan, r["sa"]["total_value"], _sesudah),
+                                        meta={"medan": _medan, "total_sebelum": str(r["sa"]["total_value"]), "total_sesudah": str(_sesudah)},
+                                        source="api:stock_adjustments.update")
+
                 logger.info(f"Stock adjustment updated: {adjustment_id}")
 
                 return {
@@ -699,6 +700,14 @@ async def update_stock_adjustment(
 # =============================================================================
 
 
+async def _catat_hapus_draf(conn, ctx, sa, sumber: str) -> None:
+    """BUG-197: baris audit hapus draf (riwayat=True; dokumen tiada sesudahnya -> riwayat dibaca dari audit_logs). Pemanggil: DELETE dan void-draf."""
+    from ..services.so_riwayat import catat_riwayat
+    await catat_riwayat(conn, ctx["tenant_id"], "stock_adjustments", sa["id"], sa["adjustment_number"], _ad_sa.nama("stock_adjustment", "deleted"),
+                        ctx.get("user_id"), f"Draf penyesuaian stok {sa['adjustment_number']} dihapus",
+                        meta={"jenis": sa["adjustment_type"], "total_sebelum": str(sa["total_value"])}, source=sumber)
+
+
 @router.post("/{adjustment_id}/delete/preview")
 async def preview_delete_stock_adjustment(request: Request, adjustment_id: UUID):
     """Standar SO: pratinjau hapus draf -- penentu SAMA dengan DELETE (SS.rencana_hapus), READ ONLY."""
@@ -716,23 +725,25 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            r = await SS.rencana_hapus(conn, ctx["tenant_id"], adjustment_id, Blok(False))
-            sa = r["sa"]
+            async with conn.transaction():
+                r = await SS.rencana_hapus(conn, ctx["tenant_id"], adjustment_id, Blok(False))
+                sa = r["sa"]
+                await _catat_hapus_draf(conn, ctx, sa, "api:stock_adjustments.delete")  # BUG-197: jejak hapus draf di transaksi yang SAMA
 
-            await conn.execute(
-                "DELETE FROM stock_adjustments WHERE id = $1 AND tenant_id = $2", adjustment_id, ctx["tenant_id"]
-            )
+                await conn.execute(
+                    "DELETE FROM stock_adjustments WHERE id = $1 AND tenant_id = $2", adjustment_id, ctx["tenant_id"]
+                )
 
-            logger.info(f"Stock adjustment deleted: {adjustment_id}")
+                logger.info(f"Stock adjustment deleted: {adjustment_id}")
 
-            return {
-                "success": True,
-                "message": "Stock adjustment deleted",
-                "data": {
-                    "id": str(adjustment_id),
-                    "adjustment_number": sa["adjustment_number"],
-                },
-            }
+                return {
+                    "success": True,
+                    "message": "Stock adjustment deleted",
+                    "data": {
+                        "id": str(adjustment_id),
+                        "adjustment_number": sa["adjustment_number"],
+                    },
+                }
 
     except HTTPException:
         raise
@@ -992,12 +1003,20 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
 
 
 @router.post("/{adjustment_id}/void/preview")
-async def preview_void_stock_adjustment(request: Request, adjustment_id: UUID, body: VoidStockAdjustmentRequest):
-    """Standar SO: pratinjau batal -- jurnal pembalik + cermin gerak stok + isyarat stok minus, penentu SAMA dengan /void, READ ONLY."""
+async def preview_void_stock_adjustment(request: Request, adjustment_id: UUID, body: Optional[VoidStockAdjustmentPreviewRequest] = None):
+    """Standar SO: pratinjau batal -- jurnal pembalik + cermin gerak stok + isyarat stok minus, penentu SAMA dengan /void, READ ONLY.
+    BUG-197 (pola Biaya B3): `reason` OPSIONAL di pratinjau: kosong -> penentu dijalankan dgn alasan pengganti (blok lain tetap muncul, jurnal pembalik tetap terlihat)
+    + blok PENYESUAIAN_ALASAN_WAJIB, 200 ok=false. /void tulis tetap wajib alasan."""
     ctx = get_user_context(request)
     tid = ctx["tenant_id"]
-    return await SS.pratinjau(await get_pool(), tid, lambda c: SS.rencana_batal(c, tid, adjustment_id, body.reason, Blok(True)),
-                              body.model_dump(mode="json"))
+    alasan = ((body.reason if body else None) or "").strip()
+    hasil = await SS.pratinjau(await get_pool(), tid, lambda c: SS.rencana_batal(c, tid, adjustment_id, alasan or "(alasan belum diisi)", Blok(True)),
+                               {"reason": alasan or None})
+    if not alasan:
+        d = hasil["data"]
+        d["blocks"].append({"code": "PENYESUAIAN_ALASAN_WAJIB", "message": "Isi alasan pembatalan."})
+        d["ok"] = False
+    return hasil
 
 
 @router.post("/{adjustment_id}/void", response_model=StockAdjustmentResponse)
@@ -1028,6 +1047,7 @@ async def void_stock_adjustment(
                 sa = r["sa"]
 
                 if r["hapus_draf"]:
+                    await _catat_hapus_draf(conn, ctx, sa, "api:stock_adjustments.void_draf")  # BUG-197
                     await conn.execute(
                         "DELETE FROM stock_adjustments WHERE id = $1 AND tenant_id = $2", adjustment_id, ctx["tenant_id"]
                     )
@@ -1173,7 +1193,7 @@ async def get_stock_adjustment_history(request: Request, adjustment_id: UUID, li
     async with pool.acquire() as conn:
         data = await SS.riwayat(conn, ctx["tenant_id"], adjustment_id, limit)
     if data is None:
-        raise HTTPException(status_code=404, detail="Penyesuaian stok tidak ditemukan.")
+        raise GalatBerkode(404, "PENYESUAIAN_TIDAK_DITEMUKAN", "Penyesuaian stok tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -1185,7 +1205,7 @@ async def get_stock_adjustment_documents(request: Request, adjustment_id: UUID):
     async with pool.acquire() as conn:
         data = await SS.dokumen(conn, ctx["tenant_id"], adjustment_id)
     if data is None:
-        raise HTTPException(status_code=404, detail="Penyesuaian stok tidak ditemukan.")
+        raise GalatBerkode(404, "PENYESUAIAN_TIDAK_DITEMUKAN", "Penyesuaian stok tidak ditemukan.")
     return {"success": True, "data": data}
 
 
@@ -1199,7 +1219,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
         try:
             uuid_module.UUID(adjustment_id)
         except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="Invalid adjustment_id format")
+            raise GalatBerkode(400, "ID_PENYESUAIAN_TIDAK_VALID", "Format ID penyesuaian tidak valid.")
 
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1216,9 +1236,7 @@ async def get_stock_adjustment_journal_entries(request: Request, adjustment_id: 
             )
 
             if not sa:
-                raise HTTPException(
-                    status_code=404, detail="Stock adjustment not found"
-                )
+                raise GalatBerkode(404, "PENYESUAIAN_TIDAK_DITEMUKAN", "Penyesuaian stok tidak ditemukan.")
 
             journal_ids = []
             if sa["journal_id"]:

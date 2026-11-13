@@ -81,6 +81,11 @@ class VoidStockAdjustmentRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+class VoidStockAdjustmentPreviewRequest(BaseModel):
+    """Pratinjau batal (BUG-197, pola Biaya B3): alasan OPSIONAL -- kosong -> 200 + blok PENYESUAIAN_ALASAN_WAJIB, jurnal pembalik tetap terlihat. /void tulis tetap wajib alasan."""
+    reason: Optional[str] = Field(None, max_length=500)
+
+
 # =============================================================================
 # RESPONSE MODELS - Items
 # =============================================================================
