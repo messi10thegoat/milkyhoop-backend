@@ -2764,8 +2764,12 @@ async def get_item_history(
     item_id: UUID,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    warehouse_id: Optional[UUID] = Query(None, description="K9: kartu stok SATU gudang (kosong = semua gudang; Transit ikut sebagai gudang)"),
+    date_from: Optional[dateclass] = Query(None, description="K9: dari tanggal (saldo awal = sebelum tanggal ini)"),
+    date_to: Optional[dateclass] = Query(None, description="K9: sampai tanggal"),
 ):
-    """Get stock movement history from inventory ledger for an item."""
+    """Kartu stok barang dari inventory ledger. K9 (14 Nov 2026, banding Accurate "Kartu Stok Persediaan"): kolom Gudang per baris (warehouse_name),
+    filter gudang + periode, saldo awal sebelum periode, saldo berjalan DARI saldo awal, ringkasan masuk/keluar/akhir (hanya bila ada filter)."""
     tenant_id = get_tenant_id(request)
     conn = None
     offset = (page - 1) * limit
@@ -2783,11 +2787,38 @@ async def get_item_history(
             raise HTTPException(status_code=404, detail="Item not found")
 
         # Get total count
-        total = await conn.fetchval(
-            "SELECT COUNT(*) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2",
-            str(item_id),
-            tenant_id,
-        )
+        # K9: saringan opsional (default Query() = objek truthy saat dipanggil langsung -> cek tipe, bukan truthy)
+        wid = warehouse_id if isinstance(warehouse_id, UUID) else None
+        df = date_from if isinstance(date_from, dateclass) else None
+        dt = date_to if isinstance(date_to, dateclass) else None
+        saring = ["il.product_id = $1", "il.tenant_id = $2"]
+        params = [str(item_id), tenant_id]
+        if wid:
+            params.append(str(wid))
+            saring.append(f"il.warehouse_id = ${len(params)}::uuid")
+        if df:
+            params.append(df)
+            saring.append(f"il.movement_date >= ${len(params)}")
+        if dt:
+            params.append(dt)
+            saring.append(f"il.movement_date <= ${len(params)}")
+        where = " AND ".join(saring)
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM inventory_ledger il WHERE {where}", *params)
+
+        # K9: saldo awal = Σ gerak SEBELUM tanggal mulai (dalam gudang yang sama bila difilter); tanpa tanggal mulai = 0
+        saldo_awal = Decimal("0")
+        if df:
+            awal = ["il.product_id = $1", "il.tenant_id = $2"] + ([f"il.warehouse_id = $3::uuid"] if wid else [])
+            awal_params = list(params[:3 if wid else 2]) + [df]
+            awal_sql = (f"SELECT COALESCE(SUM(COALESCE(il.quantity_in, 0) - COALESCE(il.quantity_out, 0)), 0) FROM inventory_ledger il "
+                        f"WHERE {' AND '.join(awal)} AND il.movement_date < ${len(awal_params)}")
+            saldo_awal = Decimal(str(await conn.fetchval(awal_sql, *awal_params) or 0))
+        ringkasan = None
+        if wid or df or dt:
+            rg = await conn.fetchrow(f"SELECT COALESCE(SUM(il.quantity_in), 0) AS masuk, COALESCE(SUM(il.quantity_out), 0) AS keluar "
+                                     f"FROM inventory_ledger il WHERE {where}", *params)
+            masuk, keluar = Decimal(str(rg["masuk"])), Decimal(str(rg["keluar"]))
+            ringkasan = {"saldo_awal": saldo_awal, "total_masuk": masuk, "total_keluar": keluar, "saldo_akhir": saldo_awal + masuk - keluar}
 
         # Get stock movements from inventory_ledger with counterparty info
         # f-string: kosakata ledger disisipkan (dulu string BIASA -> "{sql_daftar(...)}" terkirim mentah -> 500)
@@ -2809,6 +2840,7 @@ async def get_item_history(
                 il.total_cost,
                 il.average_cost,
                 il.warehouse_id,
+                w.name AS warehouse_name,
                 il.batch_id,
                 il.notes,
                 il.created_at,
@@ -2827,11 +2859,12 @@ async def get_item_history(
                 ON il.source_type IN ('BILL', 'PURCHASE_INVOICE')
                 AND il.source_id::text = b.id::text
                 AND b.tenant_id = $2
-            WHERE il.product_id = $1 AND il.tenant_id = $2
+            LEFT JOIN warehouses w ON w.id = il.warehouse_id AND w.tenant_id = il.tenant_id
+            WHERE {where}
             ORDER BY il.movement_date DESC, il.created_at DESC, il.id DESC
-            LIMIT $3 OFFSET $4
+            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
         """
-        rows = await conn.fetch(query, str(item_id), tenant_id, limit, offset)
+        rows = await conn.fetch(query, *params, limit, offset)
 
         movements = []
         for row in rows:
@@ -2847,13 +2880,14 @@ async def get_item_history(
                     "source_number": row["source_number"],
                     "quantity_in": row["quantity_in"] or 0,
                     "quantity_out": row["quantity_out"] or 0,
-                    "quantity_balance": row["saldo_berjalan"] or 0,  # BUG-099: saldo berjalan saat baca (bukan snapshot)
+                    "quantity_balance": (row["saldo_berjalan"] or 0) + saldo_awal,  # BUG-099: saldo berjalan saat baca; K9: mulai dari saldo awal periode
                     "unit_cost": float(_rp(row["unit_cost"])),  # BUG-038: dulu int() membuang sen
                     "total_cost": float(_rp(row["total_cost"])),
                     "average_cost": float(_rp(row["average_cost"])) if row["average_cost"] else None,
                     "warehouse_id": str(row["warehouse_id"])
                     if row["warehouse_id"]
                     else None,
+                    "warehouse_name": row.get("warehouse_name"),  # K9: kolom Gudang (Transit tampil "Transit")
                     "batch_id": str(row["batch_id"]) if row["batch_id"] else None,
                     "notes": row["notes"],
                     "created_at": row["created_at"].isoformat()
@@ -2870,6 +2904,9 @@ async def get_item_history(
             "page": page,
             "limit": limit,
             "has_more": (offset + limit) < (total or 0),
+            "saldo_awal": saldo_awal,
+            "ringkasan": ringkasan,  # K9: null bila tanpa filter gudang/periode
+            "filter": {"warehouse_id": str(wid) if wid else None, "date_from": df.isoformat() if df else None, "date_to": dt.isoformat() if dt else None},
             "item": {
                 "id": str(item["id"]),
                 "code": item["item_code"],

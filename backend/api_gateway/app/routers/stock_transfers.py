@@ -241,6 +241,49 @@ async def get_in_transit_transfers(request: Request):
         )
 
 
+@router.get("/variance")
+async def get_transfer_variance(request: Request):
+    """K9 (banding Accurate "Perbedaan Persediaan Terkirim Pemindahan Barang"): barang yang DIKIRIM tetapi belum (seluruhnya) DITERIMA, per pemindahan dan
+    per barang: dikirim, diterima, tertunda + nilai tertunda (qty x biaya saat kirim). DITERIMA diturunkan dari LEDGER (RELOKASI_TERIMA, kaki masuk): kolom item
+    quantity_received beku sesudah Kirim karena trigger DB (prevent_st_modification + trg_update_st_totals). Hanya yang in_transit (void/batal tak ikut). Baca saja."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        rows = await conn.fetch(
+            """
+            SELECT st.id AS transfer_id, st.transfer_number, st.shipped_date, st.status,
+                   fw.name AS from_warehouse_name, tw.name AS to_warehouse_name,
+                   i.item_id, i.item_code, i.item_name, i.unit, i.quantity_shipped, d.diterima AS quantity_received, i.unit_cost
+            FROM stock_transfers st
+            JOIN stock_transfer_items i ON i.stock_transfer_id = st.id
+            LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
+            LEFT JOIN warehouses tw ON st.to_warehouse_id = tw.id
+            LEFT JOIN LATERAL (SELECT COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il
+                               WHERE il.tenant_id = st.tenant_id AND il.source_type = 'RELOKASI_TERIMA' AND il.source_id = st.id
+                                 AND il.product_id = i.item_id) d ON true
+            WHERE st.tenant_id = $1 AND st.status = 'in_transit'
+              AND COALESCE(i.quantity_shipped, 0) > d.diterima
+            ORDER BY st.shipped_date ASC, st.transfer_number ASC, i.line_number ASC
+            """,
+            ctx["tenant_id"],
+        )
+    data, total_q, total_n, nomor = [], Decimal("0"), Decimal("0"), set()
+    for r in rows:
+        tertunda = Decimal(str(r["quantity_shipped"] or 0)) - Decimal(str(r["quantity_received"] or 0))
+        biaya = Decimal(str(r["unit_cost"] or 0))
+        nilai = (tertunda * biaya).quantize(Decimal("0.01"))
+        total_q += tertunda
+        total_n += nilai
+        nomor.add(r["transfer_id"])
+        data.append({"transfer_id": str(r["transfer_id"]), "transfer_number": r["transfer_number"], "shipped_date": r["shipped_date"].isoformat() if r["shipped_date"] else None,
+                     "from_warehouse_name": r["from_warehouse_name"], "to_warehouse_name": r["to_warehouse_name"], "item_id": str(r["item_id"]),
+                     "item_code": r["item_code"], "item_name": r["item_name"], "unit": r["unit"], "quantity_shipped": _f(Decimal(str(r["quantity_shipped"] or 0))),
+                     "quantity_received": _f(Decimal(str(r["quantity_received"] or 0))), "quantity_tertunda": _f(tertunda), "nilai_tertunda": _f(nilai),
+                     "diterima_sebagian": Decimal(str(r["quantity_received"] or 0)) > 0})
+    return {"success": True, "data": data, "summary": {"jumlah_pemindahan": len(nomor), "jumlah_baris": len(data), "total_tertunda": _f(total_q), "total_nilai_tertunda": _f(total_n)}}
+
+
 def _f(x):
     return float(x) if isinstance(x, Decimal) else x
 
