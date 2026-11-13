@@ -27,7 +27,7 @@ def test_berlaku_text_ikut_daftar_bila_kosong_dan_rentang():
 def test_unit_text_satuan_dasar_bila_unit_kosong():
     assert HD.unit_text("Lusin", "Pcs") == "Lusin"
     assert HD.unit_text(None, "Pcs") == "Pcs" and HD.unit_text("  ", "Pcs") == "Pcs"
-    assert HD.unit_text(None, None) == "Satuan dasar"
+    assert HD.unit_text(None, None) is None and HD.unit_text("", "  ") is None       # data cacat: null, bukan teks palsu
 
 
 # --- kunci aksi ----------------------------------------------------------------------------------------------------------

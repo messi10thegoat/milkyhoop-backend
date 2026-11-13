@@ -41,11 +41,12 @@ def berlaku_text(mulai: Optional[date], sampai: Optional[date]) -> str:
     return "Ikut daftar"
 
 
-def unit_text(unit: Optional[str], dasar: Optional[str]) -> str:
+def unit_text(unit: Optional[str], dasar: Optional[str]) -> Optional[str]:
+    """Nama satuan baris; unit kosong = NAMA satuan dasar barang (mis. "Pcs"). Barang tanpa base_unit dan satuan (data cacat) = None (FE "—", tanpa teks palsu)."""
     u = " ".join((unit or "").split())
     if u:
         return u
-    return " ".join((dasar or "").split()) or "Satuan dasar"
+    return " ".join((dasar or "").split()) or None
 
 
 def position_text(is_active: bool, is_default: bool, status: str) -> str:
