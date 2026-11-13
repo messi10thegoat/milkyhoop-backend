@@ -447,6 +447,13 @@ POST /api/items/units
 POST /api/items/{item_id}/duplicate
 POST /api/items/{item_id}/stock-adjustment
 POST /api/items/{item_id}/stock-transfer
+POST /api/items/bulk/status
+POST /api/items/bulk/status/preview
+POST /api/items/categories/delete/preview
+POST /api/items/{item_id}/delete/preview
+POST /api/items/{item_id}/duplicate/preview
+POST /api/items/{item_id}/edit/preview
+POST /api/items/{item_id}/status/preview
 POST /api/journals
 POST /api/journals/reclassify-bill-cogs-class
 POST /api/journals/reclassify-bill-inventory
