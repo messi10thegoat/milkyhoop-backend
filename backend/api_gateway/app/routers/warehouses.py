@@ -64,7 +64,7 @@ async def list_warehouses(
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
     is_branch: Optional[bool] = None,
-    aksi: Optional[str] = Query(None, pattern="^stok_minus$", description="Kunci standar SO (services/gudang_daftar)"),
+    aksi: Optional[str] = Query(None, pattern="^(stok_minus|nonaktif)$", description="Kunci standar SO (services/gudang_daftar)"),
     with_totals: bool = Query(False, description="sum_nilai = Σ nilai stok gudang terfilter"),
 ):
     """List all warehouses (+ ?aksi=stok_minus, with_totals, position_text/aksi/nilai_stok per baris)."""
@@ -114,9 +114,9 @@ async def list_warehouses(
         # Fetch warehouses
         rows = await conn.fetch(
             f"""
-            SELECT *, {GD.sql_stok_minus()} AS stok_minus, {GD.sql_nilai()} AS nilai_stok FROM warehouses
+            SELECT *, {GD.kolom_turunan()} FROM warehouses
             WHERE {where_sql}
-            ORDER BY is_default DESC, name ASC
+            ORDER BY is_default DESC, name ASC, id ASC
             LIMIT ${param_idx} OFFSET ${param_idx + 1}
             """,
             *params,
@@ -124,8 +124,7 @@ async def list_warehouses(
             skip,
         )
 
-        data = [WarehouseData(**dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
-                              aksi=(GD.aksi_semua(row["stok_minus"]) or [None])[0], aksi_semua=GD.aksi_semua(row["stok_minus"]))
+        data = [WarehouseData(**{**dict(row), **GD.turunan(row)}, position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]))
                 for row in rows]
 
         return WarehouseListResponse(data=data, total=total, sum_nilai=sum_nilai)
@@ -201,7 +200,7 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
         )
 
         row = await conn.fetchrow(
-            "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
+            f"SELECT *, {GD.kolom_turunan()} FROM warehouses WHERE id = $1 AND tenant_id = $2",
             warehouse_id,
             ctx["tenant_id"],
         )
@@ -210,7 +209,8 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
         return WarehouseDetailResponse(data=WarehouseData(
-            **dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+            **{**dict(row), **GD.turunan(row)}, position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+            barang_minus=await GD.barang_minus(conn, ctx["tenant_id"], warehouse_id) if row["stok_minus"] else [],  # K7 + P5
             aksi_tersedia=await GD.aksi_tersedia(conn, ctx["tenant_id"], row)))
 
 

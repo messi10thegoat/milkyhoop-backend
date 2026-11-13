@@ -5,7 +5,7 @@ Pydantic models for multi-warehouse/location management.
 """
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -95,6 +95,8 @@ class WarehouseData(BaseModel):
     aksi: Optional[str] = None
     aksi_semua: List[str] = []
     nilai_stok: Optional[int] = None
+    ada_stok_minus: Optional[bool] = None  # K7: ada barang saldo ledger < 0 di gudang ini (== pill stok_minus)
+    barang_minus: Optional[List[Dict[str, Any]]] = None  # K7: hanya di DETAIL, [{item_id, nama, satuan, saldo}] maks 100
     aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 

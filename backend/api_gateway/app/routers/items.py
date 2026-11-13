@@ -2970,9 +2970,13 @@ async def get_item(request: Request, item_id: UUID):
             for c in conversion_rows
         ]
 
+        from ..services import gudang_daftar as _GD
+        _spg = await _GD.stok_per_gudang(conn, tenant_id, item_id)  # P5: saldo ledger per gudang (minus ditandai)
         return ItemDetailResponse(
             success=True,
             data={
+                "stok_per_gudang": _spg,
+                "ada_stok_minus_gudang": any(g["minus"] for g in _spg),
                 "id": str(row["id"]),
                 "name": row["nama_produk"],
                 "item_type": row.get("item_type", "goods"),
