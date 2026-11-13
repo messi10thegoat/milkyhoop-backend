@@ -54,6 +54,7 @@ from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi 
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
 from ..services.so_riwayat import catat_riwayat  # riwayat beraktor (audit_logs) -- GET /{id}/history
+from ..services.po_cetak import termin_syarat  # BUG-205: teks syarat bayar (satu fungsi: detail + PDF)
 from ..services.termin_bayar import tentukan_jatuh_tempo_tagihan  # jatuh tempo tagihan = termin vendor (penentu SAMA tulis + pratinjau)
 from fastapi import Response
 
@@ -114,6 +115,18 @@ async def _kunci_po(conn, tenant_id: str, po_id, kolom: str = "*"):
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"PO:{tenant_id}:{po_id}")
     return await conn.fetchrow(
         f"SELECT {kolom} FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", po_id, tenant_id)  # nosec B608
+
+
+async def bawaan_termin(conn, tenant_id: str, termin_body, vendor_id):
+    """BUG-205: syarat bayar yang DISIMPAN di PO baru = isian (0..HARI_MAKS) atau, bila kosong, termin vendor SAAT ITU (snapshot; tak mengikuti vendor
+    sesudahnya). Tanpa vendor / vendor tanpa termin sah -> None (tak ada syarat bayar tercatat)."""
+    from ..services.termin_bayar import HARI_MAKS
+    if termin_body is not None:
+        return int(termin_body)
+    if not vendor_id:
+        return None
+    n = await conn.fetchval("SELECT payment_terms_days FROM vendors WHERE id = $1::uuid AND tenant_id = $2", str(vendor_id), tenant_id)
+    return int(n) if n is not None and 0 <= int(n) <= HARI_MAKS else None
 
 
 async def _vendor_tenant(conn, tenant_id: str, vendor_id):
@@ -593,6 +606,8 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     "po_number": po["po_number"],
                     "vendor_id": str(po["vendor_id"]) if po["vendor_id"] else None,
                     "vendor_name": po["vendor_name"],
+                    "payment_terms_days": po.get("payment_terms_days"),                       # BUG-205
+                    "syarat_bayar_text": termin_syarat(po.get("payment_terms_days")),
                     "subtotal": float(po["subtotal"] or 0),
                     "discount_percent": float(po["discount_percent"] or 0),
                     "discount_amount": float(po["discount_amount"] or 0),
@@ -760,6 +775,7 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     return lama
 
                 vendor = await _vendor_tenant(conn, ctx["tenant_id"], body.vendor_id)
+                terms = await bawaan_termin(conn, ctx["tenant_id"], body.payment_terms_days, vendor["id"] if vendor else None)  # BUG-205: snapshot
 
                 # Nomor: manual (sudah dipakai -> 409) atau otomatis yang melompati terpakai (V475). UNIQUE = penegak akhir.
                 po_number = await NOMOR.tetapkan_nomor(conn, ctx["tenant_id"], "purchase_order", body.po_number)
@@ -775,9 +791,9 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
                         status, po_date, expected_date,
-                        ship_to_address, ref_no, notes, created_by
+                        ship_to_address, ref_no, notes, created_by, payment_terms_days
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                              'draft', $11, $12, $13, $14, $15, $16)
+                              'draft', $11, $12, $13, $14, $15, $16, $17)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -796,6 +812,7 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     body.ref_no,
                     body.notes,
                     ctx["user_id"],
+                    terms,
                 )
 
                 await _simpan_baris(conn, po_id, baris)
@@ -1224,7 +1241,7 @@ async def convert_to_bill(request: Request, po_id: UUID, body: ConvertToBillRequ
                     # Fallback if function doesn't exist
                     bill_number = f"BILL-{po['po_number']}"
 
-                jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], body.bill_date, body.due_date, po["vendor_id"])
+                jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], body.bill_date, body.due_date, po["vendor_id"], po_terms=po.get("payment_terms_days"))
 
                 # Create Bill
                 bill_id = await conn.fetchval(
@@ -1576,7 +1593,7 @@ async def preview_convert_to_bill(request: Request, po_id: UUID, body: Optional[
         items = [i.model_dump() for i in body.items] if body and body.items else None
         r = await PR.rencana_tagih(conn, po, items, kunci=False)
         tgl = (body.bill_date if body and body.bill_date else await tanggal_dokumen(conn, ctx["tenant_id"]))
-        jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], tgl, body.due_date if body else None, po["vendor_id"])
+        jt = await tentukan_jatuh_tempo_tagihan(conn, ctx["tenant_id"], tgl, body.due_date if body else None, po["vendor_id"], po_terms=po.get("payment_terms_days"))
         jatuh = jt["due_date"]
         return {"blocks": r["blocks"], "bill_date": tgl.isoformat(), "due_date": jatuh.isoformat(),
                 "due_date_source": jt["due_date_source"], "payment_terms_days": jt["payment_terms_days"], "due_date_text": jt["due_date_text"],

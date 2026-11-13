@@ -44,6 +44,15 @@ def alamat_gudang(w) -> str | None:
     return "\n".join(baris) or None
 
 
+def termin_syarat(hari) -> str | None:
+    """Syarat bayar PO dari SNAPSHOT di PO (BUG-205; purchase_orders.payment_terms_days): None -> baris tak dicetak; 0 -> "Tunai"; N -> "N hari"
+    (kalimat termin_text kontak, BUG-026: tanpa "Net"). Satu fungsi untuk detail API dan PDF."""
+    if hari is None:
+        return None
+    from .kontak_detail import termin_text
+    return termin_text(hari)
+
+
 def label_pajak(tax_rate) -> str:
     try:
         t = float(tax_rate or 0)
@@ -92,5 +101,6 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
         "has_cents": PDFService.money_has_cents(*uang),
     }
     kop = await muat_kop(conn, tid)
+    po_data["syarat_bayar"] = termin_syarat(po.get("payment_terms_days"))     # BUG-205: dari snapshot di PO (PO lama NULL = tak dicetak)
     po_data["kop_kosong"] = not (kop.get("address") or kop.get("npwp"))     # BUG-202: petunjuk "Lengkapi profil perusahaan" (hanya tampil di layar, bukan di PDF)
     return {"po_data": po_data, "tenant_info": kop}

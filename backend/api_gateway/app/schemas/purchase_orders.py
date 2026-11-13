@@ -84,6 +84,8 @@ class CreatePurchaseOrderRequest(BaseModel):
     discount_percent: float = Field(0, ge=0, le=100, description="Overall discount percent")
     discount_amount: Decimal = Field(0, ge=0, max_digits=18, decimal_places=2, description="Diskon header (nominal)")
     tax_rate: float = Field(0, ge=0, le=100, description="Overall tax rate")
+    # BUG-205: syarat bayar PO (hari; 0 = Tunai); absen/null = bawaan termin vendor saat PO dibuat (disimpan sebagai snapshot)
+    payment_terms_days: Optional[int] = Field(None, ge=0, le=365, description="Syarat bayar (hari; 0 = Tunai); kosong = bawaan termin vendor")
 
     @field_validator('vendor_name')
     @classmethod
@@ -111,6 +113,15 @@ class UpdatePurchaseOrderRequest(BaseModel):
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
     discount_amount: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)
     tax_rate: Optional[float] = Field(None, ge=0, le=100)
+    # BUG-205: ubah syarat bayar (hanya angka; mengosongkan TIDAK didukung -- putusan MASTER 13 Nov)
+    payment_terms_days: Optional[int] = Field(None, ge=0, le=365)
+
+    @field_validator("payment_terms_days")
+    @classmethod
+    def _termin_tak_kosong(cls, v):
+        if v is None:
+            raise ValueError("Syarat bayar tidak bisa dikosongkan; isi jumlah hari (0 = Tunai).")
+        return v
 
 
 # =============================================================================
@@ -269,6 +280,8 @@ class PurchaseOrderListItem(BaseModel):
 
 class PurchaseOrderDetail(BaseModel):
     """Full purchase order detail."""
+    payment_terms_days: Optional[int] = None   # BUG-205: snapshot syarat bayar (NULL = tak tercatat)
+    syarat_bayar_text: Optional[str] = None    # "30 hari" | "Tunai" | None
     # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
     aksi_tersedia: AksiTersediaPeta = {}
     id: str

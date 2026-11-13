@@ -64,12 +64,17 @@ async def tentukan_jatuh_tempo(conn, tenant_id: str, invoice_date: date, due_dat
 
 
 async def tentukan_jatuh_tempo_tagihan(conn, tenant_id: str, bill_date: date, due_date_body: Optional[date] = None,
-                                       vendor_id=None) -> dict:
-    """SATU penentu jatuh tempo tagihan untuk /to-bill DAN /to-bill/preview -> {due_date, due_date_source,
+                                       vendor_id=None, po_terms=None) -> dict:
+    """SATU penentu jatuh tempo tagihan untuk /to-bill DAN /to-bill/preview -> {due_date, due_date_source (body|po_terms|vendor_terms|default),
     payment_terms_days, due_date_text}. payment_terms_days = None bila isian pengguna (termin tak dibaca)."""
     if due_date_body:
         return {"due_date": due_date_body, "due_date_source": "body", "payment_terms_days": None,
                 "due_date_text": "Diisi pengguna"}
+    # BUG-205 (putusan pemilik 13 Nov): tagihan dari PO MEWARISI syarat bayar PO bila tercatat (snapshot di PO), mengalahkan termin vendor. 0 = Tunai (jatuh tempo = tanggal tagihan).
+    if po_terms is not None and 0 <= int(po_terms) <= HARI_MAKS:
+        n_po = int(po_terms)
+        return {"due_date": bill_date + timedelta(days=n_po), "due_date_source": "po_terms", "payment_terms_days": n_po,
+                "due_date_text": "Tunai" if n_po == 0 else f"Termin PO {n_po} hari"}
     n = None
     if vendor_id:
         n = await conn.fetchval(

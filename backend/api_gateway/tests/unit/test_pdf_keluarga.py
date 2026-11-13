@@ -231,7 +231,7 @@ def test_po_keluarga(tangkap):
                  "<th>Nama Barang</th>", '<th class="r">Kts.</th>', '<th class="r">Diskon</th>'):
         assert teks in h, teks
     assert h.index("@Harga</th>") < h.index("Diskon</th>") and "<th>Kode</th>" not in h
-    for tak in ("Purchase Order", "Syarat bayar", "<b>Nomor</b>", "<b>Kepada</b>"):   # BUG-202: "Tanggal kirim" kini dicetak (label expected_date); "Syarat bayar" tetap TAK dicetak sampai BUG-205 (snapshot di PO, putusan pemilik 13 Nov)
+    for tak in ("Purchase Order", "<b>Nomor</b>", "<b>Kepada</b>"):   # BUG-202: "Tanggal kirim" kini dicetak; BUG-205: "Syarat bayar" dicetak bila PO punya snapshot (test PO ini tanpa snapshot -> tak muncul; diuji di test_po_syarat_bayar_205)
         assert tak not in h, tak
 
 
