@@ -16,7 +16,6 @@ from app.routers import bom as B  # noqa: E402
 from app.routers import production as P  # noqa: E402
 from app.schemas import bom as SB  # noqa: E402
 from app.schemas import production as SP  # noqa: E402
-from app.services import produksi_wip_sisa as PW  # noqa: E402
 from app.services.role_resolver import AccountRole, resolve_account_id_by_role  # noqa: E402
 
 BS = "pt-busana-indah-semesta"
