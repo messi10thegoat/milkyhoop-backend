@@ -15,6 +15,11 @@ def _blok(code: str, message: str, **kw) -> dict:
     return {"code": code, "message": message, **kw}
 
 
+def _per(code: str, pesan: str, **kw) -> dict:
+    """Peringatan = bentuk BUG-207 (satu komponen FE): {code, butuh_konfirmasi:true, pesan}; `message` = salinan pesan (sejajar dgn blok). Tulis TIDAK diblok."""
+    return {"code": code, "butuh_konfirmasi": True, "pesan": pesan, "message": pesan, **kw}
+
+
 def _hasil(blocks: list, rencana, peringatan=None) -> dict:
     return {"ok": not blocks, "blocks": blocks, "peringatan": peringatan or [], "rencana": rencana}
 
@@ -68,9 +73,9 @@ def rencana_status(r, n_pelanggan: int, ke_aktif: bool) -> dict:
     per = []
     if not ke_aktif:
         if n_pelanggan:
-            per.append(_blok("DH_DIPAKAI_PELANGGAN", f"{n_pelanggan} pelanggan memakai daftar ini; harga mereka beralih ke daftar bawaan (atau harga barang)."))
+            per.append(_per("DH_DIPAKAI_PELANGGAN", f"{n_pelanggan} pelanggan memakai daftar ini; harga mereka beralih ke daftar bawaan (atau harga barang)."))
         if r["is_default"]:
-            per.append(_blok("DH_BAWAAN_DINONAKTIFKAN", "Ini daftar bawaan; sesudah nonaktif usaha tak punya daftar bawaan (harga memakai harga barang)."))
+            per.append(_per("DH_BAWAAN_DINONAKTIFKAN", "Ini daftar bawaan; sesudah nonaktif usaha tak punya daftar bawaan (harga memakai harga barang)."))
     return _hasil([], {"dari": "aktif" if r["is_active"] else "nonaktif", "ke": "aktif" if ke_aktif else "nonaktif", "pelanggan": n_pelanggan,
                        "bawaan_dicabut": bool(r["is_default"]) and not ke_aktif}, per)
 
@@ -80,7 +85,7 @@ def rencana_hapus(r, n_pelanggan: int, n_baris: int) -> dict:
         return _tak_ada()
     if n_pelanggan:
         return _hasil([_blok("DH_DIPAKAI_PELANGGAN", f"{r['name']} dipakai {n_pelanggan} pelanggan; pindahkan pelanggannya dulu atau pilih Nonaktifkan.")], None)
-    per = [_blok("DH_BAWAAN_DIHAPUS", "Ini daftar bawaan; sesudah dihapus harga memakai harga barang.")] if r["is_default"] else []
+    per = [_per("DH_BAWAAN_DIHAPUS", "Ini daftar bawaan; sesudah dihapus harga memakai harga barang.")] if r["is_default"] else []
     return _hasil([], {"jenis": "hapus_permanen", "baris_terhapus": n_baris}, per)
 
 
