@@ -68,28 +68,30 @@ async def main():
                           and d.ada_stok_minus == (n_min > 0))
                 cek(f"B {tid} detail gudang {g.code} == daftar (nilai_stok, aksi, aksi_semua, ada_stok_minus); barang_minus {len(d.barang_minus or [])} == SQL {n_min}", tmp and ok_min,
                     f"detail={(d.nilai_stok, d.aksi, d.aksi_semua, d.ada_stok_minus)} daftar={(g.nilai_stok, g.aksi, g.aksi_semua, g.ada_stok_minus)}")
-            # C minus nyata: barang yang SUDAH punya baris warehouse_stock di gudang utama (jalur UPDATE trigger cache dipotong 0; jalur INSERT baris baru bernilai negatif
-            # melanggar chk_ws_quantity), dikurangi MELEBIHI saldo ledger gudang itu -> saldo ledger < 0 sementara cache tetap 0
+            # C minus nyata. DB menolak gerak keluar yang membuat saldo gudang negatif (trigger cache tak memotong; CHECK chk_ws_quantity "anti-oversell"), jadi minus per gudang
+            # HANYA ada sebagai data lama. Di KLON disimulasikan: trigger cache dinonaktifkan sesaat, satu baris ledger KELUAR melebihi saldo disisipkan, trigger diaktifkan lagi.
             utama = next((g for g in await daftar(rq) if g.is_default), None) or (await daftar(rq))[0]
-            cand = await c.fetchrow("""/* tenant_id */ SELECT ws.item_id, ws.quantity AS q FROM warehouse_stock ws JOIN products p ON p.id = ws.item_id AND p.tenant_id = ws.tenant_id
-                WHERE ws.tenant_id = $1 AND ws.warehouse_id = $2 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true)
-                  AND NOT COALESCE(p.track_batches, false) AND NOT COALESCE(p.track_serial, false) ORDER BY ws.quantity LIMIT 1""", tid, utama.id)
+            cand = await c.fetchrow("""/* tenant_id */ SELECT il.product_id, p.item_code, p.nama_produk, SUM(il.quantity_in - il.quantity_out) AS led FROM inventory_ledger il
+                JOIN products p ON p.id = il.product_id AND p.tenant_id = il.tenant_id WHERE il.tenant_id = $1 AND il.warehouse_id = $2 AND p.item_type = 'goods'
+                GROUP BY il.product_id, p.item_code, p.nama_produk HAVING SUM(il.quantity_in - il.quantity_out) >= 0 ORDER BY 4 LIMIT 1""", tid, utama.id)
             if cand is None:
-                print(f"CATATAN C {tid}: tak ada barang berbaris warehouse_stock di gudang utama (klon); minus nyata tak terukur (unit memakai tiruan)", flush=True)
+                print(f"CATATAN C {tid}: tak ada barang berjejak ledger di gudang utama (klon); minus nyata tak terukur (unit memakai tiruan)", flush=True)
                 continue
-            nol = cand["item_id"]
-            led = D(str(await c.fetchval("/* tenant_id */ SELECT COALESCE(SUM(quantity_in - quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $3", tid, nol, utama.id)))
-            kurang = max(D(str(cand["q"])), led) + 2
-            sesudah = led - kurang
-            body = S.CreateStockAdjustmentRequest(adjustment_date=date.today(), adjustment_type="decrease", notes="UJIGUD", items=[
-                S.StockAdjustmentItemCreate(product_id=str(nol), quantity_adjustment=-kurang, physical_quantity=None, reason_detail="ujigud")])
-            r = await SA.create_stock_adjustment(rq, body)
-            sid = uuid.UUID(str(r["data"]["id"]))
-            await SA.post_stock_adjustment(rq, sid)
+            nol, led = cand["product_id"], D(str(cand["led"]))
+            sesudah = D("-2")
+            keluar = led + 2
+            await c.execute("/* tenant_id */ ALTER TABLE inventory_ledger DISABLE TRIGGER trg_update_warehouse_stock")
+            try:
+                await c.execute("""INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date, source_type, source_id, source_number,
+                                   quantity_in, quantity_out, quantity_balance, unit_cost, total_cost, average_cost, warehouse_id, created_by, notes)
+                                   VALUES ($1, $2, $3, $4, 'UJI_MINUS', $5, 'UJI_MINUS', $6, 'UJI-MINUS', 0, $7, 0, 0, 0, 0, $8, $9, 'uji gudang minus (data lama disimulasikan)')""",
+                                tid, nol, cand["item_code"], cand["nama_produk"], date.today(), uuid.uuid4(), keluar, utama.id, uid)
+            finally:
+                await c.execute("/* tenant_id */ ALTER TABLE inventory_ledger ENABLE TRIGGER trg_update_warehouse_stock")
             minus_pill = await daftar(rq, aksi="stok_minus")
             dd = (await WH.get_warehouse(rq, utama.id)).data
             ada = any(b["item_id"] == str(nol) and D(str(b["saldo"])) == sesudah for b in (dd.barang_minus or []))
-            cek(f"C {tid} minus nyata: pill stok_minus memuat gudang, detail gudang memuat barangnya (saldo ledger {sesudah})", any(g.id == utama.id for g in minus_pill) and dd.ada_stok_minus is True and ada,
+            cek(f"C {tid} minus (data lama): pill stok_minus memuat gudang, detail gudang memuat barangnya (saldo ledger {sesudah})", any(g.id == utama.id for g in minus_pill) and dd.ada_stok_minus is True and ada,
                 f"pill={[g.code for g in minus_pill]} barang_minus={dd.barang_minus}")
             item = (await IT.get_item(rq, nol)).data
             spg = item["stok_per_gudang"]
