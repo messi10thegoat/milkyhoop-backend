@@ -231,8 +231,20 @@ def test_idem_aksi_membungkus_mulai_aksi_dan_simpan():
 
 def test_hapus_dan_duplikat_menulis_audit():
     src = RUTE.read_text()
-    assert "BA.catat_hapus(" in _fn(src, "delete_item")
+    assert "await BA.catat_hapus(" in _fn(src, "delete_item")
     dup = _fn(src, "duplicate_item")
-    assert "BA.catat_duplikat(" in dup
+    assert "await BA.catat_duplikat(" in dup
     assert "ITEM_DELETED" in inspect.getsource(BA.catat_hapus) and "audit_logs" in inspect.getsource(BA.catat_hapus).replace("catat_riwayat", "audit_logs")
     assert "duplicated" in inspect.getsource(BA.catat_duplikat)
+
+
+def test_ubah_kunci_idempotensi_dan_pratinjau_memakai_penentu_konversi_dan_duplikat_salin_harga():
+    src = RUTE.read_text()
+    assert '"ITEM_UPDATE", str(item_id)' in _fn(src, "update_item")        # kunci di awal (mulai_aksi), bukan hanya di simpan
+    assert "await _periksa_konversi(conn, ctx, item_id, b)" in _fn(src, "preview_ubah_barang")   # pratinjau = penentu SAMA dgn PUT
+    assert "INSERT INTO item_pricing (tenant_id" in _fn(src, "duplicate_item")                 # harga bertingkat ikut disalin
+
+
+def test_bulk_status_wajib_kunci_idempotensi():
+    src = BULK.read_text()
+    assert "if not kunci:" in src and "BULK_KUNCI_WAJIB" in src.split("if not kunci:", 1)[1][:200]
