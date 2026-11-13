@@ -71,16 +71,6 @@ def rencana_status(b: Optional[dict], stok, nilai, pesanan_terbuka: int, ke_akti
     return _hasil([], rencana, per)
 
 
-def gabung_status(rencana: list) -> dict:
-    if not rencana:
-        return {"ok": False, "blocks": [_blok("DAFTAR_KOSONG", "Pilih minimal satu barang.")], "peringatan": [], "items": [], "ringkasan": None}
-    diblokir = sum(1 for r in rencana if r["blocks"])
-    per = sum(1 for r in rencana if r["peringatan"])
-    return {"ok": diblokir == 0, "blocks": [], "items": rencana,
-            "peringatan": [p for r in rencana for p in r["peringatan"]],
-            "ringkasan": {"jumlah": len(rencana), "dapat_diubah": len(rencana) - diblokir, "diblokir": diblokir, "peringatan": per}}
-
-
 def rencana_hapus(b: Optional[dict], jejak: list) -> dict:
     if not b:
         return _hasil([_blok("BARANG_TAK_ADA", "Barang tidak ditemukan.")], None)
@@ -161,3 +151,15 @@ async def ukur_kategori(conn, tenant_id: str, nama: str):
     ada = await conn.fetchval("SELECT 1 FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2)", tenant_id, nama)
     n = await conn.fetchval("SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2) AND status = 'active'", tenant_id, nama)
     return bool(ada), int(n or 0)
+
+
+async def terapkan_status(conn, tenant_id: str, product_id: str, ke_aktif: bool, actor_id=None, actor_name: Optional[str] = None) -> None:
+    """TULIS status barang + satu baris item_activities (riwayat /items/{id}/activity). Di transaksi PEMANGGIL; penulis tunggal dan massal
+    memakai fungsi ini (tanpa jurnal, stok/nilai tak disentuh). Penentu boleh/tidak = rencana_status (pemanggil)."""
+    await conn.execute("UPDATE products SET status = $1, updated_at = NOW() WHERE id = $2::uuid AND tenant_id = $3",
+                       "active" if ke_aktif else "inactive", product_id, tenant_id)
+    await conn.execute(
+        """INSERT INTO item_activities (item_id, tenant_id, type, description, actor_id, actor_name)
+           VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6)""",
+        product_id, tenant_id, "activated" if ke_aktif else "deactivated",
+        "Barang diaktifkan" if ke_aktif else "Barang dinonaktifkan", str(actor_id) if actor_id else None, actor_name)
