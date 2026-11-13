@@ -137,7 +137,7 @@ class ReceiveItemRequest(BaseModel):
 class ReceiveGoodsRequest(BaseModel):
     """Request body for receiving goods."""
     receive_date: date
-    items: List[ReceiveItemRequest] = Field(..., min_length=1)
+    items: List[ReceiveItemRequest]   # BUG-203: kosong ditolak handler dgn 422 BERKODE ITEMS_KOSONG (dulu 422 skema umum); tulis tak pernah menerima "semua sisa"
     notes: Optional[str] = None
     # GRN (flag penerimaan_barang_v1, 23 Okt): gudang penerima barang ber-stok; kosong = gudang PO -> gudang bawaan tenant
     warehouse_id: Optional[UUID] = None

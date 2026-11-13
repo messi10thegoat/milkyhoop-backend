@@ -48,6 +48,8 @@ from ..services import po_agregat as PA  # #4 agregat Workspace (cermin so_agreg
 from ..services import po_hitung as PH  # P-U2 sisi tulis: uang Decimal 2dp HALF_UP (satu sumber)
 from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor bukan PKP (non-fatal)
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
+from ..services import grn_ditolak as GT  # BUG-203: teks ditolak + petunjuk sisa
+from ..services.galat_berkode import GalatBerkode  # BUG-203: ITEMS_KOSONG berkode
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
@@ -1032,6 +1034,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
     Barang Diterima Belum Ditagih (putusan pemilik P1); baris non-stok dokumen saja (P2).
     """
     try:
+        if not body.items:  # BUG-203: tulis TAK menerima "semua sisa" (itu bawaan PRATINJAU, yang menghasilkan payload eksplisit)
+            raise GalatBerkode(422, "ITEMS_KOSONG", "Pilih barang yang diterima; pratinjau memberi daftar sisa.")
         ctx = get_user_context(request)
         if not ctx["user_id"]:
             raise HTTPException(status_code=401, detail="ID pengguna wajib ada.")
@@ -1122,7 +1126,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 )
 
                 await catat_riwayat(conn, ctx["tenant_id"], "purchase_order", po_id, po["po_number"], _ad.nama("purchase_order", "received"), ctx["user_id"],
-                                    f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {_tgl_id(body.receive_date)})",
+                                    f"Barang diterima untuk {po['po_number']}: {len(items_received)} baris (tanggal terima {_tgl_id(body.receive_date)})"
+                    + (f"; ada barang ditolak ({sum(1 for b in _rt['baris'] if b['akan_ditolak'] > 0)} baris)" if any(b["akan_ditolak"] > 0 for b in _rt["baris"]) else ""),
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
 
@@ -1137,6 +1142,11 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                     f"Goods received for PO: {po_id}, items={len(items_received)}"
                 )
 
+                # BUG-203: sisa PO TETAP terbuka (menunggu kirim ulang); ditolak tercatat di GRN; menutup sisa = aksi eksplisit yang SUDAH ADA
+                _sisa = [{"po_item_id": b["po_item_id"], "description": b.get("description"), "unit": b.get("unit"), "sisa": _f2(b["sisa_sesudah"])}
+                         for b in _rt["baris"] if b["sisa_sesudah"] > 0]
+                _ditolak = [{"po_item_id": b["po_item_id"], "description": b.get("description"), "unit": b.get("unit"), "quantity_rejected": _f2(b["akan_ditolak"]),
+                             "reject_reason": _rt["alasan"].get(b["po_item_id"])} for b in _rt["baris"] if b["akan_ditolak"] > 0]
                 resp = {
                     "success": True,
                     "message": f"Barang diterima: {len(items_received)} baris.",
@@ -1145,6 +1155,10 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         "items_received": items_received,
                         "total_received": total_received,
                         "status": new_status,
+                        "sisa_belum_diterima": _sisa,
+                        "ditolak": _ditolak,
+                        **({"petunjuk": GT.petunjuk_sisa(len(_sisa)), "tutup_po": {"rute": f"/api/purchase-orders/{po_id}/close", "pratinjau": f"/api/purchase-orders/{po_id}/close/preview"}}
+                           if _sisa else {}),
                         **({"goods_receipt_id": str(_dok["goods_receipt_id"]), "receipt_number": _dok["receipt_number"],
                             "journal_id": str(_dok["journal_id"]) if _dok["journal_id"] else None} if _dok else {}),
                     },
@@ -1508,7 +1522,9 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
                 "items": [_baris_terima_json(b) for b in r["baris"]],
                 "toleransi_persen": float(r["toleransi_persen"]),
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
-                "payload": r["payload"], **g, "notes": r["notes"] + g.get("notes", [])}
+                "payload": r["payload"], **g, "notes": r["notes"] + g.get("notes", []),
+                # BUG-203: items kosong = bawaan SEMUA sisa (di-materialisasi ke payload eksplisit); tulis /receive menolak items kosong (ITEMS_KOSONG)
+                "bawaan_semua_sisa": not (body and body.items)}
     return await _pratinjau(request, po_id, isi)
 
 

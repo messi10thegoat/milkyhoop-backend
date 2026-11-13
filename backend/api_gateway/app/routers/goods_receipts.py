@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: nama event dari SATU tabel
 from ..services import grn_daftar as GD
 from ..services import grn_rencana as G
+from ..services import grn_ditolak as GT  # BUG-203: teks ditolak
 from ..services import idem_buat
 from ..services.so_riwayat import catat_riwayat
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -52,7 +53,10 @@ def _bentuk(gr, items=None) -> dict:
         out["items"] = [{"id": str(i["id"]), "po_item_id": str(i["purchase_order_item_id"]), "description": i.get("description"),
                          "unit": i.get("unit"), "quantity": str(i["quantity"]), "quantity_returned": str(i["quantity_returned"]),
                          "quantity_billed": str(i.get("quantity_billed") or 0), "unit_cost": _uang(i["unit_cost"]),
-                         "amount": _uang(i["amount"]), "stocked": i["ber_stok"]} for i in items]
+                         "amount": _uang(i["amount"]), "stocked": i["ber_stok"],
+                         # BUG-203: barang ditolak TERSIMPAN di GRN (V477) dan kini tampil di API; bukan stok/tagihan
+                         "quantity_rejected": str(i.get("quantity_rejected") or 0), "reject_reason": i.get("reject_reason"),
+                         "ditolak_text": GT.ditolak_text(i.get("quantity_rejected"), i.get("unit"), i.get("reject_reason"))} for i in items]
     return out
 
 
