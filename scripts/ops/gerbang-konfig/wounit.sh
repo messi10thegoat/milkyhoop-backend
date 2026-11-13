@@ -1,5 +1,5 @@
 # Konfig gerbang unit BUG-184 (a: satuan WO ikut BOM; b: status_text Indonesia + siap_diselesaikan di daftar/detail WO). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-wounit; CABANG=feat/wo-satuan-bom-r2; NAMA_JENDELA=wounit
+W=/root/mh-wounit; CABANG=feat/wo-satuan-bom-r3; NAMA_JENDELA=wounit
 POLA_UNIT='produksi|production|wo_|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-wounit.sh
 PENANDA_BERKAS=services/wo_status.py; PENANDA='def siap_diselesaikan'
