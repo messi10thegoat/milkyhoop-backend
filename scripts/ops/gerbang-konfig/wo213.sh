@@ -12,4 +12,6 @@ SAB=(
  "o5 kode WO_BELUM_DIMULAI salah|$PRF|s#\"WO_BELUM_DIMULAI\", \"Mulai proses dulu#\"WO_BELUM_MULAI\", \"Mulai proses dulu#|$T"
  "o6 teks tak menyuruh mulai proses|$PRF|s#\"Mulai proses dulu: hasil produksi#\"Hasil produksi#|$T"
  "o7 tutup bulan tak menguras (pratinjau/tulis)|$PRF|s#wip_sisa = await PW.sisa_wip_selesai(conn, tenant_id, _wip_id, p_end)#wip_sisa = []#|$T"
+ "o8 penguras tutup bulan mengabaikan JV-VAR lama (kuras ganda)|$A/services/produksi_wip_sisa.py|s#AND je.journal_date <= \$3 AND is_effective_journal(je.id)#AND je.journal_date <= \$3 AND je.source_type <> 'PRODUCTION_VARIANCE' AND is_effective_journal(je.id)#|$T"
+ "o9 penguras tutup bulan tak menghitung baris kuras (tak idempoten)|$A/services/produksi_wip_sisa.py|s#saldo\[m.group(1)\] += Decimal(str(r\[\"debit\"\] or 0)) - Decimal(str(r\[\"credit\"\] or 0))#saldo[m.group(1)] += 0#|$T"
 )

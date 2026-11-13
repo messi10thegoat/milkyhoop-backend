@@ -132,3 +132,51 @@ def test_report_output_sumber_gerbang_status():
     src = inspect.getsource(PR.report_output)
     assert 'order["status"] == "released"' in src and '"WO_BELUM_DIMULAI"' in src and 'order["status"] != "in_progress"' in src
     assert src.index('"WO_BELUM_DIMULAI"') < src.index("pg_advisory_xact_lock")
+
+
+# ---------------------------------------------------------------- penguras tutup bulan harus MENGHITUNG JV lama (tak kuras ganda)
+class KonWip:
+    """Tiruan untuk PW.sisa_wip_selesai: saldo WIP per WO (SUM debit-kredit jurnal efektif ber-source_id WO, TERMASUK JV-VAR lama) + baris kuras tutup bulan."""
+
+    def __init__(self, wo, saldo, kuras=()):
+        self.wo, self.saldo, self.kuras, self.sql = wo, saldo, list(kuras), []
+
+    async def fetch(self, sql, *a):
+        s = " ".join(sql.split())
+        self.sql.append(s)
+        if "FROM production_orders po" in s:
+            return self.wo
+        if "GROUP BY je.source_id" in s:
+            return [{"wo": k, "s": v} for k, v in self.saldo.items() if k in a[3]]
+        if "je.source_type = 'PRODUCTION_RECONCILE'" in s:
+            return self.kuras
+        raise AssertionError(s)
+
+
+def _wo_selesai(oid):
+    return {"id": oid, "order_number": "WO-A", "status": "completed", "planned_quantity": 10, "actual_end_date": date(2026, 11, 20), "baik": 10}
+
+
+def _sisa(k):
+    import asyncio
+    from app.services import produksi_wip_sisa as PW
+    return asyncio.run(PW.sisa_wip_selesai(k, T, "wip", date(2026, 11, 30)))
+
+
+def test_kuras_tutup_bulan_menghitung_semua_jurnal_efektif_wo_termasuk_jv_var_lama():
+    oid = uuid.uuid4()
+    k = KonWip([_wo_selesai(oid)], {str(oid): D("0")})                       # JV-VAR lama sudah mengosongkan WIP -> saldo 0
+    assert _sisa(k) == []                                                       # tak dikuras ganda
+    q = [s for s in k.sql if "GROUP BY je.source_id" in s][0]
+    assert "source_type" not in q and "is_effective_journal(je.id)" in q and "je.source_id::text = ANY($4::text[])" in q   # SEMUA jenis jurnal WO (JV-VAR lama ikut) , bukan disaring jenis
+    k2 = KonWip([_wo_selesai(oid)], {str(oid): D("40000")})                   # WO selesai TANPA JV-VAR (alur baru): dikuras tutup bulan
+    assert [(x["order_number"], x["sisa"]) for x in _sisa(k2)] == [("WO-A", D("40000.00"))]
+
+
+def test_kuras_tutup_bulan_idempoten_baris_kuras_ikut_dihitung():
+    from app.services import produksi_wip_sisa as PW
+    oid = uuid.uuid4()
+    kuras = [{"memo": PW.memo_kuras("WO-A", oid), "debit": D("0"), "credit": D("40000")}]    # sudah dikuras bulan lalu (Cr WIP 40.000)
+    assert _sisa(KonWip([_wo_selesai(oid)], {str(oid): D("40000")}, kuras)) == []              # saldo 40.000 - kuras 40.000 = 0 -> tak disentuh lagi
+    kuras_sebagian = [{"memo": PW.memo_kuras("WO-A", oid), "debit": D("0"), "credit": D("30000")}]
+    assert [x["sisa"] for x in _sisa(KonWip([_wo_selesai(oid)], {str(oid): D("40000")}, kuras_sebagian))] == [D("10000.00")]
