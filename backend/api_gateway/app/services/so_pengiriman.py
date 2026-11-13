@@ -86,7 +86,7 @@ async def _gudang(conn, tid: str, diminta: Optional[str], so, flag: bool = False
     Tanpa flag = perilaku lama PERSIS (kamus hasil tanpa kunci baru). Dengan flag, hasil membawa `source_label`
     (teks untuk pratinjau: dari mana lokasi ini diputuskan). Pilihan gudang TIDAK menggeser HPP: WAC = per barang
     (get_weighted_average_cost(tenant, produk)), bukan per gudang -- dibuktikan tes."""
-    kol = "SELECT id, name, is_active, is_default FROM warehouses WHERE tenant_id = $1"
+    kol = "SELECT id, name, is_active, is_default FROM warehouses WHERE tenant_id = $1 AND NOT is_system"  # K8
     if diminta:
         try:
             u = UUID(str(diminta))

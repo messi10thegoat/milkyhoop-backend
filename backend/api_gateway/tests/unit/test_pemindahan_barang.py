@@ -5,7 +5,7 @@ barang non-stok / batch / serial, baris ganda; (3) selesai = tepat 2 baris kartu
 (unit_cost = average_cost = WAC, WAC TIDAK dihitung ulang), Decimal 2dp, journal_id TIDAK diisi; (4) stok asal kurang / WAC nol ->
 409 dan NOL baris tertulis; (5) idempoten; (6) void = pembalik kedua kaki, average_cost = WAC saat void, stok tujuan terpakai -> 409;
 (7) NOL BUKU: modul tak menyentuh jurnal / UPDATE warehouse_stock / float / int(); (8) KOLOM HANTU: tiap INSERT ke inventory_ledger di
-seluruh app memakai hanya kolom yang ADA di tabel; (9) dua langkah (ship/receive) 409; (10) rute punya pola izin; (11) fase SO
+seluruh app memakai hanya kolom yang ADA di tabel; (9) dua langkah (ship/receive) AKTIF sejak K8 (14 Nov 2026), tes di bawah; (10) rute punya pola izin; (11) fase SO
 informatif: blok SO tak menggagalkan pemindahan."""
 import ast
 import asyncio
@@ -196,16 +196,6 @@ def test_dependency_rute_tulis_tanpa_flag(monkeypatch):
     with pytest.raises(HTTPException) as e:
         jalan(R._butuh_flag(Req()))
     assert e.value.status_code == 409 and e.value.detail["code"] == "STOCK_TRANSFER_NOT_AVAILABLE"
-
-
-def test_dua_langkah_selalu_409():
-    with pytest.raises(HTTPException) as e:
-        jalan(R._dua_langkah_belum())
-    assert e.value.detail["code"] == "STOCK_TRANSFER_DUA_LANGKAH_BELUM_TERSEDIA"
-    rute = {(r.path, tuple(sorted(r.methods))): r for r in R.router.routes}
-    for p in ("/{transfer_id}/ship", "/{transfer_id}/receive"):
-        deps = {d.dependency for d in rute[(p, ("POST",))].dependencies}
-        assert R._dua_langkah_belum in deps and R._butuh_flag in deps
 
 
 # ---- (2) validasi
@@ -664,3 +654,306 @@ def test_satuan_tanpa_konversi_diblok_berkalimat_dan_tanpa_satuan_tetap_dasar():
     c = KonekSatuan(produk=_botol())  # form CW tak mengirim satuan -> satuan dasar, nol baca kamus satuan
     r = jalan(S.pratinjau_baru(c, ctx(), S.PratinjauIn(from_warehouse_id=GA, to_warehouse_id=GB, items=[{"item_id": P1, "quantity_requested": 2}])))
     assert r["lines"][0]["quantity"] == Decimal("2") and not any("unit_conversions" in s for s in c.log)
+
+
+# ============================================================================
+# K8 (14 Nov 2026): Pemindahan DUA LANGKAH (Kirim -> Terima) via lokasi Transit, TANPA jurnal; gudang sistem disaring dari semua pembaca
+# ============================================================================
+import inspect  # noqa: E402
+
+from app.routers import stock_transfers as RT  # noqa: E402,F401
+from app.services import gudang_bawaan as GBW  # noqa: E402
+from app.services import gudang_transit as GTR_  # noqa: E402
+from app.services import pemindahan_dua_langkah as D2  # noqa: E402
+
+GTR = uuid.uuid4()   # id gudang Transit uji
+
+
+class KonekD(Konek):
+    def __init__(self, transit_ada=True, **kw):
+        super().__init__(**kw)
+        self.transit_ada, self.transit_dibuat = transit_ada, 0
+
+    async def fetchval(self, sql, *a):
+        s = " ".join(sql.split())
+        if "FROM warehouses WHERE tenant_id = $1 AND is_system AND code = $2" in s:
+            self.log.append(s)
+            return GTR if self.transit_ada else None
+        if s.startswith("INSERT INTO warehouses"):
+            self.log.append(s)
+            self.transit_ada, self.transit_dibuat = True, self.transit_dibuat + 1
+            return GTR
+        if s.startswith("SELECT name FROM warehouses WHERE id"):
+            self.log.append(s)
+            return "Gudang A"
+        return await super().fetchval(sql, *a)
+
+
+@pytest.fixture(autouse=True)
+def _pasang_d2(monkeypatch):
+    async def hari(conn, tid):
+        return HARI
+    ev = []
+
+    async def riwayat(conn, tenant_id, entity_type, entity_id, entity_number, event, user_id, ringkas, meta=None, source="api"):
+        ev.append((event, entity_number))
+    monkeypatch.setattr(D2, "tanggal_dokumen", hari)
+    monkeypatch.setattr(D2, "catat_riwayat", riwayat)
+    return ev
+
+
+def b8(pid=P1, kirim="10", terima="0", minta="10", n=1):
+    return {"id": uuid.uuid4(), "item_id": pid, "item_code": "K-1", "item_name": "Kaos A", "unit": "pcs", "quantity_requested": Decimal(minta),
+            "quantity_shipped": Decimal(kirim) if kirim is not None else None, "quantity_received": Decimal(terima), "unit_cost": Decimal("43332.95"),
+            "line_number": n, "notes": None}
+
+
+def _upd(k, potong):
+    return [s for s, _ in k.updates if potong in s]
+
+
+def test_k8_kirim_dua_kaki_asal_ke_transit_tanpa_jurnal_wac_tetap():
+    k = KonekD(header=draf(), items=[b8(kirim=None)], stok={(GA, P1): Decimal("100")})
+    assert jalan(D2.kirim(k, ctx(), U)) == {"ulang": False}
+    assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
+        [(GA, 10, 0, "RELOKASI_KIRIM"), (GTR, 0, 10, "RELOKASI_KIRIM")]                      # keluar asal, MASUK Transit (Σ on_hand tetap)
+    assert all(r["unit_cost"] == k.wac and r["average_cost"] == k.wac and r["total_cost"] == Decimal("433329.50") for r in k.ledger)   # WAC tak dihitung ulang
+    assert _upd(k, "SET status = 'in_transit'") and _upd(k, "SET quantity_shipped")
+    assert not any("journal" in s for s in k.log)                                              # TANPA jurnal
+    assert k.transit_dibuat == 0
+
+
+def test_k8_kirim_membuat_gudang_transit_sistem_bila_belum_ada():
+    k = KonekD(transit_ada=False, header=draf(), items=[b8(kirim=None)], stok={(GA, P1): Decimal("100")})
+    jalan(D2.kirim(k, ctx(), U))
+    ins = [s for s in k.log if s.startswith("INSERT INTO warehouses")]
+    assert k.transit_dibuat == 1 and len(ins) == 1 and "is_system" in ins[0] and "false, true, false, true" in ins[0]     # is_default false, aktif, bukan cabang, SISTEM
+
+
+def test_k8_kirim_idempoten_dan_blok_tanpa_tulis():
+    k = KonekD(header=draf(status="in_transit"), items=[b8()])
+    assert jalan(D2.kirim(k, ctx(), U)) == {"ulang": True} and k.ledger == []
+    k2 = KonekD(header=draf(), items=[b8(kirim=None)], stok={(GA, P1): Decimal("5")})
+    with pytest.raises(HTTPException) as e:
+        jalan(D2.kirim(k2, ctx(), U))
+    assert kode(e) == "PB_STOK_TIDAK_CUKUP" and k2.ledger == []
+    k3 = KonekD(header=draf(status="completed"), items=[b8(kirim=None)])
+    with pytest.raises(HTTPException) as e:
+        jalan(D2.kirim(k3, ctx(), U))
+    assert kode(e) == "PB_STATUS_TIDAK_BOLEH" and k3.ledger == []
+
+
+def test_k8_terima_semua_keluar_transit_masuk_tujuan_status_received(_pasang_d2):
+    k = KonekD(header=draf(status="in_transit"), items=[b8()], stok={(GTR, P1): Decimal("10")})
+    assert jalan(D2.terima(k, ctx(), U, None))["ulang"] is False
+    assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
+        [(GTR, 10, 0, "RELOKASI_TERIMA"), (GB, 0, 10, "RELOKASI_TERIMA")]
+    assert _upd(k, "quantity_received = quantity_received +") and _upd(k, "SET status = 'received'")
+    assert ("PEMINDAHAN_BARANG_DITERIMA", "ST-2610-0001") in _pasang_d2 and not any("journal" in s for s in k.log)
+
+
+def test_k8_terima_sebagian_lalu_sisa_status_turunan_dan_tuntas():
+    k = KonekD(header=draf(status="in_transit"), items=[b8()], stok={(GTR, P1): Decimal("10")})
+    jalan(D2.terima(k, ctx(), U, [{"item_id": P1, "qty": Decimal("4")}]))
+    assert [r["quantity_out"] + r["quantity_in"] for r in k.ledger] == [4, 4] and not _upd(k, "SET status = 'received'")   # sebagian: tetap in_transit
+    k2 = KonekD(header=draf(status="in_transit"), items=[b8(terima="4")], stok={(GTR, P1): Decimal("6")})
+    jalan(D2.terima(k2, ctx(), U, None))                                                      # semua tertunda = 6
+    assert [r["quantity_out"] + r["quantity_in"] for r in k2.ledger] == [6, 6] and _upd(k2, "SET status = 'received'")
+
+
+@pytest.mark.parametrize("baris_,hdr,kw,harap", [
+    ([{"item_id": P1, "qty": Decimal("11")}], {}, {}, "PB_TERIMA_QTY_MELEBIHI"),
+    ([{"item_id": uuid.uuid4(), "qty": Decimal("1")}], {}, {}, "PB_BARANG_BUKAN_DOKUMEN"),
+    ([{"item_id": P1, "qty": Decimal("0")}], {}, {}, "PB_TERIMA_KOSONG"),
+    ([{"item_id": P1, "qty": Decimal("1")}, {"item_id": P1, "qty": Decimal("1")}], {}, {}, "PB_BARANG_GANDA"),
+    ([{"item_id": P1, "qty": Decimal("10")}], {}, {"stok": {(GTR, P1): Decimal("3")}}, "PB_STOK_TRANSIT_KURANG"),
+    ([{"item_id": P1, "qty": Decimal("1")}], {}, {"gudang_aktif": False}, "PB_GUDANG_TUJUAN_NONAKTIF"),
+    ([{"item_id": P1, "qty": Decimal("1")}], {"status": "received"}, {}, "PB_SUDAH_DITERIMA"),
+    ([{"item_id": P1, "qty": Decimal("1")}], {"status": "draft"}, {}, "PB_STATUS_TIDAK_BOLEH"),
+])
+def test_k8_terima_blok_tanpa_tulis(baris_, hdr, kw, harap):
+    kw.setdefault("stok", {(GTR, P1): Decimal("10")})
+    k = KonekD(header=draf(**{"status": "in_transit", **hdr}), items=[b8()], **kw)
+    with pytest.raises(HTTPException) as e:
+        jalan(D2.terima(k, ctx(), U, baris_))
+    assert kode(e) == harap and k.ledger == [] and not k.updates
+
+
+def test_k8_terima_sudah_received_tanpa_baris_idempoten():
+    k = KonekD(header=draf(status="received"), items=[b8(terima="10")])
+    assert jalan(D2.terima(k, ctx(), U, None)) == {"ulang": True, "catatan_fase": None} and k.ledger == []
+
+
+def test_k8_pratinjau_terima_sama_dengan_tulis_nol_tulis():
+    k = KonekD(header=draf(status="in_transit"), items=[b8()], stok={(GTR, P1): Decimal("10")})
+    r = jalan(D2.pratinjau_terima(k, ctx(), U, [{"item_id": P1, "qty": Decimal("4")}]))
+    ln = r["lines"][0]
+    assert r["ok"] and (ln["akan_diterima"], ln["tertunda"], ln["tertunda_sesudah"]) == (4, 10, 6) and r["status_sesudah"] == "in_transit" and r["tuntas"] is False
+    assert r["status_text_sesudah"] == "Dikirim · diterima sebagian" and r["payload"]["items"][0]["quantity_received"] == "4"
+    semua = jalan(D2.pratinjau_terima(k, ctx(), U, None))
+    assert semua["status_sesudah"] == "received" and semua["bawaan_semua_tertunda"] is True and semua["status_text_sesudah"] == "Diterima"
+    assert k.ledger == [] and not k.updates                                                      # pratinjau tak menulis
+
+
+def _asli_kirim():
+    return [{"product_id": P1, "product_code": "K-1", "product_name": "Kaos A", "quantity_in": Decimal("0"), "quantity_out": Decimal("10"),
+             "unit_cost": Decimal("43332.95"), "total_cost": Decimal("433329.50"), "warehouse_id": GA},
+            {"product_id": P1, "product_code": "K-1", "product_name": "Kaos A", "quantity_in": Decimal("10"), "quantity_out": Decimal("0"),
+             "unit_cost": Decimal("43332.95"), "total_cost": Decimal("433329.50"), "warehouse_id": GTR}]
+
+
+def test_k8_void_kirim_balik_dari_transit_ke_asal_status_voided():
+    k = KonekD(header=draf(status="in_transit"), items=[b8()], asli=_asli_kirim())
+    assert jalan(D2.void_kirim(k, ctx(), U, "salah kirim")) == {"ulang": False, "catatan_fase": None}
+    assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
+        [(GTR, 10, 0, "RELOKASI_KIRIM_VOID"), (GA, 0, 10, "RELOKASI_KIRIM_VOID")]               # kaki masuk Transit dibalik jadi KELUAR dulu
+    assert _upd(k, "SET status = 'voided'") and not any("journal" in s for s in k.log)
+
+
+@pytest.mark.parametrize("hdr,items,asli,harap", [
+    ({}, [b8(terima="4")], None, "PB_SUDAH_ADA_PENERIMAAN"),
+    ({"status": "received"}, [b8(terima="10")], None, "PB_DUA_LANGKAH_SUDAH_DITERIMA"),
+    ({}, [b8()], [], "PB_LEDGER_TAK_ADA"),
+    ({"status": "draft"}, [b8()], None, "PB_STATUS_TIDAK_BOLEH"),
+])
+def test_k8_void_kirim_blok(hdr, items, asli, harap):
+    k = KonekD(header=draf(**{"status": "in_transit", **hdr}), items=items, asli=_asli_kirim() if asli is None else asli)
+    with pytest.raises(HTTPException) as e:
+        jalan(D2.void_kirim(k, ctx(), U, "x"))
+    assert kode(e) == harap and k.ledger == []
+
+
+def test_k8_teks_status_diterima_sebagian_adalah_turunan():
+    assert D2.teks_status("in_transit", 10, 0) == "Dikirim" and D2.teks_status("in_transit", 10, 4) == "Dikirim · diterima sebagian"
+    assert D2.teks_status("received", 10, 10) == "Diterima" and D2.teks_status("draft", 0, 0) == "Draf"
+
+
+def test_k8_modul_nol_buku_nol_float():
+    for nama in ("pemindahan_dua_langkah.py", "gudang_transit.py"):
+        t = ast.parse((APP / "services" / nama).read_text())
+        doc = {id(n.body[0].value) for n in ast.walk(t) if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+               and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+        literal = " ".join(n.value for n in ast.walk(t) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in doc)
+        for terlarang in ("journal_entries", "journal_lines", "UPDATE warehouse_stock", "INSERT INTO warehouse_stock", "record_inventory_inbound",
+                          "record_inventory_outbound", "resolve_account"):
+            assert terlarang not in literal, (nama, terlarang)
+        for n in ast.walk(t):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("float", "int"):
+                pytest.fail(f"float()/int() di {nama} baris {n.lineno}")
+
+
+def test_k8_rute_dua_langkah_aktif_pratinjau_dan_izin():
+    from app.middleware import permission_middleware as PM
+    assert not hasattr(R, "_dua_langkah_belum") and not hasattr(R, "_DUA_LANGKAH")             # kunci 409 putusan P5 DIHAPUS
+    rute = {(r.path, tuple(sorted(r.methods))): r for r in R.router.routes}
+    for p in ("/{transfer_id}/ship", "/{transfer_id}/receive", "/{transfer_id}/ship/preview", "/{transfer_id}/receive/preview"):
+        assert (p, ("POST",)) in rute, p
+        assert R._butuh_flag in {d.dependency for d in rute[(p, ("POST",))].dependencies}
+    pola = [(re.compile(p), m, mod, aksi) for p, m, mod, aksi in PM.ROUTE_PERMISSIONS]
+
+    def cari(path):
+        return next(((mod, aksi) for rx, ms, mod, aksi in pola if rx.match(path) and "POST" in ms), None)
+    for sfx in ("ship", "ship/preview", "receive", "receive/preview"):
+        assert cari(f"/api/stock-transfers/abc/{sfx}") == ("item", "P"), sfx
+    assert "pd2.pratinjau_void_kirim" in inspect.getsource(R.preview_void_stock_transfer) and "pd2.void_kirim" in inspect.getsource(R.void_stock_transfer)
+
+
+# ---- gudang SISTEM: SEMUA pembaca yang memilih/menghitung gudang aktif mengecualikannya
+UT, TR = uuid.uuid4(), uuid.uuid4()
+
+
+class KonGud:
+    """Tiruan tabel warehouses yang PAHAM saringan SQL: 'NOT is_system', ' AND is_active', 'WHERE id = $1'."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def _f(self, sql):
+        r = list(self.rows)
+        if "NOT is_system" in sql:
+            r = [x for x in r if not x["is_system"]]
+        if " AND is_active" in sql or "is_active = true" in sql:
+            r = [x for x in r if x["is_active"]]
+        return r
+
+    async def fetch(self, sql, *a):
+        return self._f(sql)
+
+    async def fetchrow(self, sql, *a):
+        r = self._f(sql)
+        if "WHERE id = $1" in sql or "AND id = $2" in sql:
+            kunci = a[0] if "WHERE id = $1" in sql else a[1]
+            r = [x for x in r if str(x["id"]) == str(kunci)]
+        return r[0] if r else None
+
+
+def _satu_gudang_plus_transit():
+    return KonGud([{"id": UT, "name": "Utama", "is_active": True, "is_default": False, "is_system": False},
+                   {"id": TR, "name": "Transit", "is_active": True, "is_default": False, "is_system": True}])
+
+
+def test_k8_satu_gudang_plus_transit_bawaan_tetap_ada_tak_memblok_so_kirim_grn_sj():
+    from app.services import grn_rencana as GR
+    from app.services import sj_so as SJ
+    from app.services import so_pengiriman as SP
+    k = _satu_gudang_plus_transit()
+    assert jalan(GBW.bawaan(k, T))["id"] == UT                                                    # bawaan: satu-satunya gudang NYATA (Transit tak dihitung aktif)
+    g, galat = jalan(SP._gudang(k, T, None, {"warehouse_id": None, "fase_lokasi": None, "fase_gudang_id": None}))
+    assert galat is None and g["id"] == str(UT)                                                   # SO kirim
+    assert jalan(GR._gudang(k, T, None, None))["id"] == UT                                        # GRN
+    assert jalan(SJ._gudang_default(k, T, None, None))[0]["id"] == UT                             # Surat Jalan dari SO
+
+
+def test_k8_gudang_sistem_tak_bisa_dipilih_by_id_di_dokumen():
+    from app.services import grn_rencana as GR
+    from app.services import sj_so as SJ
+    from app.services import so_pengiriman as SP
+    k = _satu_gudang_plus_transit()
+    assert jalan(GR._gudang(k, T, TR, None)) is None and jalan(SJ._gudang_default(k, T, TR, None))[0] is None
+    g, galat = jalan(SP._gudang(k, T, str(TR), {"warehouse_id": None}))
+    assert g is None and galat["code"] == "SO_FULFILL_WAREHOUSE_INVALID"
+
+
+@pytest.mark.parametrize("berkas,potongan", [
+    ("services/stok_sesuai.py", '"SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active AND NOT is_system "'),
+    ("services/stok_sesuai.py", '"SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"'),
+    ("services/nota_debit_gudang.py", 'FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY is_default'),
+    ("services/nota_kredit_rencana.py", 'FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY created_at LIMIT 1'),
+    ("routers/credit_notes.py", 'FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY created_at LIMIT 1'),
+    ("services/unified_agent/entity_resolver.py", "WHERE tenant_id = $1 AND NOT is_system AND name ILIKE $2"),
+    ("services/stok_baris.py", "ws.id = il.warehouse_id AND ws.is_system"),
+    ("services/grn_rencana.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("services/sj_so.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("services/so_fase_lokasi.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("services/pemindahan_barang.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("routers/metode_serah.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("services/gudang_bawaan.py", "WHERE tenant_id = $1 AND NOT is_system"),
+    ("services/so_pengiriman.py", "FROM warehouses WHERE tenant_id = $1 AND NOT is_system"),
+    ("routers/warehouses.py", 'where_clauses = ["tenant_id = $1", "NOT is_system"]'),
+    ("routers/warehouses.py", 'f"FROM warehouses WHERE tenant_id = $1 AND NOT is_system"'),
+])
+def test_k8_pembaca_gudang_menyaring_is_system(berkas, potongan):
+    assert potongan in (APP / berkas).read_text(), f"{berkas} lupa menyaring is_system"
+
+
+@pytest.mark.parametrize("berkas", ["routers/inventory.py", "routers/items.py", "routers/production.py", "routers/transactions.py"])
+def test_k8_pemilih_gudang_awal_menyaring_is_system(berkas):
+    assert re.search(r"FROM warehouses\s+WHERE tenant_id = \$1 AND is_active = true AND NOT is_system", (APP / berkas).read_text()), berkas
+
+
+def test_k8_mutasi_gudang_sistem_ditolak_dan_pb_tak_boleh_pakai_transit():
+    src = (APP / "routers" / "warehouses.py").read_text()
+    assert src.count('if existing["is_system"]:') == 3                                            # ubah, hapus, jadikan utama
+    assert "SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system" in (APP / "services" / "pemindahan_barang.py").read_text()
+
+
+def test_k8_transit_sistem_kode_dan_idempoten():
+    assert GTR_.KODE == "SYS-TRANSIT" and GTR_.NAMA == "Transit"
+    k = KonekD(transit_ada=False)
+    assert jalan(GTR_.pastikan_transit(k, T)) == GTR and k.transit_dibuat == 1
+    assert jalan(GTR_.pastikan_transit(k, T)) == GTR and k.transit_dibuat == 1                     # kedua kali: tak membuat lagi
+
+
+def test_k8_detail_memuat_teks_status_turunan():
+    assert "pd2.teks_status(" in inspect.getsource(RT._detail) and "diterima_sebagian" in inspect.getsource(RT._detail)
+    assert "pd2.teks_status(" in inspect.getsource(RT.get_stock_transfer)

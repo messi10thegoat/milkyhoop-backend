@@ -616,7 +616,9 @@ POST /api/stock-transfers/{transfer_id}/cancel/preview
 POST /api/stock-transfers/{transfer_id}/complete
 POST /api/stock-transfers/{transfer_id}/complete/preview
 POST /api/stock-transfers/{transfer_id}/receive
+POST /api/stock-transfers/{transfer_id}/receive/preview
 POST /api/stock-transfers/{transfer_id}/ship
+POST /api/stock-transfers/{transfer_id}/ship/preview
 POST /api/stock-transfers/{transfer_id}/void
 POST /api/stock-transfers/{transfer_id}/void/preview
 POST /api/storage-locations

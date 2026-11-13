@@ -35,7 +35,7 @@ def _blok(kode: str, pesan: str, status: int = 409) -> dict:
 
 async def _gudang(conn, tenant_id: str, gudang_id):
     return await conn.fetchrow(
-        "SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", gudang_id, tenant_id)
+        "SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", gudang_id, tenant_id)
 
 
 async def rencana(conn, ctx: dict, so_id, fase: Optional[str], gudang_id, kunci: bool = False) -> dict:

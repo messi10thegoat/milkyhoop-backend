@@ -1683,7 +1683,7 @@ class EntityResolver:
         try:
             rows = await self.db.fetch(
                 """SELECT id, name FROM warehouses
-                   WHERE tenant_id = $1 AND name ILIKE $2
+                   WHERE tenant_id = $1 AND NOT is_system AND name ILIKE $2
                    ORDER BY name LIMIT 5""",
                 self.tenant_id,
                 f"%{name_fragment}%",

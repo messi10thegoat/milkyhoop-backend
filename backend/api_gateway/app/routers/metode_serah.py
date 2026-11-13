@@ -144,7 +144,7 @@ async def _pref_terbaca(conn, tid: str) -> dict:
     p = await S.preferensi(conn, tid)
     lokasi = metode = None
     if p["lokasi_id"]:
-        w = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2",
+        w = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system",
                                 p["lokasi_id"], tid)
         if w:
             lokasi = {"id": str(w["id"]), "nama": w["name"], "aktif": w["is_active"]}
@@ -180,7 +180,7 @@ async def ubah_preferensi(request: Request, body: PreferensiUbah):
                         u = UUID(body.default_lokasi_kirim_id)
                     except ValueError:
                         raise HTTPException(status_code=422, detail="Gudang tidak dikenal.")
-                    w = await conn.fetchrow("SELECT is_active FROM warehouses WHERE id = $1 AND tenant_id = $2",
+                    w = await conn.fetchrow("SELECT is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system",
                                             u, c["tenant_id"])
                     if not w:
                         raise HTTPException(status_code=422, detail="Gudang tidak dikenal.")

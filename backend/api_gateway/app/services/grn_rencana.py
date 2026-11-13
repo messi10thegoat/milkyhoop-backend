@@ -105,7 +105,7 @@ async def _gudang(conn, tenant_id: str, diminta, po_gudang):
     """-> baris gudang (id, name, is_active) atau None: diminta -> gudang PO -> gudang bawaan tenant (pola /fulfill)."""
     for kandidat in (diminta, po_gudang):
         if kandidat is not None:
-            return await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", kandidat, tenant_id)
+            return await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", kandidat, tenant_id)
     return await gudang_bawaan.bawaan(conn, tenant_id)  # GUDANG-NONSTOK: aturan SAMA dengan kirim SO (satu aktif / satu is_default)
 
 

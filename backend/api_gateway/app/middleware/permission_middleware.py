@@ -961,8 +961,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/stock-transfers/[^/]+/(complete|complete/preview)$", ["POST"], "item", "P"),
     (r"^/api/stock-transfers/[^/]+/(void/preview|cancel/preview)$", ["POST"], "item", "V"),
     (r"^/api/stock-transfers/[^/]+/void$", ["POST"], "item", "V"),
-    (r"^/api/stock-transfers/[^/]+/receive$", ["POST"], "item", "P"),
-    (r"^/api/stock-transfers/[^/]+/ship$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/(receive|receive/preview)$", ["POST"], "item", "P"),
+    (r"^/api/stock-transfers/[^/]+/(ship|ship/preview)$", ["POST"], "item", "P"),
     # Baca (12 Okt 2026, kebutuhan FE PB; GET tak-terpetakan = tertutup): modul item, aksi R.
     (r"^/api/stock-transfers$", ["GET"], "item", "R"),
     (r"^/api/stock-transfers/(summary|in-transit)$", ["GET"], "item", "R"),

@@ -8,7 +8,7 @@ Terukur 2 Nov: grapgrap & kaos masing-masing 2 aktif + 1 is_default -> hasil lam
 Pemanggil hanya memanggilnya bila ADA baris ber-stok.
 """
 
-KOLOM = "SELECT id, name, is_active, is_default FROM warehouses WHERE tenant_id = $1"
+KOLOM = "SELECT id, name, is_active, is_default FROM warehouses WHERE tenant_id = $1 AND NOT is_system"  # K8: Transit (gudang sistem) bukan bawaan
 
 
 async def bawaan(conn, tid: str):

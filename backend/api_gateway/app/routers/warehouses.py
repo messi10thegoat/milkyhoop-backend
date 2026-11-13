@@ -76,7 +76,7 @@ async def list_warehouses(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        where_clauses = ["tenant_id = $1"]
+        where_clauses = ["tenant_id = $1", "NOT is_system"]  # K8: gudang sistem (Transit) tak tampil
         params = [ctx["tenant_id"]]
         param_idx = 2
 
@@ -140,7 +140,7 @@ async def warehouses_summary(request: Request):
     async with pool.acquire() as conn:
         r = await conn.fetchrow(f"SELECT COUNT(*) FILTER (WHERE {GD.sql_stok_minus()}) AS stok_minus_count, "
                                 f"COUNT(*) FILTER (WHERE NOT is_active) AS nonaktif_count, COUNT(*) AS total_count "
-                                f"FROM warehouses WHERE tenant_id = $1", ctx["tenant_id"])
+                                f"FROM warehouses WHERE tenant_id = $1 AND NOT is_system", ctx["tenant_id"])
     return {"success": True, "data": {k: int(r[k]) for k in ("stok_minus_count", "nonaktif_count", "total_count")}}
 
 
@@ -290,6 +290,8 @@ async def update_warehouse(
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
+        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
+            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
 
         # Check code uniqueness if changing
         if body.code and body.code != existing["code"]:
@@ -373,6 +375,8 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
+        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
+            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
 
         # U9: stok dari LEDGER per gudang, bersaring tenant (dulu cache warehouse_stock floor-0 tanpa tenant) -- penentu SAMA dgn
         # aksi_tersedia.nonaktifkan (services/gudang_daftar)
@@ -519,6 +523,8 @@ async def set_default_warehouse(request: Request, warehouse_id: UUID):
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Warehouse not found")
+        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
+            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
         alasan = GD.alasan_utama(existing["is_active"], False)  # penentu SAMA dgn aksi_tersedia.jadikan_utama; sudah utama = idempoten
         if alasan:
             raise HTTPException(status_code=400, detail=alasan)
