@@ -13,4 +13,5 @@ SAB=(
  "a6 search tanpa nama/SKU barang|$SSF|s#(i.product_name ILIKE \${mulai + i} OR i.product_code ILIKE \${mulai + i})#(FALSE)#|$T"
  "a7 search tanpa catatan|$SSF|s# OR {a}.notes ILIKE \${mulai + i}##|$T"
  "a8 riwayat tak membaca audit|$SSF|s#{\"stock_adjustment\": \[sa\[\"id\"\]\]}, {\"stock_adjustment\": True}, limit)#{}, {}, limit)#|$T"
+ "a9 search tanpa item_code (SKU Barang)|$SSF|s#OR i.product_id IN (SELECT pr.id FROM products pr WHERE pr.tenant_id = {a}.tenant_id AND pr.item_code ILIKE \${mulai + i})#OR FALSE#|$T"
 )

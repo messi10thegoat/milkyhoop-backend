@@ -34,8 +34,9 @@ def test_syarat_cari_kosong_dan_per_kata():
     assert SS.syarat_cari(None, 2) == (None, []) and SS.syarat_cari("   ", 2) == (None, [])
     c, p = SS.syarat_cari("kaos 001", 5)
     assert p == ["%kaos%", "%001%"] and "$5" in c and "$6" in c and c.count(" AND ") >= 1
-    for kolom in ("adjustment_number", "notes", "i.product_name", "i.product_code", "stock_adjustment_items"):
-        assert kolom in c                                                        # nomor, catatan, nama barang, SKU, via baris
+    for kolom in ("adjustment_number", "notes", "i.product_name", "i.product_code", "stock_adjustment_items", "pr.item_code"):
+        assert kolom in c                                                        # nomor, catatan, nama barang, kode baris, item_code (SKU Barang) via baris
+    assert "pr.tenant_id = stock_adjustments.tenant_id" in c                    # join master barang bertenant
 
 
 def test_syarat_cari_satu_kata_tanpa_kurung_ganda_dan_alias():

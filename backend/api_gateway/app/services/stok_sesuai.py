@@ -64,12 +64,13 @@ def documents_baris(status: Optional[str], journal_id) -> list:
 
 def syarat_cari(search, mulai: int, a: str = "stock_adjustments") -> tuple:
     """(predikat, parameter) ?search= daftar DAN /summary?search= (SATU predikat, BUG-197): tiap kata wajib cocok salah satu: nomor penyesuaian, catatan,
-    nama/kode(SKU) barang pada baris. Baris dibatasi lewat induk (`a`, sudah bersaring tenant). Tanpa kata -> (None, [])."""
+    nama barang, kode di baris (barcode), dan item_code/SKU master barang (join bertenant) pada baris. Baris dibatasi lewat induk (`a`, sudah bersaring tenant). Tanpa kata -> (None, [])."""
     kata = search.strip().split() if isinstance(search, str) else []
     if not kata:
         return None, []
     s = [(f"({a}.adjustment_number ILIKE ${mulai + i} OR {a}.notes ILIKE ${mulai + i} OR EXISTS (SELECT 1 FROM stock_adjustment_items i "
-          f"WHERE i.stock_adjustment_id = {a}.id AND (i.product_name ILIKE ${mulai + i} OR i.product_code ILIKE ${mulai + i})))") for i in range(len(kata))]
+          f"WHERE i.stock_adjustment_id = {a}.id AND ((i.product_name ILIKE ${mulai + i} OR i.product_code ILIKE ${mulai + i}) "
+          f"OR i.product_id IN (SELECT pr.id FROM products pr WHERE pr.tenant_id = {a}.tenant_id AND pr.item_code ILIKE ${mulai + i}))))") for i in range(len(kata))]
     return (s[0] if len(s) == 1 else f"({' AND '.join(s)})"), [f"%{w}%" for w in kata]
 
 

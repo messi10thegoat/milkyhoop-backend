@@ -2,7 +2,7 @@
 1 galat berkode: GET detail/history/documents id tak ada -> PENYESUAIAN_TIDAK_DITEMUKAN (404), journal-entries id rusak -> ID_PENYESUAIAN_TIDAK_VALID (400)
 · 2 void/preview TANPA alasan (penyesuaian terposting): 200, ok=false, blok PENYESUAIAN_ALASAN_WAJIB, jurnal pembalik tetap terlihat, nol tulisan; DENGAN alasan ok=true
 · 3 riwayat: PATCH draf -> 1 baris STOCK_ADJUSTMENT_UPDATED beraktor + medan + total sebelum/sesudah; pratinjau ubah NOL audit; DELETE draf -> baris hapus; riwayat id yang dihapus terbaca (dihapus=true), id acak 404
-· 4 ?search=: cocok nomor / catatan / nama barang / SKU barang di baris; kata tak ada -> 0; sum_total mengikuti search (== Σ total_value non-void baris ditemukan); /summary?search= draf_count sejalan."""
+· 4 ?search=: cocok nomor / catatan / nama barang / kode baris (barcode) / item_code (SKU Barang) di baris; kata tak ada -> 0; sum_total mengikuti search (== Σ total_value non-void baris ditemukan); /summary?search= draf_count sejalan."""
 import asyncio
 import sys
 import uuid
@@ -57,11 +57,15 @@ async def main():
     pool = await SA.get_pool()
     async with pool.acquire() as c:
         for tid in (KA, NY):
-            p = await c.fetchrow("SELECT id, nama_produk AS name, barcode AS item_code FROM products WHERE tenant_id = $1 AND item_type = 'goods' ORDER BY (COALESCE(barcode, '') <> '') DESC, created_at LIMIT 1", tid)
+            p = await c.fetchrow("SELECT id, nama_produk AS name, barcode AS item_code, item_code AS sku FROM products WHERE tenant_id = $1 AND item_type = 'goods' ORDER BY (COALESCE(barcode, '') <> '') DESC, created_at LIMIT 1", tid)
             if p is not None and not p["item_code"]:   # klon saja: beri barcode uji supaya kode baris (product_code) ada untuk uji ?search= SKU
                 kode_uji = "UJI197-" + uuid.uuid4().hex[:6].upper()
                 await c.execute("UPDATE products SET barcode = $3 WHERE tenant_id = $1 AND id = $2", tid, p["id"], kode_uji)
-                p = {"id": p["id"], "name": p["name"], "item_code": kode_uji}
+                p = {"id": p["id"], "name": p["name"], "item_code": kode_uji, "sku": p["sku"]}
+            if p is not None and not p["sku"]:   # klon saja: item_code (SKU Barang) uji bila kosong
+                sku_uji = "BRG-UJI" + uuid.uuid4().hex[:5].upper()
+                await c.execute("UPDATE products SET item_code = $3 WHERE tenant_id = $1 AND id = $2", tid, p["id"], sku_uji)
+                p = {"id": p["id"], "name": p["name"], "item_code": p["item_code"], "sku": sku_uji}
             cek(f"prasyarat {tid}: barang goods ada (barcode uji diisi di klon bila kosong)", p is not None)
             if p is None:
                 continue
@@ -115,7 +119,7 @@ async def main():
             # 4 search
             s4 = await buat(tanda + " cari-catatan", "3")
             nomor = await c.fetchval("SELECT adjustment_number FROM stock_adjustments WHERE tenant_id = $1 AND id = $2", tid, s4)
-            for nama, kata in (("nomor", nomor), ("catatan", tanda), ("nama barang", p["name"].split()[0]), ("SKU barang", p["item_code"])):
+            for nama, kata in (("nomor", nomor), ("catatan", tanda), ("nama barang", p["name"].split()[0]), ("kode baris (barcode)", p["item_code"]), ("SKU Barang (item_code master, mis. BRG-xxxx)", p["sku"])):
                 h = await daftar(c, tid, kata)
                 ids = {x["id"] for x in h["items"]}
                 cek(f"4 {tid} ?search= {nama}: dokumen ditemukan", str(s4) in ids, f"{kata!r} -> {h['total']} baris")
