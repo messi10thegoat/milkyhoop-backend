@@ -19,6 +19,7 @@ from ..schemas.price_lists import (
     PriceListDropdownResponse,
     ResolveHargaRequest,
 )
+from ..services import harga_aksi as HA
 from ..services import harga_daftar as HD
 from ..services import harga_jual as HJ
 from ..services import satuan_dasar as SD
@@ -56,6 +57,8 @@ async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
         raise GalatBerkode(400, "BARANG_TIDAK_DITEMUKAN", "Barang tidak ditemukan di usaha ini.", field="item_id")
     if not await conn.fetchval("SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2", pid, tid):
         raise GalatBerkode(400, "BARANG_TIDAK_DITEMUKAN", "Barang tidak ditemukan di usaha ini.", field="item_id")
+    if line_id is None:  # tambah baris: barang tak dijual/nonaktif ditolak (mengubah harga baris lama tetap boleh)
+        await HA.periksa_barang_dijual(conn, tid, pid)
     if SD.normal(item.unit):
         await SD.qty_dasar(conn, tid, pid, item.unit, item.min_quantity, "konversi")  # tanpa konversi -> 400 berkalimat
     if await conn.fetchval(
@@ -398,8 +401,8 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            try:  # kode / bawaan ganda (uq_price_lists_tenant_code, uq_price_lists_bawaan) -> 409 berkalimat
-                async with conn.transaction():
+            async def kerja():
+                try:  # kode / bawaan ganda (uq_price_lists_tenant_code, uq_price_lists_bawaan) -> 409 berkalimat
                     r = await siapkan_buat_daftar(conn, ctx["tenant_id"], body)  # BUG-027: penentu SAMA dengan pratinjau
                     pl_id = await conn.fetchval(
                         """INSERT INTO price_lists (tenant_id, code, name, price_type, default_discount, default_markup, start_date,
@@ -410,13 +413,11 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
                     )
                     for item in body.items or []:
                         await tulis_baris_harga(conn, ctx["tenant_id"], pl_id, item)
-            except asyncpg.exceptions.UniqueViolationError as e:
-                raise _galat_unik(e)
-            return {
-                "success": True,
-                "message": "Daftar harga dibuat.",
-                "data": {"id": str(pl_id), "code": r["code"]},
-            }
+                except asyncpg.exceptions.UniqueViolationError as e:
+                    raise _galat_unik(e)
+                return {"success": True, "message": "Daftar harga dibuat.", "data": {"id": str(pl_id), "code": r["code"]}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_BUAT", "baru", body.model_dump(mode="json"), kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -428,43 +429,39 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
 async def update_price_list(
     request: Request, price_list_id: UUID, body: UpdatePriceListRequest
 ):
+    """Ubah header daftar: penentu SAMA dgn POST /{id}/edit/preview (HA.rencana_ubah) + idempotensi (X-Idempotency-Key)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id, code FROM price_lists WHERE id = $1 AND tenant_id = $2",
-                price_list_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail=TAK_ADA)
             update_data = body.model_dump(exclude_unset=True)
-            if not update_data:
-                return {
-                    "success": True,
-                    "message": "Tidak ada perubahan.",
-                    "data": {"id": str(price_list_id)},
-                }
-            updates, params, idx = [], [], 1
-            for field, value in update_data.items():
-                updates.append(f"{field} = ${idx}")
-                params.append(value)
-                idx += 1
-            updates.append("updated_at = NOW()")
-            params.extend([price_list_id, ctx["tenant_id"]])
-            try:
-                await conn.execute(
-                    f"UPDATE price_lists SET {', '.join(updates)} WHERE id = ${idx} AND tenant_id = ${idx+1}",
-                    *params,
-                )
-            except asyncpg.exceptions.UniqueViolationError as e:  # bawaan / kode ganda -> 409 berkalimat
-                raise _galat_unik(e)
-            return {
-                "success": True,
-                "message": "Daftar harga diubah.",
-                "data": {"id": str(price_list_id)},
-            }
+
+            async def kerja():
+                existing = await HA.ukur_daftar(conn, ctx["tenant_id"], price_list_id)
+                if not existing:
+                    raise HTTPException(status_code=404, detail=TAK_ADA)
+                if not update_data:
+                    return {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(price_list_id)}}
+                kode = " ".join(str(update_data.get("code") or "").split())
+                ganda = bool(kode) and await HA.kode_dipakai(conn, ctx["tenant_id"], kode, price_list_id)
+                HA.tolak_bila_blok(HA.rencana_ubah(existing, update_data, ganda))
+                updates, params, idx = [], [], 1
+                for field, value in update_data.items():
+                    updates.append(f"{field} = ${idx}")
+                    params.append(value)
+                    idx += 1
+                updates.append("updated_at = NOW()")
+                params.extend([price_list_id, ctx["tenant_id"]])
+                try:
+                    await conn.execute(
+                        f"UPDATE price_lists SET {', '.join(updates)} WHERE id = ${idx} AND tenant_id = ${idx+1}",
+                        *params,
+                    )
+                except asyncpg.exceptions.UniqueViolationError as e:  # bawaan / kode ganda -> 409 berkalimat
+                    raise _galat_unik(e)
+                return {"success": True, "message": "Daftar harga diubah.", "data": {"id": str(price_list_id)}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_UBAH", price_list_id, body.model_dump(mode="json", exclude_unset=True), kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -474,26 +471,19 @@ async def update_price_list(
 
 @router.delete("/{price_list_id}", response_model=PriceListResponse)
 async def delete_price_list(request: Request, price_list_id: UUID):
+    """Hapus permanen: DITOLAK bila dipakai pelanggan (menyebut N pelanggan; penentu SAMA dgn POST /{id}/delete/preview). Nonaktifkan = POST /{id}/status."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id, code FROM price_lists WHERE id = $1 AND tenant_id = $2",
-                price_list_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail=TAK_ADA)
-            await conn.execute(
-                "UPDATE price_lists SET is_active = false, is_default = false, updated_at = NOW() WHERE id = $1",
-                price_list_id,
-            )
-            return {
-                "success": True,
-                "message": "Daftar harga dinonaktifkan.",
-                "data": {"id": str(price_list_id)},
-            }
+            async def kerja():
+                tid = ctx["tenant_id"]
+                r = await HA.ukur_daftar(conn, tid, price_list_id)
+                HA.tolak_bila_blok(HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id)))
+                await HA.terapkan_hapus(conn, tid, price_list_id)
+                return {"success": True, "message": "Daftar harga dihapus.", "data": {"id": str(price_list_id)}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_HAPUS", price_list_id, {"hapus": True}, kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -509,19 +499,22 @@ async def add_item_to_price_list(
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id FROM price_lists WHERE id = $1 AND tenant_id = $2",
-                price_list_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail=TAK_ADA)
-            item_id = await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, body)
-            return {
-                "success": True,
-                "message": "Harga ditambahkan ke daftar.",
-                "data": {"id": str(item_id), **await HD.teks_baris(conn, ctx["tenant_id"], item_id)},
-            }
+            async def kerja():
+                existing = await conn.fetchrow(
+                    "SELECT id FROM price_lists WHERE id = $1 AND tenant_id = $2",
+                    price_list_id,
+                    ctx["tenant_id"],
+                )
+                if not existing:
+                    raise HTTPException(status_code=404, detail=TAK_ADA)
+                item_id = await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, body)
+                return {
+                    "success": True,
+                    "message": "Harga ditambahkan ke daftar.",
+                    "data": {"id": str(item_id), **await HD.teks_baris(conn, ctx["tenant_id"], item_id)},
+                }
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_BARIS_TAMBAH", price_list_id, body.model_dump(mode="json"), kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -590,11 +583,13 @@ async def update_price_list_item(request: Request, price_list_id: UUID, line_id:
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            async with conn.transaction():
+            async def kerja():
                 baru = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, body, True)
                 await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, baru, line_id=line_id)
-            return {"success": True, "message": "Harga diperbarui.",
-                    "data": {"id": str(line_id), **await HD.teks_baris(conn, ctx["tenant_id"], line_id)}}
+                return {"success": True, "message": "Harga diperbarui.",
+                        "data": {"id": str(line_id), **await HD.teks_baris(conn, ctx["tenant_id"], line_id)}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_BARIS_UBAH", line_id, body.model_dump(mode="json", exclude_unset=True), kerja)
     except HTTPException:
         raise
     except Exception as e:
@@ -610,29 +605,154 @@ async def remove_item_from_price_list(
         ctx = get_user_context(request)
         pool = await get_pool()
         async with pool.acquire() as conn:
-            pl = await conn.fetchrow(
-                "SELECT id FROM price_lists WHERE id = $1 AND tenant_id = $2",
-                price_list_id,
-                ctx["tenant_id"],
-            )
-            if not pl:
-                raise HTTPException(status_code=404, detail=TAK_ADA)
-            await conn.execute(
-                "DELETE FROM price_list_items WHERE id = $1 AND price_list_id = $2",
-                item_id,
-                price_list_id,
-            )
-            return {
-                "success": True,
-                "message": "Harga dihapus dari daftar.",
-                "data": {"id": str(item_id)},
-            }
+            async def kerja():
+                tid = ctx["tenant_id"]
+                HA.tolak_bila_blok(HA.rencana_hapus_baris(await HA.ukur_baris_harga(conn, tid, price_list_id, item_id)))
+                await conn.execute(
+                    "DELETE FROM price_list_items WHERE id = $1 AND price_list_id = $2 AND price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)",
+                    item_id, price_list_id, tid,
+                )
+                return {"success": True, "message": "Harga dihapus dari daftar.", "data": {"id": str(item_id)}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_BARIS_HAPUS", item_id, {"hapus": True}, kerja)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=GAGAL)
 
+
+
+async def _baca_saja(fungsi):
+    """Transaksi READ ONLY untuk pratinjau (nol tulis, rollback)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            return await fungsi(conn)
+        finally:
+            await tr.rollback()
+
+
+def _aktif_dari(body) -> Optional[bool]:
+    v = (body or {}).get("aktif")
+    return v if isinstance(v, bool) else None
+
+
+@router.post("/{price_list_id}/status/preview")
+async def preview_status_daftar(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau nonaktifkan/aktifkan ({aktif: bool}): peringatan pelanggan terdampak + bawaan; penentu SAMA dgn POST /{id}/status."""
+    ctx = get_user_context(request)
+    ke = _aktif_dari(body)
+    if ke is None:
+        return {"success": True, "data": {"ok": False, "blocks": [{"code": "DATA_TIDAK_SAH", "message": "Isi aktif dengan true atau false.", "field": "aktif"}],
+                                          "peringatan": [], "rencana": None, "payload": body}}
+
+    async def f(conn):
+        r = await HA.ukur_daftar(conn, ctx["tenant_id"], price_list_id)
+        return HA.rencana_status(r, await HA.ukur_pelanggan(conn, ctx["tenant_id"], price_list_id), ke)
+    return {"success": True, "data": {**await _baca_saja(f), "payload": body}}
+
+
+@router.post("/{price_list_id}/status")
+async def ubah_status_daftar(request: Request, price_list_id: UUID, body: dict):
+    try:
+        ctx = get_user_context(request)
+        ke = _aktif_dari(body)
+        if ke is None:
+            raise GalatBerkode(400, "DATA_TIDAK_SAH", "Isi aktif dengan true atau false.", field="aktif")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async def kerja():
+                tid = ctx["tenant_id"]
+                r = await HA.ukur_daftar(conn, tid, price_list_id)
+                HA.tolak_bila_blok(HA.rencana_status(r, await HA.ukur_pelanggan(conn, tid, price_list_id), ke))
+                await HA.terapkan_status(conn, tid, price_list_id, ke)
+                return {"success": True, "message": "Daftar harga diaktifkan." if ke else "Daftar harga dinonaktifkan.",
+                        "data": {"id": str(price_list_id), "aktif": ke}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_STATUS", price_list_id, {"aktif": ke}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GAGAL)
+
+
+@router.post("/{price_list_id}/default/preview")
+async def preview_bawaan_daftar(request: Request, price_list_id: UUID, body: Optional[dict] = None):
+    """Pratinjau jadikan bawaan: menyebut bawaan lama yang dicabut; penentu SAMA dgn POST /{id}/default."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        r = await HA.ukur_daftar(conn, ctx["tenant_id"], price_list_id)
+        return HA.rencana_bawaan(r, await HA.ukur_bawaan(conn, ctx["tenant_id"]))
+    return {"success": True, "data": {**await _baca_saja(f), "payload": body or {}}}
+
+
+@router.post("/{price_list_id}/default")
+async def jadikan_bawaan_daftar(request: Request, price_list_id: UUID, body: Optional[dict] = None):
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async def kerja():
+                tid = ctx["tenant_id"]
+                r = await HA.ukur_daftar(conn, tid, price_list_id)
+                HA.tolak_bila_blok(HA.rencana_bawaan(r, await HA.ukur_bawaan(conn, tid)))
+                await HA.terapkan_bawaan(conn, tid, price_list_id)
+                return {"success": True, "message": "Daftar harga dijadikan bawaan.", "data": {"id": str(price_list_id)}}
+            async with conn.transaction():
+                return await HA.idem_aksi(conn, ctx, request, "DH_BAWAAN", price_list_id, {"bawaan": True}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GAGAL)
+
+
+@router.post("/{price_list_id}/delete/preview")
+async def preview_hapus_daftar(request: Request, price_list_id: UUID, body: Optional[dict] = None):
+    """Pratinjau hapus: DITOLAK bila dipakai pelanggan (N pelanggan); penentu SAMA dgn penghapusan daftar (HA.rencana_hapus)."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        tid = ctx["tenant_id"]
+        r = await HA.ukur_daftar(conn, tid, price_list_id)
+        return HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id))
+    return {"success": True, "data": {**await _baca_saja(f), "payload": body or {}}}
+
+
+@router.post("/{price_list_id}/edit/preview")
+async def preview_ubah_daftar(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau ubah header: daftar perubahan {medan, dari, ke} + blok (kode ganda, masa berlaku); penentu SAMA dgn PATCH /{id}."""
+    from pydantic import ValidationError
+    from .customers import blok_validasi
+    ctx = get_user_context(request)
+    payload = dict(body or {})
+    try:
+        b = UpdatePriceListRequest.model_validate(payload)
+    except ValidationError as e:
+        return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "peringatan": [], "rencana": None, "payload": payload}}
+    dat = b.model_dump(exclude_unset=True)
+
+    async def f(conn):
+        tid = ctx["tenant_id"]
+        r = await HA.ukur_daftar(conn, tid, price_list_id)
+        kode = " ".join(str(dat.get("code") or "").split())
+        return HA.rencana_ubah(r, dat, bool(kode) and r is not None and await HA.kode_dipakai(conn, tid, kode, price_list_id))
+    return {"success": True, "data": {**await _baca_saja(f), "payload": payload}}
+
+
+@router.post("/{price_list_id}/items/{line_id}/delete/preview")
+async def preview_hapus_baris(request: Request, price_list_id: UUID, line_id: UUID, body: Optional[dict] = None):
+    """Pratinjau hapus SATU baris harga (barang, satuan, jumlah minimum, harga); penentu SAMA dgn penghapusan baris."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        return HA.rencana_hapus_baris(await HA.ukur_baris_harga(conn, ctx["tenant_id"], price_list_id, line_id))
+    return {"success": True, "data": {**await _baca_saja(f), "payload": body or {}}}
 
 
 @router.post("/resolve/{modul}")
