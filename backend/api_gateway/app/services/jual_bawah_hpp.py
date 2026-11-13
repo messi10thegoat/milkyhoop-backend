@@ -155,30 +155,34 @@ async def peringatan_terima(conn, tid: str, user: Optional[dict], rencana: dict)
         return []
 
 
-# Dokumen TERSIMPAN (pratinjau terbit/konfirmasi/kirim): header, tabel baris, kolom penunjuk, urutan tampil. Nama tetap (bukan masukan pengguna).
+# Dokumen TERSIMPAN (pratinjau terbit/konfirmasi/kirim): header, tabel baris, kolom penunjuk, urutan tampil, kolom diskon baris nominal (hanya faktur). Nama tetap.
 JENIS_TERSIMPAN = {
-    "faktur": ("sales_invoices", "sales_invoice_items", "invoice_id", "i.line_number, i.id"),
-    "so": ("sales_orders", "sales_order_items", "sales_order_id", "i.sort_order, i.id"),
-    "penawaran": ("quotes", "quote_items", "quote_id", "i.sort_order, i.id"),
+    "faktur": ("sales_invoices", "sales_invoice_items", "invoice_id", "i.line_number, i.id", "i.discount_amount"),
+    "so": ("sales_orders", "sales_order_items", "sales_order_id", "i.sort_order, i.id", "NULL::numeric"),
+    "penawaran": ("quotes", "quote_items", "quote_id", "i.sort_order, i.id", "NULL::numeric"),
 }
 
 
 async def baris_tersimpan(conn, tid: str, jenis: str, doc_id) -> List[dict]:
-    """Baris dokumen yang SUDAH tersimpan -> masukan hitung_jual. nilai = jumlah_baris (neto sesudah diskon baris) dikurangi bagian diskon DOKUMEN
-    (pro-rata menurut jumlah_baris, aturan `allocate` yang sama dgn compute_document). Baris tanpa jumlah_baris (data lama) dilewati."""
-    from .sales_doc_calc import allocate
-    hdr, items, fk, urut = JENIS_TERSIMPAN[jenis]
+    """Baris dokumen TERSIMPAN -> masukan hitung_jual lewat KALKULATOR BERSAMA (sales_doc_calc.compute_document, SAMA dengan /calculate): harga bersih baris
+    = qty x harga - diskon baris (persen/nominal) [atau jumlah_baris bila pengguna mengetiknya], dikurangi bagian diskon dokumen pro-rata (dpp_harga_jual).
+    BUG-207 REOPEN: jumlah_baris (V427) HANYA terisi bila pengguna mengetik jumlah baris sendiri; baris biasa NULL -> dulu dilewati -> peringatan [] palsu."""
+    from . import uang_presisi as UP
+    from .sales_doc_calc import compute_document
+    hdr, items, fk, urut, kolom_rp = JENIS_TERSIMPAN[jenis]
     h = await conn.fetchrow(f"SELECT discount_amount FROM {hdr} WHERE id = $1::uuid AND tenant_id = $2", str(doc_id), tid)
     if h is None:
         return []
     rows = await conn.fetch(
-        f"SELECT i.item_id, i.quantity, i.unit, i.jumlah_baris FROM {items} i WHERE i.{fk} = $1::uuid "
-        f"AND EXISTS (SELECT 1 FROM {hdr} h WHERE h.id = i.{fk} AND h.tenant_id = $2) ORDER BY {urut}", str(doc_id), tid)
-    bobot = [Decimal(str(r["jumlah_baris"])) if r["jumlah_baris"] is not None else NOL for r in rows]
+        f"SELECT i.item_id, i.quantity, i.unit, i.unit_price, i.discount_percent, {kolom_rp} AS discount_amount, i.jumlah_baris FROM {items} i "
+        f"WHERE i.{fk} = $1::uuid AND EXISTS (SELECT 1 FROM {hdr} h WHERE h.id = i.{fk} AND h.tenant_id = $2) ORDER BY {urut}", str(doc_id), tid)
+    if not rows:
+        return []
+    presisi = await UP.presisi_dari(conn, tid, hdr, doc_id)
+    baris = [{"item_id": r["item_id"], "quantity": r["quantity"], "unit": r["unit"], "unit_price": r["unit_price"],
+              "discount_percent": r["discount_percent"], "discount_amount": r["discount_amount"], "jumlah_baris": r["jumlah_baris"]} for r in rows]
     diskon = Decimal(str(h["discount_amount"] or 0))
-    bagian = allocate(diskon, bobot) if diskon > NOL and sum(bobot, NOL) > NOL else [NOL] * len(rows)
-    return [{"baris": n, "item_id": r["item_id"], "quantity": r["quantity"], "unit": r["unit"], "nilai": b - a}
-            for n, (r, b, a) in enumerate(zip(rows, bobot, bagian), 1) if r["jumlah_baris"] is not None]
+    return baris_dari_hasil(compute_document(baris, doc_discount_amount=diskon, presisi=presisi)["items"])
 
 
 async def peringatan_tersimpan(conn, tid: str, user: Optional[dict], jenis: str, doc_id) -> List[dict]:

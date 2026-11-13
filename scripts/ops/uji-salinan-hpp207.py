@@ -9,6 +9,7 @@ import uuid
 from datetime import date
 from decimal import Decimal as D
 
+from fastapi import Response
 from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
@@ -94,6 +95,7 @@ async def main():
             pid, dasar = b["id"], b["dasar"]
             hpp = (await JB._hpp_barang(c, tid, [pid]))[str(pid)]["hpp"]
             rq = req(tid, uid)
+            rb = None
             bawah, atas = (hpp / 2).quantize(D("0.01")), (hpp * 2).quantize(D("0.01"))
             # A pemilik (berizin REPORT R)
             cek(f"A {tid} pemilik boleh lihat HPP (REPORT R)", await JB.boleh_lihat_hpp(rq.state.user) is True)
@@ -165,6 +167,51 @@ async def main():
                         len(baris) >= 1 and all("nilai" in x and "item_id" in x for x in baris) and isinstance(per_, list))
                 except Exception as e:  # noqa: BLE001
                     cek(f"D {tid} {jenis} tersimpan tanpa galat", False, f"{type(e).__name__}: {e}")
+            # E dokumen TERSIMPAN NYATA (BUG-207 REOPEN): dokumen DIBUAT di klon lewat handler ASLI, lalu KETIGA pratinjau tersimpan dipanggil dgn SQL asli
+            cust = await c.fetchval("/* tenant_id */ SELECT id FROM customers WHERE tenant_id = $1 ORDER BY created_at LIMIT 1", tid)
+            if cust is None:
+                print(f"CATATAN E {tid}: tak ada pelanggan di klon; dokumen tersimpan tak bisa dibuat", flush=True)
+            else:
+                hari = date.today()
+
+                def _id(r):
+                    d = r["data"] if isinstance(r, dict) else getattr(r, "data", r)
+                    return str(d["id"] if isinstance(d, dict) else d.id)
+
+                async def buat(rq_, harga):
+                    it_so = OS.SalesOrderItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)
+                    so = await SOR.create_sales_order(rq_, OS.CreateSalesOrderRequest(order_date=hari, customer_id=str(cust), customer_name="UJI207", items=[it_so]), Response())
+                    qu = await QU.create_quote(rq_, QS.CreateQuoteRequest(quote_date=hari, customer_id=str(cust), customer_name="UJI207", items=[
+                        QS.QuoteItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)]), Response())
+                    si = await SI.create_invoice(rq_, IS.CreateInvoiceRequest(customer_name="UJI207", invoice_date=hari, items=[
+                        IS.InvoiceItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)]), Response())
+                    return _id(so), _id(qu), _id(si)
+
+                async def lihat(rq_, ids):
+                    so_id, qu_id, si_id = ids
+                    return {"SO": (await SOR.preview_confirm_sales_order(rq_, so_id)).data["peringatan"],
+                            "Penawaran": (await QU.preview_send_quote(rq_, qu_id))["data"]["peringatan"],
+                            "Faktur": (await SI.preview_post_invoice(rq_, uuid.UUID(si_id), skip_deposit_ids=[]))["data"]["peringatan"]}
+                try:
+                    ids_bawah, ids_atas = await buat(rq, bawah), await buat(rq, atas)
+                    pv_bawah, pv_atas = await lihat(rq, ids_bawah), await lihat(rq, ids_atas)
+                    calc = await tiga_dokumen(rq, pid, dasar, bawah)
+                    for nama in ("SO", "Penawaran", "Faktur"):
+                        p = pv_bawah[nama]
+                        c_ = per(calc[nama])
+                        sama = len(p) == 1 and len(c_) == 1 and (p[0]["code"], p[0].get("harga_jual"), p[0].get("hpp"), p[0].get("selisih_pct")) == (
+                            c_[0]["code"], c_[0].get("harga_jual"), c_[0].get("hpp"), c_[0].get("selisih_pct"))
+                        cek(f"E {tid} {nama} TERSIMPAN (dokumen nyata di klon) harga {bawah} < HPP {hpp}: pratinjau tersimpan memuat 1 JUAL_DI_BAWAH_HPP berangka, SAMA dgn /calculate",
+                            len(p) == 1 and p[0]["code"] == "JUAL_DI_BAWAH_HPP" and p[0]["butuh_konfirmasi"] is True and "hpp" in p[0] and sama, f"tersimpan={p} calculate={c_}")
+                        cek(f"E {tid} {nama} TERSIMPAN harga {atas} > HPP: pratinjau tersimpan TANPA peringatan", pv_atas[nama] == [], f"{pv_atas[nama]}")
+                    if rb is not None:
+                        pv_rb = await lihat(rb, ids_bawah)
+                        for nama in ("SO", "Penawaran", "Faktur"):
+                            p = pv_rb[nama]
+                            alasan = bocor(p[0], angka) if len(p) == 1 else ["jumlah peringatan != 1"]
+                            cek(f"E {tid} {nama} TERSIMPAN tak berizin: peringatan ada, kunci PERSIS, NILAI HPP/selisih tak muncul", len(p) == 1 and alasan == [], f"{alasan} {p}")
+                except Exception as e:  # noqa: BLE001
+                    cek(f"E {tid} dokumen tersimpan nyata: buat + 3 pratinjau tanpa galat", False, f"{type(e).__name__}: {getattr(e, 'detail', e)}")
             tepat, lewat = (hpp * D("1.30")).quantize(D("0.0001")), (hpp * D("1.31")).quantize(D("0.0001"))
             m1 = await JB.hitung_terima(c, tid, [{"item_id": pid, "quantity": D("1"), "unit": dasar, "nilai": tepat}])
             m2 = await JB.hitung_terima(c, tid, [{"item_id": pid, "quantity": D("1"), "unit": dasar, "nilai": lewat}])

@@ -148,7 +148,7 @@ def test_titik_pasang_terima_pratinjau_dan_tulis_sebelum_stok_masuk():
     assert tulis.index("_peringatan_terima = await JB.peringatan_terima(") < tulis.index("UPDATE purchase_order_items")   # HPP pembanding = SEBELUM penerimaan ini
 
 
-# ---------------------------------------------------------------- dokumen TERSIMPAN (pratinjau terbit/konfirmasi/kirim)
+# ---------------------------------------------------------------- dokumen TERSIMPAN (BUG-207 REOPEN: jumlah_baris NULL = baris biasa, bukan baris tanpa nilai)
 class KonDok(Kon):
     """+ baris/header dokumen tersimpan."""
 
@@ -169,23 +169,53 @@ class KonDok(Kon):
         return self.rows
 
 
-def _r(item, qty, unit, jml):
-    return {"item_id": item, "quantity": D(qty), "unit": unit, "jumlah_baris": None if jml is None else D(jml)}
+@pytest.fixture(autouse=True)
+def _presisi(monkeypatch):
+    async def p(conn, tid, tabel, doc_id):
+        return 2
+    monkeypatch.setattr("app.services.uang_presisi.presisi_dari", p)
+
+
+def _r(item, qty, unit, harga, jml=None, dp="0", da=None):
+    """Baris tersimpan: jumlah_baris NULL = baris biasa (qty x harga); terisi hanya bila pengguna mengetik jumlah baris."""
+    return {"item_id": item, "quantity": D(qty), "unit": unit, "unit_price": D(harga), "jumlah_baris": None if jml is None else D(jml),
+            "discount_percent": D(dp), "discount_amount": None if da is None else D(da)}
+
+
+DOK = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.mark.parametrize("jenis,tabel,urut", [("faktur", "sales_invoice_items", "i.line_number"), ("so", "sales_order_items", "i.sort_order"),
                                               ("penawaran", "quote_items", "i.sort_order")])
 def test_baris_tersimpan_tabel_dan_urutan_per_jenis(jenis, tabel, urut):
     k = KonDok([_r(P1, "1", "karton", "375000")])
-    out = jalan(JB.baris_tersimpan(k, "T", jenis, "00000000-0000-0000-0000-000000000001"))
+    out = jalan(JB.baris_tersimpan(k, "T", jenis, DOK))
     assert out and any(tabel in s and urut in s for s in k.sql)
 
 
-def test_baris_tersimpan_diskon_dokumen_pro_rata_dan_baris_tanpa_jumlah_dilewati_nomor_tetap():
-    k = KonDok([_r(P1, "1", "karton", "600000"), _r(P2, "1", "pcs", None), _r(P2, "2", "pcs", "400000")], diskon=D("100000"))
-    out = jalan(JB.baris_tersimpan(k, "T", "faktur", "00000000-0000-0000-0000-000000000001"))
-    assert [(o["baris"], o["nilai"]) for o in out] == [(1, D("540000")), (3, D("360000"))]      # 60.000 + 40.000 dialokasikan; baris 2 dilewati, nomor tetap
-    assert jalan(JB.baris_tersimpan(KonDok([]), "T", "so", "x")) == []
+def test_REGRESI_baris_biasa_jumlah_baris_NULL_tetap_dihitung_qty_x_harga():
+    # kasus TESTER: SO draf 1 pcs @ harga, jumlah_baris NULL (tak diketik pengguna). Dulu: dilewati -> peringatan [] palsu.
+    out = jalan(JB.baris_tersimpan(KonDok([_r(P2, "1", "pcs", "4000")]), "T", "so", DOK))
+    assert out == [{"item_id": P2, "quantity": D("1.0000") if False else D("1"), "unit": "pcs", "nilai": D("4000.00")}] or \
+        [(o["item_id"], o["nilai"]) for o in out] == [(P2, D("4000.00"))]
+    pr = jalan(JB.peringatan_tersimpan(KonDok([_r(P2, "1", "pcs", "4000")], hpp={P2: D("5550")}), "T", None, "so", DOK))
+    assert len(pr) == 1 and pr[0]["code"] == "JUAL_DI_BAWAH_HPP"                                 # HPP 5.550 > harga 4.000 -> peringatan (tak berizin: tanpa angka)
+
+
+def test_baris_tersimpan_diskon_baris_persen_nominal_dan_jumlah_baris_diketik():
+    persen = jalan(JB.baris_tersimpan(KonDok([_r(P2, "2", "pcs", "5000", dp="10")]), "T", "penawaran", DOK))
+    assert persen[0]["nilai"] == D("9000.00")                                                     # 2 x 5.000 - 10%
+    nominal = jalan(JB.baris_tersimpan(KonDok([_r(P2, "2", "pcs", "5000", da="1500")]), "T", "faktur", DOK))
+    assert nominal[0]["nilai"] == D("8500.00")                                                    # diskon nominal baris (faktur)
+    diketik = jalan(JB.baris_tersimpan(KonDok([_r(P2, "2", "pcs", "5000", jml="9990")]), "T", "so", DOK))
+    assert diketik[0]["nilai"] == D("9990.00")                                                    # jumlah baris yang diketik pengguna menang
+
+
+def test_baris_tersimpan_diskon_dokumen_pro_rata_seperti_calculate():
+    k = KonDok([_r(P1, "1", "pcs", "6000"), _r(P2, "2", "pcs", "2000", dp="0")], diskon=D("1000"))
+    out = jalan(JB.baris_tersimpan(k, "T", "faktur", DOK))
+    assert [o["nilai"] for o in out] == [D("5400.00"), D("3600.00")]                              # 6.000 & 4.000 dikurangi 1.000 pro-rata (allocate == compute_document)
+    assert jalan(JB.baris_tersimpan(KonDok([]), "T", "so", DOK)) == []
 
 
 def test_peringatan_tersimpan_memakai_penentu_yang_sama_dan_izin(monkeypatch):
@@ -193,17 +223,17 @@ def test_peringatan_tersimpan_memakai_penentu_yang_sama_dan_izin(monkeypatch):
         return user["user_id"] == "boleh"
     monkeypatch.setattr(JB, "boleh_lihat_hpp", izin)
     k = KonDok([_r(P1, "1", "karton", "375000")])
-    ada = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "boleh"}, "faktur", "00000000-0000-0000-0000-000000000001"))
-    tak = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "lain"}, "faktur", "00000000-0000-0000-0000-000000000001"))
+    ada = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "boleh"}, "faktur", DOK))
+    tak = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "lain"}, "faktur", DOK))
     assert ada[0]["code"] == "JUAL_DI_BAWAH_HPP" and "hpp" in ada[0] and "hpp" not in tak[0] and "harga_jual" not in tak[0]
-    assert jalan(JB.peringatan_tersimpan(KonDok([_r(P1, "1", "karton", "900000")]), "T", {"user_id": "boleh"}, "so", "x")) == []   # di atas HPP
+    assert jalan(JB.peringatan_tersimpan(KonDok([_r(P1, "1", "karton", "900000")]), "T", {"user_id": "boleh"}, "so", DOK)) == []   # di atas HPP
 
 
 def test_peringatan_tersimpan_gagal_tak_merusak_pratinjau():
     class Rusak:
         async def fetchrow(self, *a):
             raise RuntimeError("x")
-    assert jalan(JB.peringatan_tersimpan(Rusak(), "T", {"user_id": "u"}, "faktur", "x")) == []
+    assert jalan(JB.peringatan_tersimpan(Rusak(), "T", {"user_id": "u"}, "faktur", DOK)) == []
 
 
 def test_titik_pasang_pratinjau_dokumen_tersimpan():
