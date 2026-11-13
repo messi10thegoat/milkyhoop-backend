@@ -2,10 +2,10 @@
 GUARD: koneksi get_db_connection DAN pool harus menunjuk database scratch_bgp3*; selain itu berhenti SEBELUM menulis.
 H1 pratinjau status nonaktif barang ber-stok: ok=true + peringatan BARANG_MASIH_BERSTOK (stok/nilai = ledger), NOL tulis (status tak berubah).
 H2 pratinjau hapus: barang berjejak -> BARANG_BERJEJAK + rincian; barang segar -> hapus_permanen, lalu penulis DELETE benar-benar menghapus.
-H3 duplikat: kode baru unik, konversi + item_pricing tersalin, nol baris ledger untuk salinan; pratinjau == penulis (nama/kode).
+H3 duplikat: kode baru unik, konversi + price_list_items tersalin, nol baris ledger untuk salinan; pratinjau == penulis (nama/kode).
 H4 bulk/status: pratinjau gabungan, tulis per barang + riwayat item_activities, kunci sama = replay, kunci baru = ditolak.
 H5 kategori: dipakai barang aktif -> KATEGORI_DIPAKAI + jumlah == hitung SQL; kategori baru kosong -> ok.
-H6 semua pratinjau READ ONLY: hitung baris products/item_pricing/unit_conversions tenant sama sebelum-sesudah."""
+H6 semua pratinjau READ ONLY: hitung baris products/price_list_items/unit_conversions tenant sama sebelum-sesudah."""
 import asyncio
 import os
 import sys
@@ -49,7 +49,7 @@ async def buat(tid, nama):
 async def hitung(pool, tid):
     async with pool.acquire() as c:
         return tuple([await c.fetchval("SELECT count(*) FROM products WHERE tenant_id = $1", tid),
-                      await c.fetchval("SELECT count(*) FROM item_pricing WHERE tenant_id = $1", tid),
+                      await c.fetchval("SELECT count(*) FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id WHERE pl.tenant_id = $1", tid),
                       await c.fetchval("SELECT count(*) FROM unit_conversions WHERE tenant_id = $1", tid)])
 
 
@@ -89,14 +89,15 @@ async def periksa(pool, tid):
     async with pool.acquire() as c:
         await c.execute("""INSERT INTO unit_conversions (tenant_id, product_id, base_unit, conversion_unit, conversion_factor, is_active)
                            VALUES ($1, $2, 'Pcs', 'Lusin', 12, true)""", tid, src)
-        await c.execute("""INSERT INTO item_pricing (tenant_id, product_id, unit, pricing_type, price, is_active)
-                           VALUES ($1, $2, 'Lusin', 'sales', 11000, true)""", tid, src)
+        dl = await c.fetchval("""INSERT INTO price_lists (tenant_id, code, name) VALUES ($1, $2, 'UJI P3 daftar') RETURNING id""", tid, f"UJI-P3-{st}")
+        await c.execute("""INSERT INTO price_list_items (price_list_id, item_id, unit, price, min_quantity)
+                           VALUES ($1, $2::uuid, 'Pcs', 800, 100)""", dl, src)
     pr = (await I.preview_duplikat_barang(req(tid), __import__("uuid").UUID(src)))["data"]
     d = await I.duplicate_item(req(tid), __import__("uuid").UUID(src))
     baru = str(d.data["id"])
     async with pool.acquire() as c:
         nk = await c.fetchval("SELECT count(*) FROM unit_conversions WHERE product_id = $1 AND tenant_id = $2", baru, tid)
-        nh = await c.fetchval("SELECT count(*) FROM item_pricing WHERE product_id = $1 AND tenant_id = $2", baru, tid)
+        nh = await c.fetchval("SELECT count(*) FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id WHERE pli.item_id = $1::uuid AND pl.tenant_id = $2", baru, tid)
         led = await c.fetchval("SELECT count(*) FROM inventory_ledger WHERE product_id = $1 AND tenant_id = $2", baru, tid)
         kd = await c.fetchrow("SELECT item_code, sku, nama_produk FROM products WHERE id = $1 AND tenant_id = $2", baru, tid)
         ks = await c.fetchval("SELECT item_code FROM products WHERE id = $1 AND tenant_id = $2", src, tid)
@@ -185,7 +186,7 @@ async def periksa(pool, tid):
         await fn(*args)
     from app.routers import bulk_items as BI2
     await BI2.bulk_status_preview(req(tid), BI2.BulkStatusRequest(ids=[src], is_active=False))
-    cek(f"{tid} H6 pratinjau READ ONLY: hitung products/item_pricing/unit_conversions tak berubah", await hitung(pool, tid) == s1, f"{s1}")
+    cek(f"{tid} H6 pratinjau READ ONLY: hitung products/price_list_items/unit_conversions tak berubah", await hitung(pool, tid) == s1, f"{s1}")
 
 
 async def utama():
