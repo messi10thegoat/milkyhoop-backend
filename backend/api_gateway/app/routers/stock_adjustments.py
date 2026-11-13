@@ -470,7 +470,7 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                     "warehouse_name": sa["warehouse_name"],
                     "jenis_text": SS.jenis_text(sa["adjustment_type"]),
                     "position_text": SS.position_text(sa["status"], sa["adjustment_type"]),
-                    "aksi_tersedia": await SS.aksi_tersedia(conn, ctx["tenant_id"], sa),
+                    "aksi_tersedia": await SS.aksi_tersedia(conn, ctx["tenant_id"], sa, await SS.izin_aksi(request.state.user, sa["id"])),   # BUG-199: + izin pengguna
                 },
             }
 

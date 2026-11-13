@@ -363,17 +363,41 @@ async def rencana_batal(conn, tid: str, sa_id, alasan, bl: Blok, kunci: bool = F
 
 
 # ---------------------------------------------------------------- aksi_tersedia + keluaran pratinjau
-async def aksi_tersedia(conn, tid: str, sa) -> dict:
+# BUG-199: kalimat bila PENGGUNA tak berizin (izin dari penentu rute yang SAMA dgn middleware: izin_rute_pengguna atas jalur tulis aksinya)
+ALASAN_TAK_BERIZIN = {"posting": "Anda tidak punya izin untuk memposting penyesuaian stok.", "ubah": "Anda tidak punya izin untuk mengubah penyesuaian stok.",
+                      "hapus": "Anda tidak punya izin untuk menghapus penyesuaian stok.", "batalkan": "Anda tidak punya izin untuk membatalkan penyesuaian stok."}
+JALUR_IZIN = {"posting": ("POST", "/api/stock-adjustments/{id}/post"), "batalkan": ("POST", "/api/stock-adjustments/{id}/void"),
+              "ubah": ("PATCH", "/api/stock-adjustments/{id}"), "hapus": ("DELETE", "/api/stock-adjustments/{id}")}
+
+
+async def izin_aksi(user: dict, sa_id) -> dict:
+    """{aksi: boleh?} untuk pengguna: SATU penentu dgn middleware (ROUTE_PERMISSIONS + PolicyEngine.can lewat izin_rute_pengguna)."""
+    from ..middleware.permission_middleware import izin_rute_pengguna
+    hasil = {}
+    for kunci, (metode, jalur) in JALUR_IZIN.items():
+        j = jalur.replace("{id}", str(sa_id))
+        hasil[kunci] = bool((await izin_rute_pengguna(user, [j], metode)).get(j))
+    return hasil
+
+
+async def aksi_tersedia(conn, tid: str, sa, izin: Optional[dict] = None) -> dict:
+    """izin (opsional, BUG-199) = {aksi: bool} dari izin_aksi: aksi tersedia = KEADAAN dokumen DAN izin pengguna; tak berizin -> tersedia False + kalimat izin
+    (didahulukan: pengguna tak bisa menjalankannya apa pun keadaannya). izin None = hanya keadaan (perilaku lama)."""
     from ..schemas.aksi_tersedia import aksi
     draf = sa["status"] == "draft"
     post = (await rencana_posting(conn, tid, sa["id"], Blok(True)))["blocks"] if draf else [{"message": "Hanya penyesuaian draf yang bisa diposting."}]
     batal = (await rencana_batal(conn, tid, sa["id"], None, Blok(True)))["blocks"]
-    return {
+    hasil = {
         "posting": aksi(not post, post[0]["message"] if post else None),
         "ubah": aksi(draf, "Penyesuaian yang sudah diposting tidak bisa diubah; batalkan lalu buat baru."),
         "hapus": aksi(draf, "Penyesuaian yang sudah diposting tidak bisa dihapus; batalkan saja."),
         "batalkan": aksi(not draf and not batal, "Draf dihapus, bukan dibatalkan." if draf else (batal[0]["message"] if batal else None)),
     }
+    if izin is not None:
+        for kunci, boleh in izin.items():
+            if kunci in hasil and not boleh:
+                hasil[kunci] = aksi(False, ALASAN_TAK_BERIZIN[kunci])
+    return hasil
 
 
 def _gerak_json(g: dict) -> dict:

@@ -340,10 +340,10 @@ def test_nonaktif_gudang_dari_ledger_bersaring_tenant():
 
 # ---------------------------------------------------------------- izin
 @pytest.mark.parametrize("jalur,metode,harap", [
-    (f"/api/stock-adjustments/{SA_ID}/edit/preview", "POST", ("item", "U")),
-    (f"/api/stock-adjustments/{SA_ID}/delete/preview", "POST", ("item", "D")),
-    (f"/api/stock-adjustments/{SA_ID}/post/preview", "POST", ("stock_adjust", "C")),
-    (f"/api/stock-adjustments/{SA_ID}/void/preview", "POST", ("stock_adjust", "C")),
+    (f"/api/stock-adjustments/{SA_ID}/edit/preview", "POST", ("stock_adjust", "U")),     # BUG-199: dulu ("item", "U")
+    (f"/api/stock-adjustments/{SA_ID}/delete/preview", "POST", ("stock_adjust", "D")),   # BUG-199: dulu ("item", "D")
+    (f"/api/stock-adjustments/{SA_ID}/post/preview", "POST", ("stock_adjust", "P")),     # BUG-199: dulu C
+    (f"/api/stock-adjustments/{SA_ID}/void/preview", "POST", ("stock_adjust", "V")),     # BUG-199: dulu C
     ("/api/stock-adjustments/preview", "POST", ("stock_adjust", "C")),
     (f"/api/stock-adjustments/{SA_ID}/history", "GET", ("stock_adjust", "R")),
     ("/api/warehouses/summary", "GET", ("warehouse", "R")),

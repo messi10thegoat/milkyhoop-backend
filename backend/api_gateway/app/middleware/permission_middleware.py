@@ -658,10 +658,13 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/units/[^/]+", ["PATCH", "PUT"], "unit", "U"),
     (r"^/api/units/[^/]+", ["DELETE"], "unit", "D"),
     # Stock Adjustments
-    # standar SO (9 Nov 2026): pratinjau ubah/hapus draf = huruf tulisnya (PATCH item U / DELETE item D, baris di bawah); WAJIB di atas
-    # pola POST generik ^/api/stock-adjustments (C). Pratinjau buat/posting/batal ikut C seperti tulisnya.
-    (r"^/api/stock-adjustments/[^/]+/edit/preview$", ["POST"], "item", "U"),
-    (r"^/api/stock-adjustments/[^/]+/delete/preview$", ["POST"], "item", "D"),
+    # BUG-199 (putusan pemilik 13 Nov 2026, kontrak persediaan 9 Nov): izin Penyesuaian Stok PER AKSI di modul STOCK_ADJUST (dulu posting/void = C,
+    # ubah/hapus = modul PRODUCT U/D): posting(+pratinjau) P, void(+pratinjau) V, ubah(+pratinjau) U, hapus(+pratinjau) D; buat/baca tetap C/R.
+    # Pratinjau = huruf tulisnya (test_izin_rute_pratinjau). WAJIB di atas pola POST generik ^/api/stock-adjustments (C).
+    (r"^/api/stock-adjustments/[^/]+/(post|post/preview)$", ["POST"], "stock_adjust", "P"),
+    (r"^/api/stock-adjustments/[^/]+/(void|void/preview)$", ["POST"], "stock_adjust", "V"),
+    (r"^/api/stock-adjustments/[^/]+/edit/preview$", ["POST"], "stock_adjust", "U"),
+    (r"^/api/stock-adjustments/[^/]+/delete/preview$", ["POST"], "stock_adjust", "D"),
     (r"^/api/stock-adjustments", ["GET"], "stock_adjust", "R"),
     (r"^/api/stock-adjustments", ["POST"], "stock_adjust", "C"),
     (r"^/api/stock-adjustments/[^/]+", ["GET"], "stock_adjust", "R"),
@@ -946,8 +949,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # sales_receipts
     (r"^/api/sales-receipts$", ["POST"], "sales_invoice", "C"),
     # stock_adjustments
-    (r"^/api/stock-adjustments/[^/]+$", ["DELETE"], "item", "D"),
-    (r"^/api/stock-adjustments/[^/]+$", ["PATCH"], "item", "U"),
+    (r"^/api/stock-adjustments/[^/]+$", ["DELETE"], "stock_adjust", "D"),   # BUG-199: dulu item D (PRODUCT)
+    (r"^/api/stock-adjustments/[^/]+$", ["PATCH"], "stock_adjust", "U"),    # BUG-199: dulu item U (PRODUCT)
     # stock_transfers
     (r"^/api/stock-transfers$", ["POST"], "item", "C"),
     (r"^/api/stock-transfers/[^/]+$", ["DELETE"], "item", "D"),
