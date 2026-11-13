@@ -50,6 +50,7 @@ from ..services import ppn_vendor as PPNV  # BUG-030-BE: peringatan PPN vendor b
 from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W0)
 from ..services import grn_ditolak as GT  # BUG-203: teks ditolak + petunjuk sisa
 from ..services.galat_berkode import GalatBerkode  # BUG-203: ITEMS_KOSONG berkode
+from ..services import jual_bawah_hpp as JB  # BUG-207: peringatan biaya terima janggal
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
@@ -1090,6 +1091,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                 _hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
                 _rt = await PR.rencana_terima(conn, po, body.receive_date, [i.model_dump() for i in body.items], _hari_ini)
                 _tolak(_rt["blocks"])
+                _peringatan_terima = await JB.peringatan_terima(conn, ctx["tenant_id"], request.state.user, _rt)  # BUG-207: SEBELUM stok masuk (HPP pembanding = sebelum penerimaan ini)
                 _grn = None
                 if await G.aktif(conn, ctx["tenant_id"]):  # GRN di balik flag (P6): penentu SAMA dengan /receive/preview
                     _grn = await G.rencana_grn(conn, ctx["tenant_id"], po, _rt, body.warehouse_id)
@@ -1174,6 +1176,7 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                         "status": new_status,
                         "sisa_belum_diterima": _sisa,
                         "ditolak": _ditolak,
+                        "peringatan": _peringatan_terima,  # BUG-207
                         **({"petunjuk": GT.petunjuk_sisa(len(_sisa)), "tutup_po": {"rute": f"/api/purchase-orders/{po_id}/close", "pratinjau": f"/api/purchase-orders/{po_id}/close/preview"}}
                            if _sisa else {}),
                         **({"goods_receipt_id": str(_dok["goods_receipt_id"]), "receipt_number": _dok["receipt_number"],
@@ -1540,6 +1543,7 @@ async def preview_receive_goods(request: Request, po_id: UUID, body: Optional[Re
                 "toleransi_persen": float(r["toleransi_persen"]),
                 "nilai_diterima": _f2(r["nilai_diterima"]), "amount_received_sesudah": _f2(r["amount_received_sesudah"]),
                 "payload": r["payload"], **g, "notes": r["notes"] + g.get("notes", []),
+                "peringatan": [] if r["blocks"] else await JB.peringatan_terima(conn, ctx["tenant_id"], request.state.user, r),  # BUG-207
                 # BUG-203: items kosong = bawaan SEMUA sisa (di-materialisasi ke payload eksplisit); tulis /receive menolak items kosong (ITEMS_KOSONG)
                 "bawaan_semua_sisa": not (body and body.items)}
     return await _pratinjau(request, po_id, isi)

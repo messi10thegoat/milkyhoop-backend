@@ -942,9 +942,12 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
                                  shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id)
         from ..services.pkp_guard import tolak_ppn_bila_non_pkp as _non_pkp
         await _non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+        from ..services import jual_bawah_hpp as JB
+        _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(_doc["items"]))  # BUG-207
     dp = resolve_dp(_doc["total_amount"], body.dp_amount, body.dp_percent)
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     return {"success": True, "data": {
+        "peringatan": _peringatan,  # BUG-207: jual di bawah HPP (konfirmasi, bukan blok)
         "subtotal": f(_doc["net_subtotal"]), "discount_amount": f(_doc["doc_discount"]),
         "tax_amount": f(_doc["tax_amount"]), "total_amount": f(_doc["total_amount"]),
         # V467: ongkir (pola SO /calculate: eksplisit vs efektif = dua kunci, dua arti)

@@ -251,7 +251,7 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     if po.get("po_date") and receive_date < po["po_date"]:
         bloks.append(blok("TANGGAL_TERIMA_SEBELUM_PO", "Tanggal terima tidak boleh sebelum tanggal pesanan."))
     semua = await conn.fetch(
-        f"""SELECT i.id, i.description, i.quantity, i.quantity_received, i.quantity_billed, i.unit, i.total, {G.sql_jasa("i", "$2")} AS jasa
+        f"""SELECT i.id, i.item_id, i.description, i.quantity, i.quantity_received, i.quantity_billed, i.unit, i.total, i.subtotal, {G.sql_jasa("i", "$2")} AS jasa
             FROM purchase_order_items i WHERE i.po_id = $1 ORDER BY i.line_number""" + (" FOR UPDATE" if kunci else ""),
         po["id"], po.get("tenant_id"))
     peta = {str(r["id"]): r for r in semua}

@@ -61,6 +61,7 @@ from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..utils.metode_pembayaran import label_metode, tentukan_metode
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import jual_bawah_hpp as JB
 from ..services import stok_baris as SB
 from ..services.sales_doc_calc import (
     compute_document, DocumentDiscountError, LineAmountError,
@@ -595,12 +596,14 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             await tolak_ppn_bila_non_pkp(_conn, ctx["tenant_id"], res["tax_amount"])
             _isyarat = await SB.isyarat(_conn, ctx["tenant_id"], body.invoice_date, await tanggal_dokumen(_conn, ctx["tenant_id"]),
                                         _items, getattr(body, "warehouse_id", None), kecuali_so=getattr(body, "sales_order_id", None))
+            _peringatan = await JB.peringatan_jual(_conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(res["items"]))  # BUG-207
         if body.auto_post:  # SI-FPB-RP0: == penulis (create auto_post -> _internal_post_invoice)
             tolak_faktur_nol("si", res["total_amount"])
         return {
             "success": True,
             "data": {
                 "isyarat_stok": _isyarat,  # B2 BUG-049/075: isyarat, bukan blok
+                "peringatan": _peringatan,  # BUG-207: jual di bawah HPP (konfirmasi, bukan blok)
                 "status": "draft",
                 "subtotal": float(res["gross_subtotal"]),
                 "item_discount_total": float(res["line_discount_total"]),

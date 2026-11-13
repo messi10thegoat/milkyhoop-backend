@@ -15,6 +15,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import jual_bawah_hpp as JB
 from ..services import stok_baris as SB
 from ..services import satuan_dasar as SD
 from ..services.so_faktur_draf import penanda_faktur_so
@@ -994,12 +995,14 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
                       presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]))
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
         _isyarat = await SB.isyarat(conn, ctx["tenant_id"], body.order_date, await tanggal_dokumen(conn, ctx["tenant_id"]), _items)
+        _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(doc["items"]))  # BUG-207
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
     return {
         "success": True,
         "data": {
             "isyarat_stok": _isyarat,  # B2 BUG-049/075: isyarat, bukan blok
+            "peringatan": _peringatan,  # BUG-207: jual di bawah HPP (konfirmasi, bukan blok)
             "dp_percent": f(_dp["dp_percent"]),
             "dp_amount": f(_dp["dp_amount"]),
             "dp_amount_source": _dp["dp_amount_source"],

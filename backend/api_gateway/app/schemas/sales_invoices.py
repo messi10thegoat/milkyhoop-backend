@@ -581,6 +581,7 @@ class InvoiceCalculation(BaseModel):
     shipping_tax_amount: float = 0
     items: List[Dict[str, Any]]
     isyarat_stok: List[Dict[str, Any]] = []  # B2 BUG-049/075: [{item_id, kalimat}] isyarat stok, bukan blok
+    peringatan: List[Dict[str, Any]] = []  # BUG-207: [{code, butuh_konfirmasi, baris, ...}] jual di bawah HPP (angka hanya bagi berizin REPORT R)
 
 
 class InvoiceCalculationResponse(BaseModel):
