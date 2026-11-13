@@ -155,3 +155,9 @@ def test_izin_rute_baru(metode, jalur, huruf):
 
 def test_kode_ganda_diperiksa_di_penulis_dan_pratinjau_ubah_header():
     assert "HA.kode_dipakai(" in _fn("update_price_list") and "HA.kode_dipakai(" in _fn("preview_ubah_daftar")
+
+
+def test_pratinjau_dibungkus_transaksi_baca_saja_dan_rollback():
+    src = inspect.getsource(__import__("app.routers.price_lists", fromlist=["x"])._baca_saja)
+    assert "readonly=True" in src and "tr.rollback()" in src                 # pratinjau yang menulis = MERAH (H6 harness + tes ini)
+    assert RUTE.count("readonly=True") >= 3                                  # _baca_saja + pratinjau buat + pratinjau baris

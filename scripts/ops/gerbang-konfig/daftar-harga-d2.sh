@@ -28,4 +28,5 @@ SAB=(
  "s18 penjaga hapus dicabut dari penulis|$A/routers/price_lists.py|s@HA.tolak_bila_blok(HA.rencana_hapus(r,@(HA.rencana_hapus(r,@|$T2"
  "s19 kode ganda tak diperiksa|$A/routers/price_lists.py|s@HA.kode_dipakai(conn, ctx\[\"tenant_id\"\], kode, price_list_id)@False@|$T2"
  "s20 aksi_tersedia hilang dari detail|$A/routers/price_lists.py|s@\"aksi_tersedia\": HD.aksi_tersedia(row, n_pel),@@|$T1"
+ "s21 pratinjau tak baca-saja|$A/routers/price_lists.py|s@readonly=True@readonly=False@|$T2"
 )
