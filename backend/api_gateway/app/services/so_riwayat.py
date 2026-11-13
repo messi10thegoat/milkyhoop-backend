@@ -75,7 +75,14 @@ LABEL_MEDAN = [
     ("quote_date", "tanggal"), ("order_date", "tanggal"), ("expiry_date", "berlaku sampai"),
     ("expected_ship_date", "tanggal kirim"), ("subject", "perihal"), ("reference", "referensi"),
     ("order_title", "judul"), ("items", "barang"),
-    ("discount_type", "diskon"), ("discount_value", "diskon"), ("discount_amount", "diskon"),
+    # BUG-215: medan ubah PO (po_date/expected_date/ship_to_address/discount_percent/payment_terms_days) + medan ubah Penawaran yang belum berlabel
+    ("po_date", "tanggal"), ("expected_date", "tanggal kirim"), ("ship_to_address", "alamat kirim"), ("payment_terms_days", "syarat bayar"),
+    ("attention_name", "ditujukan kepada"), ("attention_title", "ditujukan kepada"), ("attention_name_source", "ditujukan kepada"),
+    ("attention_title_source", "ditujukan kepada"), ("signer_user_id", "penandatangan"), ("signer_name", "penandatangan"), ("signer_title", "penandatangan"),
+    ("signer_phone", "penandatangan"), ("signer_email", "penandatangan"), ("signer_name_source", "penandatangan"), ("signer_title_source", "penandatangan"),
+    ("signer_phone_source", "penandatangan"), ("signer_email_source", "penandatangan"), ("opening_text_source", "teks pembuka"),
+    ("closing_text_source", "teks penutup"), ("notes_source", "catatan"), ("terms_source", "syarat pembayaran"),
+    ("discount_type", "diskon"), ("discount_value", "diskon"), ("discount_amount", "diskon"), ("discount_percent", "diskon"),
     ("shipping_address", "alamat kirim"), ("shipping_method", "cara kirim"), ("shipping_amount", "ongkir"),
     ("shipping_tax_code_id", "ongkir"), ("dp_percent", "uang muka"), ("dp_amount", "uang muka"),
     ("payment_bank_name", "rekening"), ("payment_account_number", "rekening"), ("payment_account_holder", "rekening"),
@@ -94,13 +101,15 @@ LABEL_MEDAN = [
 ]
 _PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
 _LABEL = dict(LABEL_MEDAN)
+LABEL_PER_KEJADIAN = {"PO_UPDATED": {"ref_no": "referensi"}}  # BUG-215: ref_no PO = referensi (label umum = no. faktur vendor milik Faktur pembelian)
 
 
-def label_medan(fields) -> str:
-    """['notes', 'discount_value', 'dp_percent', 'items'] -> 'barang, diskon, uang muka, catatan'."""
+def label_medan(fields, kejadian=None) -> str:
+    """['notes', 'discount_value', 'dp_percent', 'items'] -> 'barang, diskon, uang muka, catatan'. `kejadian` (opsional) memilih label khusus dokumen."""
     keluar = []
+    khusus = LABEL_PER_KEJADIAN.get(kejadian, {})
     for m in sorted(fields, key=lambda m: (_PERINGKAT.get(m, len(_PERINGKAT)), m)):
-        lb = _LABEL.get(m, m)
+        lb = khusus.get(m) or _LABEL.get(m, m)
         if lb not in keluar:
             keluar.append(lb)
     return ", ".join(keluar)
@@ -302,7 +311,7 @@ async def _selesaikan(conn, tenant_id: str, k: "_Kumpul", entitas_audit: dict, l
             _medan = meta.get("fields")
             if (r["eventType"].endswith("_UPDATED") and r["eventType"] in RINGKAS_AUDIT and isinstance(_medan, list)
                     and _medan):
-                ringkas = f"{RINGKAS_AUDIT[r['eventType']]}: {label_medan(_medan)}"
+                ringkas = f"{RINGKAS_AUDIT[r['eventType']]}: {label_medan(_medan, r['eventType'])}"
             if r["eventType"] in EVENT_KODE_ORDER or r["eventType"] == "ORDER_TITLE_CHANGED":
                 if label_kode is None:
                     from .kode_order import muat_setelan as _muat_setelan_kode
