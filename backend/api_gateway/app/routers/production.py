@@ -39,6 +39,7 @@ from ..services.role_resolver import (
 )
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services.galat_berkode import GalatBerkode  # BUG-214: WO_BELUM_DIMULAI / WO_TIDAK_BISA_LAPOR
 from ..services import produksi_wip_sisa as PW  # BUG-183b: sisa WIP WO selesai dikuras month-end
 from ..services import labor_peringatan as LP  # BUG-192: peringatan tarif standar 0 di /labor
 from ..services import produksi_terap_standar as PT  # BUG-183: terap upah/overhead ke WIP (labor + report-output)
@@ -1214,174 +1215,10 @@ async def complete_order(request: Request, order_id: UUID):
                     hari_ini,
                 )
 
-                # Bug #9 fix: Flush WIP residual via variance journal
-                # Check WIP balance from this order's journals
-                # Fase D3.3: role-based resolution (was 1-10650 / 5-90200).
-                wip_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.WIP_GENERIC
-                )
-                variance_account_id = await resolve_account_id_by_role(
-                    conn, ctx["tenant_id"], AccountRole.COGS_VARIANCE_PRODUCTION
-                )
-
-                if wip_account_id and variance_account_id:
-                    # Sisa WIP = SEMUA jurnal POSTED yang menyentuh akun WIP dan
-                    # tertaut ke WO ini. Ada DUA jenis tautan:
-                    #   (a) source_id = order_id  -> MATERIAL_ISSUE, PRODUCTION_LABOR,
-                    #       PRODUCTION_OVERHEAD, PRODUCTION_OUTPUT, PRODUCTION_VARIANCE
-                    #   (b) source_id = bill_id   -> BILL faktur maklun/subkontrak
-                    #       (post_bill mengalihkan debit ke WIP_SUBCONTRACT, yang
-                    #       ter-resolve ke akun WIP yang sama)
-                    # Sebelum perbaikan ini HANYA (a) yang dihitung, sehingga tiap WO
-                    # bermaklun tampak bersaldo kredit persis sebesar nilai maklunnya
-                    # dan melahirkan JV-VAR palsu yang justru MENGENDAPKAN WIP.
-                    #
-                    # Baris subkontrak di-void: TIDAK disaring di sini dengan sengaja.
-                    # Void faktur menerbitkan jurnal REVERSAL yang membawa
-                    # source_id = bill_id yang sama, jadi debit asal dan kreditnya
-                    # saling meniadakan lewat data jurnal. Menyaring status='voided'
-                    # justru akan membuang kredit pembalik tapi tetap meninggalkan
-                    # debit aslinya tak terhitung. bill_id NULL (maklun belum
-                    # difakturkan) nol kontribusi dengan sendirinya.
-                    #
-                    # Predikat jurnal SENGAJA dibiarkan `je.status = 'POSTED'` persis
-                    # seperti kode lama (bukan is_effective_journal) supaya perubahan
-                    # perilaku terbatas pada perluasan cakupan source_id saja.
-                    wip_residual = await conn.fetchval(
-                        """
-                        SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0)
-                        FROM journal_lines jl
-                        JOIN journal_entries je ON je.id = jl.journal_id
-                        WHERE je.tenant_id = $2
-                          AND je.status = 'POSTED' AND jl.account_id = $3
-                          AND (
-                            je.source_id = $1
-                            OR je.source_id IN (
-                                SELECT ps.bill_id
-                                FROM production_subcontracts ps
-                                WHERE ps.production_order_id = $1
-                                  AND ps.tenant_id = $2
-                                  AND ps.bill_id IS NOT NULL
-                            )
-                          )
-                    """,
-                        order_id,
-                        ctx["tenant_id"],
-                        wip_account_id,
-                    )
-
-                    if wip_residual and abs(float(wip_residual)) > Decimal("0.01"):
-                        import uuid as _uuid_var
-
-                        wip_residual = Decimal(str(wip_residual))
-
-                        # Advisory lock
-                        await conn.execute(
-                            "SELECT pg_advisory_xact_lock(hashtext($1))",
-                            f"VARIANCE:{order_id}",
-                        )
-
-                        today_var = hari_ini  # #10b-3b: tanggal bisnis tenant, bukan UTC
-                        # Backlog 3b (25 Sep 2026): pra-cek periode SEBELUM jurnal JV-VAR. Dulu periode
-                        # CLOSED/LOCKED baru ditolak trigger prevent_closed_period_journal -> galat DB mentah
-                        # (500). Fungsi yang SAMA dengan trigger (is_period_closed: CLOSED/LOCKED = tertutup;
-                        # tanpa periode = boleh, persis trigger) -> 400 bersih; transaksi di-rollback, status
-                        # WO tidak jadi 'completed'.
-                        if await conn.fetchval(
-                            "SELECT is_period_closed($1, $2)", ctx["tenant_id"], today_var
-                        ):
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"Tidak bisa menyelesaikan produksi: jurnal selisih (JV-VAR) bertanggal "
-                                    f"{today_var} jatuh di periode yang sudah ditutup/dikunci. Buka periodenya "
-                                    f"dulu atau selesaikan di periode yang masih OPEN."
-                                ),
-                            )
-                        var_id = _uuid_var.uuid4()
-                        ym_var = f"{today_var.year % 100:02d}{today_var.month:02d}"
-                        # Self-healing canonical generator (V176): emits JV-VAR
-                        # and bumps the JV-VAR counter (not the parent JV counter).
-                        var_num = await conn.fetchval(
-                            "SELECT get_next_journal_number($1, $2, $3)",
-                            ctx["tenant_id"],
-                            "JV-VAR",
-                            today_var,
-                        )
-
-                        abs_amount = abs(wip_residual)
-
-                        # Create DRAFT journal
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_entries (
-                                id, tenant_id, journal_number, journal_date,
-                                description, source_type, source_id,
-                                total_debit, total_credit, status, created_by
-                            ) VALUES ($1, $2, $3, $4, $5, 'PRODUCTION_VARIANCE', $6, $7, $7, 'DRAFT', $8)
-                        """,
-                            var_id,
-                            ctx["tenant_id"],
-                            var_num,
-                            today_var,
-                            f"Manufacturing variance WO {order['order_number']}",
-                            order_id,
-                            abs_amount,
-                            ctx.get("user_id"),
-                        )
-
-                        if wip_residual > 0:
-                            # WIP has debit residual: Cr WIP, Dr Variance Expense
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                                VALUES (gen_random_uuid(), $1, $2, $3, 0, 'Variance expense', 1)
-                            """,
-                                var_id,
-                                variance_account_id,
-                                abs_amount,
-                            )
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                                VALUES (gen_random_uuid(), $1, $2, 0, $3, 'WIP flush', 2)
-                            """,
-                                var_id,
-                                wip_account_id,
-                                abs_amount,
-                            )
-                        else:
-                            # WIP has credit residual: Dr WIP, Cr Variance Income
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                                VALUES (gen_random_uuid(), $1, $2, $3, 0, 'WIP flush', 1)
-                            """,
-                                var_id,
-                                wip_account_id,
-                                abs_amount,
-                            )
-                            await conn.execute(
-                                """
-                                INSERT INTO journal_lines (id, journal_id, account_id, debit, credit, memo, line_number)
-                                VALUES (gen_random_uuid(), $1, $2, 0, $3, 'Variance credit', 2)
-                            """,
-                                var_id,
-                                variance_account_id,
-                                abs_amount,
-                            )
-
-                        # DRAFT -> POSTED (Law 20)
-                        await conn.execute(
-                            """
-                            UPDATE journal_entries SET status = 'POSTED' WHERE id = $1
-                        """,
-                            var_id,
-                        )
-
-                        logger.info(
-                            f"Variance journal {var_num}: WIP flush {wip_residual} for {order['order_number']}"
-                        )
+                # BUG-213 (putusan pemilik 13 Nov 22:40, opsi B): Selesai TIDAK lagi menguras sisa WIP (dulu JV-VAR PRODUCTION_VARIANCE, "Bug #9 fix").
+                # Sisa WIP WO selesai dikuras HANYA saat tutup bulan lewat PRODUCTION_RECONCILE (services/produksi_wip_sisa, BUG-183b). JV-VAR lama tidak
+                # diubah (riwayat); penguras tutup bulan idempoten karena menghitung semua jurnal efektif ber-source_id WO, termasuk JV-VAR lama.
+                # Selesai kini hanya mengubah status + variance_amount (angka), tanpa jurnal.
 
                 return {
                     "success": True,
@@ -2463,10 +2300,10 @@ async def report_output(
                 if not order:
                     raise HTTPException(status_code=404, detail="Order not found")
 
-                if order["status"] not in ("released", "in_progress"):
-                    raise HTTPException(
-                        status_code=400, detail="Order must be released or in progress"
-                    )
+                if order["status"] == "released":  # BUG-214 (putusan pemilik 13 Nov 22:40, ikut Accurate): hasil hanya sesudah proses berjalan
+                    raise GalatBerkode(400, "WO_BELUM_DIMULAI", "Mulai proses dulu: hasil produksi hanya bisa dilaporkan sesudah proses dimulai.")
+                if order["status"] != "in_progress":
+                    raise GalatBerkode(400, "WO_TIDAK_BISA_LAPOR", f"Hasil hanya bisa dilaporkan pada WO yang sedang berjalan (status saat ini: {order['status']}).")
 
                 # BUG-1C-3 / Surprise #28 fix: advisory lock hoisted to top of tx.
                 # Serializes concurrent retries of report_output for same WO so that
