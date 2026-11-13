@@ -57,8 +57,12 @@ async def main():
     pool = await SA.get_pool()
     async with pool.acquire() as c:
         for tid in (KA, NY):
-            p = await c.fetchrow("SELECT id, nama_produk AS name, barcode AS item_code FROM products WHERE tenant_id = $1 AND item_type = 'goods' AND COALESCE(barcode, '') <> '' ORDER BY created_at LIMIT 1", tid)
-            cek(f"prasyarat {tid}: barang goods ber-kode (barcode = product_code baris) ada", p is not None)
+            p = await c.fetchrow("SELECT id, nama_produk AS name, barcode AS item_code FROM products WHERE tenant_id = $1 AND item_type = 'goods' ORDER BY (COALESCE(barcode, '') <> '') DESC, created_at LIMIT 1", tid)
+            if p is not None and not p["item_code"]:   # klon saja: beri barcode uji supaya kode baris (product_code) ada untuk uji ?search= SKU
+                kode_uji = "UJI197-" + uuid.uuid4().hex[:6].upper()
+                await c.execute("UPDATE products SET barcode = $3 WHERE tenant_id = $1 AND id = $2", tid, p["id"], kode_uji)
+                p = {"id": p["id"], "name": p["name"], "item_code": kode_uji}
+            cek(f"prasyarat {tid}: barang goods ada (barcode uji diisi di klon bila kosong)", p is not None)
             if p is None:
                 continue
             hari = date.today()
