@@ -2,7 +2,7 @@
 W=/root/mh-b202; CABANG=feat/pdf-po-lengkap; NAMA_JENDELA=pdfpo202
 POLA_UNIT='pdf|cetak|po_cetak|purchase_order|tabel_barang|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-pdfpo202.sh
-PENANDA_BERKAS=services/po_cetak.py; PENANDA='def termin_syarat'
+PENANDA_BERKAS=services/po_cetak.py; PENANDA='kop_kosong'
 A=backend/api_gateway/app; T=tests/unit/test_pdf_po_202.py; PCF=$A/services/po_cetak.py; TPO=$A/templates/pdf/purchase_order.html; TBF=$A/templates/pdf/_partials/tabel_barang.html
 SAB=(
  "q1 label kembali Jadwal terima|$TPO|s#<b>Tanggal kirim</b>#<b>Jadwal terima</b>#|$T"
