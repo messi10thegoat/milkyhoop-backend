@@ -161,3 +161,10 @@ def test_pratinjau_dibungkus_transaksi_baca_saja_dan_rollback():
     src = inspect.getsource(__import__("app.routers.price_lists", fromlist=["x"])._baca_saja)
     assert "readonly=True" in src and "tr.rollback()" in src                 # pratinjau yang menulis = MERAH (H6 harness + tes ini)
     assert RUTE.count("readonly=True") >= 3                                  # _baca_saja + pratinjau buat + pratinjau baris
+
+
+def test_peringatan_bentuk_bug207_satu_komponen():
+    for x in (HA.rencana_status(_r(is_default=True), 2, ke_aktif=False), HA.rencana_hapus(_r(is_default=True), 0, 1)):
+        assert x["peringatan"], x
+        for p in x["peringatan"]:
+            assert p["butuh_konfirmasi"] is True and p["pesan"] == p["message"] and p["code"].startswith("DH_")
