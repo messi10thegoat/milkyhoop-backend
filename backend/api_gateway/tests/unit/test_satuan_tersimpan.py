@@ -179,6 +179,8 @@ def test_daftar_kas_bank_mengembalikan_mata_uang(monkeypatch):
             return 1
 
         async def fetch(self, sql, *a):
+            if "FROM mutasi_bank" in sql:     # BF-1e: perlu_ditinjau per rekening (satu GROUP BY) -- tak ada mutasi pada tes ini
+                return []
             assert "ba.currency" in sql
             return [baris]
 
@@ -235,6 +237,6 @@ def test_rute_daftar_kas_bank_ada_mata_uang(monkeypatch):
             return 1
 
         async def fetch(self, sql, *a):
-            return [baris]
+            return [] if "FROM mutasi_bank" in sql else [baris]       # BF-1e: query perlu_ditinjau per rekening
     r = _klien(_C(), monkeypatch).get("/api/bank-accounts")
     assert r.status_code == 200 and r.json()["items"][0]["currency"] == "USD"
