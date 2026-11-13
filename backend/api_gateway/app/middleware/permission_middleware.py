@@ -855,6 +855,14 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/resolve/purchase_order$", ["POST"], "purchase_order", "R"),  # BUG-032-BE harga beli saran
     (r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
+    # D2 Daftar Harga (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status/bawaan = ubah
+    (r"^/api/price-lists/[^/]+/status/preview$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/status$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/default/preview$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/default$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/edit/preview$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/delete/preview$", ["POST"], "price_list", "D"),
+    (r"^/api/price-lists/[^/]+/items/[^/]+/delete/preview$", ["POST"], "price_list", "D"),
     (r"^/api/price-lists", ["POST"], "price_list", "C"),
     (r"^/api/price-lists", ["PUT", "PATCH"], "price_list", "U"),
     (r"^/api/price-lists", ["DELETE"], "price_list", "D"),

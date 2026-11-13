@@ -37,6 +37,11 @@ class _C:
     def transaction(self, readonly=False):
         return _Tx(self, readonly)
 
+    async def fetchrow(self, sql, *a):  # penentu barang dijual (D2): barang uji = aktif + dijual
+        if "FROM products WHERE id = $1 AND tenant_id = $2" in sql and str(a[0]) in self.barang:
+            return {"nama_produk": "Barang", "status": "active", "for_sales": True}
+        return None
+
     async def fetchval(self, sql, *a):
         if sql.lstrip().startswith(("INSERT", "UPDATE", "DELETE")):
             self.tulis.append(sql)
