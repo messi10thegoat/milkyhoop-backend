@@ -134,7 +134,7 @@ def test_idempotensi_semua_tulis(fungsi, prefix):
 
 def test_hapus_daftar_menjaga_pelanggan_di_penulis_dan_ukur_dalam_transaksi():
     fn = _fn("delete_price_list")
-    assert "HA.rencana_hapus(" in fn and "HA.terapkan_hapus(" in fn         # penentu SAMA dengan pratinjau
+    assert "HA.tolak_bila_blok(HA.rencana_hapus(" in fn and "HA.terapkan_hapus(" in fn         # penentu SAMA dengan pratinjau, dijaga
     src = inspect.getsource(HA.terapkan_hapus)
     assert "customers" not in src or "price_list_id" in src                  # penulis tak melewatkan penjaga
 
@@ -151,3 +151,7 @@ def test_penulis_status_bawaan_satu_fungsi():
                                                 ("POST", "/api/price-lists/ID/items/L/delete/preview", "D")])
 def test_izin_rute_baru(metode, jalur, huruf):
     assert PM.PermissionMiddleware(lambda *a: None, False)._find_permission(jalur, metode) == ("price_list", huruf), jalur
+
+
+def test_kode_ganda_diperiksa_di_penulis_dan_pratinjau_ubah_header():
+    assert "HA.kode_dipakai(" in _fn("update_price_list") and "HA.kode_dipakai(" in _fn("preview_ubah_daftar")
