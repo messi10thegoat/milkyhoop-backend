@@ -2,6 +2,7 @@
 tagihan dari PO mewarisi (urutan: isian > termin PO > termin vendor > tanggal faktur); PDF mencetak snapshot. Paritas nyata (klon + V496) = uji salinan."""
 import asyncio
 import inspect
+import re
 import uuid
 from datetime import date
 from decimal import Decimal as D
@@ -155,13 +156,15 @@ def test_detail_memuat_snapshot_dan_teks():
 def test_buat_menyimpan_snapshot_dengan_bawaan_vendor():
     src = inspect.getsource(PO.create_purchase_order)
     assert "bawaan_termin(conn, ctx[\"tenant_id\"], body.payment_terms_days" in src and "created_by, payment_terms_days" in src and "$16, $17)" in src
+    # argumen ke-17 yang DIKIRIM ke INSERT harus snapshot `terms` (bukan None/konstanta): terms = nilai terakhir sebelum penutup
+    assert re.search(r'ctx\["user_id"\],\s*terms,\s*\)', src), "snapshot terms tak dikirim sebagai $17"
 
 
 def test_migrasi_aditif_nullable_check_tanpa_backfill_dan_rollback():
     m = (MIG / "V496__po_payment_terms_days.sql").read_text()
     isi = "\n".join(x for x in m.splitlines() if not x.strip().startswith("--"))
     assert "ADD COLUMN IF NOT EXISTS payment_terms_days INTEGER;" in isi and "NOT NULL" not in isi and "DEFAULT" not in isi
-    assert "payment_terms_days >= 0 AND payment_terms_days <= 365" in isi and "chk_po_payment_terms_days" in isi
+    assert re.search(r"payment_terms_days >= 0 AND payment_terms_days <= 365\)", isi)  # batas TEPAT 365 (bukan awalan 3650) and "chk_po_payment_terms_days" in isi
     for terlarang in ("UPDATE ", "INSERT ", "DELETE ", "vendors"):
         assert terlarang not in isi                                            # TANPA backfill / tanpa menyentuh data vendor
     rb = (MIG / "V496__po_payment_terms_days_ROLLBACK.sql").read_text()
