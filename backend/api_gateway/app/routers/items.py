@@ -29,6 +29,7 @@ from decimal import Decimal
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
+from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -544,6 +545,7 @@ async def list_items(
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                     aksi_semua=BD.aksi_semua(row, row.get("current_stock")),
+                    keadaan=BA.keadaan(row), keadaan_text=BA.keadaan_text(row),
                     position_text=BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                    sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual=sb.get("bisa_dijual"),
@@ -1586,6 +1588,120 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest):
 # =============================================================================
 
 
+async def _baca_saja(fungsi):
+    """Transaksi READ ONLY untuk pratinjau (nol tulis, rollback)."""
+    conn = await get_db_connection()
+    try:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            return await fungsi(conn)
+        finally:
+            await tr.rollback()
+    finally:
+        await conn.close()
+
+
+def _ke_aktif(body: dict) -> bool:
+    v = (body or {}).get("is_active")
+    if not isinstance(v, bool):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "is_active wajib true atau false.", "field": "is_active"})
+    return v
+
+
+def _daftar_id(body: dict) -> list:
+    ids = (body or {}).get("item_ids")
+    if not isinstance(ids, list) or not all(isinstance(x, str) for x in ids) or len(ids) > 200:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "item_ids wajib daftar id (maks 200).", "field": "item_ids"})
+    try:
+        return [str(UUID(x)) for x in dict.fromkeys(ids)]
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "item_ids memuat id tak sah.", "field": "item_ids"})
+
+
+@router.post("/items/status/preview")
+async def preview_status_massal(request: Request, body: dict):
+    """Pratinjau gabungan aktifkan/nonaktifkan banyak barang (aksi massal chatbox): satu penentu dgn tulisnya, READ ONLY."""
+    ctx = get_user_context(request)
+    ke, ids = _ke_aktif(body), _daftar_id(body)
+
+    async def f(conn):
+        return BA.gabung_status([await BA.ukur_rencana_status(conn, ctx["tenant_id"], i, ke) for i in ids])
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.patch("/items/status")
+async def ubah_status_massal(request: Request, body: dict):
+    """Aktifkan/nonaktifkan banyak barang ATOMIK: penentu SAMA dgn pratinjau (blok -> 409, tak ada yang berubah); peringatan tidak memblok."""
+    ctx = get_user_context(request)
+    ke, ids = _ke_aktif(body), _daftar_id(body)
+    conn = await get_db_connection()
+    try:
+        async with conn.transaction():
+            g = BA.gabung_status([await BA.ukur_rencana_status(conn, ctx["tenant_id"], i, ke) for i in ids])
+            if not g["ok"]:
+                raise HTTPException(status_code=409, detail={"code": (g["blocks"] or [x for r in g["items"] for x in r["blocks"]])[0]["code"],
+                                                             "message": "Sebagian barang tidak dapat diubah.", "data": g})
+            await conn.execute(
+                "UPDATE products SET status = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = ANY($3::uuid[])",
+                "active" if ke else "inactive", ctx["tenant_id"], ids)
+        return {"success": True, "message": f"{len(ids)} barang {'diaktifkan' if ke else 'dinonaktifkan'}", "data": g}
+    finally:
+        await conn.close()
+
+
+@router.post("/items/{item_id}/status/preview")
+async def preview_status_barang(request: Request, item_id: UUID, body: dict):
+    """Pratinjau aktifkan/nonaktifkan SATU barang: nonaktif ber-stok/pesanan terbuka = peringatan (bukan blok), tanpa jurnal."""
+    ctx = get_user_context(request)
+    ke = _ke_aktif(body)
+
+    async def f(conn):
+        return await BA.ukur_rencana_status(conn, ctx["tenant_id"], str(item_id), ke)
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/{item_id}/delete/preview")
+async def preview_hapus_barang(request: Request, item_id: UUID):
+    """Pratinjau hapus barang: rincian jejak per sumber (daftar SAMA dgn penulis), saran Nonaktifkan bila berjejak."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        b = await BA.ukur_barang(conn, ctx["tenant_id"], str(item_id))
+        return BA.rencana_hapus(b, await BA.ukur_jejak(conn, str(item_id)) if b else [])
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/{item_id}/duplicate/preview")
+async def preview_duplikat_barang(request: Request, item_id: UUID):
+    """Pratinjau duplikat: nama + kode baru (penentu sama dgn penulis), yang disalin (data, konversi, harga bertingkat) dan yang tidak."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        b = await BA.ukur_barang(conn, ctx["tenant_id"], str(item_id))
+        if not b:
+            return BA.rencana_duplikat(None, "", None, 0, 0)
+        t = ctx["tenant_id"]
+        nk = await conn.fetchval("SELECT count(*) FROM unit_conversions WHERE product_id = $1::uuid AND tenant_id = $2 AND is_active = true", str(item_id), t)
+        nh = await conn.fetchval("SELECT count(*) FROM item_pricing WHERE product_id = $1::uuid AND tenant_id = $2", str(item_id), t)
+        return BA.rencana_duplikat(b, await _nama_salinan(conn, t, b["nama_produk"]), await _kode_otomatis(conn, t, b.get("item_type") or "goods"), nk, nh)
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/delete/preview")
+async def preview_hapus_kategori(request: Request, body: dict):
+    """Pratinjau hapus kategori: terpakai barang aktif -> blok KATEGORI_DIPAKAI + jumlah (putusan 13 Nov, ikut Accurate)."""
+    ctx = get_user_context(request)
+    nama = str((body or {}).get("name") or "").strip()
+    if not nama:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "name wajib.", "field": "name"})
+
+    async def f(conn):
+        ada, n = await BA.ukur_kategori(conn, ctx["tenant_id"], nama)
+        return BA.rencana_kategori_hapus(nama, n, ada)
+    return {"success": True, "data": await _baca_saja(f)}
+
+
 @router.delete("/items/categories")
 async def delete_category(request: Request, name: str = Query(..., min_length=1, max_length=100, description="Nama kategori (boleh mengandung / dsb)")):
     """Hapus kategori dari registry. HANYA bila 0 item AKTIF memakainya (selain itu 409).
@@ -1638,15 +1754,7 @@ async def delete_item(request: Request, item_id: UUID):
             entity_id=str(item_id),
             table="products",
             name_column="nama_produk",
-            ledger_checks=[
-                ("inventory_ledger", "product_id", None),
-                ("sales_invoice_items", "item_id", None),
-                ("bill_items", "product_id", None),
-                ("stock_adjustment_items", "product_id", None),
-                ("stock_transfer_items", "item_id", None),
-                ("production_orders", "product_id", None),
-                ("recipes", "product_id", None),
-            ],
+            ledger_checks=BA.JEJAK_BARANG,
             cascade_tables=[
                 ("item_pricing", "product_id"),
                 ("unit_conversions", "product_id"),
@@ -3056,7 +3164,8 @@ async def get_item(request: Request, item_id: UUID):
                 "position_text": BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                   sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                 "bisa_dijual": sb.get("bisa_dijual"),
-                "aksi_tersedia": BD.aksi_tersedia(row),
+                "keadaan": BA.keadaan(row), "keadaan_text": BA.keadaan_text(row),
+                "aksi_tersedia": BA.aksi_tersedia_detail(row),
                 "conversions": conversions,
                 "created_at": row["created_at"].isoformat()
                 if row["created_at"]
@@ -3295,6 +3404,15 @@ async def get_item_related(request: Request, item_id: UUID):
 # =============================================================================
 
 
+async def _nama_salinan(conn, tenant_id: str, original_name: str) -> str:
+    """Nama salinan "X (Copy)" / "X (Copy N)" yang belum dipakai (SATU penentu: penulis duplikat + pratinjau)."""
+    copy_name, suffix = f"{original_name} (Copy)", 1
+    while await conn.fetchval("SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL", tenant_id, copy_name):
+        suffix += 1
+        copy_name = f"{original_name} (Copy {suffix})"
+    return copy_name
+
+
 @router.post("/items/{item_id}/duplicate", response_model=CreateItemResponse)
 async def duplicate_item(request: Request, item_id: UUID):
     """Duplicate an existing item with '(Copy)' suffix. Does not copy stock or images."""
@@ -3314,21 +3432,12 @@ async def duplicate_item(request: Request, item_id: UUID):
         if not item_row:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        # Generate copy name
-        original_name = item_row["nama_produk"]
-        copy_name = f"{original_name} (Copy)"
-
-        # Ensure unique name
-        suffix = 1
-        while await conn.fetchval(
-            "SELECT id FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
-            tenant_id,
-            copy_name,
-        ):
-            suffix += 1
-            copy_name = f"{original_name} (Copy {suffix})"
+        copy_name = await _nama_salinan(conn, tenant_id, item_row["nama_produk"])
 
         async with conn.transaction():
+            # Kode/SKU baru wajib unik (putusan 13 Nov): kunci per tenant + nomor berikutnya, sama dgn POST /items
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"ITEM_KODE:{tenant_id}")
+            kode_baru = await _kode_otomatis(conn, tenant_id, item_row.get("item_type", "goods"))
             # Insert duplicate (without stock, image, barcode)
             new_id = await conn.fetchval(
                 """
@@ -3339,6 +3448,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                     sales_price, purchase_price, harga_jual,
                     reorder_level, preferred_vendor_id,
                     sales_account_id, purchase_account_id,
+                    item_code, sku,
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6,
@@ -3347,6 +3457,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                     $14, $15, $16,
                     $17, $18,
                     $19, $20,
+                    $21, $21,
                     NOW(), NOW()
                 )
                 RETURNING id
@@ -3377,6 +3488,7 @@ async def duplicate_item(request: Request, item_id: UUID):
                 str(item_row["purchase_account_id"])
                 if item_row.get("purchase_account_id")
                 else None,
+                kode_baru,
             )
 
             # Duplicate unit conversions
@@ -3401,6 +3513,13 @@ async def duplicate_item(request: Request, item_id: UUID):
                     conv.get("purchase_price"),
                     conv.get("sales_price"),
                 )
+
+            # Harga bertingkat (item_pricing) ikut disalin (putusan 13 Nov); stok/saldo awal/batch/riwayat TIDAK.
+            await conn.execute(
+                """INSERT INTO item_pricing (tenant_id, product_id, unit, pricing_type, price, min_quantity, max_quantity, is_active)
+                   SELECT tenant_id, $2::uuid, unit, pricing_type, price, min_quantity, max_quantity, is_active
+                   FROM item_pricing WHERE product_id = $1::uuid AND tenant_id = $3""",
+                str(item_id), str(new_id), tenant_id)
 
             # Note: No initial stock entry needed for duplicate.
             # Stock is derived from inventory_ledger movements (Law 16).
