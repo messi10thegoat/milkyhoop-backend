@@ -113,7 +113,14 @@ def test_penulis_duplikat_menyalin_item_pricing_dan_kode_unik():
     src = RUTE.read_text()
     i = src.index("async def duplicate_item")
     fn = src[i:src.index("# Alias for inventory_asset", i)]
-    assert "INSERT INTO item_pricing" in fn and "_kode_otomatis" in fn
+    assert "INSERT INTO price_list_items (price_list_id" in fn and "pl.tenant_id = $3" in fn and "_kode_otomatis" in fn
+    assert "INSERT INTO item_pricing" not in fn        # item_pricing = data yatim, tak disalin
+    assert "FROM price_list_items pli JOIN" in fn
+
+
+def test_pratinjau_duplikat_menghitung_harga_bertingkat_dari_price_list_items():
+    fn = _fn(RUTE.read_text(), "preview_duplikat_barang")
+    assert "FROM price_list_items pli JOIN price_lists pl" in fn and "pl.tenant_id = $2" in fn and "item_pricing" not in fn
 
 
 # --- pratinjau READ ONLY + rute + izin ---------------------------------------------------------------------------------
@@ -138,7 +145,7 @@ def test_aksi_tersedia_detail_punya_ubah_hapus_duplikat():
 @pytest.mark.parametrize("pola", ["items/[^/]+/status/preview", "items/bulk/(status|status/preview)", "items/[^/]+/delete/preview",
                                   "items/[^/]+/duplicate/preview", "items/categories/delete/preview"])
 def test_izin_pratinjau_dipetakan(pola):
-    assert pola in MW.read_text(), pola
+    assert pola + '$"' in MW.read_text(), pola
 
 
 BULK = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers" / "bulk_items.py"
@@ -242,7 +249,7 @@ def test_ubah_kunci_idempotensi_dan_pratinjau_memakai_penentu_konversi_dan_dupli
     src = RUTE.read_text()
     assert '"ITEM_UPDATE", str(item_id)' in _fn(src, "update_item")        # kunci di awal (mulai_aksi), bukan hanya di simpan
     assert "await _periksa_konversi(conn, ctx, item_id, b)" in _fn(src, "preview_ubah_barang")   # pratinjau = penentu SAMA dgn PUT
-    assert "INSERT INTO item_pricing (tenant_id" in _fn(src, "duplicate_item")                 # harga bertingkat ikut disalin
+    assert "INSERT INTO price_list_items (price_list_id" in _fn(src, "duplicate_item")         # harga bertingkat (daftar harga) ikut disalin
 
 
 def test_bulk_status_wajib_kunci_idempotensi():

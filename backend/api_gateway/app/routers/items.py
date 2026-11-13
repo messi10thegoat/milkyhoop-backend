@@ -1693,7 +1693,8 @@ async def preview_duplikat_barang(request: Request, item_id: UUID):
             return BA.rencana_duplikat(None, "", None, 0, 0)
         t = ctx["tenant_id"]
         nk = await conn.fetchval("SELECT count(*) FROM unit_conversions WHERE product_id = $1::uuid AND tenant_id = $2 AND is_active = true", str(item_id), t)
-        nh = await conn.fetchval("SELECT count(*) FROM item_pricing WHERE product_id = $1::uuid AND tenant_id = $2", str(item_id), t)
+        nh = await conn.fetchval("""SELECT count(*) FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
+                                   WHERE pli.item_id = $1::uuid AND pl.tenant_id = $2""", str(item_id), t)
         return BA.rencana_duplikat(b, await _nama_salinan(conn, t, b["nama_produk"]), await _kode_otomatis(conn, t, b.get("item_type") or "goods"), nk, nh)
     return {"success": True, "data": await _baca_saja(f)}
 
@@ -3521,12 +3522,16 @@ async def duplicate_item(request: Request, item_id: UUID, response: Response = N
                     conv.get("sales_price"),
                 )
 
-            # Harga bertingkat (item_pricing) ikut disalin (putusan 13 Nov); stok/saldo awal/batch/riwayat TIDAK.
+            # Harga bertingkat yang SUNGGUH dipakai harga = baris price_list_items (semua daftar, termasuk bawaan; satuan, min_quantity,
+            # masa berlaku sama) -> ikut disalin (putusan MASTER 13 Nov). item_pricing (warisan yatim) TIDAK disalin. Stok/saldo awal/batch/riwayat TIDAK.
             await conn.execute(
-                """INSERT INTO item_pricing (tenant_id, product_id, unit, pricing_type, price, min_quantity, max_quantity, is_active)
-                   SELECT tenant_id, $2::uuid, unit, pricing_type, price, min_quantity, max_quantity, is_active
-                   FROM item_pricing WHERE product_id = $1::uuid AND tenant_id = $3""",
-                str(item_id), str(new_id), tenant_id)
+                """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent,
+                                                 markup_percent, start_date, end_date, is_active, is_default_unit)
+                   SELECT pli.price_list_id, $2::uuid, $4, pli.unit, pli.price, pli.min_quantity, pli.discount_percent,
+                          pli.markup_percent, pli.start_date, pli.end_date, pli.is_active, pli.is_default_unit
+                   FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
+                   WHERE pli.item_id = $1::uuid AND pl.tenant_id = $3""",
+                str(item_id), str(new_id), tenant_id, kode_baru)
 
             # Note: No initial stock entry needed for duplicate.
             # Stock is derived from inventory_ledger movements (Law 16).
