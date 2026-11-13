@@ -33,4 +33,7 @@ SAB=(
  "r18 pencari gudang chatbot lupa saring|$A/services/unified_agent/entity_resolver.py|s# AND NOT is_system##|$T"
  "r19 nota kredit lupa saring|$A/services/nota_kredit_rencana.py|s# AND NOT is_system##|$T"
  "r20 nota kredit router lupa saring|$A/routers/credit_notes.py|s# AND NOT is_system##|$T"
+ "c9 terima sebagian menulis header (trigger DB menolak)|$D2F|s#    if rencana\[\"tuntas\"\]:   \# satu-satunya tulisan header sesudah Kirim yang diizinkan trigger (status berubah + received_date/by)#    await conn.execute(\"UPDATE stock_transfers SET updated_at = NOW() WHERE id = \$1\", transfer_id)\n    if rencana[\"tuntas\"]:#|$T"
+ "c10 terima menulis baris item (trigger DB menolak)|$D2F|s#^        total += nilai#        await conn.execute(\"UPDATE stock_transfer_items SET quantity_received = 1 WHERE id = \$1\", it[\"id\"]); total += nilai#|$T"
+ "c11 diterima dari kolom beku, bukan ledger|$D2F|s#d\[\"quantity_received\"\] = ada.get(d\[\"item_id\"\], _NOL)#d[\"quantity_received\"] = _d(d[\"quantity_received\"])#|$T"
 )
