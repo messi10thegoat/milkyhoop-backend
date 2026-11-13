@@ -15,6 +15,7 @@ from ..schemas.aksi_tersedia import aksi
 AKSI = ("kedaluwarsa", "belum_berlaku")
 SARING = ("nonaktif", "bawaan")
 SEMUA_KUNCI = AKSI + SARING
+PAKAI_HARI = ("kedaluwarsa", "belum_berlaku")  # hanya predikat ini memakai tanggal bisnis (penanda parameter); selain itu tanpa parameter
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 

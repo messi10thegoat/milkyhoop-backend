@@ -166,3 +166,44 @@ async def test_summary_dan_daftar_memakai_predikat_aksi_yang__sama(monkeypatch):
     c.sql.clear()
     await PL.list_price_lists(req, skip=0, limit=20, search=None, is_active=None, aksi="kedaluwarsa")
     assert any(HD.sql_aksi("kedaluwarsa", "p", "$2") in q for q in c.sql)
+
+
+class _CA:
+    """Merekam (sql, args): asyncpg menolak bila jumlah argumen != penanda $n tertinggi (galat harness klon 14 Nov: aksi=nonaktif/bawaan)."""
+    def __init__(self):
+        self.q = []
+
+    async def fetchrow(self, sql, *a):
+        self.q.append((sql, a))
+        return {**{f"{k}_count": 0 for k in HD.SEMUA_KUNCI}, "total_count": 0}
+
+    async def fetchval(self, sql, *a):
+        self.q.append((sql, a))
+        return 0
+
+    async def fetch(self, sql, *a):
+        self.q.append((sql, a))
+        return []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("aksi", [None, "kedaluwarsa", "belum_berlaku", "nonaktif", "bawaan"])
+async def test_jumlah_argumen_sama_dengan_penanda_di_daftar_dan_summary(monkeypatch, aksi):
+    import re
+    from app.routers import price_lists as PL
+    c = _CA()
+
+    async def gp():
+        return _Kolam(c)
+
+    async def hari(conn, tid):
+        return date(2026, 11, 13)
+    monkeypatch.setattr(PL, "get_pool", gp)
+    monkeypatch.setattr(PL, "tanggal_dokumen", hari)
+    req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": "t1", "user_id": None}))
+    await PL.list_price_lists(req, skip=0, limit=20, search="x" if aksi == "nonaktif" else None, is_active=None, aksi=aksi)
+    await PL.price_lists_summary(req)
+    assert c.q
+    for sql, a in c.q:
+        pakai = {int(n) for n in re.findall(r"\$(\d+)", sql)}
+        assert pakai == set(range(1, len(a) + 1)), (aksi, sorted(pakai), len(a), sql[:120])      # tiap argumen dipakai, tanpa lubang
