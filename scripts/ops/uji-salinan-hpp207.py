@@ -59,7 +59,7 @@ def per(x):
 
 async def main():
     pool = await SI.get_pool()
-    from app.services import policy_engine_client as PEC  # singleton YANG SAMA dipakai izin_rute_pengguna (jalur impor 'app.', sama dgn JB)
+    from backend.api_gateway.app.services import policy_engine_client as PEC  # singleton YANG SAMA dipakai middleware (impor MUTLAK; pola harness 199)
     PEC.init_policy_engine(pool)
     async with pool.acquire() as c:
         for tid in (KA, NY):
@@ -101,7 +101,7 @@ async def main():
                         p = per(data)
                         cek(f"B {tid} {nama} tak berizin: peringatan ada, TANPA angka (kunci angka ABSEN), hitungan tetap sukses",
                             len(p) == 1 and p[0]["butuh_konfirmasi"] is True and set(p[0]) == {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan"}
-                            and not any(ch.isdigit() for ch in p[0]["pesan"]), f"{p}")
+                            and "Rp" not in p[0]["pesan"] and p[0]["pesan"] == f"Harga jual {p[0]['nama']} di bawah harga pokok barang.", f"{p}")   # tanpa angka HPP/rugi (nama barang boleh berangka)
                 except Exception as e:  # noqa: BLE001
                     cek(f"B {tid} /calculate tak berizin tanpa galat", False, f"{type(e).__name__}: {e}")
             # C penerimaan
