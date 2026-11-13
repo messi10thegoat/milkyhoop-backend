@@ -7,7 +7,8 @@
 - Pembulatan: bawaan TANPA (2 desimal HALF_UP, Law 9/25); kelipatan 1/10/100/500/1000 x arah terdekat(HALF_UP)/atas/bawah, SEBELUM cek negatif.
 - Hasil < 0 = blok DH_HARGA_NEGATIF; hasil = 0 = PERINGATAN DH_HARGA_NOL (bentuk BUG-207: butuh_konfirmasi + pesan; FE meminta konfirmasi, tulis TIDAK diblok), tetap boleh.
 - Tanggal berlaku = start_date baris yang diubah (kunci unik daftar: barang+satuan+qty minimum, tanpa tanggal, jadi dua harga berjangka pada kunci sama belum
-  bisa). Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> harga jatuh ke harga dasar/daftar bawaan (PERINGATAN)."""
+  bisa). Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> (diukur dari harga_jual.harga_saran) tingkat qty lebih rendah di DAFTAR YANG SAMA bila
+  ada, selain itu harga barang (harga satuan konversi, lalu harga dasar x faktor); TIDAK pindah ke daftar bawaan (PERINGATAN)."""
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Optional
@@ -75,7 +76,8 @@ def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[dat
         return _hasil(bloks, None)
     per = []
     if mulai and mulai > hari_ini:
-        per.append(_per("DH_BERLAKU_NANTI", f"Sebelum {tgl_text(mulai)}, {nama} tidak memakai harga daftar ini (memakai harga dasar atau daftar bawaan)."))
+        per.append(_per("DH_BERLAKU_NANTI", f"Sebelum {tgl_text(mulai)}, harga {nama} di daftar ini belum berlaku: dipakai tingkat jumlah yang lebih rendah di daftar yang sama bila ada, "
+                                                    "selain itu harga barang (harga satuan konversi atau harga dasar di data barang)."))
     nol = any(h["ke"] == 0 for h in hasil)
     if nol:
         per.append(_per("DH_HARGA_NOL", f"Sebagian harga {nama} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."))

@@ -60,7 +60,9 @@ def test_rencana_barang_tak_ada_di_daftar_dan_tanpa_perubahan():
 def test_tanggal_berlaku_nanti_peringatan_harga_dasar_dan_lampau_tanpa_peringatan():
     nanti = HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), date(2026, 12, 1), HARI)
     assert nanti["ok"] and [p["code"] for p in nanti["peringatan"]] == ["DH_BERLAKU_NANTI"]
-    assert "1 Des 2026" in nanti["peringatan"][0]["message"] and nanti["peringatan"][0]["butuh_konfirmasi"] is True and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
+    m = nanti["peringatan"][0]["message"]
+    assert "1 Des 2026" in m and nanti["peringatan"][0]["butuh_konfirmasi"] is True
+    assert "harga barang" in m and "tingkat jumlah yang lebih rendah" in m and "daftar bawaan" not in m      # rantai jatuh sesuai harga_jual.harga_saran and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
     lalu = HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), date(2026, 11, 1), HARI)
     assert lalu["peringatan"] == [] and lalu["rencana"]["berlaku_mulai"] == "1 Nov 2026"
 
