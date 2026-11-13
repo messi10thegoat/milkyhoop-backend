@@ -36,7 +36,7 @@ async def main():
     PEC.init_policy_engine(pool)                    # singleton yang SAMA dipakai izin_rute_pengguna (impor mutlak)
     async with pool.acquire() as c:
         for tid in (KA, NY):
-            owner = await c.fetchval('SELECT id FROM "User" WHERE "tenantId" = $1 ORDER BY (role::text = \'OWNER\') DESC LIMIT 1', tid)
+            owner = await c.fetchval("SELECT utr.user_id FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id WHERE utr.tenant_id = $1 AND utr.status = 'ACTIVE' AND r.code = 'OWNER' ORDER BY utr.is_primary DESC LIMIT 1", tid)   # pemilik = peran bisnis OWNER (bukan kolom User.role)
             p = await c.fetchrow("SELECT id FROM products WHERE tenant_id = $1 AND item_type = 'goods' ORDER BY created_at LIMIT 1", tid)
             cek(f"prasyarat {tid}: pemilik + barang goods ada", owner is not None and p is not None)
             if owner is None or p is None:
