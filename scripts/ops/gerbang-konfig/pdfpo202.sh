@@ -6,8 +6,6 @@ PENANDA_BERKAS=services/po_cetak.py; PENANDA='def termin_syarat'
 A=backend/api_gateway/app; T=tests/unit/test_pdf_po_202.py; PCF=$A/services/po_cetak.py; TPO=$A/templates/pdf/purchase_order.html; TBF=$A/templates/pdf/_partials/tabel_barang.html
 SAB=(
  "q1 label kembali Jadwal terima|$TPO|s#<b>Tanggal kirim</b>#<b>Jadwal terima</b>#|$T"
- "q2 syarat bayar tak dicetak|$TPO|s#{% if po.syarat_bayar %}#{% if False %}#|$T"
- "q3 termin 0 tak jadi Tunai|$PCF|s#    return termin_text(hari)#    return None if not hari else termin_text(hari)#|$T"
  "q4 pajak per baris tak diteruskan|$TPO|s#\"pajak\": {\"tarif\": \"tax_rate\", \"jumlah\": \"tax_amount\"}#\"pajak_x\": {\"tarif\": \"tax_rate\", \"jumlah\": \"tax_amount\"}#|$T"
  "q5 pajak baris tak opt-in (semua dokumen)|$TBF|s#{%- if k.pajak and item\[k.pajak.jumlah\]#{%- if item.tax_amount and item[k.pajak.jumlah]#|$T"
  "q6 kode barang tanpa cadangan SKU master|$PCF|s#COALESCE(NULLIF(i.item_code, ''), pr.item_code) AS item_code#i.item_code AS item_code#|$T"

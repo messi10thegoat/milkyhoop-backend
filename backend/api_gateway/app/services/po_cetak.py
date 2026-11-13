@@ -44,15 +44,6 @@ def alamat_gudang(w) -> str | None:
     return "\n".join(baris) or None
 
 
-def termin_syarat(hari) -> str | None:
-    """Syarat bayar PO dari termin vendor (None = vendor tanpa data termin -> baris tak dicetak). Kalimat = termin_text kontak (BUG-026: tanpa "Net"):
-    0 -> "Tunai", N -> "N hari". Penentu jatuh tempo tagihan membaca kolom yang SAMA (termin_bayar.tentukan_jatuh_tempo_tagihan)."""
-    if hari is None:
-        return None
-    from .kontak_detail import termin_text
-    return termin_text(hari)
-
-
 def label_pajak(tax_rate) -> str:
     try:
         t = float(tax_rate or 0)
@@ -101,7 +92,5 @@ async def muat_pdf_po(conn, ctx, po_id) -> dict:
         "has_cents": PDFService.money_has_cents(*uang),
     }
     kop = await muat_kop(conn, tid)
-    vt = await conn.fetchrow("SELECT payment_terms_days FROM vendors WHERE id = $1 AND tenant_id = $2", po["vendor_id"], tid) if po["vendor_id"] else None
-    po_data["syarat_bayar"] = termin_syarat(vt.get("payment_terms_days") if vt else None)   # BUG-202: syarat bayar PO = termin vendor (kolom sama dgn jatuh tempo tagihan)
     po_data["kop_kosong"] = not (kop.get("address") or kop.get("npwp"))     # BUG-202: petunjuk "Lengkapi profil perusahaan" (hanya tampil di layar, bukan di PDF)
     return {"po_data": po_data, "tenant_info": kop}

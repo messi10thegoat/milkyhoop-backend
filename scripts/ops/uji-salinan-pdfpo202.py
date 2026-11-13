@@ -1,5 +1,5 @@
 """BUG-202 uji DB di SALINAN (bukan prod): render PDF PO dgn kode ASLI (muat_pdf_po + render_purchase_order + tulis_pdf) atas klon, tenant kaos + nyawit. Mutasi HANYA di klon.
-A PO apa adanya: label "Tanggal kirim" (bukan "Jadwal terima"), kode barang cadangan = SKU master (kolom Kode bila ada), syarat bayar == termin vendor di DB, petunjuk kop muncul HANYA bila profil tanpa alamat dan NPWP
+A PO apa adanya: label "Tanggal kirim" (bukan "Jadwal terima"), kode barang cadangan = SKU master (kolom Kode bila ada), (syarat bayar BELUM dicetak: BUG-205), petunjuk kop muncul HANYA bila profil tanpa alamat dan NPWP
 · B PO + profil DIISI lengkap (di klon): kop alamat+NPWP tercetak, petunjuk hilang, pajak per baris "Pajak 11% · Rp 1.100" + baris pajak ringkasan, alamat kirim · C tulis_pdf menghasilkan PDF sah (%PDF) untuk A dan B."""
 import asyncio
 import re
@@ -40,7 +40,6 @@ async def main():
             if po is None:
                 continue
             tn = await c.fetchrow('SELECT address, tax_id FROM "Tenant" WHERE id = $1 /* tenant_id = id */', tid)
-            termin = await c.fetchval("SELECT payment_terms_days FROM vendors WHERE id = $1 AND tenant_id = $2", po["vendor_id"], tid)
             # kode barang: barang PO tanpa item_code tapi master ber-SKU; bila tak ada di klon, SKU master diisi di klon
             baris = await c.fetchrow("SELECT i.id, i.item_id FROM purchase_order_items i JOIN purchase_orders p ON p.id = i.po_id AND p.tenant_id = $2 WHERE i.po_id = $1 AND i.item_id IS NOT NULL ORDER BY i.line_number LIMIT 1", po["id"], tid)
             sku = "BRG-UJI202"
@@ -51,8 +50,6 @@ async def main():
             tA = teks(hA)
             cek(f"A {tid} label 'Tanggal kirim' (bukan 'Jadwal terima')", "Tanggal kirim" in tA and "Jadwal terima" not in tA)
             cek(f"A {tid} kode barang cadangan SKU master: kolom Kode + {sku}", baris is not None and ">Kode<" in hA and sku in tA, f"baris_berkode={baris is not None}")
-            harap = None if termin is None else ("Tunai" if int(termin) <= 0 else f"{int(termin)} hari")
-            cek(f"A {tid} syarat bayar == termin vendor di DB ({harap})", (harap is None and "Syarat bayar" not in tA) or (harap is not None and f"Syarat bayar {harap}" in tA), f"termin={termin}")
             kosong = not (tn["address"] or tn["tax_id"])
             cek(f"A {tid} petunjuk kop: {'muncul' if kosong else 'tak muncul'} (profil alamat={'ya' if tn['address'] else 'kosong'}, NPWP={'ya' if tn['tax_id'] else 'kosong'})", ('class="petunjuk-kop"' in hA) == kosong)
             css = hA.split("</style>", 1)[0]

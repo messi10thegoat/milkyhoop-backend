@@ -6,7 +6,7 @@
   PDF Pesanan Pembelian -- TURUNAN Faktur Pembelian pola Accurate (4 Nov 2026, putusan pemilik: FPB acuan, dokumen Pembelian lain
   diturunkan). Kop usaha (_partials/kop_usaha) di kanan judul; PO DIKIRIM ke vendor -> "Kepada" vendor (+ "Kirim ke" bila gudang /
   alamat kirim) | meta No. PO, Tanggal, Jadwal terima, Referensi; tabel konfigurasi FPB; Catatan + TTD Pemesan | ringkasan.
-  Syarat bayar (BUG-202) = termin VENDOR (tanpa kolom baru di PO). Stempel DRAF (belum dikirim) / DIBATALKAN (_tanda_batal).
+  Syarat bayar BELUM dicetak: putusan pemilik 13 Nov = SIMPAN DI PO (snapshot purchase_orders.payment_terms_days) -> BUG-205. Stempel DRAF (belum dikirim) / DIBATALKAN (_tanda_batal).
   Konteks = services/po_cetak.muat_pdf_po.
 #}
 <body>
@@ -40,7 +40,6 @@
     <b>No. PO</b><span>{{ po.po_number or '-' }}</span>
     <b>Tanggal</b><span>{{ po.po_date | date_id }}</span>
     {% if po.expected_date %}<b>Tanggal kirim</b><span>{{ po.expected_date | date_id }}</span>{% endif %}
-    {% if po.syarat_bayar %}<b>Syarat bayar</b><span>{{ po.syarat_bayar }}</span>{% endif %}
     {% if po.ref_no %}<b>Referensi</b><span>{{ po.ref_no }}</span>{% endif %}
   </div>
 </div>

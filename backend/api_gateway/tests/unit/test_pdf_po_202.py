@@ -1,4 +1,4 @@
-"""BUG-202: PDF Pesanan Pembelian lebih lengkap: label "Tanggal kirim", syarat bayar dari termin vendor (tanpa kolom baru), pajak per baris (opt-in k.pajak), kode barang
+"""BUG-202: PDF Pesanan Pembelian lebih lengkap: label "Tanggal kirim", pajak per baris (opt-in k.pajak), kode barang
 cadangan = SKU master, petunjuk kop kosong (hanya di layar). Paritas nyata (klon) = uji salinan."""
 import asyncio
 import uuid
@@ -63,21 +63,6 @@ def test_label_tanggal_kirim_bukan_jadwal_terima():
     assert "<b>Tanggal kirim</b>" in h and "Jadwal terima" not in h
     h2, _, _ = _html(po=_po(expected_date=None))
     assert "Tanggal kirim" not in h2.split("</style>", 1)[-1]                        # tanpa tanggal = baris tak dicetak
-
-
-@pytest.mark.parametrize("hari,teks", [(30, "30 hari"), (0, "Tunai"), (7, "7 hari")])
-def test_syarat_bayar_dari_termin_vendor(hari, teks):
-    vendor = {"name": "CV X", "address": None, "city": None, "province": None, "postal_code": None, "phone": None, "mobile_phone": None, "email": None, "tax_id": None,
-              "payment_terms_days": hari}
-    h, d, _ = _html(vendor=vendor)
-    assert d["syarat_bayar"] == teks and f"<b>Syarat bayar</b><span>{teks}</span>" in h
-
-
-def test_syarat_bayar_tanpa_data_termin_tak_dicetak():
-    v = {"name": "CV X", "address": None, "city": None, "province": None, "postal_code": None, "phone": None, "mobile_phone": None, "email": None, "tax_id": None}
-    h, d, _ = _html(vendor=v)
-    assert d["syarat_bayar"] is None and "Syarat bayar" not in h.split("</style>", 1)[-1]
-    assert PC.termin_syarat(None) is None and PC.termin_syarat(0) == "Tunai" and PC.termin_syarat(14) == "14 hari"
 
 
 def test_pajak_per_baris_hanya_bila_ada_dan_opt_in():
