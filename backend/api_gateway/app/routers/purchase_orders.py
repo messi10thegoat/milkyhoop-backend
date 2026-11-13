@@ -51,6 +51,7 @@ from ..services import idem_buat  # idempotensi header X-Idempotency-Key (pola W
 from ..services import grn_ditolak as GT  # BUG-203: teks ditolak + petunjuk sisa
 from ..services.galat_berkode import GalatBerkode  # BUG-203: ITEMS_KOSONG berkode
 from ..services import jual_bawah_hpp as JB  # BUG-207: peringatan biaya terima janggal
+from ..services import po_alamat_kirim as PAK  # BUG-216: alamat kirim bawaan
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
@@ -632,6 +633,9 @@ async def get_purchase_order(request: Request, po_id: UUID):
                     if po["expected_date"]
                     else None,
                     "ship_to_address": po["ship_to_address"],
+                    "warehouse_id": str(po["warehouse_id"]) if po.get("warehouse_id") else None,  # BUG-216: hanya yang DIPILIH
+                    "warehouse_name": await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", po["warehouse_id"], ctx["tenant_id"]) if po.get("warehouse_id") else None,
+                    "alamat_kirim_sumber": await PAK.sumber_tersimpan(conn, ctx["tenant_id"], po["ship_to_address"], po.get("warehouse_id")),
                     "ref_no": po["ref_no"],
                     "notes": po["notes"],
                     "items": [
@@ -776,6 +780,10 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     return lama
 
                 vendor = await _vendor_tenant(conn, ctx["tenant_id"], body.vendor_id)
+                _alamat = await PAK.tentukan(conn, ctx["tenant_id"], body.warehouse_id, body.ship_to_address)  # BUG-216: manual > gudang dipilih > gudang utama > alamat usaha
+                if _alamat["blocks"]:
+                    _c, _m, _st = _alamat["blocks"][0]
+                    raise GalatBerkode(_st, _c, _m)
                 terms = await bawaan_termin(conn, ctx["tenant_id"], body.payment_terms_days, vendor["id"] if vendor else None)  # BUG-205: snapshot
 
                 # Nomor: manual (sudah dipakai -> 409) atau otomatis yang melompati terpakai (V475). UNIQUE = penegak akhir.
@@ -792,9 +800,9 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         subtotal, discount_percent, discount_amount,
                         tax_rate, tax_amount, total_amount,
                         status, po_date, expected_date,
-                        ship_to_address, ref_no, notes, created_by, payment_terms_days
+                        ship_to_address, ref_no, notes, created_by, payment_terms_days, warehouse_id
                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                              'draft', $11, $12, $13, $14, $15, $16, $17)
+                              'draft', $11, $12, $13, $14, $15, $16, $17, $18)
                     RETURNING id
                 """,
                     ctx["tenant_id"],
@@ -809,11 +817,12 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                     tot["total_amount"],
                     body.po_date,
                     body.expected_date,
-                    body.ship_to_address,
+                    _alamat["ship_to_address"],
                     body.ref_no,
                     body.notes,
                     ctx["user_id"],
                     terms,
+                    _alamat["warehouse_id"],  # BUG-216: HANYA gudang yang dipilih (bawaan tak disimpan) -> GRN tetap ikut gudang bawaan tenant
                 )
 
                 await _simpan_baris(conn, po_id, baris)
@@ -829,6 +838,8 @@ async def create_purchase_order(request: Request, body: CreatePurchaseOrderReque
                         "po_number": po_number,
                         "total_amount": t["total_amount"],
                         "status": "draft",
+                        "ship_to_address": _alamat["ship_to_address"],
+                        "alamat_kirim_sumber": _alamat["sumber"],
                     },
                 }
                 return await idem_buat.simpan(conn, ctx, kp, sidik, "PO_CREATE", resp, po_id)
@@ -875,9 +886,10 @@ async def update_purchase_order(
                     raise HTTPException(status_code=404, detail="Pesanan pembelian tidak ditemukan.")
                 await assert_if_match_row(request, "purchase_orders", po_id)  # PO-IM: sesudah replay & kunci
 
-                _tolak((await PR.rencana_ubah(conn, ctx["tenant_id"], po, body))["blocks"])  # = /edit/preview
+                _rc = await PR.rencana_ubah(conn, ctx["tenant_id"], po, body)  # = /edit/preview
+                _tolak(_rc["blocks"])
 
-                update_data = body.model_dump(exclude_unset=True)
+                update_data = _rc["data_efektif"]  # BUG-216: alamat kirim/gudang sudah ditentukan penentu yang SAMA dgn pratinjau
                 if not update_data:
                     _resp = {"success": True, "message": "Tidak ada perubahan.", "data": {"id": str(po_id)}}
                     return await idem_buat.simpan(conn, ctx, _kp, _sd, "PO_UPDATE", _resp, po_id) if _kp else _resp
@@ -895,7 +907,7 @@ async def update_purchase_order(
                     updates, params = [], []
                     for i, (field, value) in enumerate(update_data.items(), 1):
                         updates.append(f"{field} = ${i}")
-                        if field == "vendor_id":
+                        if field in ("vendor_id", "warehouse_id"):
                             params.append(UUID(value) if value else None)
                         elif field in ("discount_percent", "discount_amount", "tax_rate"):
                             ubah_uang = True
@@ -1505,6 +1517,8 @@ async def preview_edit_purchase_order(request: Request, po_id: UUID, body: Updat
         r = await PR.rencana_ubah(conn, ctx["tenant_id"], po, body)
         t = r["header_sesudah"]
         out = {"blocks": r["blocks"], "perubahan": r["perubahan"], "payload": body.model_dump(mode="json", exclude_unset=True)}
+        if r["alamat_kirim_sumber"] is not None:
+            out["alamat_kirim_sumber"] = r["alamat_kirim_sumber"]  # BUG-216: teks sumber alamat kirim sesudah ubah
         if t is not None:
             out.update({"subtotal_sesudah": _f2(t["subtotal"]), "discount_amount_sesudah": _f2(t["discount_amount"]),
                         "tax_amount_sesudah": _f2(t["tax_amount"]), "total_amount_sesudah": _f2(t["total_amount"])})

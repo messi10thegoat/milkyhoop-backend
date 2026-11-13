@@ -78,6 +78,8 @@ class CreatePurchaseOrderRequest(BaseModel):
     po_date: date
     expected_date: Optional[date] = Field(None, description="Expected delivery date")
     ship_to_address: Optional[str] = None
+    # BUG-216: gudang tujuan (opsional); kosong = alamat kirim bawaan dari gudang utama / alamat usaha, gudang TIDAK disimpan
+    warehouse_id: Optional[str] = Field(None, description="Gudang tujuan (UUID); hanya yang DIPILIH disimpan")
     ref_no: Optional[str] = Field(None, max_length=100, description="External reference")
     notes: Optional[str] = None
     items: List[PurchaseOrderItemCreate] = Field(..., min_length=1)
@@ -107,6 +109,7 @@ class UpdatePurchaseOrderRequest(BaseModel):
     po_date: Optional[date] = None
     expected_date: Optional[date] = None
     ship_to_address: Optional[str] = None
+    warehouse_id: Optional[str] = None  # BUG-216: gudang tujuan; null = kosongkan; ubah hanya saat Draf
     ref_no: Optional[str] = None
     notes: Optional[str] = None
     items: Optional[List[PurchaseOrderItemUpdate]] = None
@@ -281,6 +284,9 @@ class PurchaseOrderListItem(BaseModel):
 class PurchaseOrderDetail(BaseModel):
     """Full purchase order detail."""
     payment_terms_days: Optional[int] = None   # BUG-205: snapshot syarat bayar (NULL = tak tercatat)
+    warehouse_id: Optional[str] = None          # BUG-216: gudang tujuan yang DIPILIH (NULL = tak dipilih)
+    warehouse_name: Optional[str] = None
+    alamat_kirim_sumber: Optional[str] = None   # BUG-216: "Gudang X" | "Alamat usaha" | "Diisi manual" | None
     syarat_bayar_text: Optional[str] = None    # "30 hari" | "Tunai" | None
     # gelombang 3 BELI (10 Nov 2026): kelayakan aksi tulis detail = penentu tulisnya (schemas/aksi_tersedia)
     aksi_tersedia: AksiTersediaPeta = {}

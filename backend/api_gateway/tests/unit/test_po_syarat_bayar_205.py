@@ -155,9 +155,9 @@ def test_detail_memuat_snapshot_dan_teks():
 
 def test_buat_menyimpan_snapshot_dengan_bawaan_vendor():
     src = inspect.getsource(PO.create_purchase_order)
-    assert "bawaan_termin(conn, ctx[\"tenant_id\"], body.payment_terms_days" in src and "created_by, payment_terms_days" in src and "$16, $17)" in src
+    assert "bawaan_termin(conn, ctx[\"tenant_id\"], body.payment_terms_days" in src and "created_by, payment_terms_days" in src and "$16, $17, $18)" in src
     # argumen ke-17 yang DIKIRIM ke INSERT harus snapshot `terms` (bukan None/konstanta): terms = nilai terakhir sebelum penutup
-    assert re.search(r'ctx\["user_id"\],\s*terms,\s*\)', src), "snapshot terms tak dikirim sebagai $17"
+    assert re.search(r'ctx\["user_id"\],\s*terms,\s*_alamat\["warehouse_id"\],', src), "snapshot terms tak dikirim sebagai $17"
 
 
 def test_migrasi_aditif_nullable_check_tanpa_backfill_dan_rollback():

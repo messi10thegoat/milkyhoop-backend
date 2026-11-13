@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from . import po_alamat_kirim as PAK  # BUG-216: alamat kirim bawaan + gudang tujuan (satu penentu buat/ubah)
 from . import po_daftar as PD
 from . import po_hitung as PH
 
@@ -113,6 +114,20 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
     if data.get("vendor_id"):
         _, bv = await blok_vendor(conn, tenant_id, data["vendor_id"])
         bloks += bv
+    # BUG-216: gudang tujuan + alamat kirim. data_efektif = yang DITULIS (alamat bawaan/snapshot sudah ditentukan); manual menang; blank = isi ulang bawaan;
+    # ganti gudang tanpa alamat = ikut alamat gudang baru; gudang PO hanya bisa diubah saat Draf; gudang yang sudah tersimpan tak diperiksa aktif lagi.
+    data_efektif, alamat = dict(data), None
+    if "warehouse_id" in data or "ship_to_address" in data:
+        berubah_gudang = "warehouse_id" in data and str(data["warehouse_id"] or "") != str(po.get("warehouse_id") or "")
+        if berubah_gudang and po["status"] != "draft":
+            bloks.append(blok("PO_GUDANG_HANYA_DRAF", "Gudang tujuan hanya bisa diubah saat pesanan pembelian masih Draf."))
+        if "ship_to_address" in data or berubah_gudang:
+            pilih = data["warehouse_id"] if "warehouse_id" in data else po.get("warehouse_id")
+            alamat = await PAK.tentukan(conn, tenant_id, pilih, data.get("ship_to_address") if "ship_to_address" in data else None,
+                                        periksa_gudang=berubah_gudang)
+            bloks += [blok(c, m, st) for c, m, st in alamat["blocks"]]
+            data_efektif["ship_to_address"] = alamat["ship_to_address"]
+            data_efektif["warehouse_id"] = str(alamat["warehouse_id"]) if alamat["warehouse_id"] else None
     lama = await conn.fetch(
         """SELECT id, description, quantity, quantity_received, quantity_billed, subtotal, discount_amount, tax_amount
            FROM purchase_order_items WHERE po_id = $1 ORDER BY line_number""", po["id"])
@@ -132,7 +147,7 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
                                   data.get("discount_amount", po.get("discount_amount")) or 0,
                                   data.get("tax_rate", po.get("tax_rate")) or 0))["header"]
     perubahan = []
-    for k, v in data.items():
+    for k, v in data_efektif.items():
         if k == "items":
             perubahan.append({"field": "items", "before": len(lama), "after": len(v)})
         else:
@@ -141,7 +156,8 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
                 perubahan.append({"field": k, "before": _j(sebelum), "after": _j(v)})
     if header is not None and _d(po.get("total_amount")) != header["total_amount"]:
         perubahan.append({"field": "total_amount", "before": _f(po.get("total_amount")), "after": _f(header["total_amount"])})
-    return {"blocks": bloks, "perubahan": perubahan, "header_sesudah": header, "baris_baru": baris_baru}
+    return {"blocks": bloks, "perubahan": perubahan, "header_sesudah": header, "baris_baru": baris_baru,
+            "data_efektif": data_efektif, "alamat_kirim_sumber": alamat["sumber"] if alamat else None}
 
 
 def _j(v):
