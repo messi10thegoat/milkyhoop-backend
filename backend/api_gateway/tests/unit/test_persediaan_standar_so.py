@@ -98,7 +98,7 @@ class Kon:
     async def fetch(self, sql, *a):
         self._cocok(sql, a)
         self.log.append((sql, a))
-        if "FROM stock_adjustment_items" in sql:
+        if "FROM stock_adjustment_items" in sql and "FROM stock_adjustments" not in sql:   # BUG-197: daftar kini memuat subkueri baris untuk ?search= (bukan pembacaan baris dokumen)
             return self.items
         if "FROM journal_lines" in sql:
             return [{"account_id": AK_ADJ, "debit": D("3000"), "credit": D("0"), "memo": "x"},
