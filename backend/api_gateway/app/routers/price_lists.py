@@ -204,10 +204,12 @@ async def list_price_lists(
             conditions = ["p.tenant_id = $1"]
             params = [ctx["tenant_id"]]
             idx = 2
-            if aksi:
+            if aksi in HD.PAKAI_HARI:  # tanggal hanya dipasang bila predikatnya memakainya (parameter tak terpakai = galat asyncpg)
                 params.append(hari_ini)
                 conditions.append(HD.sql_aksi(aksi, "p", f"${idx}"))
                 idx += 1
+            elif aksi:
+                conditions.append(HD.sql_aksi(aksi, "p", "NULL"))
             if search:
                 conditions.append(f"(p.code ILIKE ${idx} OR p.name ILIKE ${idx})")
                 params.append(f"%{search}%")
