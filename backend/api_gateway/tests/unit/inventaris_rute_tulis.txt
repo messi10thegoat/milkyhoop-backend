@@ -496,6 +496,8 @@ POST /api/price-lists/{price_list_id}/default
 POST /api/price-lists/{price_list_id}/delete/preview
 POST /api/price-lists/{price_list_id}/edit/preview
 POST /api/price-lists/{price_list_id}/items/{line_id}/delete/preview
+POST /api/price-lists/{price_list_id}/bulk/price/preview
+POST /api/price-lists/{price_list_id}/bulk/price
 POST /api/product-djp-mapping
 POST /api/product-djp-mapping/bulk
 POST /api/production
