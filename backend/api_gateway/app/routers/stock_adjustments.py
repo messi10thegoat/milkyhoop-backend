@@ -759,14 +759,14 @@ async def delete_stock_adjustment(request: Request, adjustment_id: UUID):
 # =============================================================================
 
 
-async def _tulis_posting(conn, ctx, adjustment_id, r, tanpa_jurnal_bila_nol: bool = False):
+async def _tulis_posting(conn, ctx, adjustment_id, r):
     """Tulis jurnal + gerak inventory_ledger + status 'posted' dari penentu `r` (SS.rencana_posting). DI DALAM transaksi pemanggil.
     -> (journal_id|None, journal_number|None). SATU penulis: handler POST /{id}/post DAN quick adjust items.py (penyesuaian-3).
-    tanpa_jurnal_bila_nol=True (quick adjust): total nilai 0 (barang tanpa harga pokok) = tanpa jurnal, stok tetap bergerak (perilaku quick adjust lama);
-    handler dokumen memakai bawaan False (perilaku dokumen tak berubah)."""
+    BUG-212 (putusan pemilik 13 Nov): total nilai 0 (barang tanpa harga pokok) = TANPA jurnal, stok tetap bergerak -- SATU aturan untuk dokumen DAN quick adjust
+    (dulu dokumen menulis jurnal POSTED 0 tanpa baris)."""
     sa = r["sa"]
     journal_id = journal_number = None
-    if r["baris"] or not tanpa_jurnal_bila_nol:
+    if r["baris"]:
         # Law 20: Create journal entry as DRAFT first
         journal_id = uuid_module.uuid4()
         trace_id = uuid_module.uuid4()
@@ -982,7 +982,7 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
                     "message": "Stock adjustment posted to accounting",
                     "data": {
                         "id": str(adjustment_id),
-                        "journal_id": str(journal_id),
+                        "journal_id": str(journal_id) if journal_id else None,  # BUG-212: nilai 0 = tanpa jurnal
                         "journal_number": journal_number,
                         "status": "posted",
                     },
@@ -1132,21 +1132,21 @@ async def void_stock_adjustment(
                     )
 
                 # Reverse inventory changes via the canonical shared helper (milkyhoop-inventory Rule 9)
-                if reversal_journal_id:
-                    from ..services.inventory_helpers import (
-                        record_inventory_reversal,
-                    )
+                # BUG-212: SELALU balik gerak stok -- dokumen nilai 0 tak punya jurnal (reversal_journal_id None), tetap harus dibalik (putusan pemilik).
+                from ..services.inventory_helpers import (
+                    record_inventory_reversal,
+                )
 
-                    await record_inventory_reversal(
-                        conn,
-                        ctx["tenant_id"],
-                        source_type="STOCK_ADJUSTMENT",
-                        source_id=adjustment_id,
-                        reversal_journal_id=reversal_journal_id,
-                        created_by=ctx["user_id"],
-                        reversal_date=hari_ini,  # t10-tanggal-bisnis
-                        notes_prefix=f"VOID {sa['adjustment_number']}",
-                    )
+                await record_inventory_reversal(
+                    conn,
+                    ctx["tenant_id"],
+                    source_type="STOCK_ADJUSTMENT",
+                    source_id=adjustment_id,
+                    reversal_journal_id=reversal_journal_id,
+                    created_by=ctx["user_id"],
+                    reversal_date=hari_ini,  # t10-tanggal-bisnis
+                    notes_prefix=f"VOID {sa['adjustment_number']}",
+                )
 
                 # Update status
                 await conn.execute(

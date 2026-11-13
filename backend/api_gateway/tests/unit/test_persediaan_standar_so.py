@@ -351,3 +351,64 @@ def test_nonaktif_gudang_dari_ledger_bersaring_tenant():
 def test_izin_pratinjau_sama_dengan_tulis(jalur, metode, harap):
     from app.middleware.permission_middleware import PermissionMiddleware
     assert PermissionMiddleware(app=None)._find_permission(jalur, metode) == harap
+
+# ---------------------------------------------------------------- BUG-212: posting nilai 0 = TANPA jurnal (putusan pemilik 13 Nov)
+BARIS_NOL = [{"product_id": P1, "product_code": "K1", "product_name": "Kaos", "quantity_adjustment": D("-3"), "unit_cost": D("0"),
+              "total_value": D("0"), "line_number": 1}]
+
+
+def test_nol212_penentu_posting_tanpa_baris_jurnal_dan_isyarat_harga_pokok():
+    r = jalan(SS.rencana_posting(Kon(items=BARIS_NOL, stok=D("5")), T, SA_ID, Blok(True)))
+    assert r["blocks"] == [] and r["total"] == D("0") and r["baris"] == [] and r["tanpa_jurnal"] is True
+    assert r["gerak"] and r["gerak"][0]["keluar"] == D("3")                                   # stok TETAP bergerak
+    assert any("belum punya harga pokok" in x for x in r["isyarat"])                          # isyarat tampil sebelum posting
+    r2 = jalan(SS.rencana_posting(Kon(stok=D("5")), T, SA_ID, Blok(True)))                    # nilai > 0: jurnal ada
+    assert r2["tanpa_jurnal"] is False and len(r2["baris"]) == 2
+
+
+def test_nol212_tulis_posting_tanpa_jurnal_stok_tetap_bergerak(monkeypatch):
+    k = Kon(items=BARIS_NOL, stok=D("5"))
+    _pool(monkeypatch, k)
+    h = jalan(SA.post_stock_adjustment(req(), SA_ID))
+    assert h["data"]["status"] == "posted" and h["data"]["journal_id"] is None and h["data"]["journal_number"] is None
+    assert not any(s.startswith("INSERT INTO journal_entries") or s.startswith("INSERT INTO journal_lines") for s, _ in k.exe)
+    assert len([1 for s, _ in k.exe if s.startswith("INSERT INTO inventory_ledger")]) == 1   # gerak stok tertulis
+    up = [a for s, a in k.exe if s.startswith("UPDATE stock_adjustments SET status = 'posted'")]
+    assert up and up[0][1] is None                                                           # journal_id dokumen NULL
+
+
+def test_nol212_pratinjau_menyatakan_tanpa_jurnal(monkeypatch):
+    async def keluaran(conn, tid, r, payload):
+        return {"ok": not r["blocks"], "blocks": r["blocks"], "jurnal": [], "saldo": []}
+    monkeypatch.setattr("app.services.kasbank_tulis.keluaran", keluaran)
+
+    def pra(k, rencana):
+        return jalan(SS.pratinjau(Pool(k), T, rencana, {}))["data"]
+    d = pra(Kon(items=BARIS_NOL, stok=D("5")), lambda c: SS.rencana_posting(c, T, SA_ID, Blok(True)))
+    assert d["tanpa_jurnal"] is True and d["jurnal_catatan"] == "Tanpa jurnal (nilai Rp 0)." and any("belum punya harga pokok" in x for x in d["isyarat"])
+    d2 = pra(Kon(stok=D("5")), lambda c: SS.rencana_posting(c, T, SA_ID, Blok(True)))
+    assert "tanpa_jurnal" not in d2 and "jurnal_catatan" not in d2                             # bernilai: tak ada pernyataan
+    d3 = pra(Kon(sa={"status": "posted", "journal_id": None}, stok=D("0")), lambda c: SS.rencana_batal(c, T, SA_ID, "salah", Blok(True)))
+    assert d3["tanpa_jurnal"] is True and d3["jurnal_catatan"] == SS.TEKS_TANPA_JURNAL_BATAL
+    d4 = pra(Kon(sa={"status": "posted", "journal_id": JE}, stok=D("0")), lambda c: SS.rencana_batal(c, T, SA_ID, "salah", Blok(True)))
+    assert "tanpa_jurnal" not in d4                                                            # ada jurnal: pembalik biasa
+    d5 = pra(Kon(sa={"status": "posted"}, items=BARIS_NOL), lambda c: SS.rencana_posting(c, T, SA_ID, Blok(True)))
+    assert d5["ok"] is False and "tanpa_jurnal" not in d5                                      # diblok: tak menyatakan apa pun
+
+
+def test_nol212_batal_tanpa_jurnal_gerak_stok_tetap_dibalik(monkeypatch):
+    r = jalan(SS.rencana_batal(Kon(sa={"status": "posted", "journal_id": None}, stok=D("0")), T, SA_ID, "salah", Blok(True)))
+    assert r["blocks"] == [] and r["tanpa_jurnal"] is True and r["baris"] == []
+    assert len(r["gerak"]) == 1 and (r["gerak"][0]["masuk"], r["gerak"][0]["stok_sesudah"]) == (D("3"), D("3"))   # cermin gerak tetap ada
+    k = Kon(sa={"status": "posted", "journal_id": None}, stok=D("0"))
+    _pool(monkeypatch, k)
+    panggil = []
+
+    async def balik(conn, tenant_id, **kw):
+        panggil.append(kw)
+        return []
+    monkeypatch.setattr("app.services.inventory_helpers.record_inventory_reversal", balik)
+    h = jalan(SA.void_stock_adjustment(req(), SA_ID, VoidStockAdjustmentRequest(reason="salah")))
+    assert h["data"]["status"] == "void" and h["data"]["reversal_journal_id"] is None
+    assert len(panggil) == 1 and panggil[0]["reversal_journal_id"] is None and panggil[0]["source_type"] == "STOCK_ADJUSTMENT"   # stok dibalik
+    assert not any(s.startswith("INSERT INTO journal_entries") for s, _ in k.exe)               # tanpa jurnal pembalik

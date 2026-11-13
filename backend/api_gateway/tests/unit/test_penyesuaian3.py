@@ -100,8 +100,8 @@ def pasang(monkeypatch):
         cat.draf += 1
         return SA_ID, "SA-2611-0001", D("1000")
 
-    async def tulis(conn, ctx, aid, r, tanpa_jurnal_bila_nol=False):
-        cat.tulis.append(tanpa_jurnal_bila_nol)
+    async def tulis(conn, ctx, aid, r):
+        cat.tulis.append("tulis")
         return cat.jurnal if cat.harga else (None, None)
 
     async def pool():
@@ -140,7 +140,7 @@ def test_peta_tipe_set_add_subtract_ke_dokumen(pasang):
     r = jalan({"quantity": 7, "reason": "Opname"})                                # bawaan = set -> hitung ulang, fisik = jumlah, selisih per gudang
     q = pasang.rencana_buat_req
     assert (q.adjustment_type, q.items[0].physical_quantity, q.items[0].quantity_adjustment) == ("recount", D("7"), D("-3")) and r["new_stock"] == "7"
-    assert pasang.tulis == [True, True, True]                                      # quick adjust: tanpa jurnal bila nilai 0 (perilaku lama)
+    assert pasang.tulis == ["tulis"] * 3                                           # quick adjust memanggil SATU penulis (BUG-212: nilai 0 = tanpa jurnal di penulis itu)
 
 
 def test_respons_lama_tetap_plus_medan_baru(pasang):
@@ -209,14 +209,15 @@ def test_id_barang_tak_sah_400(pasang):
 
 def test_satu_penulis_tak_ada_sql_jurnal_sendiri_dan_kunci_stok():
     src = inspect.getsource(IT.create_stock_adjustment)
-    assert "SAR._buat_draf(" in src and "SAR._tulis_posting(" in src and "tanpa_jurnal_bila_nol=True" in src
+    assert "SAR._buat_draf(" in src and "SAR._tulis_posting(" in src and "tanpa_jurnal_bila_nol" not in src
     assert "INSERT INTO journal_entries" not in src and "INSERT INTO inventory_ledger" not in src and "record_inventory_inbound" not in src
     assert 'f"STOCK:{item_id}:{g[\'id\']}"' in src and 'f"STOCK_ADJ_CREATE:{item_id}"' in src
     assert src.index("STOCK:{item_id}") < src.index("SS_PEN.stok_gudang(")          # kunci SEBELUM membaca stok
     assert "sales_price" not in src                                                 # fallback harga jual DIBUANG (putusan 12 Nov)
 
 
-def test_tulis_posting_tanpa_jurnal_bila_nol_hanya_untuk_quick(monkeypatch):
+def test_tulis_posting_nilai_nol_tanpa_jurnal_untuk_dokumen_dan_quick(monkeypatch):
+    """BUG-212 (putusan pemilik 13 Nov): total nilai 0 = TANPA jurnal, stok tetap bergerak -- SATU aturan penulis (dokumen DAN quick adjust)."""
     class K:
         def __init__(self):
             self.exe = []
@@ -230,12 +231,13 @@ def test_tulis_posting_tanpa_jurnal_bila_nol_hanya_untuk_quick(monkeypatch):
     r = {"sa": sa, "baris": [], "gerak": [], "gudang": {"id": G}, "total": D("0")}
     ctx = {"tenant_id": T, "user_id": "u"}
     k = K()
-    jid, jn = asyncio.run(SAR._tulis_posting(k, ctx, SA_ID, r, tanpa_jurnal_bila_nol=True))
+    jid, jn = asyncio.run(SAR._tulis_posting(k, ctx, SA_ID, r))
     assert (jid, jn) == (None, None) and not any("INSERT INTO journal_entries" in s for s in k.exe) and any("UPDATE stock_adjustments" in s for s in k.exe)
 
     async def nomor(conn, tid, no, pfx):
         return "SAJ-1"
     monkeypatch.setattr(SAR.NJ, "nomor_jurnal_dokumen", nomor)
     k2 = K()
-    jid, jn = asyncio.run(SAR._tulis_posting(k2, ctx, SA_ID, r))                     # dokumen: perilaku lama (bawaan False) tak berubah
+    r2 = dict(r, baris=[("akun-a", D("5"), D("0"), "m1"), ("akun-b", D("0"), D("5"), "m2")], total=D("5"))
+    jid, jn = asyncio.run(SAR._tulis_posting(k2, ctx, SA_ID, r2))                    # nilai > 0: jurnal tetap ditulis
     assert jid is not None and jn == "SAJ-1" and any("INSERT INTO journal_entries" in s for s in k2.exe)

@@ -3564,7 +3564,7 @@ async def create_stock_adjustment(request: Request, item_id: str, response: Resp
                 r_buat = await SS_PEN.rencana_buat(conn, tid, req, BlokPen(False))
                 sa_id, sa_number, total_nilai = await SAR._buat_draf(conn, ctx, req, r_buat)
                 r_post = await SS_PEN.rencana_posting(conn, tid, sa_id, BlokPen(False), kunci=True, counter_account_id=lawan)
-                journal_id, journal_number = await SAR._tulis_posting(conn, ctx, sa_id, r_post, tanpa_jurnal_bila_nol=True)
+                journal_id, journal_number = await SAR._tulis_posting(conn, ctx, sa_id, r_post)
                 harga = r_buat["baris_draf"][0]["unit_cost"]
                 biaya_ledger = await conn.fetchval(
                     "SELECT average_cost FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND average_cost IS NOT NULL AND average_cost > 0 "

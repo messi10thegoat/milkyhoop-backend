@@ -121,6 +121,15 @@ async def stok_gudang(conn, tid: str, product_id, warehouse_id) -> Decimal:
         "WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $3", tid, product_id, warehouse_id))
 
 
+def isyarat_tanpa_harga(nama) -> str:
+    """Kalimat isyarat SATU sumber: dipakai pratinjau buat/ubah (susun_baris) DAN pratinjau posting (BUG-212)."""
+    return f"Barang {nama} belum punya harga pokok; nilai Rp 0."
+
+
+TEKS_TANPA_JURNAL_POSTING = "Tanpa jurnal (nilai Rp 0)."
+TEKS_TANPA_JURNAL_BATAL = "Tanpa jurnal pembalik (penyesuaian ini tanpa jurnal); hanya gerak stok yang dibalik."
+
+
 async def harga_pokok(conn, tid: str, product_id) -> Decimal:
     """Harga pokok SAAT INI dengan penentu yang SAMA dengan nilai baris draf (router get_product_info: WAC terakhir, cadangan harga beli)."""
     from ..routers.stock_adjustments import get_product_info
@@ -194,7 +203,7 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
             continue
         harga = Decimal(int(p["unit_cost"] or 0))
         if harga == 0 and isyarat is not None:
-            isyarat.append(f"Barang {nama} belum punya harga pokok; nilai Rp 0.")
+            isyarat.append(isyarat_tanpa_harga(nama))
         hasil.append({"product_id": pid, "product_code": p["code"], "product_name": nama, "unit": p["unit"],
                       "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
@@ -343,6 +352,7 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, 
         hasil["baris"] += [(persediaan, naik, NOL, f"Penambahan Persediaan - {n}"), (penyesuaian, NOL, naik, f"Koreksi Persediaan - {n}")]
     if turun > 0:
         hasil["baris"] += [(penyesuaian, turun, NOL, f"Penyesuaian Persediaan - {n}"), (persediaan, NOL, turun, f"Pengurangan Persediaan - {n}")]
+    hasil["tanpa_jurnal"] = not hasil["baris"]  # BUG-212 (putusan pemilik 13 Nov): total nilai 0 = TANPA jurnal; stok tetap bergerak
     if not g:
         return hasil
     for i in items:
@@ -354,6 +364,8 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, 
         hasil["gerak"].append({"product_id": i["product_id"], "product_code": i["product_code"], "product_name": i["product_name"],
                                "masuk": q if q > 0 else NOL, "keluar": -q if q < 0 else NOL, "unit_cost": _d(i["unit_cost"]),
                                "stok_sebelum": sebelum, "stok_sesudah": sebelum + q})
+        if q != 0 and _d(i["unit_cost"]) == 0:
+            hasil["isyarat"].append(isyarat_tanpa_harga(i["product_name"]))
         if q < 0 and sebelum + q < 0:
             hasil["isyarat"].append(f"Stok {i['product_name']} di {g['name']} akan minus ({sebelum + q}).")
         kini = await harga_pokok(conn, tid, i["product_id"])
@@ -383,19 +395,20 @@ async def rencana_batal(conn, tid: str, sa_id, alasan, bl: Blok, kunci: bool = F
     await periode(conn, tid, sa["adjustment_date"], bl)
     hari_ini = hasil["hari_ini"] = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis: jurnal pembalik bertanggal hari ini
     await periode(conn, tid, hari_ini, bl)
+    hasil["tanpa_jurnal"] = not sa["journal_id"]  # BUG-212: dokumen nilai 0 tak punya jurnal -> tanpa jurnal pembalik, gerak stok TETAP dibalik
     if sa["journal_id"]:
         lines = await conn.fetch("SELECT l.* FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_id AND e.tenant_id = $2 "
                                  "WHERE l.journal_id = $1 ORDER BY l.line_number", sa["journal_id"], tid)
         hasil["baris"] = [(x["account_id"], _d(x["credit"]), _d(x["debit"]), f"Reversal - {x['memo'] or ''}") for x in lines]
-        for r in await conn.fetch(
-                "SELECT product_id, product_name, warehouse_id, SUM(quantity_in) AS masuk, SUM(quantity_out) AS keluar FROM inventory_ledger "
-                "WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 GROUP BY 1, 2, 3 ORDER BY 2, 1", tid, sa_id):
-            sebelum = await stok_gudang(conn, tid, r["product_id"], r["warehouse_id"])
-            sesudah = sebelum - _d(r["masuk"]) + _d(r["keluar"])
-            hasil["gerak"].append({"product_id": r["product_id"], "product_name": r["product_name"], "warehouse_id": r["warehouse_id"],
-                                   "masuk": _d(r["keluar"]), "keluar": _d(r["masuk"]), "stok_sebelum": sebelum, "stok_sesudah": sesudah})
-            if sesudah < 0:
-                hasil["isyarat"].append(f"Stok {r['product_name']} akan minus ({sesudah}) sesudah pembatalan.")
+    for r in await conn.fetch(
+            "SELECT product_id, product_name, warehouse_id, SUM(quantity_in) AS masuk, SUM(quantity_out) AS keluar FROM inventory_ledger "
+            "WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 GROUP BY 1, 2, 3 ORDER BY 2, 1", tid, sa_id):
+        sebelum = await stok_gudang(conn, tid, r["product_id"], r["warehouse_id"])
+        sesudah = sebelum - _d(r["masuk"]) + _d(r["keluar"])
+        hasil["gerak"].append({"product_id": r["product_id"], "product_name": r["product_name"], "warehouse_id": r["warehouse_id"],
+                               "masuk": _d(r["keluar"]), "keluar": _d(r["masuk"]), "stok_sebelum": sebelum, "stok_sesudah": sesudah})
+        if sesudah < 0:
+            hasil["isyarat"].append(f"Stok {r['product_name']} akan minus ({sesudah}) sesudah pembatalan.")
     return hasil
 
 
@@ -459,6 +472,9 @@ async def pratinjau(pool, tid: str, rencana, payload) -> dict:
             d["gudang"] = {"id": str(r["gudang"]["id"]), "name": r["gudang"]["name"]} if r.get("gudang") else None
             d["gerak"] = [_gerak_json(g) for g in r.get("gerak", [])]
             d["isyarat"] = list(r.get("isyarat", []))
+            if r.get("tanpa_jurnal") and not r.get("blocks"):  # BUG-212: pratinjau posting/batal menyatakan tanpa jurnal
+                d["tanpa_jurnal"] = True
+                d["jurnal_catatan"] = TEKS_TANPA_JURNAL_BATAL if "hapus_draf" in r else TEKS_TANPA_JURNAL_POSTING
             if r.get("baris_draf") is not None:
                 d["baris_draf"] = [_draf_json(b) for b in r["baris_draf"]]
             # BUG-204 (+ permintaan WORKSPACE): total nilai dokumen buat/ubah dari penentu YANG SAMA dgn yang tersimpan (trigger trg_update_sa_totals = Σ total_value baris);
