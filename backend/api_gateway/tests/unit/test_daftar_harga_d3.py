@@ -83,6 +83,7 @@ async def test_terapkan_update_harga_tiap_baris_bersaring_tenant_dan_tanggal_ber
     for s, a in c.sql:
         assert s.lstrip().startswith("UPDATE price_list_items") and "tenant_id" in s and "price_list_id" in s
     assert c.sql[0][1][0] == "l1" and c.sql[0][1][3] == D("1100.00") and c.sql[0][1][4] == date(2026, 12, 1)
+    assert "start_date = $5" in c.sql[0][0]
 
 
 @pytest.mark.asyncio
@@ -192,6 +193,8 @@ def test_badan_memuat_dasar_pembulatan_konfirmasi_dan_menolak_nilai_ngawur():
 def test_rute_meneruskan_dasar_pembulatan_dan_menjaga_konfirmasi_nol():
     assert "dasar=body.dasar" in RUTE and "kelipatan=body.pembulatan_kelipatan" in RUTE
     assert "DH_HARGA_NOL_BELUM_DIKONFIRMASI" in RUTE and "konfirmasi_harga_nol" in RUTE
+    assert 'if r["rencana"]["ada_harga_nol"] and not body.konfirmasi_harga_nol:' in RUTE      # penulis menuntut konfirmasi
+    assert "    if not kunci:" in RUTE                                                          # kunci idempotensi WAJIB
     assert RUTE.split("payload=", 1)[1].count("dasar") >= 1                    # kunci per barang memuat dasar + pembulatan
 
 
