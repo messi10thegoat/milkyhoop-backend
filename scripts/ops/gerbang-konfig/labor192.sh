@@ -1,5 +1,5 @@
 # Konfig gerbang unit BUG-192 (/labor tarif standar 0: peringatan + tarif_ditemukan; perilaku terap tak berubah). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-b192; CABANG=feat/labor-peringatan-tarif-nol; NAMA_JENDELA=labor192
+W=/root/mh-b192; CABANG=feat/labor-peringatan-tarif-nol-r2; NAMA_JENDELA=labor192
 POLA_UNIT='labor|produksi|production|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-labor192.sh
 PENANDA_BERKAS=services/labor_peringatan.py; PENANDA='def peringatan'
