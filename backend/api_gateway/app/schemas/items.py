@@ -359,6 +359,8 @@ class ItemListItem(BaseModel):
     updated_at: datetime
     # Standar SO (7 Nov 2026): kunci aksi (urut desak), teks posisi server, bisa dijual (stok - dipesan SO terbuka)
     aksi_semua: List[str] = []
+    keadaan: Optional[str] = None  # P3: aktif | nonaktif
+    keadaan_text: Optional[str] = None
     position_text: Optional[str] = None
     bisa_dijual: Optional[Decimal] = None
 

@@ -158,4 +158,4 @@ def test_izin_pratinjau_dipetakan(pola):
 
 def test_status_massal_tulis_dan_pratinjau_satu_penentu():
     src = RUTE.read_text()
-    assert '@router.patch("/items/status")' in src and "BA.rencana_status" in src
+    assert '@router.patch("/items/status")' in src and src.count("BA.ukur_rencana_status") >= 3   # massal tulis + massal/satu pratinjau
