@@ -176,3 +176,63 @@ def test_keadaan_di_baris_daftar_dan_detail():
     src = RUTE.read_text()
     assert "keadaan=BA.keadaan(row), keadaan_text=BA.keadaan_text(row)" in src
     assert '"keadaan": BA.keadaan(row), "keadaan_text": BA.keadaan_text(row)' in src
+
+
+# =============================== TAHAP 2: pratinjau ubah, idempotensi, audit ===============================
+def _fn(src: str, nama: str, jenis: str = "async def") -> str:
+    i = src.index(f"{jenis} {nama}(")
+    j = src.find("\n@router.", i)
+    k = src.find("\nasync def ", i + 10)
+    akhir = min(x for x in (j, k) if x != -1) if (j != -1 or k != -1) else len(src)
+    return src[i:akhir]
+
+
+def test_rencana_ubah_daftar_perubahan_dari_ke_dan_tanpa_perubahan():
+    lama = {"nama_produk": "Kaos", "sales_price": D("50000"), "base_unit": "pcs", "kategori": "Atasan", "reorder_level": None}
+    r = BA.rencana_ubah(lama, {"name": "Kaos Polos", "sales_price": 55000, "base_unit": "pcs", "kategori": "Atasan"})
+    assert r["ok"] and r["rencana"]["perubahan"] == [
+        {"medan": "name", "dari": "Kaos", "ke": "Kaos Polos"}, {"medan": "sales_price", "dari": "50000", "ke": "55000"}]
+    assert BA.rencana_ubah(lama, {"name": "Kaos"})["peringatan"][0]["code"] == "TANPA_PERUBAHAN"
+
+
+def test_rencana_ubah_barang_tak_ada_blok():
+    assert BA.rencana_ubah(None, {"name": "x"})["blocks"][0]["code"] == "BARANG_TAK_ADA"
+
+
+def test_pemeriksa_ubah_satu_penentu_untuk_put_dan_pratinjau():
+    src = RUTE.read_text()
+    assert "async def _periksa_ubah(" in src and "async def _periksa_konversi(" in src
+    put = _fn(src, "update_item")
+    assert "_periksa_ubah(" in put and "_periksa_konversi(" in put
+    assert "tolak_ubah_dasar" not in put and "_alasan_tolak_ubah_tipe" not in put      # tak ada salinan di penulis
+    pv = _fn(src, "preview_ubah_barang")
+    assert "_periksa_ubah(" in pv and "_periksa_konversi(" in pv and "readonly=True" in pv or "_baca_saja" in pv
+    for tulis in ("INSERT ", "UPDATE ", "DELETE "):
+        assert tulis not in pv, tulis
+    assert '@router.post("/items/{item_id}/edit/preview")' in src
+
+
+def test_izin_pratinjau_ubah_dipetakan_U():
+    assert 'r"^/api/items/[^/]+/edit/preview$", ["POST"], "item", "U"' in MW.read_text()
+
+
+@pytest.mark.parametrize("fungsi,prefix", [("update_item", "ITEM_UPDATE"), ("update_item_status", "ITEM_STATUS"), ("delete_item", "ITEM_DELETE"),
+                                           ("duplicate_item", "ITEM_DUPLICATE"), ("create_category", "ITEM_KATEGORI_BUAT"),
+                                           ("delete_category", "ITEM_KATEGORI_HAPUS")])
+def test_idempotensi_tulis_barang_berkunci(fungsi, prefix):
+    fn = _fn(RUTE.read_text(), fungsi)
+    assert f'"{prefix}"' in fn and "idem_aksi(" in fn, fungsi
+
+
+def test_idem_aksi_membungkus_mulai_aksi_dan_simpan():
+    fn = inspect.getsource(BA.idem_aksi)
+    assert "mulai_aksi" in fn and "simpan" in fn and "_lama is not None" in fn.replace("lama is not None", "_lama is not None")
+
+
+def test_hapus_dan_duplikat_menulis_audit():
+    src = RUTE.read_text()
+    assert "BA.catat_hapus(" in _fn(src, "delete_item")
+    dup = _fn(src, "duplicate_item")
+    assert "BA.catat_duplikat(" in dup
+    assert "ITEM_DELETED" in inspect.getsource(BA.catat_hapus) and "audit_logs" in inspect.getsource(BA.catat_hapus).replace("catat_riwayat", "audit_logs")
+    assert "duplicated" in inspect.getsource(BA.catat_duplikat)
