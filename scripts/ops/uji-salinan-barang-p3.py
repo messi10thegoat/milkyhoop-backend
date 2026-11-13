@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import items as I  # noqa: E402
-from app.schemas.items import CreateItemRequest  # noqa: E402
+from app.schemas.items import CreateItemRequest, UpdateItemRequest  # noqa: E402
 from app.services.db_pool import get_db_pool  # noqa: E402
 
 HASIL = []
@@ -34,8 +34,8 @@ def req(tid, metode="POST", path="/api/items"):
     return r
 
 
-def reqk(tid, kunci):
-    r = Request({"type": "http", "method": "POST", "path": "/api/items/bulk/status", "headers": [(b"x-idempotency-key", kunci.encode())]})
+def reqk(tid, kunci, metode="POST", path="/api/items/bulk/status"):
+    r = Request({"type": "http", "method": metode, "path": path, "headers": [(b"x-idempotency-key", kunci.encode())]})
     r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-barang-p3"}
     return r
 
@@ -121,6 +121,48 @@ async def periksa(pool, tid):
         pv["ok_count"] == 2 and t1["all_ok"] and sts == ["inactive", "inactive"] and akt == 2
         and all(x["replay"] for x in t2["items"]) and akt2 == 2 and t3["rejected_count"] == 2,
         f"pv={pv['ok_count']} t1={t1['ok_count']} riwayat={akt}->{akt2} replay={[x['replay'] for x in t2['items']]} t3_tolak={t3['rejected_count']}")
+    # ---- H7 pratinjau ubah (penentu == PUT) + PUT idempoten + riwayat
+    U = __import__("uuid")
+    e1 = await buat(tid, f"UJI P3 Ubah {st}")
+    bad = (await I.preview_ubah_barang(req(tid), U.UUID(e1), {"name": f"UJI P3 Ubah2 {st}", "sales_price": 7000}))["data"]
+    async with pool.acquire() as c:
+        nama0 = await c.fetchval("SELECT nama_produk FROM products WHERE id = $1 AND tenant_id = $2", e1, tid)
+    kn = f"uji-p3-put-{st}-{tid}"
+    ub = UpdateItemRequest(name=f"UJI P3 Ubah2 {st}", sales_price=7000)
+    await I.update_item(reqk(tid, kn, "PUT", "/api/items/x"), U.UUID(e1), ub)
+    ulang = await I.update_item(reqk(tid, kn, "PUT", "/api/items/x"), U.UUID(e1), ub)   # kunci sama + isi sama = replay
+    try:
+        await I.update_item(reqk(tid, kn, "PUT", "/api/items/x"), U.UUID(e1), UpdateItemRequest(name=f"UJI P3 Lain {st}"))
+        beda = None
+    except HTTPException as e:
+        beda = e.status_code
+    async with pool.acquire() as c:
+        nu = await c.fetchval("SELECT count(*) FROM item_activities WHERE item_id = $1 AND tenant_id = $2 AND type = 'updated'", U.UUID(e1), tid)
+        nama1 = await c.fetchval("SELECT nama_produk FROM products WHERE id = $1 AND tenant_id = $2", e1, tid)
+    pd = [x["medan"] for x in bad["rencana"]["perubahan"]]
+    cek(f"{tid} H7 ubah: pratinjau nol tulis + perubahan name/sales_price; PUT berkunci replay, isi beda 409, satu riwayat",
+        bad["ok"] and set(pd) == {"name", "sales_price"} and nama0 == f"UJI P3 Ubah {st}" and nama1 == f"UJI P3 Ubah2 {st}"
+        and ulang is not None and beda == 409 and nu == 1, f"perubahan={pd} replay_ok={ulang is not None} beda={beda} riwayat={nu}")
+    # ---- H8 hapus berkunci: replay tanpa 404 + satu audit ITEM_DELETED; duplikat berkunci: satu salinan
+    e2 = await buat(tid, f"UJI P3 HapusKunci {st}")
+    kd = f"uji-p3-del-{st}-{tid}"
+    await I.delete_item(reqk(tid, kd, "DELETE", "/api/items/x"), U.UUID(e2))
+    try:
+        await I.delete_item(reqk(tid, kd, "DELETE", "/api/items/x"), U.UUID(e2))
+        rep = True
+    except HTTPException as e:
+        rep = e.status_code
+    async with pool.acquire() as c:
+        na = await c.fetchval("SELECT count(*) FROM audit_logs WHERE tenant_id = $1 AND \"eventType\" = 'ITEM_DELETED' AND entity_id = $2", tid, e2)
+    e3 = await buat(tid, f"UJI P3 DupKunci {st}")
+    kdp = f"uji-p3-dup-{st}-{tid}"
+    d1 = await I.duplicate_item(reqk(tid, kdp, "POST", "/api/items/x"), U.UUID(e3))
+    d2 = await I.duplicate_item(reqk(tid, kdp, "POST", "/api/items/x"), U.UUID(e3))
+    async with pool.acquire() as c:
+        nd = await c.fetchval("SELECT count(*) FROM products WHERE tenant_id = $1 AND nama_produk LIKE $2", tid, f"UJI P3 DupKunci {st} (Copy%")
+        nr = await c.fetchval("SELECT count(*) FROM item_activities WHERE tenant_id = $1 AND item_id = $2::uuid AND type = 'duplicated'", tid, d1.data["id"])
+    cek(f"{tid} H8 hapus berkunci: replay (bukan 404) + 1 audit ITEM_DELETED; duplikat berkunci: 1 salinan + riwayat duplicated",
+        rep is True and na == 1 and nd == 1 and d2.data["id"] == d1.data["id"] and nr == 1, f"replay_hapus={rep} audit={na} salinan={nd} riwayat={nr}")
     # ---- H5
     async with pool.acquire() as c:
         kat = await c.fetchrow("""SELECT kategori AS k, count(*) AS n FROM products WHERE tenant_id = $1 AND status = 'active' AND kategori IS NOT NULL

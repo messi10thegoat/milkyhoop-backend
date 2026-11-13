@@ -813,6 +813,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # P3 Barang (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status massal PATCH /items/status
     (r"^/api/items/bulk/(status|status/preview)$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/status/preview$", ["POST"], "item", "U"),
+    (r"^/api/items/[^/]+/edit/preview$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/delete/preview$", ["POST"], "item", "D"),
     (r"^/api/items/[^/]+/duplicate/preview$", ["POST"], "item", "P"),
     (r"^/api/items/categories/delete/preview$", ["POST"], "item", "D"),

@@ -221,7 +221,7 @@ def test_izin_pratinjau_ubah_dipetakan_U():
                                            ("delete_category", "ITEM_KATEGORI_HAPUS")])
 def test_idempotensi_tulis_barang_berkunci(fungsi, prefix):
     fn = _fn(RUTE.read_text(), fungsi)
-    assert f'"{prefix}"' in fn and "idem_aksi(" in fn, fungsi
+    assert f'"{prefix}"' in fn and ("idem_aksi(" in fn or "idem_buat.mulai_aksi(" in fn), fungsi
 
 
 def test_idem_aksi_membungkus_mulai_aksi_dan_simpan():
