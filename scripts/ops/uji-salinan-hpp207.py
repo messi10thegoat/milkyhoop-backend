@@ -3,6 +3,7 @@ A barang ber-WAC > 0: harga jual per satuan dasar < HPP -> peringatan JUAL_DI_BA
 B pengguna non-pemilik tanpa REPORT R (override klon): pesan TANPA angka dan kunci angka ABSEN, butuh_konfirmasi true; tulis tak diblok (calculate tetap sukses)
 C penerimaan: SQL rencana_terima asli (item_id + subtotal) atas PO klon; peringatan_terima tak galat; biaya per satuan dasar menyimpang > 30% dari HPP -> BIAYA_TERIMA_JANGGAL, 30% tepat -> tidak."""
 import asyncio
+import json
 import sys
 import uuid
 from datetime import date
@@ -52,6 +53,28 @@ async def tiga_dokumen(rq, pid, dasar, harga, qty=D("2")):
     return {"Faktur": d(si), "SO": d(so), "Penawaran": d(qu)}
 
 
+KUNCI_TAK_BERIZIN = {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan"}
+
+
+def varian_angka(nilai: D) -> set:
+    """Semua rupa NILAI (HPP / selisih %) yang tak boleh muncul bagi pemegang tanpa REPORT R: 35000.00, 35000, 35.000, Rp 35.000, 38.952,04, 50.00, ..."""
+    n2 = nilai.quantize(D("0.01"))
+    bulat = int(n2)
+    ribuan = f"{bulat:,}".replace(",", ".")
+    indo = f"{n2:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return {v for v in {str(n2), f"{n2:.2f}", str(bulat), ribuan, f"Rp {ribuan}", indo, f"Rp {indo}"} if len(v) >= 4}
+
+
+def bocor(p: dict, angka: set) -> list:
+    """Alasan kebocoran pada SATU objek peringatan tak berizin: kunci != persis KUNCI_TAK_BERIZIN, atau angka terlarang muncul di nilai mana pun (id dikecualikan agar tak positif palsu)."""
+    alasan = []
+    if set(p) != KUNCI_TAK_BERIZIN:
+        alasan.append(f"kunci menyimpang: {sorted(set(p) ^ KUNCI_TAK_BERIZIN)}")
+    teks = json.dumps({k: v for k, v in p.items() if k not in ("product_id", "baris")}, default=str, ensure_ascii=False)
+    alasan += [f"angka {a_} muncul" for a_ in sorted(angka) if a_ in teks]
+    return alasan
+
+
 def per(x):
     v = x["peringatan"] if isinstance(x, dict) else x.peringatan
     return v
@@ -99,9 +122,20 @@ async def main():
                     dok = await tiga_dokumen(rb, pid, dasar, bawah)
                     for nama, data in dok.items():
                         p = per(data)
-                        cek(f"B {tid} {nama} tak berizin: peringatan ada, TANPA angka (kunci angka ABSEN), hitungan tetap sukses",
-                            len(p) == 1 and p[0]["butuh_konfirmasi"] is True and set(p[0]) == {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan"}
-                            and "Rp" not in p[0]["pesan"] and p[0]["pesan"] == f"Harga jual {p[0]['nama']} di bawah harga pokok barang.", f"{p}")   # tanpa angka HPP/rugi (nama barang boleh berangka)
+                        selisih = (hpp - bawah) / hpp * 100
+                        angka = varian_angka(hpp) | varian_angka(selisih) | varian_angka(bawah)  # HPP, selisih %, dan harga jual (selisih/HPP = margin/rugi)
+                        alasan = bocor(p[0], angka) if len(p) == 1 else ["jumlah peringatan != 1"]
+                        cek(f"B {tid} {nama} tak berizin: peringatan ada, butuh_konfirmasi, kunci PERSIS {sorted(KUNCI_TAK_BERIZIN)}, NILAI HPP/selisih tak muncul (semua format rupiah), hitungan sukses",
+                            len(p) == 1 and p[0]["butuh_konfirmasi"] is True and alasan == [] and p[0]["pesan"] == f"Harga jual {p[0]['nama']} di bawah harga pokok barang.", f"{alasan} {p}")
+                    # KONTROL MERAH harness (KM-1..KM-3): pemeriksa HARUS bisa gagal; tanpa ini hijau di atas tak berarti
+                    p0 = dict(per(dok["Faktur"])[0])
+                    km1 = bocor({**p0, "hpp": str(hpp.quantize(D("0.01")))}, angka)
+                    km2 = bocor({**p0, "pesan": p0["pesan"] + " (HPP Rp " + f"{int(hpp):,}".replace(",", ".") + ")"}, angka)
+                    km3 = bocor({**p0, "selisih_pct": str(selisih.quantize(D("0.01")))}, angka)
+                    cek(f"B {tid} KM-1 kontrol merah: hpp disisipkan sebagai KUNCI -> terdeteksi", km1 != [], f"{km1}")
+                    cek(f"B {tid} KM-2 kontrol merah: HPP disisipkan ke PESAN (format rupiah) -> terdeteksi", km2 != [], f"{km2}")
+                    cek(f"B {tid} KM-3 kontrol merah: selisih_pct disisipkan sebagai kunci -> terdeteksi", km3 != [], f"{km3}")
+                    cek(f"B {tid} KM-0 pemeriksa tak positif-palsu: objek bersih lolos", bocor(p0, angka) == [], f"{bocor(p0, angka)}")
                 except Exception as e:  # noqa: BLE001
                     cek(f"B {tid} /calculate tak berizin tanpa galat", False, f"{type(e).__name__}: {e}")
             # C penerimaan
