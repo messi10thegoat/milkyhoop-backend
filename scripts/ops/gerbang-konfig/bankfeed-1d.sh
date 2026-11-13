@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus BF-1d (catat bayar_tagihan + batalkan BILL_PAYMENT; ekstraksi E4/E5 di routers/bill_payments; jurnal HANYA lewat penulis modul; tanpa migrasi).
 # Pemisah sabotase = "|", ekspresi sed memakai "@". Alamat rentang /awal/,/akhir/ dipakai agar sabotase hanya mengenai fungsi bayar_tagihan.
-W=/root/mh-bf1d; CABANG=feat/bankfeed-bf1d-bayar; NAMA_JENDELA=bankfeed-1d
+W=/root/mh-bf1d; CABANG=feat/bankfeed-bf1d-bayar-r2; NAMA_JENDELA=bankfeed-1d
 POLA_UNIT='bankfeed|mutasi_bank|bank_transfers|customer_deposits|receive_payments|bill_payments|bayar_keluar|buat_bayar_core|void_bayar_core|buat_transfer_core|void_transfer_core|buat_dp_core|guc_tenant|jaga_rekonsiliasi|tolak_void_bila|inventaris_rute_tulis|gate_izin|include_router|izin_untuk_jalur|izin_rute_pengguna'
 HARNESS=scripts/ops/uji-salinan-bankfeed-1d.sh
 PENANDA_BERKAS=services/bankfeed_aksi.py; PENANDA='def _rencana_bayar_tagihan('
