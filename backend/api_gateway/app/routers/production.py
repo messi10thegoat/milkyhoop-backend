@@ -40,6 +40,7 @@ from ..services.role_resolver import (
 from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import produksi_wip_sisa as PW  # BUG-183b: sisa WIP WO selesai dikuras month-end
+from ..services import labor_peringatan as LP  # BUG-192: peringatan tarif standar 0 di /labor
 from ..services import produksi_terap_standar as PT  # BUG-183: terap upah/overhead ke WIP (labor + report-output)
 from ..services import wo_status as WS  # BUG-184b: teks status + siap_diselesaikan dari satu peta
 from ..services.lampiran_milik import hapus_objek_sesudah_commit, lepas_berkas_milik
@@ -2424,6 +2425,9 @@ async def record_labor(request: Request, order_id: UUID, body: ProductionLaborIn
                         # center). `rate_source` di atas hanya ringkasan.
                         "labor_rate_source": _labor_src,
                         "overhead_rate_source": _oh_src,
+                        # BUG-192: tarif standar 0 (labor DAN overhead) -> tak ada biaya diterapkan; beri tahu (perilaku terap tak berubah)
+                        "tarif_ditemukan": LP.tarif_ditemukan(labor_rate_std, oh_rate_std),
+                        "peringatan": LP.peringatan(labor_rate_std, oh_rate_std),
                     },
                 }
 
