@@ -510,6 +510,10 @@ app.include_router(inventory.router, prefix="/api/inventory", tags=["inventory"]
 # GET/PUT /api/items/aliases ditangkap /items/{item_id}.
 app.include_router(item_aliases.router, prefix="/api", tags=["items"])
 # Items master data router
+# P3 Barang: aksi massal /api/items/bulk/status WAJIB sebelum router items ("/items/{item_id}/status/preview" menelan "bulk" sebagai id)
+from .routers import bulk_items as bulk_items_router  # noqa: E402
+
+app.include_router(bulk_items_router.router, prefix="/api/items", tags=["bulk"])
 app.include_router(items.router, prefix="/api", tags=["items"])
 app.include_router(mutasi_bank.router, prefix="/api/bank-accounts", tags=["Bank Feed"])  # BF-1a (izin: kas_bank R/C generik)
 app.include_router(matrix_items.router, prefix="/api/matrix-items", tags=["Matrix Items"])  # BUG-159 B1 (izin: modul item)

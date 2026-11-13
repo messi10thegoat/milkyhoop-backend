@@ -811,8 +811,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/intercompany/transactions/[^/]+/reject$", ["POST"], "journal", "V"),
     # items
     # P3 Barang (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status massal PATCH /items/status
-    (r"^/api/items/status/preview$", ["POST"], "item", "U"),
-    (r"^/api/items/status$", ["PATCH"], "item", "U"),
+    (r"^/api/items/bulk/(status|status/preview)$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/status/preview$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/delete/preview$", ["POST"], "item", "D"),
     (r"^/api/items/[^/]+/duplicate/preview$", ["POST"], "item", "P"),
