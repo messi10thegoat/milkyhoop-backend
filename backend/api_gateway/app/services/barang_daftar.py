@@ -115,4 +115,8 @@ def aksi_tersedia(b: dict) -> dict:
         "aktifkan": {"tersedia": not aktif, "alasan": None if not aktif else "Barang sudah aktif."},
         "sesuaikan_stok": {"tersedia": aktif and lacak, "alasan": None if (aktif and lacak) else (
             "Barang nonaktif; aktifkan dulu." if not aktif else "Stok barang ini tidak dilacak.")},
+        # P3 (13 Nov): ubah/duplikat selalu tersedia; hapus dikoreksi detail dgn ukur_jejak (barang_aksi), bukan di sini (sinkron, tanpa DB)
+        "ubah": {"tersedia": True, "alasan": None},
+        "hapus": {"tersedia": True, "alasan": None},
+        "duplikat": {"tersedia": True, "alasan": None},
     }
