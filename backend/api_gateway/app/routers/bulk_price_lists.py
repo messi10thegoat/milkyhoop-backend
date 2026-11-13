@@ -41,7 +41,6 @@ class BulkHargaRequest(BaseModel):
     dasar: Literal["harga_lama", "hpp"] = Field("harga_lama", description="dasar hitung: harga baris sekarang atau HPP (WAC satuan dasar x faktor konversi)")
     pembulatan_kelipatan: int = Field(0, description="0 = tanpa pembulatan (bawaan); selain itu 1/10/100/500/1000")
     pembulatan_arah: Literal["terdekat", "atas", "bawah"] = "terdekat"
-    konfirmasi_harga_nol: bool = Field(False, description="true = pengguna sudah mengonfirmasi peringatan DH_HARGA_NOL (harga hasil Rp 0)")
 
     @model_validator(mode="after")
     def _periksa(self):
@@ -76,9 +75,6 @@ def _fungsi(price_list_id: UUID, body: BulkHargaRequest):
         if r["blocks"]:
             raise HTTPException(status_code=409 if r["blocks"][0]["code"] != "DH_BARANG_TAK_DI_DAFTAR" else 404,
                                 detail={"code": r["blocks"][0]["code"], "message": r["blocks"][0]["message"]})
-        if r["rencana"]["ada_harga_nol"] and not body.konfirmasi_harga_nol:
-            raise HTTPException(status_code=409, detail={"code": "DH_HARGA_NOL_BELUM_DIKONFIRMASI",
-                                                         "message": "Sebagian harga akan jadi Rp 0; konfirmasi dulu (konfirmasi_harga_nol=true)."})
         await HM.terapkan(conn, ctx["tenant_id"], price_list_id, r["rencana"])
         return {"id": str(i), "jumlah_baris": r["rencana"]["jumlah_baris"], "baris": r["rencana"]["baris"], "peringatan": r["peringatan"]}
 
@@ -111,5 +107,5 @@ async def bulk_price(request: Request, price_list_id: UUID, body: BulkHargaReque
         pool, ctx, AKSI, "price_lists", ids, tulis, kunci_batch=kunci,
         payload={"price_list_id": str(price_list_id), "mode": body.mode, "nilai": str(body.nilai),
                  "berlaku_mulai": body.berlaku_mulai.isoformat() if body.berlaku_mulai else None,
-                 "dasar": body.dasar, "kelipatan": body.pembulatan_kelipatan, "arah": body.pembulatan_arah, "konfirmasi_nol": body.konfirmasi_harga_nol},
+                 "dasar": body.dasar, "kelipatan": body.pembulatan_kelipatan, "arah": body.pembulatan_arah},
         nomor=nama)}

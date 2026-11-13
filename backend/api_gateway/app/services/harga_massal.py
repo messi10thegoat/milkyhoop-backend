@@ -5,7 +5,7 @@
   ledger -- Iron Law 16) x faktor konversi satuan baris (penentu satuan_dasar yang SAMA dgn jalur stok). Tanpa HPP (None/<=0/satuan tak terkonversi) = BLOK
   per barang DH_HPP_TAK_ADA; barang lain tetap bisa diterapkan.
 - Pembulatan: bawaan TANPA (2 desimal HALF_UP, Law 9/25); kelipatan 1/10/100/500/1000 x arah terdekat(HALF_UP)/atas/bawah, SEBELUM cek negatif.
-- Hasil < 0 = blok DH_HARGA_NEGATIF; hasil = 0 = PERINGATAN DH_HARGA_NOL (perlu_konfirmasi; penulis menolak sampai dikonfirmasi), tetap boleh.
+- Hasil < 0 = blok DH_HARGA_NEGATIF; hasil = 0 = PERINGATAN DH_HARGA_NOL (bentuk BUG-207: butuh_konfirmasi + pesan; FE meminta konfirmasi, tulis TIDAK diblok), tetap boleh.
 - Tanggal berlaku = start_date baris yang diubah (kunci unik daftar: barang+satuan+qty minimum, tanpa tanggal, jadi dua harga berjangka pada kunci sama belum
   bisa). Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> harga jatuh ke harga dasar/daftar bawaan (PERINGATAN)."""
 from datetime import date
@@ -24,6 +24,11 @@ KELIPATAN = (0, 1, 10, 100, 500, 1000)
 
 def _blok(code: str, message: str) -> dict:
     return {"code": code, "message": message}
+
+
+def _per(code: str, pesan: str) -> dict:
+    """Peringatan = bentuk BUG-207 (satu komponen FE): {code, butuh_konfirmasi:true, pesan}; `message` = salinan pesan. Tulis TIDAK diblok."""
+    return {"code": code, "butuh_konfirmasi": True, "pesan": pesan, "message": pesan}
 
 
 def _hasil(blocks: list, rencana, peringatan=None) -> dict:
@@ -70,12 +75,10 @@ def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[dat
         return _hasil(bloks, None)
     per = []
     if mulai and mulai > hari_ini:
-        per.append({"code": "DH_BERLAKU_NANTI",
-                    "message": f"Sebelum {tgl_text(mulai)}, {nama} tidak memakai harga daftar ini (memakai harga dasar atau daftar bawaan)."})
+        per.append(_per("DH_BERLAKU_NANTI", f"Sebelum {tgl_text(mulai)}, {nama} tidak memakai harga daftar ini (memakai harga dasar atau daftar bawaan)."))
     nol = any(h["ke"] == 0 for h in hasil)
     if nol:
-        per.append({"code": "DH_HARGA_NOL", "perlu_konfirmasi": True,
-                    "message": f"Sebagian harga {nama} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."})
+        per.append(_per("DH_HARGA_NOL", f"Sebagian harga {nama} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."))
     return _hasil([], {"barang": nama, "jumlah_baris": len(hasil), "baris": hasil, "mode": mode, "nilai": Decimal(str(nilai)), "dasar": dasar,
                        "pembulatan": {"kelipatan": kelipatan, "arah": arah}, "ada_harga_nol": nol,
                        "berlaku_mulai": tgl_text(mulai) if mulai else None, "mulai": mulai}, per)

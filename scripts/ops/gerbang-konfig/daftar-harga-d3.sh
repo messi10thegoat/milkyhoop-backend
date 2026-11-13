@@ -15,7 +15,7 @@ SAB=(
  "s6 faktor konversi diabaikan|$A/services/harga_massal.py|s@Decimal(str(wac)) \* h\[\"faktor\"\]@Decimal(str(wac))@|$T"
  "s7 WAC nol diterima|$A/services/harga_massal.py|s@or Decimal(str(wac)) <= 0@or False@|$T"
  "s8 peringatan harga nol dicabut|$A/services/harga_massal.py|s@nol = any(h\[\"ke\"\] == 0 for h in hasil)@nol = False@|$T"
- "s9 konfirmasi harga nol tak dituntut|$A/routers/bulk_price_lists.py|s@if r\[\"rencana\"\]\[\"ada_harga_nol\"\] and not body.konfirmasi_harga_nol:@if False:@|$T"
+ "s9 peringatan tak minta konfirmasi|$A/services/harga_massal.py|s@\"butuh_konfirmasi\": True@\"butuh_konfirmasi\": False@|$T"
  "s10 kunci idempotensi tak wajib|$A/routers/bulk_price_lists.py|s@    if not kunci:@    if False:@|$T"
  "s11 pratinjau tak baca-saja|$A/routers/bulk_price_lists.py|s@baca_saja=True@baca_saja=False@|$T"
  "s12 izin ubah massal dicabut|$A/middleware/permission_middleware.py|s@price-lists/\[^/\]+/bulk/price@price-lists/\[^/\]+/bulk/priceX@|$T"

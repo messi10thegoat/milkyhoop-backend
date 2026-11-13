@@ -5,7 +5,7 @@ H2 pratinjau READ ONLY: harga + start_date semua baris daftar sama sebelum-sesud
 H3 tulis wajib kunci (BULK_KUNCI_WAJIB); dengan kunci harga berubah; kunci sama = replay (tak berlipat ganda).
 H4 dasar HPP: ke == bulat(WAC x (1+n/100)); barang tanpa HPP -> DH_HPP_TAK_ADA sementara barang lain tetap ok.
 H5 pembulatan kelipatan 100 atas: ke kelipatan 100 dan >= nilai mentah.
-H6 harga nol: pratinjau peringatan DH_HARGA_NOL perlu_konfirmasi; tulis tanpa konfirmasi ditolak; dengan konfirmasi harga 0.
+H6 harga nol: peringatan DH_HARGA_NOL (bentuk BUG-207 butuh_konfirmasi + pesan); tulis TIDAK diblok, harga jadi 0.
 H7 tanggal berlaku masa depan: start_date baris = tanggal itu + peringatan DH_BERLAKU_NANTI.
 H8 audit: baris audit_logs BULK_HARGA bertambah untuk tenant."""
 import asyncio
@@ -124,12 +124,9 @@ async def periksa(pool, tid):
     p6 = (await BP.bulk_price_preview(req(tid), uuid.UUID(pl4), B(mode="nominal", nilai=Decimal("-1000"))))["data"]
     w = [x for i in p6["items"] for x in i["preview"]["peringatan"] if x["code"] == "DH_HARGA_NOL"]
     r6 = (await BP.bulk_price(req(tid, f"uji-d3n-{st}"), uuid.UUID(pl4), B(mode="nominal", nilai=Decimal("-1000"))))["data"]
-    harga_tolak = await harga(pool, tid, pl4)
-    r6b = (await BP.bulk_price(req(tid, f"uji-d3n2-{st}"), uuid.UUID(pl4), B(mode="nominal", nilai=Decimal("-1000"), konfirmasi_harga_nol=True)))["data"]
     harga_ok = await harga(pool, tid, pl4)
-    cek(f"{tid} H6 harga nol: peringatan perlu_konfirmasi; tanpa konfirmasi ditolak (harga tetap); dengan konfirmasi jadi 0",
-        len(w) == 2 and all(x["perlu_konfirmasi"] for x in w) and r6["rejected_count"] == 2 and all(p[1] == Decimal("1000") for p in harga_tolak)
-        and r6b["all_ok"] and all(p[1] == Decimal("0") for p in harga_ok))
+    cek(f"{tid} H6 harga nol: peringatan BUG-207 (butuh_konfirmasi + pesan); tulis TIDAK diblok -> harga 0",
+        len(w) == 2 and all(x["butuh_konfirmasi"] and x["pesan"] for x in w) and r6["all_ok"] and all(p[1] == Decimal("0") for p in harga_ok))
     # ---- H7
     pl5 = await daftar_baru(pool, tid, st, "T", brg)
     tgl = date.today() + timedelta(days=30)

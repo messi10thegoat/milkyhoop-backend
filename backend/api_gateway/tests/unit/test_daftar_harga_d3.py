@@ -60,7 +60,7 @@ def test_rencana_barang_tak_ada_di_daftar_dan_tanpa_perubahan():
 def test_tanggal_berlaku_nanti_peringatan_harga_dasar_dan_lampau_tanpa_peringatan():
     nanti = HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), date(2026, 12, 1), HARI)
     assert nanti["ok"] and [p["code"] for p in nanti["peringatan"]] == ["DH_BERLAKU_NANTI"]
-    assert "1 Des 2026" in nanti["peringatan"][0]["message"] and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
+    assert "1 Des 2026" in nanti["peringatan"][0]["message"] and nanti["peringatan"][0]["butuh_konfirmasi"] is True and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
     lalu = HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), date(2026, 11, 1), HARI)
     assert lalu["peringatan"] == [] and lalu["rencana"]["berlaku_mulai"] == "1 Nov 2026"
 
@@ -175,7 +175,7 @@ def test_harga_nol_peringatan_perlu_konfirmasi_bukan_blok():
     x = HM.rencana_barang("Kaos", [_baris(price=D("500"))], "nominal", D("-500"), None, HARI)
     assert x["ok"] is True and x["blocks"] == []
     w = [p for p in x["peringatan"] if p["code"] == "DH_HARGA_NOL"]
-    assert len(w) == 1 and w[0]["perlu_konfirmasi"] is True and "Kaos" in w[0]["message"]
+    assert len(w) == 1 and w[0]["butuh_konfirmasi"] is True and "Kaos" in w[0]["pesan"] and w[0]["pesan"] == w[0]["message"]     # bentuk BUG-207
     assert not any(p["code"] == "DH_HARGA_NOL" for p in HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), None, HARI)["peringatan"])
 
 
@@ -183,7 +183,7 @@ def test_harga_nol_peringatan_perlu_konfirmasi_bukan_blok():
 def test_badan_memuat_dasar_pembulatan_konfirmasi_dan_menolak_nilai_ngawur():
     from app.routers.bulk_price_lists import BulkHargaRequest
     b = BulkHargaRequest(mode="persen", nilai=D("5"))
-    assert b.dasar == "harga_lama" and b.pembulatan_kelipatan == 0 and b.pembulatan_arah == "terdekat" and b.konfirmasi_harga_nol is False
+    assert b.dasar == "harga_lama" and b.pembulatan_kelipatan == 0 and b.pembulatan_arah == "terdekat" 
     assert BulkHargaRequest(mode="persen", nilai=D("5"), dasar="hpp", pembulatan_kelipatan=500, pembulatan_arah="atas").dasar == "hpp"
     for salah in ({"dasar": "ngawur"}, {"pembulatan_kelipatan": 7}, {"pembulatan_arah": "naik"}):
         with pytest.raises(ValidationError):
@@ -192,8 +192,7 @@ def test_badan_memuat_dasar_pembulatan_konfirmasi_dan_menolak_nilai_ngawur():
 
 def test_rute_meneruskan_dasar_pembulatan_dan_menjaga_konfirmasi_nol():
     assert "dasar=body.dasar" in RUTE and "kelipatan=body.pembulatan_kelipatan" in RUTE
-    assert "DH_HARGA_NOL_BELUM_DIKONFIRMASI" in RUTE and "konfirmasi_harga_nol" in RUTE
-    assert 'if r["rencana"]["ada_harga_nol"] and not body.konfirmasi_harga_nol:' in RUTE      # penulis menuntut konfirmasi
+    assert "konfirmasi" not in RUTE.lower().replace("butuh_konfirmasi", "")                   # pola BUG-207: konfirmasi di FE, tulis tidak diblok
     assert "    if not kunci:" in RUTE                                                          # kunci idempotensi WAJIB
     assert RUTE.split("payload=", 1)[1].count("dasar") >= 1                    # kunci per barang memuat dasar + pembulatan
 
