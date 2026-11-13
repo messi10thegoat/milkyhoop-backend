@@ -1632,6 +1632,7 @@ async def preview_confirm_sales_order(request: Request, order_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn, conn.transaction(readonly=True):
             h = await pratinjau_konfirmasi_so(conn, ctx, order_id)
+            h = {**h, "peringatan": await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "so", order_id)}  # BUG-207
         return SalesOrderResponse(success=True, message="Preview", data={**h, "preview": True})
     except HTTPException:
         raise

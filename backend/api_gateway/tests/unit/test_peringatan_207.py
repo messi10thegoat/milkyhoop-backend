@@ -146,3 +146,70 @@ def test_titik_pasang_terima_pratinjau_dan_tulis_sebelum_stok_masuk():
     tulis = inspect.getsource(PO.receive_goods)
     assert "_peringatan_terima = await JB.peringatan_terima(" in tulis and '"peringatan": _peringatan_terima,' in tulis
     assert tulis.index("_peringatan_terima = await JB.peringatan_terima(") < tulis.index("UPDATE purchase_order_items")   # HPP pembanding = SEBELUM penerimaan ini
+
+
+# ---------------------------------------------------------------- dokumen TERSIMPAN (pratinjau terbit/konfirmasi/kirim)
+class KonDok(Kon):
+    """+ baris/header dokumen tersimpan."""
+
+    def __init__(self, rows, diskon=D("0"), hpp=None):
+        super().__init__(hpp)
+        self.rows, self.diskon, self.sql = rows, diskon, []
+
+    async def fetchrow(self, sql, *a):
+        self.sql.append(sql)
+        assert "discount_amount FROM" in sql and "tenant_id = $2" in sql and a[1] == "T"
+        return {"discount_amount": self.diskon}
+
+    async def fetch(self, sql, *a):
+        if "FROM products p" in sql:
+            return await super().fetch(sql, *a)
+        self.sql.append(sql)
+        assert "tenant_id = $2" in sql and a[1] == "T"
+        return self.rows
+
+
+def _r(item, qty, unit, jml):
+    return {"item_id": item, "quantity": D(qty), "unit": unit, "jumlah_baris": None if jml is None else D(jml)}
+
+
+@pytest.mark.parametrize("jenis,tabel,urut", [("faktur", "sales_invoice_items", "i.line_number"), ("so", "sales_order_items", "i.sort_order"),
+                                              ("penawaran", "quote_items", "i.sort_order")])
+def test_baris_tersimpan_tabel_dan_urutan_per_jenis(jenis, tabel, urut):
+    k = KonDok([_r(P1, "1", "karton", "375000")])
+    out = jalan(JB.baris_tersimpan(k, "T", jenis, "00000000-0000-0000-0000-000000000001"))
+    assert out and any(tabel in s and urut in s for s in k.sql)
+
+
+def test_baris_tersimpan_diskon_dokumen_pro_rata_dan_baris_tanpa_jumlah_dilewati_nomor_tetap():
+    k = KonDok([_r(P1, "1", "karton", "600000"), _r(P2, "1", "pcs", None), _r(P2, "2", "pcs", "400000")], diskon=D("100000"))
+    out = jalan(JB.baris_tersimpan(k, "T", "faktur", "00000000-0000-0000-0000-000000000001"))
+    assert [(o["baris"], o["nilai"]) for o in out] == [(1, D("540000")), (3, D("360000"))]      # 60.000 + 40.000 dialokasikan; baris 2 dilewati, nomor tetap
+    assert jalan(JB.baris_tersimpan(KonDok([]), "T", "so", "x")) == []
+
+
+def test_peringatan_tersimpan_memakai_penentu_yang_sama_dan_izin(monkeypatch):
+    async def izin(user):
+        return user["user_id"] == "boleh"
+    monkeypatch.setattr(JB, "boleh_lihat_hpp", izin)
+    k = KonDok([_r(P1, "1", "karton", "375000")])
+    ada = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "boleh"}, "faktur", "00000000-0000-0000-0000-000000000001"))
+    tak = jalan(JB.peringatan_tersimpan(k, "T", {"user_id": "lain"}, "faktur", "00000000-0000-0000-0000-000000000001"))
+    assert ada[0]["code"] == "JUAL_DI_BAWAH_HPP" and "hpp" in ada[0] and "hpp" not in tak[0] and "harga_jual" not in tak[0]
+    assert jalan(JB.peringatan_tersimpan(KonDok([_r(P1, "1", "karton", "900000")]), "T", {"user_id": "boleh"}, "so", "x")) == []   # di atas HPP
+
+
+def test_peringatan_tersimpan_gagal_tak_merusak_pratinjau():
+    class Rusak:
+        async def fetchrow(self, *a):
+            raise RuntimeError("x")
+    assert jalan(JB.peringatan_tersimpan(Rusak(), "T", {"user_id": "u"}, "faktur", "x")) == []
+
+
+def test_titik_pasang_pratinjau_dokumen_tersimpan():
+    si = inspect.getsource(SI.preview_post_invoice)
+    assert '_peringatan = await JB.peringatan_tersimpan(' in si and '"faktur"' in si and '"peringatan": _peringatan,' in si
+    so = inspect.getsource(SOR.preview_confirm_sales_order)
+    assert '"peringatan": await JB.peringatan_tersimpan(' in so and '"so"' in so
+    q = inspect.getsource(QU.preview_send_quote)
+    assert "_peringatan.extend(await JB.peringatan_tersimpan(" in q and '"penawaran"' in q and '"peringatan": _peringatan' in q

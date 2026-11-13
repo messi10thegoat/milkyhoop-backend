@@ -1674,12 +1674,17 @@ async def preview_send_quote(request: Request, quote_id: str, body: SendQuoteReq
     tulisan. Badan SAMA dengan /send. 200 walau diblok (teks blok = teks galat /send); 404 bila tak ada."""
     try:
         kirim_surel = bool(body and body.send_email)
-        q, blok = await _pratinjau_baca(
-            request, quote_id, lambda conn, ctx: rencana_kirim_penawaran(conn, ctx, quote_id, kunci=False, send_email=kirim_surel),
-            "QUOTE_TAK_BISA_DIKIRIM")
+        _peringatan = []
+
+        async def _rencana(conn, ctx):
+            hasil = await rencana_kirim_penawaran(conn, ctx, quote_id, kunci=False, send_email=kirim_surel)
+            from ..services import jual_bawah_hpp as JB
+            _peringatan.extend(await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "penawaran", quote_id))  # BUG-207
+            return hasil
+        q, blok = await _pratinjau_baca(request, quote_id, _rencana, "QUOTE_TAK_BISA_DIKIRIM")
         return {"success": True, "data": {
             "ok": not blok, "quote_number": q["quote_number"], "status": q["status"], "status_after": "sent",
-            "send_email": kirim_surel, "blocks": blok}}
+            "send_email": kirim_surel, "blocks": blok, "peringatan": _peringatan}}
     except HTTPException:
         raise
     except Exception as e:

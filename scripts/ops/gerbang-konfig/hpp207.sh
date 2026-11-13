@@ -17,4 +17,9 @@ SAB=(
  "j10 terima tulis menghitung SESUDAH stok masuk (HPP pembanding bergeser)|$A/routers/purchase_orders.py|s#_peringatan_terima = await JB.peringatan_terima(#_peringatan_terima = [] or await JB.peringatan_terima(#|$T"
  "j11 respons SO tanpa kunci peringatan|$A/routers/sales_orders.py|s#\"peringatan\": _peringatan,#\"peringatan_x\": _peringatan,#|$T"
  "j12 skema Faktur menyaring peringatan|$A/schemas/sales_invoices.py|s#    peringatan: List\[Dict\[str, Any\]\] = \[\]#    peringatan_x: List[Dict[str, Any]] = []#|$T"
+ "j13 Faktur post/preview tanpa peringatan|$A/routers/sales_invoices.py|s#_peringatan = await JB.peringatan_tersimpan(#_peringatan = [] and await JB.peringatan_tersimpan(#|$T"
+ "j14 SO confirm/preview tanpa peringatan|$A/routers/sales_orders.py|s#\"peringatan\": await JB.peringatan_tersimpan(#\"peringatan\": [] and await JB.peringatan_tersimpan(#|$T"
+ "j15 Penawaran send/preview tanpa peringatan|$A/routers/quotes.py|s#_peringatan.extend(await JB.peringatan_tersimpan(#_peringatan.extend([] and await JB.peringatan_tersimpan(#|$T"
+ "j16 diskon dokumen tak dialokasikan (dokumen tersimpan)|$JBF|s#bagian = allocate(diskon, bobot) if diskon > NOL and sum(bobot, NOL) > NOL else \[NOL\] \* len(rows)#bagian = [NOL] * len(rows)#|$T"
+ "j17 dokumen tersimpan: urutan tabel salah|$JBF|s#\"i.sort_order, i.id\"),#\"i.id\"),#|$T"
 )

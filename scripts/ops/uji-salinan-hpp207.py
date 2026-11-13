@@ -116,6 +116,19 @@ async def main():
                         cek(f"C {tid} peringatan_terima atas PO klon tanpa galat (hasil {len(hasil)} peringatan)", isinstance(hasil, list))
                     except Exception as e:  # noqa: BLE001
                         cek(f"C {tid} peringatan_terima tanpa galat", False, f"{type(e).__name__}: {e}")
+            # D dokumen TERSIMPAN: SQL asli baris_tersimpan (kolom + urutan) atas dokumen klon tiap jenis
+            for jenis, (hdr, items, fk, _urut) in JB.JENIS_TERSIMPAN.items():
+                doc = await c.fetchval(f"/* tenant_id */ SELECT h.id FROM {hdr} h WHERE h.tenant_id = $1 AND EXISTS (SELECT 1 FROM {items} i WHERE i.{fk} = h.id AND i.jumlah_baris IS NOT NULL) ORDER BY h.created_at LIMIT 1", tid)
+                if doc is None:
+                    print(f"CATATAN D {tid}: tak ada dokumen {jenis} berbaris di klon; SQL tersimpan tak terukur", flush=True)
+                    continue
+                try:
+                    baris = await JB.baris_tersimpan(c, tid, jenis, doc)
+                    per_ = await JB.peringatan_tersimpan(c, tid, rq.state.user, jenis, doc)
+                    cek(f"D {tid} {jenis} tersimpan: SQL asli memuat {len(baris)} baris bernilai, peringatan tanpa galat ({len(per_)})",
+                        len(baris) >= 1 and all("nilai" in x and "item_id" in x for x in baris) and isinstance(per_, list))
+                except Exception as e:  # noqa: BLE001
+                    cek(f"D {tid} {jenis} tersimpan tanpa galat", False, f"{type(e).__name__}: {e}")
             tepat, lewat = (hpp * D("1.30")).quantize(D("0.0001")), (hpp * D("1.31")).quantize(D("0.0001"))
             m1 = await JB.hitung_terima(c, tid, [{"item_id": pid, "quantity": D("1"), "unit": dasar, "nilai": tepat}])
             m2 = await JB.hitung_terima(c, tid, [{"item_id": pid, "quantity": D("1"), "unit": dasar, "nilai": lewat}])

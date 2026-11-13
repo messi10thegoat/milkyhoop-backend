@@ -5605,6 +5605,7 @@ async def preview_post_invoice(request: Request, invoice_id: UUID,
         try:
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             r = await _ftr.rencana_terbit_ro(conn, ctx, invoice_id, _skip)
+            _peringatan = await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "faktur", invoice_id)  # BUG-207
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     if r is None:
@@ -5618,6 +5619,7 @@ async def preview_post_invoice(request: Request, invoice_id: UUID,
         "journals": r["journals"], "deposit_applications": r["deposit_applications"],
         "deposit_application_journals": r["deposit_application_journals"], "skip_deposit_ids": _skip,
         "ringkas_per_akun": r["ringkas_per_akun"], "akun_nol_netto": r["akun_nol_netto"],  # BUG-169: neto per akun (tampilan); journals = rincian
+        "peringatan": _peringatan,  # BUG-207: jual di bawah HPP (konfirmasi, bukan blok)
         "payload": None, "preview": True}}
 
 

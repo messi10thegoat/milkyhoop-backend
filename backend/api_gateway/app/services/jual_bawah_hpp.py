@@ -155,6 +155,41 @@ async def peringatan_terima(conn, tid: str, user: Optional[dict], rencana: dict)
         return []
 
 
+# Dokumen TERSIMPAN (pratinjau terbit/konfirmasi/kirim): header, tabel baris, kolom penunjuk, urutan tampil. Nama tetap (bukan masukan pengguna).
+JENIS_TERSIMPAN = {
+    "faktur": ("sales_invoices", "sales_invoice_items", "invoice_id", "i.line_number, i.id"),
+    "so": ("sales_orders", "sales_order_items", "sales_order_id", "i.sort_order, i.id"),
+    "penawaran": ("quotes", "quote_items", "quote_id", "i.sort_order, i.id"),
+}
+
+
+async def baris_tersimpan(conn, tid: str, jenis: str, doc_id) -> List[dict]:
+    """Baris dokumen yang SUDAH tersimpan -> masukan hitung_jual. nilai = jumlah_baris (neto sesudah diskon baris) dikurangi bagian diskon DOKUMEN
+    (pro-rata menurut jumlah_baris, aturan `allocate` yang sama dgn compute_document). Baris tanpa jumlah_baris (data lama) dilewati."""
+    from .sales_doc_calc import allocate
+    hdr, items, fk, urut = JENIS_TERSIMPAN[jenis]
+    h = await conn.fetchrow(f"SELECT discount_amount FROM {hdr} WHERE id = $1::uuid AND tenant_id = $2", str(doc_id), tid)
+    if h is None:
+        return []
+    rows = await conn.fetch(
+        f"SELECT i.item_id, i.quantity, i.unit, i.jumlah_baris FROM {items} i WHERE i.{fk} = $1::uuid "
+        f"AND EXISTS (SELECT 1 FROM {hdr} h WHERE h.id = i.{fk} AND h.tenant_id = $2) ORDER BY {urut}", str(doc_id), tid)
+    bobot = [Decimal(str(r["jumlah_baris"])) if r["jumlah_baris"] is not None else NOL for r in rows]
+    diskon = Decimal(str(h["discount_amount"] or 0))
+    bagian = allocate(diskon, bobot) if diskon > NOL and sum(bobot, NOL) > NOL else [NOL] * len(rows)
+    return [{"baris": n, "item_id": r["item_id"], "quantity": r["quantity"], "unit": r["unit"], "nilai": b - a}
+            for n, (r, b, a) in enumerate(zip(rows, bobot, bagian), 1) if r["jumlah_baris"] is not None]
+
+
+async def peringatan_tersimpan(conn, tid: str, user: Optional[dict], jenis: str, doc_id) -> List[dict]:
+    """Peringatan jual di bawah HPP untuk dokumen TERSIMPAN (penentu SAMA: hitung_jual + sajikan). Gagal hitung -> daftar kosong (dicatat)."""
+    try:
+        return sajikan(await hitung_jual(conn, tid, await baris_tersimpan(conn, tid, jenis, doc_id)), await boleh_lihat_hpp(user))
+    except Exception:  # noqa: BLE001
+        logger.error("BUG-207 peringatan_tersimpan gagal (%s)", jenis, exc_info=True)
+        return []
+
+
 def baris_dari_hasil(items: Iterable[dict]) -> List[dict]:
     """Baris hasil compute_document -> masukan hitung_jual (nilai = dpp_harga_jual)."""
     return [{"item_id": ln.get("item_id"), "quantity": ln.get("quantity"), "unit": ln.get("unit"), "nilai": ln.get("dpp_harga_jual")} for ln in items]
