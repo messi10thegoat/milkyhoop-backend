@@ -46,7 +46,7 @@ class Conn:
         self.sql.append((sql, a))
         if "FROM price_list_items" in sql and self.baris:
             return {"id": LINE, "item_id": ITEM, "item_code": "MG-2L", "unit": None, "price": D("30000"), "min_quantity": D("1"),
-                    "is_default_unit": False, "discount_percent": None, "start_date": None, "end_date": None}
+                    "is_default_unit": False, "discount_percent": None, "start_date": None, "end_date": None, "dasar": "Pcs"}
         return None
 
 

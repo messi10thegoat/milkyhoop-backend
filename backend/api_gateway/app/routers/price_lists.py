@@ -19,6 +19,7 @@ from ..schemas.price_lists import (
     PriceListDropdownResponse,
     ResolveHargaRequest,
 )
+from ..services import harga_daftar as HD
 from ..services import harga_jual as HJ
 from ..services import satuan_dasar as SD
 from ..services.galat_berkode import GalatBerkode
@@ -186,14 +187,24 @@ async def list_price_lists(
     limit: int = Query(20, ge=1, le=100),
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
+    aksi: Optional[str] = None,
 ):
+    """Daftar + ?aksi= (kedaluwarsa|belum_berlaku|nonaktif|bawaan; services/harga_daftar), urutan stabil (priority, nama, id),
+    pelanggan_count + aksi_tersedia per baris, total_baris (Σ server)."""
     try:
         ctx = get_user_context(request)
+        if aksi is not None and aksi not in HD.SEMUA_KUNCI:
+            raise HTTPException(status_code=400, detail="Saringan tidak dikenal.")
         pool = await get_pool()
         async with pool.acquire() as conn:
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # status berlaku: tanggal zona tenant
             conditions = ["p.tenant_id = $1"]
             params = [ctx["tenant_id"]]
             idx = 2
+            if aksi:
+                params.append(hari_ini)
+                conditions.append(HD.sql_aksi(aksi, "p", f"${idx}"))
+                idx += 1
             if search:
                 conditions.append(f"(p.code ILIKE ${idx} OR p.name ILIKE ${idx})")
                 params.append(f"%{search}%")
@@ -203,17 +214,20 @@ async def list_price_lists(
                 params.append(is_active)
                 idx += 1
             where = " AND ".join(conditions)
-            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])  # status berlaku: tanggal zona tenant
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM price_lists p WHERE {where}", *params
+            )
+            total_baris = await conn.fetchval(
+                f"""SELECT COUNT(*) FROM price_list_items pli JOIN price_lists p ON p.id = pli.price_list_id WHERE {where}""", *params
             )
             params.extend([limit, skip])
             rows = await conn.fetch(
                 f"""
                 SELECT p.id, p.code, p.name, p.price_type, p.start_date, p.end_date,
                        p.is_active, p.is_default,
-                       (SELECT COUNT(*) FROM price_list_items WHERE price_list_id = p.id) as item_count
-                FROM price_lists p WHERE {where} ORDER BY p.priority, p.name LIMIT ${idx} OFFSET ${idx+1}
+                       (SELECT COUNT(*) FROM price_list_items WHERE price_list_id = p.id) as item_count,
+                       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = p.tenant_id AND c.price_list_id = p.id) AS pelanggan_count
+                FROM price_lists p WHERE {where} ORDER BY p.priority, p.name, p.id LIMIT ${idx} OFFSET ${idx+1}
             """,
                 *params,
             )
@@ -234,12 +248,34 @@ async def list_price_lists(
                         "is_default": r["is_default"],
                         "item_count": r["item_count"],
                         **HJ.status_daftar(r, hari_ini),
+                        "position_text": HD.position_text(r["is_active"], r["is_default"], HJ.status_daftar(r, hari_ini)["status"]),
+                        "pelanggan_count": r["pelanggan_count"],
+                        "aksi_tersedia": HD.aksi_tersedia(r, r["pelanggan_count"]),
                     }
                     for r in rows
                 ],
                 "total": total,
+                "total_baris": total_baris,
                 "has_more": skip + limit < total,
             }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GAGAL)
+
+
+@router.get("/summary")
+async def price_lists_summary(request: Request):
+    """{kedaluwarsa_count, belum_berlaku_count, nonaktif_count, bawaan_count, total_count} -- predikat SAMA dgn ?aksi= daftar (services/harga_daftar)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            sel = ", ".join(f"COUNT(*) FILTER (WHERE {HD.sql_aksi(k, 'p', '$2')}) AS {k}_count" for k in HD.SEMUA_KUNCI)
+            r = await conn.fetchrow(f"SELECT {sel}, COUNT(*) AS total_count FROM price_lists p WHERE p.tenant_id = $1", ctx["tenant_id"], hari_ini)
+            return {"success": True, "data": {**{f"{k}_count": r[f"{k}_count"] for k in HD.SEMUA_KUNCI}, "total_count": r["total_count"]}}
     except HTTPException:
         raise
     except Exception as e:
@@ -261,11 +297,14 @@ async def get_price_list(request: Request, price_list_id: UUID):
             if not row:
                 raise HTTPException(status_code=404, detail=TAK_ADA)
             items = await conn.fetch(  # nama barang lewat JOIN (satu kueri)
-                """SELECT pli.*, p.nama_produk AS item_name FROM price_list_items pli
+                """SELECT pli.*, p.nama_produk AS item_name, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar FROM price_list_items pli
                    LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = $2
                    WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.min_quantity""",
                 price_list_id, ctx["tenant_id"],
             )
+            hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+            st = HJ.status_daftar(row, hari_ini)
+            n_pel = await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2", ctx["tenant_id"], price_list_id)
             return {
                 "success": True,
                 "data": {
@@ -285,7 +324,10 @@ async def get_price_list(request: Request, price_list_id: UUID):
                     "description": row["description"],
                     "is_active": row["is_active"],
                     "is_default": row["is_default"],
-                    **HJ.status_daftar(row, await tanggal_dokumen(conn, ctx["tenant_id"])),
+                    **st,
+                    "position_text": HD.position_text(row["is_active"], row["is_default"], st["status"]),
+                    "pelanggan_count": n_pel,
+                    "aksi_tersedia": HD.aksi_tersedia(row, n_pel),
                     "items": [
                         {
                             "id": str(i["id"]),
@@ -306,6 +348,8 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             if i["end_date"]
                             else None,
                             "is_active": i["is_active"],
+                            "unit_text": HD.unit_text(i["unit"], i["dasar"]),
+                            "berlaku_text": HD.berlaku_text(i["start_date"], i["end_date"]),
                         }
                         for i in items
                     ],
@@ -476,7 +520,7 @@ async def add_item_to_price_list(
             return {
                 "success": True,
                 "message": "Harga ditambahkan ke daftar.",
-                "data": {"id": str(item_id)},
+                "data": {"id": str(item_id), **await HD.teks_baris(conn, ctx["tenant_id"], item_id)},
             }
     except HTTPException:
         raise
@@ -549,7 +593,8 @@ async def update_price_list_item(request: Request, price_list_id: UUID, line_id:
             async with conn.transaction():
                 baru = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, body, True)
                 await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, baru, line_id=line_id)
-            return {"success": True, "message": "Harga diperbarui.", "data": {"id": str(line_id)}}
+            return {"success": True, "message": "Harga diperbarui.",
+                    "data": {"id": str(line_id), **await HD.teks_baris(conn, ctx["tenant_id"], line_id)}}
     except HTTPException:
         raise
     except Exception as e:

@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any, Literal
 from datetime import date
 from uuid import UUID
 
+from .aksi_tersedia import AksiTersediaPeta
 from .uang_json import UangJson
 
 
@@ -47,6 +48,8 @@ class PriceListItemResponse(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     is_active: bool = True
+    unit_text: Optional[str] = None  # services/harga_daftar.unit_text ("<satuan dasar>" bila unit kosong)
+    berlaku_text: Optional[str] = None  # services/harga_daftar.berlaku_text ("Ikut daftar" bila kosong)
 
 
 class CreatePriceListRequest(BaseModel):
@@ -90,11 +93,15 @@ class PriceListListItem(BaseModel):
     status: str = "aktif"  # services/harga_jual.status_daftar (tanggal bisnis tenant)
     status_text: str = "Aktif"
     is_expired: bool = False
+    position_text: str = "Aktif"
+    pelanggan_count: int = 0
+    aksi_tersedia: AksiTersediaPeta = {}
 
 
 class PriceListListResponse(BaseModel):
     items: List[PriceListListItem]
     total: int
+    total_baris: int = 0  # Σ server: jumlah baris harga pada daftar yang tersaring
     has_more: bool
 
 
@@ -114,6 +121,9 @@ class PriceListDetail(BaseModel):
     status: str = "aktif"  # services/harga_jual.status_daftar
     status_text: str = "Aktif"
     is_expired: bool = False
+    position_text: str = "Aktif"
+    pelanggan_count: int = 0
+    aksi_tersedia: AksiTersediaPeta = {}
     items: List[PriceListItemResponse] = []
     created_at: str
     updated_at: str
