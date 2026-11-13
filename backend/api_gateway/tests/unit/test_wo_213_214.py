@@ -88,9 +88,15 @@ async def test_selesai_tidak_menguras_sisa_wip_tanpa_jurnal(monkeypatch):
 
 
 def test_selesai_sumber_tanpa_pengurasan_dan_penanda_putusan():
+    import ast
+    import textwrap
     src = inspect.getsource(PR.complete_order)
-    assert "PRODUCTION_VARIANCE" not in src and "JV-VAR" not in src and "wip_residual" not in src and "WIP_GENERIC" not in src
-    assert "BUG-213" in src and "PRODUCTION_RECONCILE" in src
+    t = ast.parse(textwrap.dedent(src))                                             # periksa KODE (literal + nama), BUKAN komentar yang memang menyebut JV-VAR lama
+    teks = " ".join(n.value for n in ast.walk(t) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    nama = " ".join([n.id for n in ast.walk(t) if isinstance(n, ast.Name)] + [n.attr for n in ast.walk(t) if isinstance(n, ast.Attribute)])
+    assert "PRODUCTION_VARIANCE" not in teks and "JV-VAR" not in teks and "journal_entries" not in teks
+    assert "wip_residual" not in nama and "WIP_GENERIC" not in nama
+    assert "BUG-213" in src and "PRODUCTION_RECONCILE" in src                          # penanda putusan ada di komentar kode
 
 
 def test_tutup_bulan_tetap_menguras_wo_selesai():

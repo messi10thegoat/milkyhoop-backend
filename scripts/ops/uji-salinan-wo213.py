@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import production as PR  # noqa: E402
+from app.utils.tanggal_tenant import tanggal_dokumen  # noqa: E402
 from app.services import produksi_wip_sisa as PW  # noqa: E402
 from app.services.galat_berkode import GalatBerkode  # noqa: E402
 
@@ -69,7 +70,7 @@ async def main():
                 continue
             # C
             wip = await PR.resolve_account_id_by_role(c, tid, PR.AccountRole.WIP_GENERIC)
-            akhir = date.today()
+            akhir = await tanggal_dokumen(c, tid)          # TANGGAL BISNIS tenant (WIB), sama dgn actual_end_date yang ditulis Selesai; date.today() = UTC bisa tertinggal sehari
             sisa = {x["order_id"]: x["sisa"] for x in await PW.sisa_wip_selesai(c, tid, wip, akhir)}
             saldo = await c.fetchval("/* tenant_id */ SELECT COALESCE(SUM(jl.debit - jl.credit), 0) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id WHERE je.tenant_id = $1 AND jl.account_id = $2 AND je.source_id = $3 AND is_effective_journal(je.id) AND je.journal_date <= $4", tid, wip, oid, akhir)
             ada = sisa.get(str(oid))
