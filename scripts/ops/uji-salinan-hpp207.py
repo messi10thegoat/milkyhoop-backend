@@ -59,6 +59,8 @@ def per(x):
 
 async def main():
     pool = await SI.get_pool()
+    from app.services import policy_engine_client as PEC  # singleton YANG SAMA dipakai izin_rute_pengguna (jalur impor 'app.', sama dgn JB)
+    PEC.init_policy_engine(pool)
     async with pool.acquire() as c:
         for tid in (KA, NY):
             uid = await c.fetchval("/* tenant_id */ SELECT utr.user_id FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id WHERE utr.tenant_id = $1 AND utr.status = 'ACTIVE' AND r.code = 'OWNER' ORDER BY utr.is_primary DESC LIMIT 1", tid)

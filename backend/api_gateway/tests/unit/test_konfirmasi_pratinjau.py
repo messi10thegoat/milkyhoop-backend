@@ -89,7 +89,8 @@ async def test_pratinjau_konfirmasi_read_only_tanpa_penulis_dan_membawa_kode(mon
     r = await SO.preview_confirm_sales_order(_req(), SOID)
     assert pool.log == [("tx", {"readonly": True}), "commit"], pool.log  # transaksi READ ONLY: DB menolak tulisan apa pun
     assert r.data == {"order_number": "SO-1", "status": "confirmed", "order_code": "005-10-26", "order_code_issued": True,
-                      "order_code_label": "Kode order", "order_code_estimated": True, "preview": True}
+                      "order_code_label": "Kode order", "order_code_estimated": True, "preview": True,
+                      "peringatan": []}   # BUG-207: pratinjau konfirmasi memuat peringatan jual di bawah HPP (kosong pada tiruan ini)
 
 
 @pytest.mark.asyncio
