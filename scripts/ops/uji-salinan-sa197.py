@@ -57,8 +57,8 @@ async def main():
     pool = await SA.get_pool()
     async with pool.acquire() as c:
         for tid in (KA, NY):
-            p = await c.fetchrow("SELECT id, name, item_code FROM products WHERE tenant_id = $1 AND item_type = 'goods' AND item_code IS NOT NULL ORDER BY created_at LIMIT 1", tid)
-            cek(f"prasyarat {tid}: barang goods ber-SKU ada", p is not None)
+            p = await c.fetchrow("SELECT id, nama_produk AS name, barcode AS item_code FROM products WHERE tenant_id = $1 AND item_type = 'goods' AND COALESCE(barcode, '') <> '' ORDER BY created_at LIMIT 1", tid)
+            cek(f"prasyarat {tid}: barang goods ber-kode (barcode = product_code baris) ada", p is not None)
             if p is None:
                 continue
             hari = date.today()
