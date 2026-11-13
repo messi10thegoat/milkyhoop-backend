@@ -119,3 +119,53 @@ def test_rencana_buat_dan_ubah_membawa_isyarat(monkeypatch):
     body = SimpleNamespace(warehouse_id=None, adjustment_type="increase", items=[baris(B, 2)])
     r = jalan(SS.rencana_buat(Kon(), T, body, Blok(True)))
     assert r["isyarat"] == ["Barang Benang belum punya harga pokok; nilai Rp 0."] and r["blocks"] == []
+
+
+# ---------------- total_value pratinjau buat/ubah (FE tak menjumlah)
+class _Pool:
+    def acquire(self):
+        class Ac:
+            async def __aenter__(s):
+                return s
+
+            async def __aexit__(s, *e):
+                return False
+
+            def transaction(s, readonly=False):
+                class Tx:
+                    async def __aenter__(s2):
+                        return None
+
+                    async def __aexit__(s2, *e):
+                        return False
+                return Tx()
+        return Ac()
+
+
+def _pratinjau(r):
+    async def rencana(conn):
+        return r
+    return jalan(SS.pratinjau(_Pool(), T, rencana, {}))["data"]
+
+
+def _baris(nilai):
+    return {"product_id": A, "product_name": "Kaos", "unit": "Pcs", "quantity_before": D("5"), "quantity_adjustment": D("1"), "quantity_after": D("6"),
+            "unit_cost": 1000, "total_value": D(str(nilai))}
+
+
+DASAR = {"blocks": [], "gudang": None, "baris": [], "saldo": [], "isyarat": []}
+
+
+def test_pratinjau_buat_memuat_total_value_jumlah_nilai_baris():
+    d = _pratinjau({**DASAR, "baris_draf": [_baris(1000), _baris(500)]})
+    assert d["total_value"] == "1500.00" and [b["total_value"] for b in d["baris_draf"]] == ["1000.00", "500.00"]
+
+
+def test_pratinjau_ubah_tanpa_items_total_tersimpan_dan_dengan_items_jumlah_baru():
+    assert _pratinjau({**DASAR, "baris_draf": None, "sa": {"total_value": 3000}})["total_value"] == "3000.00"
+    assert _pratinjau({**DASAR, "baris_draf": [_baris(250)], "sa": {"total_value": 3000}})["total_value"] == "250.00"
+
+
+def test_pratinjau_ditolak_atau_bukan_buat_ubah_tanpa_total_value():
+    assert "total_value" not in _pratinjau({**DASAR, "blocks": [{"code": "X", "message": "x"}], "baris_draf": [_baris(1000)]})
+    assert "total_value" not in _pratinjau({**DASAR, "gerak": []})                  # posting/batal/hapus: tanpa kunci baris_draf

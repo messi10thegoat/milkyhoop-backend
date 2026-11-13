@@ -15,4 +15,7 @@ SAB=(
  "k8 harga pokok 0 tanpa isyarat|$SSF|s#if harga == 0 and isyarat is not None:#if False:#|$T"
  "k9 harga pokok 0 jadi blok|$SSF|s#            isyarat.append(f\"Barang {nama} belum punya harga pokok; nilai Rp 0.\")#            bl.galat(\"HARGA_POKOK_NOL\", 422, \"x\")#|$T"
  "k10 rencana_buat tak membawa isyarat|$SSF|s#\"saldo\": \[\], \"isyarat\": isyarat}#\"saldo\": []}#|$T"
+ "k11 total_value tak dimuat|$SSF|s#d\[\"total_value\"\] = rp(sum((b\[\"total_value\"\] for b in r\[\"baris_draf\"\]), NOL))#d[\"total_x\"] = rp(sum((b[\"total_value\"] for b in r[\"baris_draf\"]), NOL))#|$T"
+ "k12 total_value ikut walau ditolak|$SSF|s#if \"baris_draf\" in r and not r.get(\"blocks\"):#if \"baris_draf\" in r:#|$T"
+ "k13 total ubah tanpa items hilang|$SSF|s#d\[\"total_value\"\] = rp(r\[\"sa\"\]\[\"total_value\"\])#pass#|$T"
 )

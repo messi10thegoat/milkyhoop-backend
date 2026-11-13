@@ -101,6 +101,9 @@ async def main():
                 if ok:
                     ids.append(uuid.UUID(str(r["data"]["id"])))
                 cek(f"B {tid} dokumen sah ({nama}): pratinjau ok, tulis berhasil", ok, f"{pr['blocks']} {r if isinstance(r, HTTPException) else ''}")
+                if ok:
+                    tersimpan = await c.fetchval("SELECT total_value FROM stock_adjustments WHERE tenant_id = $1 AND id = $2", tid, ids[-1])
+                    cek(f"B {tid} pratinjau buat ({nama}) total_value == total yang tersimpan di draf", pr.get("total_value") is not None and D(pr["total_value"]) == D(str(tersimpan)), f"pratinjau={pr.get('total_value')} tersimpan={tersimpan}")
             # C PATCH melanggar
             if ids:
                 sid = ids[0]
@@ -111,8 +114,16 @@ async def main():
                 baris_ssd = [dict(x) for x in await c.fetch("SELECT i.product_id, i.quantity_adjustment FROM stock_adjustment_items i JOIN stock_adjustments sa ON sa.id = i.stock_adjustment_id AND sa.tenant_id = $2 WHERE i.stock_adjustment_id = $1 ORDER BY i.line_number", sid, tid)]
                 cek(f"C {tid} PATCH tanda salah: edit/preview blok, PATCH menolak sama, baris tak berubah", pe["ok"] is False and isinstance(gp, HTTPException) and getattr(gp, "code", None) == pe["blocks"][0]["code"] == "PENYESUAIAN_TANDA_TIDAK_COCOK"
                     and gp.detail == pe["blocks"][0]["message"] and baris_sblm == baris_ssd, f"{pe['blocks']} {getattr(gp, 'code', gp)}")
-                ok_patch = await galat(SA.update_stock_adjustment(rq, sid, S.UpdateStockAdjustmentRequest(items=[iu(p1, 4)])))
+                ub_ok = S.UpdateStockAdjustmentRequest(items=[iu(p1, 4)])
+                pe_ok = (await SA.preview_update_stock_adjustment(rq, sid, ub_ok))["data"]
+                ok_patch = await galat(SA.update_stock_adjustment(rq, sid, ub_ok))
                 cek(f"C {tid} PATCH items sah: berhasil", not isinstance(ok_patch, HTTPException), str(ok_patch))
+                simpan2 = await c.fetchval("SELECT total_value FROM stock_adjustments WHERE tenant_id = $1 AND id = $2", tid, sid)
+                cek(f"C {tid} edit/preview total_value == total tersimpan sesudah PATCH", pe_ok.get("total_value") is not None and D(pe_ok["total_value"]) == D(str(simpan2)), f"pratinjau={pe_ok.get('total_value')} tersimpan={simpan2}")
+                pe_tanpa = (await SA.preview_update_stock_adjustment(rq, sid, S.UpdateStockAdjustmentRequest(notes="catatan baru")))["data"]
+                cek(f"C {tid} edit/preview tanpa items: total_value == total tersimpan sekarang", D(pe_tanpa["total_value"]) == D(str(simpan2)), str(pe_tanpa.get("total_value")))
+                pe_tolak = (await SA.preview_update_stock_adjustment(rq, sid, ub))["data"]
+                cek(f"C {tid} edit/preview ditolak: tanpa total_value", "total_value" not in pe_tolak)
             # D harga pokok 0
             nol = await c.fetchval("SELECT p.id FROM products p WHERE p.tenant_id = $1 AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true) AND NOT EXISTS (SELECT 1 FROM inventory_ledger l WHERE l.tenant_id = p.tenant_id AND l.product_id = p.id) ORDER BY p.created_at LIMIT 1", tid)
             if nol is None:

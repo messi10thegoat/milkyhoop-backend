@@ -461,6 +461,13 @@ async def pratinjau(pool, tid: str, rencana, payload) -> dict:
             d["isyarat"] = list(r.get("isyarat", []))
             if r.get("baris_draf") is not None:
                 d["baris_draf"] = [_draf_json(b) for b in r["baris_draf"]]
+            # BUG-204 (+ permintaan WORKSPACE): total nilai dokumen buat/ubah dari penentu YANG SAMA dgn yang tersimpan (trigger trg_update_sa_totals = Σ total_value baris);
+            # FE tak menjumlah. Ubah tanpa `items` = total tersimpan sekarang. Ditolak (ada blok) = tanpa total (tak ada yang tersimpan).
+            if "baris_draf" in r and not r.get("blocks"):
+                if r["baris_draf"] is not None:
+                    d["total_value"] = rp(sum((b["total_value"] for b in r["baris_draf"]), NOL))
+                elif r.get("sa") is not None:
+                    d["total_value"] = rp(r["sa"]["total_value"])
             return {"success": True, "data": d}
 
 
