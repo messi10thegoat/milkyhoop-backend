@@ -68,21 +68,6 @@ def test_barang_tak_dilacak_tak_peringatan_stok():
     assert [p["code"] for p in r["peringatan"]] == ["PESANAN_TERBUKA"]
 
 
-# --- massal ------------------------------------------------------------------------------------------------------------
-def test_massal_gabungan_ringkasan_dan_blok_per_barang():
-    a = BA.rencana_status(_b(id="a", nama_produk="A"), D("5"), D("500"), 0, ke_aktif=False, satuan="pcs")
-    b = BA.rencana_status(_b(id="b", nama_produk="B", status="inactive"), D("0"), D("0"), 0, ke_aktif=False)
-    g = BA.gabung_status([a, b])
-    assert g["ok"] is False                      # satu barang sudah nonaktif = blok -> seluruh pratinjau tak ok
-    assert g["ringkasan"] == {"jumlah": 2, "dapat_diubah": 1, "diblokir": 1, "peringatan": 1}
-    assert g["items"][1]["blocks"][0]["code"] == "BARANG_SUDAH_NONAKTIF"
-    assert g["items"][0]["peringatan"][0]["code"] == "BARANG_MASIH_BERSTOK"
-
-
-def test_massal_kosong_blok():
-    assert BA.gabung_status([])["blocks"][0]["code"] == "DAFTAR_KOSONG"
-
-
 # --- hapus -------------------------------------------------------------------------------------------------------------
 def test_hapus_berjejak_blok_dengan_rincian_dan_saran():
     r = BA.rencana_hapus(_b(), [("inventory_ledger", 4), ("sales_invoice_items", 2)])
@@ -132,7 +117,7 @@ def test_penulis_duplikat_menyalin_item_pricing_dan_kode_unik():
 
 
 # --- pratinjau READ ONLY + rute + izin ---------------------------------------------------------------------------------
-@pytest.mark.parametrize("rute", ["/items/{item_id}/status/preview", "/items/status/preview", "/items/{item_id}/delete/preview",
+@pytest.mark.parametrize("rute", ["/items/{item_id}/status/preview", "/items/{item_id}/delete/preview",
                                   "/items/{item_id}/duplicate/preview", "/items/categories/delete/preview"])
 def test_rute_pratinjau_terdaftar_dan_baca_saja(rute):
     src = RUTE.read_text()
@@ -150,12 +135,44 @@ def test_aksi_tersedia_detail_punya_ubah_hapus_duplikat():
     assert t["ubah"]["tersedia"] is True
 
 
-@pytest.mark.parametrize("pola", ["items/[^/]+/status/preview", "items/status/preview", "items/[^/]+/delete/preview",
+@pytest.mark.parametrize("pola", ["items/[^/]+/status/preview", "items/bulk/(status|status/preview)", "items/[^/]+/delete/preview",
                                   "items/[^/]+/duplicate/preview", "items/categories/delete/preview"])
 def test_izin_pratinjau_dipetakan(pola):
     assert pola in MW.read_text(), pola
 
 
-def test_status_massal_tulis_dan_pratinjau_satu_penentu():
+BULK = pathlib.Path(__file__).resolve().parents[2] / "app" / "routers" / "bulk_items.py"
+MAIN = pathlib.Path(__file__).resolve().parents[2] / "app" / "main.py"
+
+
+def test_massal_rute_bulk_status_satu_penentu_idempotensi_dan_audit():
+    src = BULK.read_text()
+    assert '@router.post("/bulk/status/preview")' in src and '@router.post("/bulk/status")' in src
+    assert src.count("BA.ukur_rencana_status") == 2           # pratinjau + tulis = penentu SAMA
+    assert "baca_saja=True" in src                           # pratinjau READ ONLY
+    assert "BULK_KUNCI_WAJIB" in src and "jalankan_per_item" in src      # idempotensi per barang + audit BULK_STATUS
+    assert "BA.terapkan_status" in src                       # satu penulis (riwayat item_activities)
+    assert "pratinjau" in src and "r[\"blocks\"]" in src
+
+
+def test_bulk_status_di_daftar_putih_bukan_aksi_uang():
+    from app.services import bulk
+    assert "status" in bulk.AKSI_DIIZINKAN
+
+
+def test_router_bulk_items_didaftarkan_sebelum_router_items():
+    m = MAIN.read_text()
+    assert m.index("bulk_items_router.router") < m.index('app.include_router(items.router, prefix="/api"')
+
+
+def test_terapkan_status_menulis_riwayat_aktivitas_dan_status_tunggal_memakainya():
+    import inspect
+    fn = inspect.getsource(BA.terapkan_status)
+    assert "item_activities" in fn and "'activated'" not in fn and '"activated" if ke_aktif else "deactivated"' in fn
+    assert "BA.terapkan_status" in RUTE.read_text()
+
+
+def test_keadaan_di_baris_daftar_dan_detail():
     src = RUTE.read_text()
-    assert '@router.patch("/items/status")' in src and src.count("BA.ukur_rencana_status") >= 3   # massal tulis + massal/satu pratinjau
+    assert "keadaan=BA.keadaan(row), keadaan_text=BA.keadaan_text(row)" in src
+    assert '"keadaan": BA.keadaan(row), "keadaan_text": BA.keadaan_text(row)' in src

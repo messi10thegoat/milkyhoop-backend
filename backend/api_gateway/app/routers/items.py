@@ -1609,47 +1609,6 @@ def _ke_aktif(body: dict) -> bool:
     return v
 
 
-def _daftar_id(body: dict) -> list:
-    ids = (body or {}).get("item_ids")
-    if not isinstance(ids, list) or not all(isinstance(x, str) for x in ids) or len(ids) > 200:
-        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "item_ids wajib daftar id (maks 200).", "field": "item_ids"})
-    try:
-        return [str(UUID(x)) for x in dict.fromkeys(ids)]
-    except ValueError:
-        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "item_ids memuat id tak sah.", "field": "item_ids"})
-
-
-@router.post("/items/status/preview")
-async def preview_status_massal(request: Request, body: dict):
-    """Pratinjau gabungan aktifkan/nonaktifkan banyak barang (aksi massal chatbox): satu penentu dgn tulisnya, READ ONLY."""
-    ctx = get_user_context(request)
-    ke, ids = _ke_aktif(body), _daftar_id(body)
-
-    async def f(conn):
-        return BA.gabung_status([await BA.ukur_rencana_status(conn, ctx["tenant_id"], i, ke) for i in ids])
-    return {"success": True, "data": await _baca_saja(f)}
-
-
-@router.patch("/items/status")
-async def ubah_status_massal(request: Request, body: dict):
-    """Aktifkan/nonaktifkan banyak barang ATOMIK: penentu SAMA dgn pratinjau (blok -> 409, tak ada yang berubah); peringatan tidak memblok."""
-    ctx = get_user_context(request)
-    ke, ids = _ke_aktif(body), _daftar_id(body)
-    conn = await get_db_connection()
-    try:
-        async with conn.transaction():
-            g = BA.gabung_status([await BA.ukur_rencana_status(conn, ctx["tenant_id"], i, ke) for i in ids])
-            if not g["ok"]:
-                raise HTTPException(status_code=409, detail={"code": (g["blocks"] or [x for r in g["items"] for x in r["blocks"]])[0]["code"],
-                                                             "message": "Sebagian barang tidak dapat diubah.", "data": g})
-            await conn.execute(
-                "UPDATE products SET status = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = ANY($3::uuid[])",
-                "active" if ke else "inactive", ctx["tenant_id"], ids)
-        return {"success": True, "message": f"{len(ids)} barang {'diaktifkan' if ke else 'dinonaktifkan'}", "data": g}
-    finally:
-        await conn.close()
-
-
 @router.post("/items/{item_id}/status/preview")
 async def preview_status_barang(request: Request, item_id: UUID, body: dict):
     """Pratinjau aktifkan/nonaktifkan SATU barang: nonaktif ber-stok/pesanan terbuka = peringatan (bukan blok), tanpa jurnal."""
@@ -2661,7 +2620,7 @@ async def bulk_import_items(request: Request):
 
 @router.patch("/items/{item_id}/status")
 async def update_item_status(request: Request, item_id: str):
-    """Update item active/inactive status."""
+    """Update item active/inactive status (+ baris riwayat; nonaktif ber-stok BOLEH, peringatannya di /items/{id}/status/preview)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -2669,19 +2628,12 @@ async def update_item_status(request: Request, item_id: str):
         is_active = body.get("is_active", True)
 
         async with pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE products SET status = CASE WHEN $1 THEN 'active' ELSE 'inactive' END, updated_at = NOW()
-                WHERE id = $2::uuid AND tenant_id = $3 AND deleted_at IS NULL
-            """,
-                is_active,
-                item_id,
-                ctx["tenant_id"],
-            )
-
-            if result == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Item not found")
-
+            async with conn.transaction():
+                ada = await conn.fetchval("SELECT 1 FROM products WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL", item_id, ctx["tenant_id"])
+                if not ada:
+                    raise HTTPException(status_code=404, detail="Item not found")
+                await BA.terapkan_status(conn, ctx["tenant_id"], item_id, bool(is_active), ctx.get("user_id"),
+                                         getattr(request.state, "user", {}).get("username"))
             return {
                 "success": True,
                 "message": "Status updated",
