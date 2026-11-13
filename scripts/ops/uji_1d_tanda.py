@@ -48,7 +48,8 @@ async def jalankan(pool, tid, req, Response, BP, BKR, BodyBuat, BodyAlok, BodyVo
     async with pool.acquire() as c:
         hasil.append({"sesudah_bayar": await tanda_bayar(c, tid, pid, peta), "tagihan": [str(x) for x in await c.fetchrow("SELECT status, amount_paid FROM bills WHERE tenant_id = $1 AND id = $2", tid, t["id"])]})
     v = await BP.void_bill_payment(req(tid), str(pid), BodyVoid(void_reason="uji batal bayar"), Response())
-    hasil.append({"void": {"status": v.data["status"] if hasattr(v, "data") else str(v)}})
+    vd, vp = (v["data"], v["message"]) if isinstance(v, dict) else (v.data, v.message)      # execute_idempotent mengembalikan dict; pohon lain bisa objek -- normalkan keduanya
+    hasil.append({"void": {"status": vd["status"], "pesan": C3.norm(vp)}})
     async with pool.acquire() as c:
         hasil.append({"sesudah_void": await tanda_bayar(c, tid, pid, peta), "tagihan": [str(x) for x in await c.fetchrow("SELECT status, amount_paid FROM bills WHERE tenant_id = $1 AND id = $2", tid, t["id"])],
                       "sisa": str(await BKR.sisa_tagihan(c, tid, t["id"]))})
