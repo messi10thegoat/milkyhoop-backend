@@ -66,7 +66,7 @@ def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[dat
         ke = hitung_baru(dasar_nilai, mode, nilai, kelipatan, arah)
         ut = unit_text(b["unit"], b.get("dasar"))
         if ke is None:
-            bloks.append(_blok("DH_HARGA_NEGATIF", f"{nama} ({ut}, minimum {Decimal(str(b['min_quantity'])).normalize():f}) akan jadi di bawah Rp 0."))
+            bloks.append(_blok("DH_HARGA_NEGATIF", f"{nama} ({ut or 'satuan dasar'}, minimum {Decimal(str(b['min_quantity'])).normalize():f}) akan jadi di bawah Rp 0."))
             continue
         dari = Decimal(str(b["price"]))
         margin = ((ke - hpp) / hpp * Decimal(100)).quantize(SEN, rounding=ROUND_HALF_UP) if hpp else None
