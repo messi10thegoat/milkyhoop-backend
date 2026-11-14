@@ -45,7 +45,12 @@ PER_JENIS = {
     "PURCHASE_RETURN": "Retur pembelian",
     "RELOKASI_GUDANG_VOID": "Pembatalan pemindahan gudang",
     "RELOKASI_KELUAR": "Pemindahan gudang keluar",
+    "RELOKASI_KIRIM_KELUAR": "Pengiriman gudang keluar",  # pemindahan dua langkah (K8): kirim = keluar gudang asal -> masuk transit
+    "RELOKASI_KIRIM_TRANSIT": "Pengiriman gudang masuk transit",
+    "RELOKASI_KIRIM_VOID": "Pembatalan pengiriman gudang",
     "RELOKASI_MASUK": "Pemindahan gudang masuk",
+    "RELOKASI_TERIMA_MASUK": "Penerimaan gudang masuk",  # terima = keluar transit -> masuk gudang tujuan
+    "RELOKASI_TERIMA_TRANSIT": "Penerimaan gudang keluar transit",
     "REVALUASI_KELUAR": "Revaluasi keluar",
     "REVALUASI_MASUK": "Revaluasi masuk",
     "SALE": "Penjualan",
