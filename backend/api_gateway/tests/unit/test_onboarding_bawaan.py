@@ -103,6 +103,8 @@ class _KU:
         self.rows = list(tenant_rows)
 
     async def fetch(self, sql, *a):
+        if "AS u, COUNT(*)" in sql:  # query pemakai satuan (S-1): tak ada barang/konversi di fake ini
+            return []
         return self.rows
 
 
@@ -130,7 +132,7 @@ def _panggil(monkeypatch, k, **kw):
     async def pool():
         return _Pool(k)
     monkeypatch.setattr(UN, "get_pool", pool)
-    a = dict(search=None, is_active=None, limit=100)
+    a = dict(search=None, is_active=None, aksi=None, limit=100)
     a.update(kw)
     return asyncio.run(UN.list_units(_req(), **a))
 

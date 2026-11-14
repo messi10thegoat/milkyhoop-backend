@@ -68,3 +68,47 @@ def test_pemakai_dari_db_satu_penentu():
     daftar = [_u("1", "Kilogram", "Kg")]
     pakai = asyncio.run(SP.muat_pemakai(c, "t", daftar))
     assert pakai["1"] == {"jumlah_barang": 2, "jumlah_konversi": 1}
+
+
+# ---------------------------------------------------------------- router S-1
+def test_router_summary_sebelum_rute_unit_id_dan_detail_terakhir():
+    import inspect
+    from app.routers import units as UN
+    rute = [(r.path, sorted(r.methods)[0]) for r in UN.router.routes]
+    gets = [p for p, m in rute if m == "GET"]
+    assert gets.index("/summary") < gets.index("/{unit_id}") and gets[-1] == "/{unit_id}"
+    assert gets.index("/conversions") < gets.index("/{unit_id}")
+
+
+def test_router_hapus_dan_daftar_memakai_satu_penentu():
+    import inspect
+    from app.routers import units as UN
+    for f in (UN.delete_unit, UN.list_units, UN.units_summary, UN.get_unit):
+        s = inspect.getsource(f)
+        assert "SP." in s, f.__name__
+    assert "LOWER(satuan)" not in inspect.getsource(UN.delete_unit)
+
+
+def test_router_filter_ngawur_400(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.routers import units as UN
+
+    class K:
+        async def fetch(self, sql, *a):
+            return []
+
+    class P:
+        def acquire(self):
+            class C:
+                async def __aenter__(s): return K()
+                async def __aexit__(s, *e): return False
+            return C()
+
+    async def pool(): return P()
+    monkeypatch.setattr(UN, "get_pool", pool)
+    req = SimpleNamespace(state=SimpleNamespace(user={"tenant_id": "t", "user_id": "u"}))
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(UN.list_units(req, search=None, is_active=None, aksi="ngawur", limit=100))
+    assert e.value.status_code == 400
