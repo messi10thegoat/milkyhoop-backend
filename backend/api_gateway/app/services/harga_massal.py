@@ -6,8 +6,8 @@
   per barang DH_HPP_TAK_ADA; barang lain tetap bisa diterapkan.
 - Pembulatan: bawaan TANPA (2 desimal HALF_UP, Law 9/25); kelipatan 1/10/100/500/1000 x arah terdekat(HALF_UP)/atas/bawah, SEBELUM cek negatif.
 - Hasil < 0 = blok DH_HARGA_NEGATIF; hasil = 0 = PERINGATAN DH_HARGA_NOL (bentuk BUG-207: butuh_konfirmasi + pesan; FE meminta konfirmasi, tulis TIDAK diblok), tetap boleh.
-- Tanggal berlaku = start_date baris yang diubah (kunci unik daftar: barang+satuan+qty minimum, tanpa tanggal, jadi dua harga berjangka pada kunci sama belum
-  bisa). Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> (diukur dari harga_jual.harga_saran) tingkat qty lebih rendah di DAFTAR YANG SAMA bila
+- Tanggal berlaku = start_date baris. BUG-245 (V500): kunci unik memuat tanggal mulai; tanggal di MASA DEPAN membuat BARIS BERJANGKA (harga lama tetap berlaku
+  sampai tanggal itu), tanggal hari ini/lampau menimpa seperti semula. Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> (diukur dari harga_jual.harga_saran) tingkat qty lebih rendah di DAFTAR YANG SAMA bila
   ada, selain itu harga barang (harga satuan konversi, lalu harga dasar x faktor); TIDAK pindah ke daftar bawaan (PERINGATAN)."""
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
@@ -76,8 +76,7 @@ def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[dat
         return _hasil(bloks, None)
     per = []
     if mulai and mulai > hari_ini:
-        per.append(_per("DH_BERLAKU_NANTI", f"Sebelum {tgl_text(mulai)}, harga {nama} di daftar ini belum berlaku: dipakai tingkat jumlah yang lebih rendah di daftar yang sama bila ada, "
-                                                    "selain itu harga barang (harga satuan konversi atau harga dasar di data barang)."))
+        per.append(_per("DH_BERLAKU_NANTI", f"Harga baru {nama} berlaku mulai {tgl_text(mulai)} (baris berjangka baru); harga lama tetap berlaku sampai tanggal itu."))
     nol = any(h["ke"] == 0 for h in hasil)
     if nol:
         per.append(_per("DH_HARGA_NOL", f"Sebagian harga {nama} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."))
@@ -111,11 +110,28 @@ async def ukur_rencana(conn, tid: str, pl_id, item_id, mode: str, nilai, mulai: 
     return rencana_barang(nama or "Barang", baris, mode, nilai, mulai, await tanggal_dokumen(conn, tid), dasar, kelipatan, arah)
 
 
-async def terapkan(conn, tid: str, pl_id, rencana: dict) -> None:
-    """Satu penulis: UPDATE harga tiap baris rencana (+ start_date bila tanggal berlaku diisi); bersaring tenant lewat price_lists."""
+async def terapkan(conn, tid: str, pl_id, rencana: dict, hari_ini: Optional[date] = None) -> None:
+    """Satu penulis. Tanpa tanggal berlaku atau sudah berlaku (<= hari ini): UPDATE harga baris (+ start_date bila diisi). Tanggal berlaku di MASA
+    DEPAN (BUG-245, putusan pemilik 15 Nov): BUAT BARIS BERJANGKA (salinan baris lama, harga baru, start_date = tanggal itu, end_date kosong) -- harga lama
+    tetap berlaku sampai tanggal itu; bila baris dengan kunci + tanggal sama sudah ada, hanya harganya yang diperbarui. Bersaring tenant lewat price_lists."""
     mulai = rencana.get("mulai")
+    hari_ini = hari_ini or (await tanggal_dokumen(conn, tid) if mulai else None)
     for b in rencana["baris"]:
-        if mulai:
+        if mulai and mulai > hari_ini:
+            sama = await conn.execute(
+                """UPDATE price_list_items n SET price = $4 FROM price_list_items o
+                   WHERE o.id = $1 AND o.price_list_id = $2 AND n.price_list_id = o.price_list_id AND n.item_id = o.item_id
+                     AND lower(btrim(COALESCE(n.unit, ''))) = lower(btrim(COALESCE(o.unit, ''))) AND n.min_quantity = o.min_quantity
+                     AND n.start_date IS NOT DISTINCT FROM $5::date
+                     AND o.price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)""", b["id"], pl_id, tid, b["ke"], mulai)
+            if sama == "UPDATE 0":
+                await conn.execute(
+                    """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent, start_date,
+                                                     end_date, is_default_unit)
+                       SELECT o.price_list_id, o.item_id, o.item_code, o.unit, $4, o.min_quantity, o.discount_percent, $5, NULL, o.is_default_unit
+                       FROM price_list_items o WHERE o.id = $1 AND o.price_list_id = $2
+                         AND o.price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)""", b["id"], pl_id, tid, b["ke"], mulai)
+        elif mulai:
             await conn.execute(
                 """UPDATE price_list_items SET price = $4, start_date = $5 WHERE id = $1 AND price_list_id = $2
                    AND price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)""", b["id"], pl_id, tid, b["ke"], mulai)

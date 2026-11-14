@@ -62,7 +62,7 @@ def test_tanggal_berlaku_nanti_peringatan_harga_dasar_dan_lampau_tanpa_peringata
     assert nanti["ok"] and [p["code"] for p in nanti["peringatan"]] == ["DH_BERLAKU_NANTI"]
     m = nanti["peringatan"][0]["message"]
     assert "1 Des 2026" in m and nanti["peringatan"][0]["butuh_konfirmasi"] is True
-    assert "harga barang" in m and "tingkat jumlah yang lebih rendah" in m and "daftar bawaan" not in m      # rantai jatuh sesuai harga_jual.harga_saran and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
+    assert "baris berjangka" in m and "harga lama tetap berlaku" in m and "daftar bawaan" not in m      # BUG-245: tanggal depan = baris berjangka, harga lama tetap and nanti["rencana"]["berlaku_mulai"] == "1 Des 2026"
     lalu = HM.rencana_barang("Kaos", [_baris()], "persen", D("5"), date(2026, 11, 1), HARI)
     assert lalu["peringatan"] == [] and lalu["rencana"]["berlaku_mulai"] == "1 Nov 2026"
 
@@ -79,12 +79,12 @@ class _C:
 @pytest.mark.asyncio
 async def test_terapkan_update_harga_tiap_baris_bersaring_tenant_dan_tanggal_berlaku():
     c = _C()
-    r = HM.rencana_barang("Kaos", [_baris(), _baris(id="l2", price=D("2000"))], "persen", D("10"), date(2026, 12, 1), HARI)["rencana"]
-    await HM.terapkan(c, "t1", "pl1", r)
+    r = HM.rencana_barang("Kaos", [_baris(), _baris(id="l2", price=D("2000"))], "persen", D("10"), date(2026, 11, 1), HARI)["rencana"]
+    await HM.terapkan(c, "t1", "pl1", r, hari_ini=HARI)   # tanggal sudah berlaku -> menimpa (tanggal depan = baris berjangka: test_dh_berjangka)
     assert len(c.sql) == 2
     for s, a in c.sql:
         assert s.lstrip().startswith("UPDATE price_list_items") and "tenant_id" in s and "price_list_id" in s
-    assert c.sql[0][1][0] == "l1" and c.sql[0][1][3] == D("1100.00") and c.sql[0][1][4] == date(2026, 12, 1)
+    assert c.sql[0][1][0] == "l1" and c.sql[0][1][3] == D("1100.00") and c.sql[0][1][4] == date(2026, 11, 1)
     assert "start_date = $5" in c.sql[0][0]
 
 
