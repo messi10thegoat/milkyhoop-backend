@@ -168,7 +168,9 @@ async def main():
                 except Exception as e:  # noqa: BLE001
                     cek(f"D {tid} {jenis} tersimpan tanpa galat", False, f"{type(e).__name__}: {e}")
             # E dokumen TERSIMPAN NYATA (BUG-207 REOPEN): dokumen DIBUAT di klon lewat handler ASLI, lalu KETIGA pratinjau tersimpan dipanggil dgn SQL asli
-            cust = await c.fetchval("/* tenant_id */ SELECT id FROM customers WHERE tenant_id = $1 ORDER BY created_at LIMIT 1", tid)
+            cust_row = await c.fetchrow("/* tenant_id */ SELECT id, nama FROM customers WHERE tenant_id = $1 AND is_active = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1", tid)
+            cust = cust_row["id"] if cust_row else None
+            nama_cust = cust_row["nama"] if cust_row else None   # create_invoice meresolusi pelanggan dari NAMA (tolak nama tak dikenal)
             if cust is None:
                 print(f"CATATAN E {tid}: tak ada pelanggan di klon; dokumen tersimpan tak bisa dibuat", flush=True)
             else:
@@ -180,10 +182,10 @@ async def main():
 
                 async def buat(rq_, harga):
                     it_so = OS.SalesOrderItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)
-                    so = await SOR.create_sales_order(rq_, OS.CreateSalesOrderRequest(order_date=hari, customer_id=str(cust), customer_name="UJI207", items=[it_so]), Response())
-                    qu = await QU.create_quote(rq_, QS.CreateQuoteRequest(quote_date=hari, customer_id=str(cust), customer_name="UJI207", items=[
+                    so = await SOR.create_sales_order(rq_, OS.CreateSalesOrderRequest(order_date=hari, customer_id=str(cust), customer_name=nama_cust, items=[it_so]), Response())
+                    qu = await QU.create_quote(rq_, QS.CreateQuoteRequest(quote_date=hari, customer_id=str(cust), customer_name=nama_cust, items=[
                         QS.QuoteItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)]), Response())
-                    si = await SI.create_invoice(rq_, IS.CreateInvoiceRequest(customer_name="UJI207", invoice_date=hari, items=[
+                    si = await SI.create_invoice(rq_, IS.CreateInvoiceRequest(customer_name=nama_cust, invoice_date=hari, items=[
                         IS.InvoiceItemCreate(description="uji207e", item_id=str(pid), quantity=D("2"), unit=dasar, unit_price=harga)]), Response())
                     return _id(so), _id(qu), _id(si)
 
