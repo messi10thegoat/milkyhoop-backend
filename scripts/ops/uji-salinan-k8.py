@@ -94,7 +94,7 @@ async def main():
             if isinstance(cr, HTTPException):
                 cek(f"{tid} buat draf PB", False, f"{cr.status_code} {cr.detail}")
                 continue
-            pb = cr.data.id
+            pb = cr["data"]["id"] if isinstance(cr, dict) else cr.data.id
             # A Kirim
             pv = (await ST.preview_ship_stock_transfer(rq, pb))["data"]
             cek(f"A {tid} pratinjau Kirim ok, menyebut lokasi Transit, tanpa jurnal", pv["ok"] is True and pv["lokasi_transit"] == "Transit" and "Tanpa jurnal" in pv["catatan"], f"{pv['blocks']}")

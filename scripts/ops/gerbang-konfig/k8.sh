@@ -1,5 +1,5 @@
 # Konfig gerbang unit K8 (Pemindahan Barang DUA LANGKAH via Transit, tanpa jurnal; gudang sistem V497 disaring dari semua pembaca). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-bk8; CABANG=feat/pemindahan-dua-langkah-transit-r2; NAMA_JENDELA=k8
+W=/root/mh-bk8; CABANG=feat/pemindahan-dua-langkah-transit-r3; NAMA_JENDELA=k8
 POLA_UNIT='pemindahan|stock_transfer|gudang|warehouse|transit|izin_rute|inventaris_rute|pagar_rute|permission|stok_baris|stok_sesuai|grn|sj_so|so_pengiriman'
 HARNESS=scripts/ops/uji-salinan-k8.sh
 PENANDA_BERKAS=services/pemindahan_dua_langkah.py; PENANDA='rencana_terima'

@@ -64,8 +64,8 @@ async def terapkan_diterima(conn, tid: str, transfer_id, status: str, items: lis
     if status in ("in_transit", "received"):
         ada = await diterima_per_barang(conn, tid, transfer_id)
         for d in items:
-            d["quantity_received"] = float(ada.get(d["item_id"], _NOL))
-            d["quantity_variance"] = float(_d(d["quantity_shipped"]) - ada.get(d["item_id"], _NOL))
+            d["quantity_received"] = ada.get(d["item_id"], _NOL)
+            d["quantity_variance"] = _d(d["quantity_shipped"]) - ada.get(d["item_id"], _NOL)
     return items
 
 

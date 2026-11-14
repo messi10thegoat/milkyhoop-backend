@@ -43,7 +43,7 @@ class Kon:
 
     async def fetchval(self, sql, *a):
         s = " ".join(sql.split()); self.q.append(s)
-        if "FROM warehouses WHERE tenant_id = $1 ORDER BY is_default DESC NULLS LAST, created_at" in s:
+        if "FROM warehouses WHERE tenant_id = $1 AND NOT is_system ORDER BY is_default DESC NULLS LAST, created_at" in s:
             return self.pertama
         if "VENDOR_CREDIT_VOID" in s:
             return self.sudah
