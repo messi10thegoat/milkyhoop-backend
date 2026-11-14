@@ -31,6 +31,7 @@ from ..services import satuan_master as SM
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
 from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
+from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil, deskripsi Barang
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -549,6 +550,8 @@ async def list_items(
                     keadaan=BA.keadaan(row), keadaan_text=BA.keadaan_text(row),
                     position_text=BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                    sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
+                    position_text_ket=BD.position_text_ket(row, row.get("current_stock"), sb.get("bisa_dijual"),
+                                                           sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual=sb.get("bisa_dijual"),
                 )
             )
@@ -2828,10 +2831,13 @@ async def get_item_activity(
 
         # Get activities
         query = """
-            SELECT id, type, description, details, actor_name, timestamp
-            FROM item_activities
-            WHERE item_id = $1 AND tenant_id = $2
-            ORDER BY timestamp DESC
+            SELECT ia.id, ia.type, ia.description, ia.details, ia.actor_name, ia.timestamp,
+                   NULLIF(up.display_name, '') AS profil_nama, NULLIF(u.name, '') AS pengguna_nama
+            FROM item_activities ia
+            LEFT JOIN "User" u ON u.id::text = ia.actor_id::text
+            LEFT JOIN user_profiles up ON up.user_id::text = ia.actor_id::text
+            WHERE ia.item_id = $1 AND ia.tenant_id = $2
+            ORDER BY ia.timestamp DESC
             LIMIT $3 OFFSET $4
         """
         rows = await conn.fetch(query, str(item_id), tenant_id, limit, offset)
@@ -2840,9 +2846,9 @@ async def get_item_activity(
             ItemActivity(
                 id=str(row["id"]),
                 type=row["type"],
-                description=row["description"],
+                description=BT.norm_aktivitas(row["description"]),
                 details=row.get("details"),
-                actor_name=row.get("actor_name"),
+                actor_name=BT.nama_tampil(row["profil_nama"], row["pengguna_nama"], row.get("actor_name")),
                 timestamp=row["timestamp"].isoformat() if row["timestamp"] else None,
             )
             for row in rows
@@ -2985,6 +2991,7 @@ async def get_item_history(
                 {
                     "id": str(row["id"]),
                     "movement_type": row["movement_type"],
+                    "jenis_text": BT.jenis_text(row["movement_type"], row["source_type"]),
                     "movement_date": row["movement_date"].isoformat()
                     if row["movement_date"]
                     else None,
@@ -3209,6 +3216,8 @@ async def get_item(request: Request, item_id: UUID):
                 "aksi_semua": BD.aksi_semua(row, row.get("current_stock")),
                 "position_text": BD.position_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                   sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
+                "position_text_ket": BD.position_text_ket(row, row.get("current_stock"), sb.get("bisa_dijual"),
+                                                          sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                 "bisa_dijual": sb.get("bisa_dijual"),
                 "keadaan": BA.keadaan(row), "keadaan_text": BA.keadaan_text(row),
                 "aksi_tersedia": BA.aksi_tersedia_detail(row),

@@ -86,24 +86,33 @@ def _q(x: Decimal) -> str:
     return ("-" if neg else "") + bulat + (f",{pecah.rstrip('0')}" if pecah.rstrip("0") else "")
 
 
+def _posisi(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None) -> tuple:
+    """(utama, ket): `utama` = bagian bernilai ("Stok 172 pcs"), `ket` = keterangan sesudah " · " ("bisa dijual 160") atau None. SATU sumber."""
+    if b.get("status", "active") != "active":
+        return "Nonaktif", None
+    if b.get("item_type") == "service":
+        return "Jasa", None
+    if not dilacak(b):
+        return "Tanpa stok", None
+    s, sat = _d(stok), (f" {satuan}" if satuan else "")
+    if s < 0:
+        return f"Stok minus {_q(-s)}{sat}", "perlu hitung fisik"
+    if s == 0:
+        return "Stok habis", None
+    ket = f"bisa dijual {_q(_d(bisa_dijual))}" if bisa_dijual is not None and _d(bisa_dijual) != s else None
+    return f"Stok {_q(s)}{sat}", ket
+
+
 def position_text(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None) -> str:
     """Teks posisi SERVER: "Stok 172 pcs · bisa dijual 160" · "Stok habis" · "Stok minus 3 pcs · perlu hitung fisik" · "Tanpa stok" ·
     "Jasa" · "Nonaktif"."""
-    if b.get("status", "active") != "active":
-        return "Nonaktif"
-    if b.get("item_type") == "service":
-        return "Jasa"
-    if not dilacak(b):
-        return "Tanpa stok"
-    s, sat = _d(stok), (f" {satuan}" if satuan else "")
-    if s < 0:
-        return f"Stok minus {_q(-s)}{sat} · perlu hitung fisik"
-    if s == 0:
-        return "Stok habis"
-    teks = f"Stok {_q(s)}{sat}"
-    if bisa_dijual is not None and _d(bisa_dijual) != s:
-        teks += f" · bisa dijual {_q(_d(bisa_dijual))}"
-    return teks
+    utama, ket = _posisi(b, stok, bisa_dijual, satuan)
+    return utama + (f" · {ket}" if ket else "")
+
+
+def position_text_ket(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None) -> Optional[str]:
+    """Keterangan TANPA angka stok ("bisa dijual 160" / "perlu hitung fisik"), untuk subteks strip Stok yang tak mengulang nilai besar; None bila tak ada."""
+    return _posisi(b, stok, bisa_dijual, satuan)[1]
 
 
 def aksi_tersedia(b: dict) -> dict:

@@ -362,6 +362,7 @@ class ItemListItem(BaseModel):
     keadaan: Optional[str] = None  # P3: aktif | nonaktif
     keadaan_text: Optional[str] = None
     position_text: Optional[str] = None
+    position_text_ket: Optional[str] = None  # BUG-236: keterangan tanpa angka stok ("bisa dijual 160"); None bila tak ada
     bisa_dijual: Optional[Decimal] = None
 
 
