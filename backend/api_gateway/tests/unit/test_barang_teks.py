@@ -21,7 +21,10 @@ TERUKUR = [("ADJUSTMENT", "STOCK_ADJUSTMENT"), ("GOODS_RECEIPT_REVERSAL", "GOODS
            ("REVALUASI_MASUK", "PPV_REVALUASI"), ("REVALUASI_MASUK", "PPV_REVALUASI_VOID"), ("SALE", "DELIVERY_NOTE"), ("SALE", "INVOICE_FULFILLMENT"),
            ("SALE", "VENDOR_CREDIT"), ("SALES_RETURN", "CREDIT_NOTE"), ("SALES_RETURN_REVERSAL", "CREDIT_NOTE_VOID"), ("STOCK_ADJUSTMENT", "STOCK_ADJUSTMENT"),
            ("STOCK_ADJUSTMENT_REVERSAL", "STOCK_ADJUSTMENT_VOID"), ("VOID_REVERSAL", "DELIVERY_NOTE_VOID"), ("VOID_REVERSAL", "INVOICE_FULFILLMENT_VOID"),
-           ("VOID_REVERSAL", "STOCK_ADJUSTMENT_VOID"), ("VOID_REVERSAL", "VENDOR_CREDIT_VOID")]
+           ("VOID_REVERSAL", "STOCK_ADJUSTMENT_VOID"), ("VOID_REVERSAL", "VENDOR_CREDIT_VOID"),
+           # pemindahan dua langkah (K8, pemindahan_dua_langkah.py): terukur di klon kaos 15 Nov; kosakata baru ini sempat jatuh ke "Mutasi stok"
+           ("RELOKASI_KIRIM_KELUAR", "RELOKASI_KIRIM"), ("RELOKASI_KIRIM_TRANSIT", "RELOKASI_KIRIM"), ("RELOKASI_KIRIM_VOID", "RELOKASI_KIRIM_VOID"),
+           ("RELOKASI_TERIMA_TRANSIT", "RELOKASI_TERIMA"), ("RELOKASI_TERIMA_MASUK", "RELOKASI_TERIMA")]
 
 
 @pytest.mark.parametrize("mv,src", TERUKUR)
@@ -111,3 +114,22 @@ def test_activity_memakai_nama_tampil_dan_deskripsi_barang():
 def test_position_text_ket_di_baris_daftar_dan_detail():
     assert RUTE.count("position_text_ket=BD.position_text_ket(") + RUTE.count('"position_text_ket": BD.position_text_ket(') >= 2
     assert "position_text_ket" in (APP / "schemas" / "items.py").read_text()
+
+
+DUA_LANGKAH = {("RELOKASI_KIRIM_KELUAR", "RELOKASI_KIRIM"): "Pengiriman gudang keluar",
+               ("RELOKASI_KIRIM_TRANSIT", "RELOKASI_KIRIM"): "Pengiriman gudang masuk transit",
+               ("RELOKASI_KIRIM_VOID", "RELOKASI_KIRIM_VOID"): "Pembatalan pengiriman gudang",
+               ("RELOKASI_TERIMA_TRANSIT", "RELOKASI_TERIMA"): "Penerimaan gudang keluar transit",
+               ("RELOKASI_TERIMA_MASUK", "RELOKASI_TERIMA"): "Penerimaan gudang masuk"}
+
+
+@pytest.mark.parametrize("pasang,teks", sorted(DUA_LANGKAH.items()))
+def test_pemindahan_dua_langkah_terpetakan_bukan_generik(pasang, teks):
+    assert BT.jenis_text(*pasang) == teks != BT.GENERIK
+
+
+def test_semua_konstanta_ledger_pemindahan_dua_langkah_terpetakan():
+    import inspect
+    from app.services import pemindahan_dua_langkah as PD
+    for mv in (PD.KIRIM_KELUAR, PD.KIRIM_MASUK, PD.TERIMA_KELUAR, PD.TERIMA_MASUK, PD.SUMBER_KIRIM_BATAL):
+        assert BT.jenis_text(mv, None) != BT.GENERIK, mv
