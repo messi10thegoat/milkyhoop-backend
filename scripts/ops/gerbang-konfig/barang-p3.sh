@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus Barang & Jasa P3 (13 Nov 2026): keadaan, pratinjau status/hapus/duplikat/kategori/ubah, bulk status, idempotensi, audit. Tanpa migrasi.
 # Pemisah sabotase = "|", ekspresi sed memakai "@".
-W=/root/mh-barang-p3-r2; CABANG=feat/barang-p3-pratinjau-r2; NAMA_JENDELA=barang-p3
+W=/root/mh-barang-p3-r3; CABANG=feat/barang-p3-pratinjau-r3; NAMA_JENDELA=barang-p3
 POLA_UNIT='barang_aksi|barang_daftar|bulk_items|routers.items|app.routers import items|update_item|delete_item|duplicate_item|create_category|delete_category|tolak_ubah_dasar|tolak_ubah_konversi|satuan_dasar|permission_middleware|AKSI_DIIZINKAN|stock_transfer_items'
 HARNESS=scripts/ops/uji-salinan-barang-p3.sh
 PENANDA_BERKAS=services/barang_aksi.py; PENANDA='async def terapkan_status('
