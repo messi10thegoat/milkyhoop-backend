@@ -56,7 +56,7 @@ async def test_riwayat_barang_sql_terkirim_tanpa_placeholder_mentah(monkeypatch)
         return c
     monkeypatch.setattr(IT, "get_db_connection", _conn)
     monkeypatch.setattr(IT, "get_tenant_id", lambda r: "kaos-biru-konveksi")
-    r = await IT.get_item_history(SimpleNamespace(), uuid.uuid4(), page=1, limit=5)
+    r = await IT.get_item_history(SimpleNamespace(), uuid.uuid4(), page=1, limit=5, warehouse_id=None, date_from=None, date_to=None)
     utama = [s for s in c.sql if "FROM inventory_ledger il" in s]
     assert utama, "kueri riwayat tak dijalankan"
     for s in c.sql:

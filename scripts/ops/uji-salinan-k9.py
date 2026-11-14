@@ -69,7 +69,7 @@ async def main():
                 await c.execute("INSERT INTO tenant_features (tenant_id, feature, enabled) VALUES ($1, 'pemindahan_barang', true)", tid)
             cr = await ST.create_stock_transfer(rq, Response(), CreateStockTransferRequest(from_warehouse_id=gud[0]["id"], to_warehouse_id=gud[1]["id"],
                                                                                            items=[StockTransferItemCreate(item_id=brg["id"], quantity_requested=D("3"))]))
-            pb = cr.data.id
+            pb = cr["data"]["id"] if isinstance(cr, dict) else cr.data.id
             await c.execute("/* tenant_id */ UPDATE stock_transfer_items SET quantity_shipped = 3, unit_cost = 1000, total_value = 3000 WHERE stock_transfer_id = $1", pb)     # draf: boleh (trigger hanya membekukan sesudah Kirim)
             await c.execute("UPDATE stock_transfers SET status = 'in_transit', shipped_date = $2 WHERE id = $1 AND tenant_id = $3", pb, date.today(), tid)
 

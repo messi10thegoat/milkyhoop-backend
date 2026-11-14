@@ -14,7 +14,7 @@ SAB=(
  "h7 perbedaan: diterima dari kolom beku (bukan ledger)|$STF|s#d.diterima AS quantity_received#i.quantity_received AS quantity_received#|$T"
  "h8 perbedaan: saringan tertunda hilang|$STF|s#AND COALESCE(i.quantity_shipped, 0) > d.diterima#AND 1=1#|$T"
  "h9 perbedaan: status bukan in_transit ikut|$STF|s#AND st.status = 'in_transit'#AND st.status <> 'cancelled'#|$T"
- "h10 perbedaan: izin rute hilang|$A/middleware/permission_middleware.py|s#(summary|in-transit|variance)#(summary|in-transit)#|$T"
+ "h10 perbedaan: izin rute hilang|$A/middleware/permission_middleware.py|s#in-transit.variance#in-transit#|$T"
  "h11 perbedaan: nilai tertunda salah|$STF|s#nilai = (tertunda \* biaya).quantize(Decimal(\"0.01\"))#nilai = tertunda#|$T"
  "h12 perbedaan: tertunda tak dikurangi diterima|$STF|s#tertunda = Decimal(str(r\[\"quantity_shipped\"\] or 0)) - Decimal(str(r\[\"quantity_received\"\] or 0))#tertunda = Decimal(str(r[\"quantity_shipped\"] or 0))#|$T"
 )
