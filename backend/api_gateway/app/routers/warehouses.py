@@ -395,8 +395,9 @@ async def get_warehouse_stock(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     search: Optional[str] = None,
+    hanya_berstok: bool = Query(True, description="BUG-230: True (bawaan) = hanya baris ber-stok (quantity <> 0) = barang yang dihitung strip detail + stock-value; False = ikut baris stok 0"),
 ):
-    """Get stock in warehouse"""
+    """Get stock in warehouse. BUG-230: bawaan hanya barang ber-stok, supaya jumlah baris (total) == jumlah barang di detail/stock-value."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -414,10 +415,10 @@ async def get_warehouse_stock(
         if not wh:
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
-        where_extra = ""
+        where_extra = " AND ws.quantity <> 0" if hanya_berstok else ""
         params = [warehouse_id, ctx["tenant_id"]]
         if search:
-            where_extra = " AND (i.item_code ILIKE $3 OR i.nama_produk ILIKE $3)"
+            where_extra += " AND (i.item_code ILIKE $3 OR i.nama_produk ILIKE $3)"
             params.append(f"%{search}%")
 
         total = await conn.fetchval(
