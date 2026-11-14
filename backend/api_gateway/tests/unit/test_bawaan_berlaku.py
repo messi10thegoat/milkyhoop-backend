@@ -35,7 +35,7 @@ def test_id_kolom_tak_dikenal_tidak_diam_jadi_bawaan():
 def test_item_detail_memuat_bawaan_berlaku():
     import inspect
     from app.routers import items as IT
-    assert "bawaan_berlaku" in inspect.getsource(IT.get_item)
+    assert '"bawaan_berlaku": bawaan_berlaku,' in inspect.getsource(IT.get_item)
 
 
 # ---- putusan pemilik 14 Nov: akun_pembelian ikut Accurate; pajak_beli kosong = tanpa pajak
