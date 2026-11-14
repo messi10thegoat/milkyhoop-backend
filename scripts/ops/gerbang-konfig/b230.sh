@@ -1,5 +1,5 @@
 # Konfig gerbang unit BUG-230 (GET /warehouses/{id}/stock bawaan hanya barang ber-stok; ?hanya_berstok=false ikut baris 0). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-b230; CABANG=feat/gudang-stok-tanpa-nol-r2; NAMA_JENDELA=b230
+W=/root/mh-b230; CABANG=feat/gudang-stok-tanpa-nol-r3; NAMA_JENDELA=b230
 POLA_UNIT='bug230|gudang_stok|warehouse|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-b230.sh
 PENANDA_BERKAS=routers/warehouses.py; PENANDA='hanya_berstok'
