@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus Teks Barang (BUG-235/236, 14 Nov 2026): history jenis_text, activity nama tampil + "Barang ...", position_text_ket. Tanpa migrasi, aditif.
 # Pemisah sabotase = "|", ekspresi sed memakai "@".
-W=/root/mh-barang-teks-r2; CABANG=feat/barang-teks-235-r2; NAMA_JENDELA=barang-teks
+W=/root/mh-barang-teks-r3; CABANG=feat/barang-teks-235-r3; NAMA_JENDELA=barang-teks
 POLA_UNIT='barang_teks|barang_daftar|barang_standar|routers.items|get_item_activity|get_item_history|position_text|jenis_text|kosakata_ledger'
 HARNESS=scripts/ops/uji-salinan-barang-teks.sh
 PENANDA_BERKAS=services/barang_teks.py; PENANDA='def jenis_text('
