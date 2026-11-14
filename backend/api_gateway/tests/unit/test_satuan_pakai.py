@@ -87,6 +87,7 @@ def test_router_hapus_dan_daftar_memakai_satu_penentu():
         s = inspect.getsource(f)
         assert "SP." in s, f.__name__
     assert "LOWER(satuan)" not in inspect.getsource(UN.delete_unit)
+    assert "SP.muat_pemakai(" in inspect.getsource(UN.delete_unit)
 
 
 def test_router_filter_ngawur_400(monkeypatch):
