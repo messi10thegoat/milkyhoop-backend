@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus Satuan S-1 + bawaan_berlaku (14 Nov 2026): penentu pemakai satuan, /units/summary, ?aksi=, GET /units/{id}, bawaan_berlaku (akun/pajak + sumber). Tanpa migrasi.
 # Pemisah sabotase = "|", ekspresi sed memakai "@".
-W=/root/mh-satuan-s1-r4; CABANG=feat/satuan-s1-r4; NAMA_JENDELA=satuan-s1
+W=/root/mh-satuan-s1-r5; CABANG=feat/satuan-s1-r5; NAMA_JENDELA=satuan-s1
 POLA_UNIT='satuan_pakai|satuan_master|bawaan_berlaku|routers.units|routers.items|test_onboarding_bawaan|satuan_dasar'
 HARNESS=scripts/ops/uji-salinan-satuan-s1.sh
 PENANDA_BERKAS=services/satuan_pakai.py; PENANDA='def tetapkan_pemakai('

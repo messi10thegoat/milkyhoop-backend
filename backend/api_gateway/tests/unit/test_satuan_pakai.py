@@ -113,3 +113,14 @@ def test_router_filter_ngawur_400(monkeypatch):
     with pytest.raises(HTTPException) as e:
         asyncio.run(UN.list_units(req, search=None, is_active=None, aksi="ngawur", limit=100))
     assert e.value.status_code == 400
+
+
+def test_satuan_hanya_dipakai_konversi_tetap_terpakai_dan_tak_bisa_dinonaktifkan():
+    """Celah s3 (R11): 'terpakai' yang hanya menghitung barang tak terjaga; satuan yang HANYA dipakai konversi harus terpakai."""
+    baris = SP.susun([_u("1", "Dus"), _u("2", "Box")], {"1": {"jumlah_barang": 0, "jumlah_konversi": 3}, "2": {"jumlah_barang": 0, "jumlah_konversi": 0}})
+    dus, box = baris
+    assert dus["terpakai"] is True and box["terpakai"] is False
+    assert SP.ringkasan(baris)["terpakai"] == 1 and SP.ringkasan(baris)["tak_terpakai"] == 1
+    assert [b["id"] for b in SP.saring(baris, "terpakai")] == ["1"] and [b["id"] for b in SP.saring(baris, "tak_terpakai")] == ["2"]
+    n = dus["aksi_tersedia"]["nonaktifkan"]
+    assert n["tersedia"] is False and "3 konversi" in n["alasan"] and "barang" not in n["alasan"]
