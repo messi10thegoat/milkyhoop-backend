@@ -13,7 +13,7 @@ SAB=(
  "s3 urutan daftar tak stabil|$A/routers/price_lists.py|s@ORDER BY p.priority, p.name, p.id@ORDER BY p.priority, p.name@|$T1"
  "s4 hapus selalu tersedia|$A/services/harga_daftar.py|s@aksi(n == 0,@aksi(True,@|$T1"
  "s5 berlaku_text kosong tak ikut daftar|$A/services/harga_daftar.py|s@return \"Ikut daftar\"@return \"\"@|$T1"
- "s6 unit_text tanpa satuan dasar|$A/services/harga_daftar.py|s@ or \"Satuan dasar\"@ or \"X\"@|$T1"
+ "s6 unit_text tanpa satuan dasar|$A/services/harga_daftar.py|s@split()) or None@split()) or \"X\"@|$T1"
  "s7 penjaga pelanggan dicabut|$A/services/harga_aksi.py|s@    if n_pelanggan:@    if False:@|$T2"
  "s8 peringatan nonaktif jadi blok|$A/services/harga_aksi.py|s@return _hasil(\[\], {\"dari\"@return _hasil(per, {\"dari\"@|$T2"
  "s9 bawaan lama tak dicabut|$A/services/harga_aksi.py|s@SET is_default = false, updated_at = NOW() WHERE tenant_id@SET is_default = true, updated_at = NOW() WHERE tenant_id@|$T2"

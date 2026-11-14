@@ -58,6 +58,10 @@ KHUSUS = {
     "POST /api/bill-payments/{payment_id}/delete/preview": "DELETE /api/bill-payments/{payment_id}",
     "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
     # daftar harga (ANDROID U3, 4 Nov): ubah baris = PATCH (penentu bersama price_lists.siapkan_baris_harga)
+    # daftar harga D2 (13 Nov): hapus daftar = DELETE, ubah header = PATCH, hapus baris = DELETE (penentu bersama services/harga_aksi)
+    "POST /api/price-lists/{price_list_id}/delete/preview": "DELETE /api/price-lists/{price_list_id}",
+    "POST /api/price-lists/{price_list_id}/edit/preview": "PATCH /api/price-lists/{price_list_id}",
+    "POST /api/price-lists/{price_list_id}/items/{line_id}/delete/preview": "DELETE /api/price-lists/{price_list_id}/items/{item_id}",
     "POST /api/price-lists/{price_list_id}/items/{line_id}/edit/preview": "PATCH /api/price-lists/{price_list_id}/items/{line_id}",
     # KONTAK standar SO (9 Nov): ubah = PATCH, hapus = DELETE (penentu bersama _siapkan_ubah_* / smart_delete.cek_jejak)
     "POST /api/customers/{customer_id}/edit/preview": "PATCH /api/customers/{customer_id}",
