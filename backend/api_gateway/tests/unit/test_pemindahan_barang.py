@@ -979,3 +979,9 @@ def test_k8_diterima_diturunkan_dari_ledger_bukan_kolom_beku():
     assert ek[0]["quantity_received"] == 4.0 and ek[0]["quantity_variance"] == 6.0
     mentah = [{"item_id": P1, "quantity_shipped": None, "quantity_received": Decimal("0"), "quantity_variance": None}]
     assert jalan(D2.terapkan_diterima(k, T, U, "draft", mentah)) == mentah                   # draf: apa adanya
+
+
+def test_k8_void_rute_received_ke_jalur_dua_langkah():
+    """Dokumen dua langkah yang sudah diterima (status received) harus dapat galat PB_DUA_LANGKAH_SUDAH_DITERIMA, bukan 'hanya yang selesai' jalur satu langkah (completed)."""
+    src = (APP / "routers" / "stock_transfers.py").read_text()
+    assert '_h["status"] in ("in_transit", "received")' in src

@@ -541,7 +541,7 @@ async def void_stock_transfer(request: Request, transfer_id: UUID, body: VoidTra
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             _h = await pb._header(conn, ctx["tenant_id"], transfer_id)
-            hasil = await (pd2.void_kirim(conn, ctx, transfer_id, body.reason) if _h["status"] == "in_transit"   # K8: void kirim (masih di Transit)
+            hasil = await (pd2.void_kirim(conn, ctx, transfer_id, body.reason) if _h["status"] in ("in_transit", "received")   # K8: dua langkah (di Transit / sudah diterima -> galat jelas); satu langkah = completed
                            else pb.void(conn, ctx, transfer_id, body.reason))
             return CompleteTransferResponse(
                 data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Pemindahan barang di-void",

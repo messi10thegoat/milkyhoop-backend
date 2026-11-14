@@ -128,11 +128,11 @@ async def main():
                 and await saldo_g(tuj["id"]) == u0 + 3 and await saldo_g(asal["id"]) == a0 - 3 and await saldo_total() == t0 and await jurnal(pb) == 0)
             cek(f"B {tid} Check 15/Inv-3 tak berubah sesudah Terima", await verdict() == v0)
             vd = await galat(ST.void_stock_transfer(rq, pb, VoidTransferRequest(reason="uji")))
-            cek(f"B {tid} void sesudah diterima ditolak PB_DUA_LANGKAH_SUDAH_DITERIMA", isinstance(vd, HTTPException) and kode(vd) == "PB_DUA_LANGKAH_SUDAH_DITERIMA")
+            cek(f"B {tid} void sesudah diterima ditolak PB_DUA_LANGKAH_SUDAH_DITERIMA", isinstance(vd, HTTPException) and kode(vd) == "PB_DUA_LANGKAH_SUDAH_DITERIMA", f"{getattr(vd, 'status_code', '')} {getattr(vd, 'detail', vd)}")
             # C Kirim lalu void
             a1, u1 = await saldo_g(asal["id"]), await saldo_g(tuj["id"])
             cr2 = await galat(ST.create_stock_transfer(rq, Response(), CreateStockTransferRequest(from_warehouse_id=asal["id"], to_warehouse_id=tuj["id"], items=[StockTransferItemCreate(item_id=pid, quantity_requested=D("2"))])))
-            pb2 = cr2.data.id
+            pb2 = cr2["data"]["id"] if isinstance(cr2, dict) else cr2.data.id
             await ST.ship_stock_transfer(rq, pb2)
             v2 = await galat(ST.void_stock_transfer(rq, pb2, VoidTransferRequest(reason="uji")))
             cek(f"C {tid} Kirim lalu void: barang kembali ke asal, Transit 0, status voided", not isinstance(v2, HTTPException) and await saldo_g(asal["id"]) == a1 and await saldo_g(tr) == 0

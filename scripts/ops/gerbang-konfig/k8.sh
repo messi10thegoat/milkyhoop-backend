@@ -37,4 +37,5 @@ SAB=(
  "c10 terima menulis baris item (trigger DB menolak)|$D2F|s#^        total += nilai#        await conn.execute(\"UPDATE stock_transfer_items SET quantity_received = 1 WHERE id = \$1\", it[\"id\"]); total += nilai#|$T"
  "c11 diterima dari kolom beku, bukan ledger|$D2F|s#d\[\"quantity_received\"\] = ada.get(d\[\"item_id\"\], _NOL)#d[\"quantity_received\"] = _d(d[\"quantity_received\"])#|$T"
  "r21 alamat kirim PO: gudang sistem bisa dipilih|$A/services/po_alamat_kirim.py|s# AND NOT is_system##|$T"
+ "r22 void received jatuh ke jalur satu langkah|$A/routers/stock_transfers.py|s#in (\"in_transit\", \"received\")#== \"in_transit\"#|$T"
 )
