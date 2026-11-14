@@ -98,7 +98,7 @@ def _siap(monkeypatch, transit_id, saldo_transit):
     monkeypatch.setattr(D2.pb, "_stok", stok)
 
 
-def test_pratinjau_kirim_tak_menyiratkan_stok_di_tujuan(monkeypatch):
+def test_pratinjau_kirim_menambah_transit_dan_to_usang_tetap_dikirim(monkeypatch):
     iid = uuid.uuid4()
 
     async def rk(conn, tid, h, items, kunci=False):
@@ -108,7 +108,7 @@ def test_pratinjau_kirim_tak_menyiratkan_stok_di_tujuan(monkeypatch):
     monkeypatch.setattr(D2, "rencana_kirim", rk)
     r = jalan(D2.pratinjau_kirim(Kon(), {"tenant_id": T}, uuid.uuid4()))
     ln = r["lines"][0]
-    assert ln["to_before"] is None and ln["to_after"] is None and ln["available_to"] is None             # bukan stok tujuan
+    assert ln["to_before"] == D("0") and ln["to_after"] == D("3") and ln["available_to"] == D("0")       # USANG tapi TETAP dikirim (FE belum pindah; dihapus di unit pembersihan)
     assert ln["transit_before"] == D("2") and ln["transit_after"] == D("5")                              # barang masuk Transit
 
 
@@ -119,7 +119,7 @@ def test_pratinjau_kirim_transit_belum_ada_saldo_nol(monkeypatch):
     _siap(monkeypatch, None, D("9"))
     monkeypatch.setattr(D2, "rencana_kirim", rk)
     ln = jalan(D2.pratinjau_kirim(Kon(), {"tenant_id": T}, uuid.uuid4()))["lines"][0]
-    assert ln["transit_before"] == D("0") and ln["transit_after"] == D("3")
+    assert ln["transit_before"] == D("0") and ln["transit_after"] == D("3") and ln["to_after"] == D("4")
 
 
 def test_pratinjau_terima_dari_transit_ke_gudang_tujuan(monkeypatch):

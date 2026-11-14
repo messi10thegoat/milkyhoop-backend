@@ -11,7 +11,7 @@ SAB=(
  "s4 GET stok/nilai gudang sistem terbuka|$WHF|s# AND NOT is_system\",#\",#|$T"
  "s5 label Transit hilang|$GDF|s#GT.LABEL if r\[\"is_system\"\] else r\[\"nama\"\]#r[\"nama\"]#|$T"
  "s6 penanda sistem selalu false|$GDF|s#\"sistem\": bool(r\[\"is_system\"\])#\"sistem\": False#|$T"
- "s7 pratinjau Kirim tetap menyiratkan stok tujuan|$D2F|s#ln\[\"to_before\"\] = ln\[\"to_after\"\] = ln\[\"available_to\"\] = None#pass#|$T"
+ "s7 pratinjau Kirim tanpa transit_before/after|$D2F|s#ln\[\"transit_before\"\], ln\[\"transit_after\"\] = _d(ada), _d(ada) + _d(ln\[\"quantity\"\])#pass#|$T"
  "s8 transit_after tak menambah jumlah|$D2F|s#_d(ada) + _d(ln\[\"quantity\"\])#_d(ada)#|$T"
  "s9 pratinjau Terima from kosong|$D2F|s#r\[\"dari\"\] = {\"id\": str(transit_id) if transit_id else None, \"name\": GT.NAMA}#r[\"dari\"] = None#|$T"
  "s10 pratinjau Terima to kosong|$D2F|s#r\[\"ke\"\] = r\[\"tujuan\"\]#r[\"ke\"] = None#|$T"

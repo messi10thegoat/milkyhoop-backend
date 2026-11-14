@@ -1,7 +1,7 @@
 """K8 uji DB di SALINAN (bukan prod; V497 diterapkan di salinan oleh pembungkus): handler ASLI Pemindahan Barang dua langkah + daftar gudang atas klon, tenant kaos + nyawit.
 A Kirim: Σ on_hand ledger produk TETAP, asal turun, Transit naik, NOL jurnal, verify_inventory_wac_reconciliation_all (Check 15) TAK berubah; Transit tak tampil di daftar/ringkasan gudang, bawaan tetap
 B Terima sebagian lalu sisa: tertunda benar, status_text turunan, tujuan naik, Transit akhir 0; terima > tertunda ditolak; void setelah diterima ditolak
-D (246/247/248) daftar memuat status_text; GET gudang Transit 404; stok_per_gudang Transit berlabel server; pratinjau Kirim/Terima tak menyesatkan; galat PB_* aditif
+D (246/247/248) daftar memuat status_text; GET gudang Transit 404; stok_per_gudang Transit berlabel server; pratinjau Kirim (transit_* aditif)/Terima (from/to); galat PB_* aditif
 C Kirim lalu void: barang kembali dari Transit ke asal; Transit TIDAK bisa dipilih sebagai gudang tujuan; satu gudang nyata + Transit tetap punya gudang bawaan"""
 import asyncio
 import sys
@@ -145,7 +145,7 @@ async def main():
             cr3 = await galat(ST.create_stock_transfer(rq, Response(), CreateStockTransferRequest(from_warehouse_id=asal["id"], to_warehouse_id=tuj["id"], items=[StockTransferItemCreate(item_id=pid, quantity_requested=D("2"))])))
             pb3 = cr3["data"]["id"] if isinstance(cr3, dict) else cr3.data.id
             pv3 = (await ST.preview_ship_stock_transfer(rq, pb3))["data"]["lines"][0]
-            cek(f"D {tid} 248-a pratinjau Kirim: to_before/to_after/available_to null, transit_before 0 -> transit_after 2", pv3["to_before"] is None and pv3["to_after"] is None and pv3["available_to"] is None
+            cek(f"D {tid} 248-a pratinjau Kirim (aditif): transit_before 0 -> transit_after 2; to_before/to_after/available_to USANG tapi TETAP dikirim", pv3["to_before"] is not None and pv3["to_after"] is not None and pv3["available_to"] is not None
                 and pv3["transit_before"] == 0 and pv3["transit_after"] == 2, f"{pv3}")
             await ST.ship_stock_transfer(rq, pb3)
             lst = (await ST.list_stock_transfers(rq, skip=0, limit=100, status=None, from_warehouse_id=None, to_warehouse_id=None, date_from=None, date_to=None, search=None)).data

@@ -105,9 +105,8 @@ async def pratinjau_kirim(conn, ctx: dict, transfer_id) -> dict:
     r["ok"] = not r["blocks"]
     r["transfer_number"] = h["transfer_number"]
     transit_id = await GT.id_transit(conn, tid)
-    for ln in r["lines"]:   # BUG-248-a: barang masuk TRANSIT, bukan gudang tujuan: tak ada to_before/to_after (stok tujuan tak berubah saat Kirim)
-        ada = await pb._stok(conn, tid, transit_id, ln["item_id"], False) if transit_id else _NOL
-        ln["to_before"] = ln["to_after"] = ln["available_to"] = None
+    for ln in r["lines"]:   # BUG-248-a (ADITIF, putusan MASTER): barang masuk TRANSIT; transit_before/after ditambah. to_before/to_after/available_to TETAP dikirim sementara (USANG:
+        ada = await pb._stok(conn, tid, transit_id, ln["item_id"], False) if transit_id else _NOL   # dihapus sesudah FE pindah ke transit_*; unit pembersihan terpisah)
         ln["transit_before"], ln["transit_after"] = _d(ada), _d(ada) + _d(ln["quantity"])
     r["lokasi_transit"] = GT.NAMA
     r["catatan"] = "Tanpa jurnal: barang pindah dari gudang asal ke lokasi Transit; nilai persediaan tidak berubah."
