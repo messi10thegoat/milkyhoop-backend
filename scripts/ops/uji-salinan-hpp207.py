@@ -155,7 +155,7 @@ async def main():
                     except Exception as e:  # noqa: BLE001
                         cek(f"C {tid} peringatan_terima tanpa galat", False, f"{type(e).__name__}: {e}")
             # D dokumen TERSIMPAN: SQL asli baris_tersimpan (kolom + urutan) atas dokumen klon tiap jenis
-            for jenis, (hdr, items, fk, _urut) in JB.JENIS_TERSIMPAN.items():
+            for jenis, (hdr, items, fk, *_sisa) in JB.JENIS_TERSIMPAN.items():
                 doc = await c.fetchval(f"/* tenant_id */ SELECT h.id FROM {hdr} h WHERE h.tenant_id = $1 AND EXISTS (SELECT 1 FROM {items} i WHERE i.{fk} = h.id AND i.jumlah_baris IS NOT NULL) ORDER BY h.created_at LIMIT 1", tid)
                 if doc is None:
                     print(f"CATATAN D {tid}: tak ada dokumen {jenis} berbaris di klon; SQL tersimpan tak terukur", flush=True)
