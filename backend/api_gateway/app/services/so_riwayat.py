@@ -101,7 +101,7 @@ LABEL_MEDAN = [
 ]
 _PERINGKAT = {m: i for i, (m, _) in enumerate(LABEL_MEDAN)}
 _LABEL = dict(LABEL_MEDAN)
-LABEL_PER_KEJADIAN = {"PO_UPDATED": {"ref_no": "referensi"}}  # BUG-215: ref_no PO = referensi (label umum = no. faktur vendor milik Faktur pembelian)
+LABEL_PER_KEJADIAN = {_AD.nama("purchase_order", "updated"): {"ref_no": "referensi"}}  # BUG-215: ref_no PO = referensi (label umum = no. faktur vendor milik Faktur pembelian)
 
 
 def label_medan(fields, kejadian=None) -> str:
