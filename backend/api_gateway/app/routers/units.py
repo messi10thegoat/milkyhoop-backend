@@ -12,6 +12,7 @@ import logging
 from ..services.db_pool import get_db_pool
 from ..services import satuan_dasar as SD  # P1: konversi terpakai terkunci
 from ..services import satuan_master as SM
+from ..services import satuan_pakai as SP  # S-1: SATU penentu pemakai
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,6 +40,7 @@ async def list_units(
     request: Request,
     search: Optional[str] = Query(None),
     is_active: Optional[bool] = Query(None),
+    aksi: Optional[str] = Query(None, description="semua|terpakai|tak_terpakai|duplikat"),
     limit: int = Query(100, ge=1, le=500),
 ):
     """Daftar satuan master = bawaan + milik tenant (SATU sumber dengan /dropdown dan halaman Satuan: services/satuan_master.daftar;
@@ -50,10 +52,16 @@ async def list_units(
         pool = await get_pool()
         async with pool.acquire() as conn:
             semua = await SM.daftar(conn, ctx["tenant_id"], search)
+            baris = SP.susun(semua, await SP.muat_pemakai(conn, ctx["tenant_id"], semua))
+        try:
+            baris = SP.saring(baris, aksi)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Filter satuan tidak dikenal. Pilihan: semua, terpakai, tak_terpakai, duplikat.")
         return {
-            "items": [{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"], "is_system": u["is_system"], "is_active": True}
-                      for u in semua[:limit]],
-            "total": len(semua),
+            "items": [{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"], "is_system": u["is_system"], "is_active": True,
+                       **{k: u[k] for k in ("jumlah_barang", "jumlah_konversi", "terpakai", "duplikat", "kelompok_duplikat", "aksi_tersedia", "aksi_semua")}}
+                      for u in baris[:limit]],
+            "total": len(baris),
         }
     except HTTPException:
         raise
@@ -194,17 +202,11 @@ async def delete_unit(request: Request, unit_id: UUID):
                     status_code=400, detail="Tidak dapat menghapus satuan sistem"
                 )
 
-            # Check products using this unit
-            product_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM products WHERE tenant_id = $1 AND LOWER(satuan) = $2 AND deleted_at IS NULL",
-                ctx["tenant_id"],
-                existing["abbreviation"],
-            )
-            if product_count > 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Satuan '{existing['name']}' masih digunakan oleh {product_count} produk",
-                )
+            semua = await SM.daftar(conn, ctx["tenant_id"])
+            pakai = (await SP.muat_pemakai(conn, ctx["tenant_id"], semua)).get(str(unit_id), SP.NOL)
+            if pakai["jumlah_barang"] or pakai["jumlah_konversi"]:
+                alasan = SP.susun([u for u in semua if u["id"] == str(unit_id)], {str(unit_id): pakai})[0]["aksi_tersedia"]["nonaktifkan"]["alasan"]
+                raise HTTPException(status_code=400, detail=f"Satuan '{existing['name']}' tidak bisa dihapus. {alasan}")
 
             await conn.execute(
                 "UPDATE product_units SET is_active = false, updated_at = NOW() WHERE id = $1",
@@ -221,6 +223,20 @@ async def delete_unit(request: Request, unit_id: UUID):
     except Exception as e:
         logger.error(f"Error deleting unit: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal menghapus satuan")
+
+
+# =============================================================================
+# SUMMARY (SATU angka; BUG-233) -- sebelum rute /{unit_id}
+# =============================================================================
+@router.get("/summary")
+async def units_summary(request: Request):
+    """Ringkasan satuan: semua/terpakai/tak_terpakai/duplikat dihitung dari SATU penentu (services/satuan_pakai), sama dengan ?aksi= pada daftar."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        semua = await SM.daftar(conn, ctx["tenant_id"])
+        baris = SP.susun(semua, await SP.muat_pemakai(conn, ctx["tenant_id"], semua))
+    return {"success": True, "data": SP.ringkasan(baris)}
 
 
 # =============================================================================
@@ -546,3 +562,20 @@ async def seed_default_units(request: Request):
     except Exception as e:
         logger.error(f"Error seeding units: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal membuat satuan default")
+
+
+# =============================================================================
+# DETAIL (rute literal GET di atas dulu; ini terakhir)
+# =============================================================================
+@router.get("/{unit_id}")
+async def get_unit(request: Request, unit_id: str):
+    """Satu satuan master + jumlah pemakai + aksi_tersedia (SATU penentu dengan daftar/summary)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        semua = await SM.daftar(conn, ctx["tenant_id"])
+        baris = SP.susun(semua, await SP.muat_pemakai(conn, ctx["tenant_id"], semua))
+    for b in baris:
+        if b["id"] == unit_id:
+            return {"success": True, "data": b}
+    raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
