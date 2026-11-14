@@ -20,6 +20,10 @@ def test_semua_medan_ubah_dokumen_berlabel(skema):
     assert belum == [], f"medan tanpa label Indonesia di riwayat: {belum}"                      # tak ada nama kolom mentah yang bocor
 
 
+def test_gudang_tujuan_po_berlabel():
+    assert RW.label_medan(["warehouse_id"]) == "gudang tujuan"                              # BUG-216: medan warehouse_id di UpdatePurchaseOrderRequest
+
+
 def test_medan_po_baru_label_dan_dedupe():
     assert RW.label_medan(["po_date", "expected_date", "ship_to_address"]) == "tanggal, tanggal kirim, alamat kirim"
     assert RW.label_medan(["discount_percent", "discount_amount"]) == "diskon"               # label ganda dirapatkan

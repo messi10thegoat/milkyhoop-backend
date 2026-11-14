@@ -76,7 +76,7 @@ LABEL_MEDAN = [
     ("expected_ship_date", "tanggal kirim"), ("subject", "perihal"), ("reference", "referensi"),
     ("order_title", "judul"), ("items", "barang"),
     # BUG-215: medan ubah PO (po_date/expected_date/ship_to_address/discount_percent/payment_terms_days) + medan ubah Penawaran yang belum berlabel
-    ("po_date", "tanggal"), ("expected_date", "tanggal kirim"), ("ship_to_address", "alamat kirim"), ("payment_terms_days", "syarat bayar"),
+    ("po_date", "tanggal"), ("expected_date", "tanggal kirim"), ("ship_to_address", "alamat kirim"), ("warehouse_id", "gudang tujuan"), ("payment_terms_days", "syarat bayar"),
     ("attention_name", "ditujukan kepada"), ("attention_title", "ditujukan kepada"), ("attention_name_source", "ditujukan kepada"),
     ("attention_title_source", "ditujukan kepada"), ("signer_user_id", "penandatangan"), ("signer_name", "penandatangan"), ("signer_title", "penandatangan"),
     ("signer_phone", "penandatangan"), ("signer_email", "penandatangan"), ("signer_name_source", "penandatangan"), ("signer_title_source", "penandatangan"),
