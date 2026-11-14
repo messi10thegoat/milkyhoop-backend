@@ -30,4 +30,4 @@ def test_medan_po_baru_label_dan_dedupe():
 
 def test_render_riwayat_meneruskan_kejadian():
     src = inspect.getsource(RW)
-    assert "label_medan(_medan, r['eventType'])" in src and 'LABEL_PER_KEJADIAN = {"PO_UPDATED": {"ref_no": "referensi"}}' in src
+    assert "label_medan(_medan, r['eventType'])" in src and 'LABEL_PER_KEJADIAN = {_AD.nama("purchase_order", "updated"): {"ref_no": "referensi"}}' in src

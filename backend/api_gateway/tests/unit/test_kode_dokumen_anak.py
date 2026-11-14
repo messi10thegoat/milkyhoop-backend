@@ -98,7 +98,7 @@ def test_label_riwayat_manusia():
 def test_riwayat_merender_label_saat_baca():
     from app.services import so_riwayat as R
     src = inspect.getsource(R._selesaikan)
-    assert 'label_medan(_medan, r["eventType"])' in src and '.endswith("_UPDATED")' in src
+    assert "label_medan(_medan, r['eventType'])" in src and '.endswith("_UPDATED")' in src
 
 
 @pytest.mark.parametrize("modul,fungsi,jenis", [

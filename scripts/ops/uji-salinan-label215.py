@@ -29,6 +29,8 @@ async def main():
     pool = await PO.get_pool()
     from backend.api_gateway.app.services import policy_engine_client as PEC  # singleton YANG SAMA dipakai middleware (impor MUTLAK; pola harness 199/207)
     PEC.init_policy_engine(pool)
+    from app.services import policy_engine_client as PEC2  # singleton yang dipakai dashboard_izin (impor relatif `app.`): dua jalur modul, init KEDUANYA
+    PEC2.init_policy_engine(pool)
     async with pool.acquire() as c:
         for tid in ("kaos-biru-konveksi", "pt-kita-nyawit-bersama"):
             uid = await c.fetchval("/* tenant_id */ SELECT utr.user_id FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id WHERE utr.tenant_id = $1 AND utr.status = 'ACTIVE' AND r.code = 'OWNER' ORDER BY utr.is_primary DESC LIMIT 1", tid)

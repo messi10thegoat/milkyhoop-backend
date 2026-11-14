@@ -8,7 +8,7 @@ SAB=(
  "l1 syarat bayar tak berlabel|$RWF|s#(\"payment_terms_days\", \"syarat bayar\")#(\"payment_terms_days_x\", \"syarat bayar\")#|$T"
  "l2 tanggal kirim PO tak berlabel|$RWF|s#(\"expected_date\", \"tanggal kirim\")#(\"expected_date_x\", \"tanggal kirim\")#|$T"
  "l3 diskon persen PO tak berlabel|$RWF|s#(\"discount_amount\", \"diskon\"), (\"discount_percent\", \"diskon\"),#(\"discount_amount\", \"diskon\"),#|$T"
- "l4 ref_no PO tetap no. faktur vendor|$RWF|s#LABEL_PER_KEJADIAN = {\"PO_UPDATED\": {\"ref_no\": \"referensi\"}}#LABEL_PER_KEJADIAN = {}#|$T"
+ "l4 ref_no PO tetap no. faktur vendor|$RWF|s#LABEL_PER_KEJADIAN = {_AD.nama(\"purchase_order\", \"updated\"): {\"ref_no\": \"referensi\"}}#LABEL_PER_KEJADIAN = {}#|$T"
  "l5 render tak meneruskan kejadian|$RWF|s#label_medan(_medan, r\['eventType'\])#label_medan(_medan)#|$T"
  "l6 medan Penawaran signer tak berlabel|$RWF|s#(\"signer_name\", \"penandatangan\"),#(\"signer_name_x\", \"penandatangan\"),#|$T"
 )
