@@ -3076,6 +3076,9 @@ async def get_item(request: Request, item_id: UUID):
         sb = (await SB.hitung(conn, tenant_id, [item_id], await tanggal_dokumen(conn, tenant_id)))["barang"].get(str(item_id), {}) \
             if BD.dilacak(row) else {}
 
+        from ..services import bawaan_berlaku as _BB  # akun/pajak yang berlaku + sumbernya (barang|bawaan_usaha)
+        bawaan_berlaku = await _BB.untuk_barang(conn, tenant_id, dict(row))
+
         conversions = [
             {
                 "id": str(c["id"]),
@@ -3099,6 +3102,7 @@ async def get_item(request: Request, item_id: UUID):
                 "track_inventory": row.get("track_inventory", True),
                 "bisa_dikirim": bool(row.get("bisa_dikirim") or False),
                 "base_unit": row.get("base_unit") or row["satuan"],
+                "bawaan_berlaku": bawaan_berlaku,
                 "base_unit_terpakai": base_unit_terpakai,  # BUG-086: True -> satuan dasar tak bisa diganti (409 SATUAN_DASAR_TERPAKAI)
                 "barcode": row.get("barcode"),
                 "kategori": row.get("kategori"),
