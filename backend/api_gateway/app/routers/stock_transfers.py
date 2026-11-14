@@ -186,7 +186,8 @@ async def list_stock_transfers(
             skip,
         )
 
-        data = [StockTransferData(**dict(row)) for row in rows]
+        teks = await pd2.teks_daftar(conn, ctx["tenant_id"], rows)   # BUG-246: status_text turunan (satu kueri)
+        data = [StockTransferData(**{**dict(row), "status_text": teks[row["id"]][0], "diterima_sebagian": teks[row["id"]][1]}) for row in rows]
 
         return StockTransferListResponse(
             data=data, total=total, has_more=(skip + limit) < total

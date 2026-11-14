@@ -135,9 +135,9 @@ def test_barang_minus_predikat_tunggal_bertenant_dan_batas():
 
 
 def test_p5_stok_per_gudang_dari_ledger_dengan_minus_ditandai():
-    k = Kon(ledger=[{"warehouse_id": G1, "nama": "Utama", "kode": "UTA", "aktif": True, "saldo": D("5")},
-                    {"warehouse_id": G2, "nama": "Toko", "kode": "TOK", "aktif": True, "saldo": D("-2.5")},
-                    {"warehouse_id": None, "nama": "(tanpa gudang)", "kode": None, "aktif": True, "saldo": D("1")}])
+    k = Kon(ledger=[{"warehouse_id": G1, "nama": "Utama", "kode": "UTA", "aktif": True, "is_system": False, "saldo": D("5")},
+                    {"warehouse_id": G2, "nama": "Toko", "kode": "TOK", "aktif": True, "is_system": False, "saldo": D("-2.5")},
+                    {"warehouse_id": None, "nama": "(tanpa gudang)", "kode": None, "aktif": True, "is_system": False, "saldo": D("1")}])
     out = jalan(GD.stok_per_gudang(k, T, P1))
     assert [(o["nama"], o["saldo"], o["minus"]) for o in out] == [("Utama", 5.0, False), ("Toko", -2.5, True), ("(tanpa gudang)", 1.0, False)]
     assert out[2]["warehouse_id"] is None and out[0]["warehouse_id"] == str(G1)

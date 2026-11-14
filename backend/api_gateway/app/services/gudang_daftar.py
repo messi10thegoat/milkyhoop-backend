@@ -7,6 +7,7 @@ posisi, nilai stok per gudang, aksi_tersedia, dan satu perbaikan integritas (U9)
 - Satu gudang utama per tenant DIJAGA DB: trigger trg_single_default_warehouse (BEFORE INSERT/UPDATE WHEN is_default; diukur pg_trigger
   9 Nov, ENABLED) -- klaim U8 kontrak ("set-default tak mencabut yang lama") GUGUR di uji salinan; tak ada penulis tambahan di kode.
 - U9: nonaktifkan ditolak bila saldo LEDGER gudang itu ≠ 0 untuk barang mana pun, bersaring tenant (dulu cache floor-0 tanpa tenant)."""
+from . import gudang_transit as GT  # BUG-247: label server baris Transit
 from decimal import Decimal
 from typing import Optional
 
@@ -63,13 +64,14 @@ async def barang_minus(conn, tid: str, warehouse_id, batas: int = 100) -> list:
 async def stok_per_gudang(conn, tid: str, product_id) -> list:
     """P5: saldo LEDGER satu barang per gudang (saldo != 0), minus ditandai. Baris ledger tanpa gudang = '(tanpa gudang)' agar Σ == stok barang."""
     rows = await conn.fetch(
-        "SELECT il.warehouse_id, COALESCE(w.name, '(tanpa gudang)') AS nama, w.code AS kode, COALESCE(w.is_active, true) AS aktif, "
+        "SELECT il.warehouse_id, COALESCE(w.name, '(tanpa gudang)') AS nama, w.code AS kode, COALESCE(w.is_active, true) AS aktif, COALESCE(w.is_system, false) AS is_system, "
         "SUM(il.quantity_in) - SUM(il.quantity_out) AS saldo FROM inventory_ledger il "
         "LEFT JOIN warehouses w ON w.id = il.warehouse_id AND w.tenant_id = il.tenant_id "
-        "WHERE il.tenant_id = $1 AND il.product_id = $2 GROUP BY il.warehouse_id, w.name, w.code, w.is_active "
+        "WHERE il.tenant_id = $1 AND il.product_id = $2 GROUP BY il.warehouse_id, w.name, w.code, w.is_active, w.is_system "
         "HAVING SUM(il.quantity_in) - SUM(il.quantity_out) <> 0 ORDER BY nama, il.warehouse_id", tid, product_id)
     return [{"warehouse_id": str(r["warehouse_id"]) if r["warehouse_id"] else None, "nama": r["nama"], "kode": r["kode"], "aktif": bool(r["aktif"]),
-             "saldo": float(Decimal(str(r["saldo"]))), "minus": Decimal(str(r["saldo"])) < 0} for r in rows]
+             "saldo": float(Decimal(str(r["saldo"]))), "minus": Decimal(str(r["saldo"])) < 0,
+             "sistem": bool(r["is_system"]), "nama_text": GT.LABEL if r["is_system"] else r["nama"]} for r in rows]
 
 
 def position_text(is_active: bool, is_default: bool, is_branch: bool = False) -> str:

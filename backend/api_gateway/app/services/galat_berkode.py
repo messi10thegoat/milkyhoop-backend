@@ -22,3 +22,14 @@ class GalatBerkode(HTTPException):
         if self.field:
             b["field"] = self.field
         return b
+
+
+class GalatDetailObjek(HTTPException):
+    """Galat modul pemindahan (PB_*): `detail` TETAP objek {code, message} (FE lama membaca detail.code) + `code` & `message` ADITIF di tingkat atas
+    (BUG-248-c, putusan MASTER): badan = {"detail": {code, message}, "code": ..., "message": ...}. Dirender handler main.py."""
+    def __init__(self, status_code: int, code: str, message: str):
+        super().__init__(status_code=status_code, detail={"code": code, "message": message})
+        self.code, self.message = code, message
+
+    def badan(self) -> dict:
+        return {"detail": self.detail, "code": self.code, "message": self.message}

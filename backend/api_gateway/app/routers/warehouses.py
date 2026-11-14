@@ -200,7 +200,7 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
         )
 
         row = await conn.fetchrow(
-            f"SELECT *, {GD.kolom_turunan()} FROM warehouses WHERE id = $1 AND tenant_id = $2",
+            f"SELECT *, {GD.kolom_turunan()} FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system",
             warehouse_id,
             ctx["tenant_id"],
         )
@@ -411,7 +411,7 @@ async def get_warehouse_stock(
 
         # Verify warehouse
         wh = await conn.fetchrow(
-            "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
+            "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system",
             warehouse_id,
             ctx["tenant_id"],
         )
@@ -473,7 +473,7 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
         )
 
         wh = await conn.fetchrow(
-            "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2",
+            "SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system",
             warehouse_id,
             ctx["tenant_id"],
         )

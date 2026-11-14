@@ -343,6 +343,14 @@ async def _galat_berkode_handler(request, exc):  # noqa: ANN001
     return _JSONResp(status_code=exc.status_code, content=exc.badan(), headers=exc.headers)
 
 
+from .services.galat_berkode import GalatDetailObjek as _GalatDetailObjek  # noqa: E402
+
+
+@app.exception_handler(_GalatDetailObjek)
+async def _galat_detail_objek_handler(request, exc):  # noqa: ANN001
+    return _JSONResp(status_code=exc.status_code, content=exc.badan(), headers=exc.headers)   # BUG-248-c: detail objek + code/message aditif
+
+
 # T-G5 (5 Nov 2026): 422 validasi Pydantic -> Bahasa Indonesia + kode VALIDASI_GAGAL (services/galat_validasi.py).
 from fastapi.encoders import jsonable_encoder as _jsonable  # noqa: E402
 from fastapi.exceptions import RequestValidationError as _RequestValidationError  # noqa: E402

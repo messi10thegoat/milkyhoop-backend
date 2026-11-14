@@ -46,6 +46,17 @@ async def diterima_per_barang(conn, tid: str, transfer_id) -> dict:
     return {r["product_id"]: _d(r["diterima"]) for r in await conn.fetch(SQL_DITERIMA, tid, SUMBER_TERIMA, transfer_id)}
 
 
+async def teks_daftar(conn, tid: str, rows) -> dict:
+    """BUG-246: {id: (status_text, diterima_sebagian)} untuk daftar. SATU kueri ledger untuk semua pemindahan in_transit di halaman (bukan N kueri)."""
+    ids = [r["id"] for r in rows if r["status"] == "in_transit"]
+    ada = {}
+    if ids:
+        for r in await conn.fetch("SELECT il.source_id, COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il "
+                                  "WHERE il.tenant_id = $1 AND il.source_type = $2 AND il.source_id = ANY($3::uuid[]) GROUP BY il.source_id", tid, SUMBER_TERIMA, ids):
+            ada[r["source_id"]] = _d(r["diterima"])
+    return {r["id"]: (teks_status(r["status"], _NOL, ada.get(r["id"], _NOL)), r["status"] == "in_transit" and ada.get(r["id"], _NOL) > _NOL) for r in rows}
+
+
 async def item_baris(conn, tid: str, transfer_id) -> list:
     """Baris item (dict) + quantity_received/quantity_variance DITURUNKAN dari ledger."""
     ada = await diterima_per_barang(conn, tid, transfer_id)
@@ -93,6 +104,11 @@ async def pratinjau_kirim(conn, ctx: dict, transfer_id) -> dict:
     r = await rencana_kirim(conn, tid, h, await item_baris(conn, tid, transfer_id), kunci=False)
     r["ok"] = not r["blocks"]
     r["transfer_number"] = h["transfer_number"]
+    transit_id = await GT.id_transit(conn, tid)
+    for ln in r["lines"]:   # BUG-248-a: barang masuk TRANSIT, bukan gudang tujuan: tak ada to_before/to_after (stok tujuan tak berubah saat Kirim)
+        ada = await pb._stok(conn, tid, transit_id, ln["item_id"], False) if transit_id else _NOL
+        ln["to_before"] = ln["to_after"] = ln["available_to"] = None
+        ln["transit_before"], ln["transit_after"] = _d(ada), _d(ada) + _d(ln["quantity"])
     r["lokasi_transit"] = GT.NAMA
     r["catatan"] = "Tanpa jurnal: barang pindah dari gudang asal ke lokasi Transit; nilai persediaan tidak berubah."
     r["payload"] = {"transfer_id": str(transfer_id)}
@@ -199,6 +215,9 @@ async def pratinjau_terima(conn, ctx: dict, transfer_id, baris: Optional[List[di
     r["ok"] = not r["blocks"]
     r["transfer_number"] = h["transfer_number"]
     r["bawaan_semua_tertunda"] = not baris
+    transit_id = await GT.id_transit(conn, tid)
+    r["dari"] = {"id": str(transit_id) if transit_id else None, "name": GT.NAMA}   # BUG-248-b: Terima = dari Transit ke gudang tujuan
+    r["ke"] = r["tujuan"]
     r["payload"] = {"items": [{"item_id": str(l["item_id"]), "quantity_received": str(l["akan_diterima"])} for l in r["lines"] if l["akan_diterima"] > _NOL]}
     return r
 

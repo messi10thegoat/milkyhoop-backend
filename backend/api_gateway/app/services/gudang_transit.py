@@ -6,6 +6,7 @@ from uuid import UUID
 
 KODE = "SYS-TRANSIT"
 NAMA = "Transit"
+LABEL = "Dalam perjalanan (Transit)"   # teks tampil dari SERVER (stok_per_gudang/kartu stok); FE tanpa logika label
 
 
 async def id_transit(conn, tid: str) -> Optional[UUID]:

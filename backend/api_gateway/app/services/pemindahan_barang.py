@@ -27,6 +27,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
+from .galat_berkode import GalatDetailObjek  # BUG-248-c
 from pydantic import BaseModel, Field, model_validator
 
 from . import satuan_dasar as SD  # K1 (5 Nov): satuan baris -> satuan dasar lewat penentu SATU jalur stok
@@ -97,13 +98,13 @@ class PratinjauIn(BaseModel):
 
 
 def _blok(kode: str, pesan: str, status: int = 409) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": kode, "message": pesan})
+    return GalatDetailObjek(status, kode, pesan)
 
 
 def angkat_blok_pertama(rencana: dict) -> None:
     if rencana["blocks"]:
         b = rencana["blocks"][0]
-        raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
+        raise GalatDetailObjek(b["status"], b["code"], b["message"])
 
 
 async def aktif(conn, tenant_id: str) -> bool:
@@ -399,7 +400,7 @@ async def _validasi_isi(conn, tid: str, isi: PemindahanIn) -> dict:
     struktural = [b for b in r["blocks"] if b["code"] not in ("PB_STOK_TIDAK_CUKUP", "PB_WAC_NOL")]
     if struktural:
         b = struktural[0]
-        raise HTTPException(status_code=b["status"], detail={"code": b["code"], "message": b["message"]})
+        raise GalatDetailObjek(b["status"], b["code"], b["message"])
     qty = {ln["item_id"]: ln["quantity"] for ln in r["lines"]}
     return {ln["item_id"]: {"item_code": ln["item_code"], "nama_produk": ln["name"], "base_unit": ln["unit"], "qty_dasar": qty[ln["item_id"]]}
             for ln in r["lines"]}
