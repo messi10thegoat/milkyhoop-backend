@@ -48,14 +48,14 @@ async def main():
                 ada_nol = ada_nol or n_semua > n_stok
                 b = await stok(rq, g["id"])
                 cek(f"A {tid} gudang {g['code']}: bawaan total {b.total} == SQL ber-stok {n_stok}, semua baris quantity <> 0, len(data) == min(total, 200)",
-                    b.total == n_stok and all(r["quantity"] != 0 for r in b.data) and len(b.data) == min(n_stok, 200))
+                    b.total == n_stok and all(r.quantity != 0 for r in b.data) and len(b.data) == min(n_stok, 200))
                 s = await stok(rq, g["id"], hanya_berstok=False)
                 cek(f"B {tid} gudang {g['code']}: hanya_berstok=false total {s.total} == SQL semua baris {n_semua} (>= bawaan)", s.total == n_semua and s.total >= b.total)
                 if b.data:
-                    kata = b.data[0]["item_code"][:3]
+                    kata = (b.data[0].item_code or b.data[0].item_name)[:3]
                     n_cari = await c.fetchval("/* tenant_id */ SELECT count(*) FROM warehouse_stock ws JOIN products i ON ws.item_id = i.id WHERE ws.tenant_id = $1 AND ws.warehouse_id = $2 AND ws.quantity <> 0 AND (i.item_code ILIKE $3 OR i.nama_produk ILIKE $3)", tid, g["id"], f"%{kata}%")
                     cr = await stok(rq, g["id"], search=kata)
-                    cek(f"C {tid} gudang {g['code']}: cari '{kata}' digabung bawaan total {cr.total} == SQL {n_cari}", cr.total == n_cari and all(r["quantity"] != 0 for r in cr.data))
+                    cek(f"C {tid} gudang {g['code']}: cari '{kata}' digabung bawaan total {cr.total} == SQL {n_cari}", cr.total == n_cari and all(r.quantity != 0 for r in cr.data))
             print(f"CATATAN {tid}: ada gudang dengan baris stok 0 di klon: {ada_nol}", flush=True)
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
