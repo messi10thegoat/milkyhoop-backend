@@ -481,7 +481,8 @@ async def delete_price_list(request: Request, price_list_id: UUID):
             async def kerja():
                 tid = ctx["tenant_id"]
                 r = await HA.ukur_daftar(conn, tid, price_list_id)
-                HA.tolak_bila_blok(HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id)))
+                HA.tolak_bila_blok(HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id),
+                                                      await HA.ukur_nama_pelanggan(conn, tid, price_list_id)))
                 await HA.terapkan_hapus(conn, tid, price_list_id)
                 return {"success": True, "message": "Daftar harga dihapus.", "data": {"id": str(price_list_id)}}
             async with conn.transaction():
@@ -722,7 +723,8 @@ async def preview_hapus_daftar(request: Request, price_list_id: UUID, body: Opti
     async def f(conn):
         tid = ctx["tenant_id"]
         r = await HA.ukur_daftar(conn, tid, price_list_id)
-        return HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id))
+        return HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id),
+                                   await HA.ukur_nama_pelanggan(conn, tid, price_list_id))
     return {"success": True, "data": {**await _baca_saja(f), "payload": body or {}}}
 
 

@@ -52,6 +52,7 @@ def test_kompatibel_tanpa_argumen_nama():
 def test_ukur_nama_pelanggan_satu_query_bersaring_tenant_urut_nama():
     sql = inspect.getsource(HA.ukur_nama_pelanggan)
     assert "tenant_id = $1" in sql and "price_list_id = $2" in sql and "ORDER BY" in sql and "LIMIT" in sql
+    assert "SELECT nama FROM customers" in sql  # customers.name kosong di data nyata; nama pelanggan = kolom nama
 
 
 def test_penulis_dan_pratinjau_memakai_penentu_nama_yang_sama():

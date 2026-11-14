@@ -39,6 +39,13 @@ async def ukur_pelanggan(conn, tid: str, pl_id) -> int:
     return int(await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2", tid, pl_id) or 0)
 
 
+async def ukur_nama_pelanggan(conn, tid: str, pl_id) -> list:
+    """Nama pelanggan pemakai daftar (urut nama, maks MAKS_NAMA) -- bersaring tenant; jumlah penuh tetap dari ukur_pelanggan."""
+    return [r["nama"] for r in await conn.fetch(  # kolom nama (customers.name kosong di semua baris terukur 15 Nov)
+        "SELECT nama FROM customers WHERE tenant_id = $1 AND price_list_id = $2 AND NULLIF(btrim(nama), '') IS NOT NULL ORDER BY lower(nama), id LIMIT "
+        + str(MAKS_NAMA), tid, pl_id)]
+
+
 async def ukur_baris(conn, tid: str, pl_id) -> int:
     return int(await conn.fetchval(
         """SELECT COUNT(*) FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
@@ -80,11 +87,21 @@ def rencana_status(r, n_pelanggan: int, ke_aktif: bool) -> dict:
                        "bawaan_dicabut": bool(r["is_default"]) and not ke_aktif}, per)
 
 
-def rencana_hapus(r, n_pelanggan: int, n_baris: int) -> dict:
+MAKS_NAMA = 5
+
+
+def rencana_hapus(r, n_pelanggan: int, n_baris: int, nama=()) -> dict:
+    """Hapus daftar: DITOLAK bila dipakai pelanggan -- pesan menyebut NAMA (maks 5 + "dan N lainnya"; putusan pemilik) dan blok membawa
+    jumlah_pelanggan/nama_pelanggan/sisa_pelanggan + baris_terhapus (jumlah baris harga yang ikut terhapus bila lolos; FE tak menampilkan "—")."""
     if not r:
         return _tak_ada()
     if n_pelanggan:
-        return _hasil([_blok("DH_DIPAKAI_PELANGGAN", f"{r['name']} dipakai {n_pelanggan} pelanggan; pindahkan pelanggannya dulu atau pilih Nonaktifkan.")], None)
+        tampil = list(nama)[:MAKS_NAMA]
+        sisa = max(0, n_pelanggan - len(tampil)) if tampil else 0
+        sebut = (": " + ", ".join(tampil) + (f" dan {sisa} lainnya" if sisa else "")) if tampil else ""
+        return _hasil([_blok("DH_DIPAKAI_PELANGGAN",
+                             f"{r['name']} dipakai {n_pelanggan} pelanggan{sebut}; pindahkan pelanggannya dulu atau pilih Nonaktifkan.",
+                             jumlah_pelanggan=n_pelanggan, nama_pelanggan=tampil, sisa_pelanggan=sisa, baris_terhapus=n_baris)], None)
     per = [_per("DH_BAWAAN_DIHAPUS", "Ini daftar bawaan; sesudah dihapus harga memakai harga barang.")] if r["is_default"] else []
     return _hasil([], {"jenis": "hapus_permanen", "baris_terhapus": n_baris}, per)
 
