@@ -2,7 +2,9 @@
 
 Kolom barang NULL atau SAMA dengan bawaan usaha sekarang -> sumber "bawaan_usaha" (backfill V072 mengisi kolom dengan bawaan lama; tanpa
 aturan ini FE menampilkan "diganti" palsu). Kolom beda -> "barang". Hanya MEMBACA. Sumber "kategori" menyusul sesudah B1 kategori.
-Akun pembelian: tak ada peran akun tenant untuknya -> tanpa bawaan usaha (null) sampai ada putusan (aturan akuntansi = tanya pemilik)."""
+Putusan pemilik LANGSUNG 14 Nov (ikut Accurate): akun pembelian BARANG BERSTOK = akun Persediaan (tak ada akun pembelian sendiri); jasa =
+peran COGS_SERVICE; barang non-stok = COGS_SALES (SATU aturan dengan tagihan_aksi.akun_beban_default). Peran tak terpetakan -> null + teks
+server (tak membuat akun, tak menebak). pajak_beli/pajak_jual bawaan kosong = "Tanpa pajak" (fokus non-PKP)."""
 from typing import Optional
 
 # butir -> (kolom barang, jenis) ; jenis "akun" dicari di peta akun, "pajak" di peta pajak
@@ -14,7 +16,21 @@ BUTIR = {
     "pajak_jual": ("sales_tax_id", "pajak"),
     "pajak_beli": ("purchase_tax_id", "pajak"),
 }
-PERAN_AKUN = {"akun_penjualan": "REVENUE_SALES_GOODS", "akun_persediaan": "INVENTORY_MERCHANDISE", "akun_hpp": "COGS_SALES"}
+PERAN_AKUN = {"akun_penjualan": "REVENUE_SALES_GOODS", "akun_persediaan": "INVENTORY_MERCHANDISE", "akun_hpp": "COGS_SALES",
+              "akun_beban_jasa": "COGS_SERVICE"}
+TEKS_PAJAK = "Tanpa pajak"
+TEKS_AKUN = {"akun_penjualan": "Akun penjualan belum diatur di Daftar Akun.", "akun_persediaan": "Akun persediaan belum diatur di Daftar Akun.",
+             "akun_hpp": "Akun HPP belum diatur di Daftar Akun.",
+             "akun_pembelian": "Akun pembelian bawaan belum diatur di Daftar Akun; pilih akun di Lanjutan."}
+
+
+def _bawaan_pembelian(barang: dict, usaha: dict):
+    """Bawaan usaha akun pembelian menurut jenis barang (ikut Accurate)."""
+    if barang.get("item_type", "goods") == "service":
+        return usaha.get("akun_beban_jasa")
+    if barang.get("track_inventory"):
+        return usaha.get("akun_persediaan")
+    return usaha.get("akun_hpp")
 
 
 def berlaku(barang: dict, usaha: dict, akun: dict, pajak: Optional[dict] = None) -> dict:
@@ -22,7 +38,7 @@ def berlaku(barang: dict, usaha: dict, akun: dict, pajak: Optional[dict] = None)
     pajak = pajak or {}
     hasil = {}
     for butir, (kolom, jenis) in BUTIR.items():
-        bu = usaha.get(butir)
+        bu = _bawaan_pembelian(barang, usaha) if butir == "akun_pembelian" else usaha.get(butir)
         nilai = barang.get(kolom)
         nilai = str(nilai) if nilai is not None else None
         if nilai is None or (bu and nilai == bu["id"]):
@@ -31,6 +47,7 @@ def berlaku(barang: dict, usaha: dict, akun: dict, pajak: Optional[dict] = None)
         peta = akun if jenis == "akun" else pajak
         rinci = peta.get(nilai) or {"id": nilai, "kode": None, "nama": None}
         hasil[butir] = {**rinci, "sumber": "barang"}
+    hasil["teks"] = {b: (TEKS_PAJAK if BUTIR[b][1] == "pajak" else TEKS_AKUN[b]) for b in BUTIR if hasil[b] is None}
     return hasil
 
 
