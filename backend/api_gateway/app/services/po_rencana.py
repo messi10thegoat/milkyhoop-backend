@@ -123,8 +123,13 @@ async def rencana_ubah(conn, tenant_id: str, po, body) -> dict:
             bloks.append(blok("PO_GUDANG_HANYA_DRAF", "Gudang tujuan hanya bisa diubah saat pesanan pembelian masih Draf."))
         if "ship_to_address" in data or berubah_gudang:
             pilih = data["warehouse_id"] if "warehouse_id" in data else po.get("warehouse_id")
-            alamat = await PAK.tentukan(conn, tenant_id, pilih, data.get("ship_to_address") if "ship_to_address" in data else None,
-                                        periksa_gudang=berubah_gudang)
+            if "ship_to_address" in data:
+                manual = data["ship_to_address"]
+            elif await PAK.sumber_tersimpan(conn, tenant_id, po.get("ship_to_address"), po.get("warehouse_id")) == PAK.SUMBER_MANUAL:
+                manual = po.get("ship_to_address")     # BUG-216-6: alamat bersumber manual TIDAK ditimpa saat ganti gudang (sumber diturunkan saat baca, tanpa kolom)
+            else:
+                manual = None                          # bukan manual (alamat usaha/gudang/kosong): ikut bawaan gudang baru
+            alamat = await PAK.tentukan(conn, tenant_id, pilih, manual, periksa_gudang=berubah_gudang)
             bloks += [blok(c, m, st) for c, m, st in alamat["blocks"]]
             data_efektif["ship_to_address"] = alamat["ship_to_address"]
             data_efektif["warehouse_id"] = str(alamat["warehouse_id"]) if alamat["warehouse_id"] else None

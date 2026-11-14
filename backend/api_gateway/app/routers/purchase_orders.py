@@ -1504,9 +1504,10 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
                                body.tax_rate)
         _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
         peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], body.vendor_id, h["header"]["tax_amount"])  # BUG-030-BE non-fatal
-    bloks = list(bloks) + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
+        _alamat = await PAK.tentukan(conn, ctx["tenant_id"], body.warehouse_id, body.ship_to_address)  # BUG-216-6: penentu SAMA dgn buat/ubah
+    bloks = list(bloks) + [PR.blok(c, m, st) for c, m, st in _alamat["blocks"]] + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
     return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), "peringatan": peringatan, **PR.hitung_json(h),
-                                      "payload": body.model_dump(mode="json")}}
+                                      "alamat_kirim_bawaan": PAK.petunjuk(_alamat), "payload": body.model_dump(mode="json")}}
 
 
 @router.post("/{po_id}/edit/preview")
