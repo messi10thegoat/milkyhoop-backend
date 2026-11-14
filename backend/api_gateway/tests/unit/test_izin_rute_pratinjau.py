@@ -57,6 +57,11 @@ KHUSUS = {
     # AS-GP3 Pembayaran Keluar: hapus draf = DELETE (penentu bersama services/bayar_keluar_rencana.rencana_hapus_draf_bayar)
     "POST /api/bill-payments/{payment_id}/delete/preview": "DELETE /api/bill-payments/{payment_id}",
     "POST /api/quotes/{quote_id}/delete/preview": "DELETE /api/quotes/{quote_id}",  # QA-AGEN 25 Okt
+    # Barang P3 (13 Nov): ubah = PUT, hapus = DELETE, status = PATCH, hapus kategori = DELETE (penentu bersama services/barang_aksi + items._periksa_ubah)
+    "POST /api/items/{item_id}/edit/preview": "PUT /api/items/{item_id}",
+    "POST /api/items/{item_id}/delete/preview": "DELETE /api/items/{item_id}",
+    "POST /api/items/{item_id}/status/preview": "PATCH /api/items/{item_id}/status",
+    "POST /api/items/categories/delete/preview": "DELETE /api/items/categories",
     # daftar harga (ANDROID U3, 4 Nov): ubah baris = PATCH (penentu bersama price_lists.siapkan_baris_harga)
     # daftar harga D2 (13 Nov): hapus daftar = DELETE, ubah header = PATCH, hapus baris = DELETE (penentu bersama services/harga_aksi)
     "POST /api/price-lists/{price_list_id}/delete/preview": "DELETE /api/price-lists/{price_list_id}",
