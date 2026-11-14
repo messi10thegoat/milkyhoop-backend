@@ -61,7 +61,7 @@ async def test_riwayat_barang_sql_terkirim_tanpa_placeholder_mentah(monkeypatch)
     assert utama, "kueri riwayat tak dijalankan"
     for s in c.sql:
         assert "{" not in s and "}" not in s, s[:200]
-    assert f"il.source_type IN {sql_daftar(KELUAR_JUAL_FAKTUR)}" in " ".join(utama[0].split())
+    assert any(f"il.source_type IN {sql_daftar(KELUAR_JUAL_FAKTUR)}" in " ".join(s.split()) for s in utama)   # K9: ada kueri COUNT sebelum kueri utama
     assert r["data"][0]["counterparty"] == "Toko Merdeka" and r["data"][0]["source_type"] == "INVOICE_FULFILLMENT"
 
 

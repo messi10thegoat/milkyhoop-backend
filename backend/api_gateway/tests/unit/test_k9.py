@@ -174,8 +174,8 @@ def test_perbedaan_terkirim_tanpa_baris_ringkasan_nol(monkeypatch):
 
 
 def test_perbedaan_terkirim_izin_dan_urutan_rute():
-    pola = [(re.compile(p), m, mod, aksi) for p, m, mod, aksi in PM.ROUTE_PERMISSIONS]
-    hit = next(((mod, aksi) for rx, ms, mod, aksi in pola if rx.match("/api/stock-transfers/variance") and "GET" in ms), None)
-    assert hit == ("item", "R")
+    pola = [(p, re.compile(p), m, mod, aksi) for p, m, mod, aksi in PM.ROUTE_PERMISSIONS]
+    hit = next(((p, mod, aksi) for p, rx, ms, mod, aksi in pola if rx.match("/api/stock-transfers/variance") and "GET" in ms), None)
+    assert hit is not None and hit[1:] == ("item", "R") and "variance" in hit[0]      # aturan EKSPLISIT, bukan jatuh ke /{id} yang kebetulan sama izinnya
     rute = [(r.path, tuple(sorted(r.methods))) for r in ST.router.routes]
     assert rute.index(("/variance", ("GET",))) < rute.index(("/{transfer_id}", ("GET",)))                # literal sebelum /{id}
