@@ -187,7 +187,7 @@ def test_pratinjau_tambah_ok_dan_ganda_berkalimat_sama(monkeypatch):
     c = ConnPv(ganda=True)
     g = _pv(c, monkeypatch, {"item_id": str(ITEM), "price": "15000"})
     assert not g["ok"] and [b["code"] for b in g["blocks"]] == ["HARGA_GANDA"]
-    assert g["blocks"][0]["message"] == "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini."
+    assert g["blocks"][0]["message"] == PL.PESAN_HARGA_GANDA and "tanggal mulai" in PL.PESAN_HARGA_GANDA
     assert c.ro == [True] and not [s for s, _ in c.sql if s.lstrip().startswith(("UPDATE", "INSERT", "DELETE"))]
 
 

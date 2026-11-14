@@ -27,6 +27,7 @@ from ..services.galat_berkode import GalatBerkode
 from ..utils.tanggal_tenant import tanggal_dokumen
 
 GAGAL = "Gagal memproses daftar harga."
+PESAN_HARGA_GANDA = "Harga untuk barang, satuan, jumlah minimum, dan tanggal mulai itu sudah ada di daftar ini. Pakai tanggal mulai lain untuk menjadwalkan harga baru."
 TAK_ADA = "Daftar harga tidak ditemukan."
 
 
@@ -36,7 +37,7 @@ def _galat_unik(e) -> GalatBerkode:
     if "bawaan" in n:
         return GalatBerkode(409, "DAFTAR_BAWAAN_GANDA", "Usaha ini sudah punya daftar harga bawaan. Jadikan bawaan yang lama bukan bawaan dulu.")
     if "satuan" in n or "items" in n:
-        return GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+        return GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA)
     return _kode_ganda()
 
 
@@ -50,7 +51,7 @@ def _satuan(unit):
 
 async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
     """PENENTU BERSAMA penulis + pratinjau (BACA SAJA; GalatBerkode, kalimat == tulis): barang milik usaha, satuan dasar/berkonversi
-    (penentu satuan_dasar), unik barang + satuan + qty minimum di daftar ini (baris yang diubah dikecualikan). -> id barang."""
+    (penentu satuan_dasar), unik barang + satuan + qty minimum + TANGGAL MULAI di daftar ini (BUG-245: harga berjangka) (baris yang diubah dikecualikan). -> id barang."""
     try:
         pid = UUID(str(item.item_id))
     except (ValueError, TypeError):
@@ -63,8 +64,9 @@ async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
         await SD.qty_dasar(conn, tid, pid, item.unit, item.min_quantity, "konversi")  # tanpa konversi -> 400 berkalimat
     if await conn.fetchval(
             """SELECT 1 FROM price_list_items WHERE price_list_id = $1 AND item_id = $2 AND unit IS NOT DISTINCT FROM $3
-               AND min_quantity = $4 AND ($5::uuid IS NULL OR id <> $5)""", pl_id, pid, _satuan(item.unit), item.min_quantity, line_id):
-        raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+               AND min_quantity = $4 AND start_date IS NOT DISTINCT FROM $6::date AND ($5::uuid IS NULL OR id <> $5)""",
+            pl_id, pid, _satuan(item.unit), item.min_quantity, line_id, item.start_date):
+        raise GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA)
     return pid
 
 
@@ -113,9 +115,9 @@ async def siapkan_buat_daftar(conn, tid: str, b: CreatePriceListRequest) -> dict
             pid = await siapkan_baris_harga(conn, tid, None, item)
         except GalatBerkode as e:
             raise GalatBerkode(e.status_code, e.code, e.detail, field=f"items.{i}.{e.field}" if e.field else f"items.{i}")
-        k = (pid, (_satuan(item.unit) or "").lower(), item.min_quantity)
+        k = (pid, (_satuan(item.unit) or "").lower(), item.min_quantity, item.start_date)
         if k in kunci:
-            raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.",
+            raise GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA,
                                field=f"items.{i}")
         kunci.add(k)
         baris.append({"item_id": str(pid), "item_code": item.item_code, "unit": _satuan(item.unit), "price": item.price,

@@ -21,6 +21,12 @@ def _r2(x) -> Decimal:
     return Decimal(str(x)).quantize(SEN, rounding=ROUND_HALF_UP)
 
 
+def pilih_baris(cocok: list) -> dict:
+    """Baris harga yang dipakai di antara yang sah+memenuhi qty: tingkat qty TERTINGGI dulu, pada kunci sama mulai TERBARU (<= tanggal dokumen, sudah
+    disaring pemanggil; tanpa tanggal = paling lama). BUG-245: max() polos pada kunci sama jatuh ke baris pertama (tak terdefinisi)."""
+    return max(cocok, key=lambda x: (Decimal(str(x["min_quantity"])), x["start_date"] or date.min))
+
+
 def _berlaku(r, tanggal: date) -> bool:
     return (r["start_date"] is None or r["start_date"] <= tanggal) and (r["end_date"] is None or r["end_date"] >= tanggal)
 
@@ -97,7 +103,7 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
         cocok = [r for r in baris_daftar.get(pid, []) if SD.kanon(r["unit"] or dasar, alias) == kanon_baris
                  and _berlaku(r, tanggal) and Decimal(str(r["min_quantity"])) <= q]
         if cocok:
-            r = max(cocok, key=lambda x: Decimal(str(x["min_quantity"])))
+            r = pilih_baris(cocok)
             hasil.update(harga=float(_r2(r["price"])), sumber="daftar", daftar={"id": str(daftar["id"]), "code": daftar["code"]},
                          tingkat_min_qty=float(r["min_quantity"]))
         elif SD.normal(b.get("unit")) and kanon_baris != SD.kanon(dasar, alias) and kanon_baris in harga_konv.get(pid, {}):
