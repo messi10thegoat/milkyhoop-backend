@@ -61,11 +61,15 @@ def test_rute_po_calculate_vendor_bukan_pkp_peringatan_ok_tetap_true(monkeypatch
                 return {"is_pkp": False}
             if "FROM vendors" in sql:
                 return {"id": V, "name": "CV Mitra Pangan Sulut"}
+            if "is_default AND is_active" in sql:  # BUG-216-6: /calculate menentukan alamat kirim bawaan (gudang utama) lewat penentu yang sama dgn buat/ubah
+                return None
             raise AssertionError(sql[:80])
 
         async def fetchval(self, sql, *a):  # BUG-088: /calculate menyelesaikan faktor DPP (kode masukan 11% = DPP penuh)
             if "FROM tax_codes" in sql and "direction = 'input'" in sql:
                 return None
+            if 'FROM "Tenant"' in sql:  # BUG-216-6: alamat usaha (bawaan terakhir)
+                return "Jl. Usaha 1"
             raise AssertionError(sql[:80])
 
         async def fetch(self, sql, *a):
@@ -98,3 +102,4 @@ def test_rute_po_calculate_vendor_bukan_pkp_peringatan_ok_tetap_true(monkeypatch
     r = TestClient(app).post("/api/purchase-orders/calculate", json=body)
     d = r.json()["data"]
     assert r.status_code == 200 and d["ok"] is True and [p["code"] for p in d["peringatan"]] == ["VENDOR_BUKAN_PKP"]
+    assert d["alamat_kirim_bawaan"] == {"alamat": "Jl. Usaha 1", "sumber": "usaha", "teks": "Bawaan: alamat usaha"}   # BUG-216-6: lewat rute nyata

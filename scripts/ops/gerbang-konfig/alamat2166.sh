@@ -1,5 +1,5 @@
 # Konfig gerbang unit BUG-216-6 (petunjuk bawaan di /calculate + ganti gudang tak menimpa alamat manual; di atas 216-r3). Dasar: BUG-216 (alamat kirim PO opsional + bawaan snapshot; warehouse_id HANYA bila gudang dipilih; GRN tak berubah). Tiap cabang penentu disabotase; tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-b2166; CABANG=feat/po-alamat-kirim-216-6; NAMA_JENDELA=alamat2166
+W=/root/mh-b2166; CABANG=feat/po-alamat-kirim-216-6-r2; NAMA_JENDELA=alamat2166
 POLA_UNIT='purchase_order|po_|grn|goods_receipt|gudang|izin_rute|inventaris_rute|pagar_rute|permission'
 HARNESS=scripts/ops/uji-salinan-alamat216.sh
 PENANDA_BERKAS=services/po_alamat_kirim.py; PENANDA='def petunjuk'
