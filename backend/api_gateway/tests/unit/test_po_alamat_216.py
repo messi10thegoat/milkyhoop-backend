@@ -107,11 +107,44 @@ def rencana(p, kon=None, **isi):
     return jalan(PR.rencana_ubah(kon or Kon(), T, p, UpdatePurchaseOrderRequest(**isi)))
 
 
-def test_ubah_ganti_gudang_tanpa_alamat_ikut_alamat_gudang_baru_dan_perubahan_memuat_keduanya():
-    r = rencana(po(wid=None, ship="Lama"), warehouse_id=str(G1))
-    assert r["blocks"] == [] and r["alamat_kirim_sumber"] == "Gudang Toko"
-    assert r["data_efektif"] == {"warehouse_id": str(G1), "ship_to_address": "Jl. Toko 1\nBandung"}
-    assert {p["field"] for p in r["perubahan"]} == {"warehouse_id", "ship_to_address"}
+def test_ubah_ganti_gudang_tanpa_alamat_ikut_alamat_gudang_baru_bila_alamat_tersimpan_bukan_manual():
+    """Putusan MASTER 216-6: yang bukan manual (alamat usaha / alamat gudang) IKUT berubah saat ganti gudang tanpa ship_to_address."""
+    for ship, wid in ((USAHA, None), ("Jl. Toko 1\nBandung", G1), ("Jl. Utama 9\nJakarta", None), (None, None)):
+        tujuan = G2 if wid == G1 else G1
+        r = rencana(po(wid=wid, ship=ship), warehouse_id=str(tujuan))
+        assert r["blocks"] == [], (ship, wid)
+        assert r["data_efektif"]["warehouse_id"] == str(tujuan)
+        assert r["data_efektif"]["ship_to_address"] == (USAHA if tujuan == G2 else "Jl. Toko 1\nBandung"), (ship, wid)
+        assert {p["field"] for p in r["perubahan"]} >= {"warehouse_id"}
+
+
+def test_ubah_ganti_gudang_tanpa_alamat_TIDAK_menimpa_alamat_manual():
+    """Putusan MASTER 216-6: alamat sumber manual dipertahankan; sumber diturunkan saat baca (tanpa kolom/migrasi baru) -> sama dgn alamat gudang/usaha = bukan manual."""
+    for wid in (None, G1):
+        r = rencana(po(wid=wid, ship="Jl. Ketikan Sendiri 3"), warehouse_id=str(G2 if wid == G1 else G1))
+        assert r["blocks"] == []
+        assert r["data_efektif"]["ship_to_address"] == "Jl. Ketikan Sendiri 3" and r["alamat_kirim_sumber"] == "Diisi manual"
+        assert [p["field"] for p in r["perubahan"]] == ["warehouse_id"]                          # alamat tak berubah -> bukan perubahan
+    k = rencana(po(wid=G1, ship="Jl. Ketikan Sendiri 3"), warehouse_id=None)                    # kosongkan gudang pun tak menimpa manual
+    assert k["data_efektif"]["ship_to_address"] == "Jl. Ketikan Sendiri 3" and k["data_efektif"]["warehouse_id"] is None
+    e = rencana(po(wid=G1, ship="Jl. Ketikan Sendiri 3"), warehouse_id=str(G2), ship_to_address="")   # eksplisit "" = isi ulang bawaan (tak berubah)
+    assert e["data_efektif"]["ship_to_address"] == USAHA and e["alamat_kirim_sumber"] == "Alamat usaha"
+
+
+def test_petunjuk_bawaan_calculate_teks_server_satu_sumber_dengan_buat_ubah():
+    pet = lambda *a, **kw: PAK.petunjuk(tentukan(*a, **kw))  # noqa: E731
+    assert pet(None, None) == {"alamat": "Jl. Utama 9\nJakarta", "sumber": "gudang", "teks": "Bawaan: alamat Gudang Utama"}
+    assert pet(G1, None) == {"alamat": "Jl. Toko 1\nBandung", "sumber": "gudang", "teks": "Bawaan: alamat Gudang Toko"}
+    assert pet(G2, None) == {"alamat": USAHA, "sumber": "usaha", "teks": "Bawaan: alamat usaha"}
+    assert pet(None, None, utama=None) == {"alamat": USAHA, "sumber": "usaha", "teks": "Bawaan: alamat usaha"}
+    assert pet(None, "  Jl. Manual 1 ") == {"alamat": "Jl. Manual 1", "sumber": "manual", "teks": "Diisi manual"}
+    assert pet(None, None, utama=None, usaha=None) == {"alamat": None, "sumber": None, "teks": "Belum ada alamat bawaan"}
+
+
+def test_calculate_memuat_alamat_kirim_bawaan_dari_penentu_yang_sama():
+    c = inspect.getsource(PO.calculate_purchase_order)
+    assert "PAK.tentukan(conn, ctx[\"tenant_id\"], body.warehouse_id, body.ship_to_address)" in c
+    assert '"alamat_kirim_bawaan": PAK.petunjuk(_alamat)' in c and "_alamat[\"blocks\"]" in c
 
 
 def test_ubah_alamat_manual_menang_gudang_tak_berubah_dan_blank_isi_ulang_bawaan():

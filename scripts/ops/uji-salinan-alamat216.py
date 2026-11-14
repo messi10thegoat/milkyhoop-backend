@@ -1,6 +1,7 @@
 """BUG-216 uji DB di SALINAN (bukan prod): handler ASLI buat/ubah/detail PO + penentu gudang GRN atas klon, tenant kaos + nyawit. Mutasi HANYA di klon.
 A buat tanpa alamat/gudang -> snapshot gudang UTAMA beralamat, purchase_orders.warehouse_id TETAP NULL; gudang dipilih tanpa alamat -> alamat usaha, kolom = gudang dipilih; manual menang
 B detail: alamat_kirim_sumber + warehouse_name; edit/preview ganti gudang: perubahan memuat gudang + alamat; PATCH menulis sama; PO Terkirim ganti gudang ditolak PO_GUDANG_HANYA_DRAF
+D (216-6) /calculate memuat alamat_kirim_bawaan (teks server, penentu sama); ganti gudang TIDAK menimpa alamat manual, alamat bawaan ikut gudang baru
 C GRN (grn_rencana._gudang): PO tanpa gudang mengikuti bawaan tenant TERKINI (ganti gudang utama di klon -> ikut), PO dengan gudang memakai gudang PO"""
 import asyncio
 import sys
@@ -78,6 +79,27 @@ async def main():
             await PO.update_purchase_order(rq, __import__("uuid").UUID(id2), body)
             d3 = (await PO.get_purchase_order(rq, __import__("uuid").UUID(id2)))["data"]
             cek(f"B {tid} PATCH menulis sama dgn pratinjau", d3["warehouse_id"] == str(utama["id"]) and d3["ship_to_address"] == "Jl. Utama Uji 216\nKota Utama" and d3["alamat_kirim_sumber"] == f"Gudang {utama['name']}")
+            # D (216-6)
+            def kb(r):
+                return r["data"]["alamat_kirim_bawaan"]
+            cu = kb(await PO.calculate_purchase_order(rq, buat()))
+            cek(f"D {tid} /calculate tanpa alamat/gudang: bawaan gudang utama + teks server", cu == {"alamat": "Jl. Utama Uji 216\nKota Utama", "sumber": "gudang", "teks": f"Bawaan: alamat Gudang {utama['name']}"}, f"{cu}")
+            cl = kb(await PO.calculate_purchase_order(rq, buat(warehouse_id=str(lain["id"]))))
+            cek(f"D {tid} /calculate gudang dipilih tanpa alamat: alamat usaha", cl == {"alamat": "Alamat Usaha Uji 216", "sumber": "usaha", "teks": "Bawaan: alamat usaha"}, f"{cl}")
+            cm = kb(await PO.calculate_purchase_order(rq, buat(ship_to_address=" Jl. Manual 216 ")))
+            cek(f"D {tid} /calculate manual: efektif + sumber manual", cm == {"alamat": "Jl. Manual 216", "sumber": "manual", "teks": "Diisi manual"}, f"{cm}")
+            cb = await PO.calculate_purchase_order(rq, buat(warehouse_id="00000000-0000-0000-0000-000000000000"))
+            cek(f"D {tid} /calculate gudang tak ada: blok GUDANG_TIDAK_DITEMUKAN, ok false", cb["data"]["ok"] is False and any(b["code"] == "GUDANG_TIDAK_DITEMUKAN" for b in cb["data"]["blocks"]), f"{cb['data']['blocks']}")
+            print("CONTOH", tid, "calculate.alamat_kirim_bawaan(bawaan)", __import__("json").dumps(cu, ensure_ascii=False), "| (gudang dipilih)", __import__("json").dumps(cl, ensure_ascii=False), "| (manual)", __import__("json").dumps(cm, ensure_ascii=False), "| create.data", __import__("json").dumps(r2["data"], ensure_ascii=False, default=str), flush=True)
+            id3 = r3["data"]["id"]
+            await PO.update_purchase_order(rq, __import__("uuid").UUID(id3), UpdatePurchaseOrderRequest(warehouse_id=str(lain["id"])))
+            d4 = (await PO.get_purchase_order(rq, __import__("uuid").UUID(id3)))["data"]
+            cek(f"D {tid} ganti gudang TANPA alamat: alamat manual TETAP, sumber manual, gudang = baru", d4["ship_to_address"] == "Jl. Manual 216" and d4["alamat_kirim_sumber"] == "Diisi manual" and d4["warehouse_id"] == str(lain["id"]), f"{d4['ship_to_address']!r} {d4['alamat_kirim_sumber']} {d4['warehouse_id']}")
+            print("CONTOH", tid, "detail PO manual sesudah ganti gudang", __import__("json").dumps({k: d4[k] for k in ("ship_to_address", "warehouse_id", "warehouse_name", "alamat_kirim_sumber")}, ensure_ascii=False), flush=True)
+            await PO.update_purchase_order(rq, __import__("uuid").UUID(id2), UpdatePurchaseOrderRequest(warehouse_id=str(lain["id"])))
+            d5 = (await PO.get_purchase_order(rq, __import__("uuid").UUID(id2)))["data"]
+            cek(f"D {tid} ganti gudang TANPA alamat, alamat tersimpan = bawaan gudang: IKUT berubah (gudang baru tanpa alamat -> alamat usaha)", d5["ship_to_address"] == "Alamat Usaha Uji 216" and d5["alamat_kirim_sumber"] == "Alamat usaha" and d5["warehouse_id"] == str(lain["id"]), f"{d5['ship_to_address']!r} {d5['alamat_kirim_sumber']}")
+            await PO.update_purchase_order(rq, __import__("uuid").UUID(id2), UpdatePurchaseOrderRequest(warehouse_id=str(utama["id"])))   # kembalikan: bagian C membutuhkan gudang PO = utama
             await c.execute("UPDATE purchase_orders SET status = 'sent' WHERE tenant_id = $1 AND id = $2::uuid", tid, id2)
             t = await galat(PO.update_purchase_order(rq, __import__("uuid").UUID(id2), UpdatePurchaseOrderRequest(warehouse_id=str(lain["id"]))))
             cek(f"B {tid} PO Terkirim ganti gudang ditolak PO_GUDANG_HANYA_DRAF", getattr(t, "status_code", None) in (400, 409, 422) and (getattr(t, "code", None) == "PO_GUDANG_HANYA_DRAF" or "hanya bisa diubah saat" in str(getattr(t, "detail", ""))), f"{t}")

@@ -78,3 +78,18 @@ async def sumber_tersimpan(conn, tid: str, ship_to, warehouse_id) -> Optional[st
     if await alamat_usaha(conn, tid) == s:
         return SUMBER_USAHA
     return SUMBER_MANUAL
+
+
+def petunjuk(r: dict) -> dict:
+    """Petunjuk SIAP TAMPIL untuk /calculate (BUG-216-6): hasil `tentukan` (SATU penentu dgn buat/ubah) -> {alamat, sumber: usaha|gudang|manual|None, teks}.
+    FE tak merakit teks: bawaan = "Bawaan: alamat usaha" / "Bawaan: alamat Gudang X"; manual = "Diisi manual"; kosong = "Belum ada alamat bawaan"."""
+    sumber = r["sumber"]
+    if sumber == SUMBER_MANUAL:
+        jenis, teks = "manual", "Diisi manual"
+    elif sumber == SUMBER_USAHA:
+        jenis, teks = "usaha", "Bawaan: alamat usaha"
+    elif sumber:
+        jenis, teks = "gudang", f"Bawaan: alamat {sumber}"
+    else:
+        jenis, teks = None, "Belum ada alamat bawaan"
+    return {"alamat": r["ship_to_address"], "sumber": jenis, "teks": teks}
