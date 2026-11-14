@@ -20,7 +20,7 @@ def test_kolom_beda_adalah_barang():
 
 def test_tanpa_bawaan_dan_tanpa_kolom_kosong_tegas():
     r = BB.berlaku({}, USAHA, {})
-    assert r["akun_hpp"] is None and set(r) == set(BB.BUTIR)
+    assert r["akun_hpp"] is None and set(r) == set(BB.BUTIR) | {"teks"}
 
 def test_pajak_dipetakan_dari_tax_id():
     usaha = {**USAHA, "pajak_jual": {"id": "p1", "kode": "PPN11", "nama": "PPN 11%"}}
@@ -36,3 +36,42 @@ def test_item_detail_memuat_bawaan_berlaku():
     import inspect
     from app.routers import items as IT
     assert "bawaan_berlaku" in inspect.getsource(IT.get_item)
+
+
+# ---- putusan pemilik 14 Nov: akun_pembelian ikut Accurate; pajak_beli kosong = tanpa pajak
+P = {"id": "p1", "kode": "5-10100", "nama": "HPP"}
+I = {"id": "i1", "kode": "1-10600", "nama": "Persediaan"}
+J = {"id": "j1", "kode": "5-10300", "nama": "Beban Jasa"}
+U2 = {**USAHA, "akun_persediaan": I, "akun_hpp": P, "akun_beban_jasa": J}
+
+def test_pembelian_barang_berstok_ikut_akun_persediaan():
+    r = BB.berlaku({"item_type": "goods", "track_inventory": True}, U2, {})
+    assert r["akun_pembelian"] == {**I, "sumber": "bawaan_usaha"}
+
+def test_pembelian_jasa_ikut_beban_jasa_dan_barang_nonstok_ikut_hpp():
+    assert BB.berlaku({"item_type": "service", "track_inventory": False}, U2, {})["akun_pembelian"]["id"] == "j1"
+    assert BB.berlaku({"item_type": "goods", "track_inventory": False}, U2, {})["akun_pembelian"]["id"] == "p1"
+
+def test_pembelian_diganti_per_barang_sumber_barang():
+    r = BB.berlaku({"item_type": "service", "purchase_account_id": "zz"}, U2, {"zz": {"id": "zz", "kode": "5-9", "nama": "X"}})
+    assert r["akun_pembelian"]["sumber"] == "barang"
+
+def test_kolom_pembelian_sama_dengan_bawaan_efektif_tetap_bawaan_usaha():
+    r = BB.berlaku({"item_type": "service", "purchase_account_id": "j1"}, U2, {})
+    assert r["akun_pembelian"]["sumber"] == "bawaan_usaha"
+
+def test_akun_tak_terpetakan_null_dengan_teks_jelas_bukan_tebakan():
+    r = BB.berlaku({"item_type": "service"}, {**U2, "akun_beban_jasa": None}, {})
+    assert r["akun_pembelian"] is None
+    assert "belum diatur" in r["teks"]["akun_pembelian"] and "Daftar Akun" in r["teks"]["akun_pembelian"]
+
+def test_pajak_beli_kosong_teks_tanpa_pajak():
+    r = BB.berlaku({}, U2, {})
+    assert r["pajak_beli"] is None and r["teks"]["pajak_beli"] == "Tanpa pajak"
+    assert r["teks"]["pajak_jual"] == "Tanpa pajak"
+
+def test_butir_terisi_tak_punya_teks():
+    assert "akun_penjualan" not in BB.berlaku({}, U2 | {"akun_penjualan": A}, {})["teks"]
+
+def test_muat_usaha_memuat_beban_jasa_dari_peran_cogs_service():
+    assert BB.PERAN_AKUN["akun_beban_jasa"] == "COGS_SERVICE" and BB.PERAN_AKUN["akun_hpp"] == "COGS_SALES"
