@@ -41,7 +41,7 @@ async def tentukan(conn, tid: str, gudang_dipilih, alamat_manual, periksa_gudang
             gid = None
             blocks.append(("GUDANG_TIDAK_SAH", "ID gudang tidak sah.", 422))
         if gid is not None:
-            w = await conn.fetchrow("SELECT id, name, address, city, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2", gid, tid)
+            w = await conn.fetchrow("SELECT id, name, address, city, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", gid, tid)
             if w is None:
                 blocks.append(("GUDANG_TIDAK_DITEMUKAN", "Gudang tujuan tidak ditemukan di usaha ini.", 422))
             elif periksa_gudang and not w["is_active"]:

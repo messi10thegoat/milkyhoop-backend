@@ -1,5 +1,5 @@
 # Konfig gerbang unit K8 (Pemindahan Barang DUA LANGKAH via Transit, tanpa jurnal; gudang sistem V497 disaring dari semua pembaca). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-bk8; CABANG=feat/pemindahan-dua-langkah-transit; NAMA_JENDELA=k8
+W=/root/mh-bk8; CABANG=feat/pemindahan-dua-langkah-transit-r2; NAMA_JENDELA=k8
 POLA_UNIT='pemindahan|stock_transfer|gudang|warehouse|transit|izin_rute|inventaris_rute|pagar_rute|permission|stok_baris|stok_sesuai|grn|sj_so|so_pengiriman'
 HARNESS=scripts/ops/uji-salinan-k8.sh
 PENANDA_BERKAS=services/pemindahan_dua_langkah.py; PENANDA='rencana_terima'
@@ -36,4 +36,5 @@ SAB=(
  "c9 terima sebagian menulis header (trigger DB menolak)|$D2F|s#    if rencana\[\"tuntas\"\]:   \# satu-satunya tulisan header sesudah Kirim yang diizinkan trigger (status berubah + received_date/by)#    await conn.execute(\"UPDATE stock_transfers SET updated_at = NOW() WHERE id = \$1\", transfer_id)\n    if rencana[\"tuntas\"]:#|$T"
  "c10 terima menulis baris item (trigger DB menolak)|$D2F|s#^        total += nilai#        await conn.execute(\"UPDATE stock_transfer_items SET quantity_received = 1 WHERE id = \$1\", it[\"id\"]); total += nilai#|$T"
  "c11 diterima dari kolom beku, bukan ledger|$D2F|s#d\[\"quantity_received\"\] = ada.get(d\[\"item_id\"\], _NOL)#d[\"quantity_received\"] = _d(d[\"quantity_received\"])#|$T"
+ "r21 alamat kirim PO: gudang sistem bisa dipilih|$A/services/po_alamat_kirim.py|s# AND NOT is_system##|$T"
 )

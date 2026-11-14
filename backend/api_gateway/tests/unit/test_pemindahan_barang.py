@@ -936,6 +936,7 @@ def test_k8_gudang_sistem_tak_bisa_dipilih_by_id_di_dokumen():
     ("services/so_fase_lokasi.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
     ("services/pemindahan_barang.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
     ("routers/metode_serah.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
+    ("services/po_alamat_kirim.py", "FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system"),
     ("services/gudang_bawaan.py", "WHERE tenant_id = $1 AND NOT is_system"),
     ("services/so_pengiriman.py", "FROM warehouses WHERE tenant_id = $1 AND NOT is_system"),
     ("routers/warehouses.py", 'where_clauses = ["tenant_id = $1", "NOT is_system"]'),
