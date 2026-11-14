@@ -147,4 +147,5 @@ def test_galat_pb_dua_bentuk_aditif():
     src = (APP / "services" / "pemindahan_barang.py").read_text()
     assert 'raise HTTPException(status_code=b["status"], detail={"code"' not in src                        # tak ada jalur PB_* lama yang lolos dari bentuk baru
     main = (APP / "main.py").read_text()
-    assert "GalatDetailObjek" in main and "exc.badan()" in main
+    import re
+    assert "GalatDetailObjek as _GalatDetailObjek" in main and re.search(r"def _galat_detail_objek_handler.*?content=exc\.badan\(\)", main, re.S)

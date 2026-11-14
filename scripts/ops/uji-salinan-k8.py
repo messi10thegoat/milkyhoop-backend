@@ -1,6 +1,7 @@
 """K8 uji DB di SALINAN (bukan prod; V497 diterapkan di salinan oleh pembungkus): handler ASLI Pemindahan Barang dua langkah + daftar gudang atas klon, tenant kaos + nyawit.
 A Kirim: Σ on_hand ledger produk TETAP, asal turun, Transit naik, NOL jurnal, verify_inventory_wac_reconciliation_all (Check 15) TAK berubah; Transit tak tampil di daftar/ringkasan gudang, bawaan tetap
 B Terima sebagian lalu sisa: tertunda benar, status_text turunan, tujuan naik, Transit akhir 0; terima > tertunda ditolak; void setelah diterima ditolak
+D (246/247/248) daftar memuat status_text; GET gudang Transit 404; stok_per_gudang Transit berlabel server; pratinjau Kirim/Terima tak menyesatkan; galat PB_* aditif
 C Kirim lalu void: barang kembali dari Transit ke asal; Transit TIDAK bisa dipilih sebagai gudang tujuan; satu gudang nyata + Transit tetap punya gudang bawaan"""
 import asyncio
 import sys
@@ -15,6 +16,7 @@ from app.routers import warehouses as WH  # noqa: E402
 from app.schemas.stock_transfers import (CreateStockTransferRequest, ReceiveItemRequest, ReceiveTransferRequest, StockTransferItemCreate,  # noqa: E402
                                          VoidTransferRequest)
 from app.services import gudang_bawaan as GBW  # noqa: E402
+from app.services import gudang_daftar as GD  # noqa: E402
 from app.services import gudang_transit as GT  # noqa: E402
 
 HASIL = []
@@ -139,6 +141,33 @@ async def main():
                 and await saldo_total() == t0 and (await ST.get_stock_transfer(rq, pb2)).data.status == "voided", f"{v2 if isinstance(v2, HTTPException) else ''}")
             ke_transit = await galat(ST.create_stock_transfer(rq, Response(), CreateStockTransferRequest(from_warehouse_id=asal["id"], to_warehouse_id=tr, items=[StockTransferItemCreate(item_id=pid, quantity_requested=D("1"))])))
             cek(f"C {tid} Transit TAK bisa dipilih sebagai gudang tujuan pemindahan", isinstance(ke_transit, HTTPException) or "TAK_ADA" in str(getattr(ke_transit, "detail", "")))
+            # D (246/247/248)
+            cr3 = await galat(ST.create_stock_transfer(rq, Response(), CreateStockTransferRequest(from_warehouse_id=asal["id"], to_warehouse_id=tuj["id"], items=[StockTransferItemCreate(item_id=pid, quantity_requested=D("2"))])))
+            pb3 = cr3["data"]["id"] if isinstance(cr3, dict) else cr3.data.id
+            pv3 = (await ST.preview_ship_stock_transfer(rq, pb3))["data"]["lines"][0]
+            cek(f"D {tid} 248-a pratinjau Kirim: to_before/to_after/available_to null, transit_before 0 -> transit_after 2", pv3["to_before"] is None and pv3["to_after"] is None and pv3["available_to"] is None
+                and pv3["transit_before"] == 0 and pv3["transit_after"] == 2, f"{pv3}")
+            await ST.ship_stock_transfer(rq, pb3)
+            lst = (await ST.list_stock_transfers(rq, skip=0, limit=100, status=None, from_warehouse_id=None, to_warehouse_id=None, date_from=None, date_to=None, search=None)).data
+            baris = next((x for x in lst if str(x.id) == str(pb3)), None)
+            cek(f"D {tid} 246 daftar: status_text 'Dikirim' (diterima_sebagian False); pemindahan received/voided juga berteks", baris is not None and baris.status_text == "Dikirim" and baris.diterima_sebagian is False
+                and all(x.status_text for x in lst), f"{baris.status_text if baris else None}")
+            pr3 = (await ST.preview_receive_stock_transfer(rq, pb3, ReceiveTransferRequest(items=[ReceiveItemRequest(item_id=pid, quantity_received=D("1"))])))["data"]
+            cek(f"D {tid} 248-b pratinjau Terima: from = Transit, to = gudang tujuan", pr3["from"] is not None and pr3["from"]["name"] == "Transit" and pr3["to"] is not None and pr3["to"]["name"] == tuj["name"], f"{pr3['from']} {pr3['to']}")
+            g404 = await galat(WH.get_warehouse(rq, tr))
+            cek(f"D {tid} 247-1 GET gudang Transit = 404", isinstance(g404, HTTPException) and g404.status_code == 404)
+            spg = await GD.stok_per_gudang(c, tid, pid)
+            tb = [x for x in spg if x["warehouse_id"] == str(tr)]
+            cek(f"D {tid} 247-2 stok_per_gudang: baris Transit sistem:true + nama_text server; gudang biasa sistem:false", len(tb) == 1 and tb[0]["sistem"] is True and tb[0]["nama_text"] == "Dalam perjalanan (Transit)"
+                and all(x["sistem"] is False and x["nama_text"] == x["nama"] for x in spg if x["warehouse_id"] != str(tr)), f"{tb}")
+            await ST.receive_stock_transfer(rq, pb3, ReceiveTransferRequest(items=[ReceiveItemRequest(item_id=pid, quantity_received=D("1"))]))
+            lst2 = (await ST.list_stock_transfers(rq, skip=0, limit=100, status=None, from_warehouse_id=None, to_warehouse_id=None, date_from=None, date_to=None, search=None)).data
+            b2 = next((x for x in lst2 if str(x.id) == str(pb3)), None)
+            cek(f"D {tid} 246 daftar sesudah terima sebagian: 'Dikirim · diterima sebagian' + diterima_sebagian True", b2 is not None and b2.status_text == "Dikirim · diterima sebagian" and b2.diterima_sebagian is True)
+            lb = await galat(ST.receive_stock_transfer(rq, pb3, ReceiveTransferRequest(items=[ReceiveItemRequest(item_id=pid, quantity_received=D("9"))])))
+            bd = lb.badan() if hasattr(lb, "badan") else None
+            cek(f"D {tid} 248-c galat PB_*: detail objek TETAP + code/message tingkat atas", bd is not None and bd["code"] == "PB_TERIMA_QTY_MELEBIHI" and bd["message"] and bd["detail"] == {"code": bd["code"], "message": bd["message"]}, f"{bd}")
+            await ST.receive_stock_transfer(rq, pb3, None)
             # satu gudang NYATA + Transit tetap punya gudang bawaan
             await c.execute("UPDATE warehouses SET is_active = false WHERE tenant_id = $1 AND NOT is_system AND id <> $2", tid, asal["id"])
             await c.execute("UPDATE warehouses SET is_default = false WHERE tenant_id = $1 AND id = $2", tid, asal["id"])
