@@ -25,7 +25,7 @@ SAB=(
  "s16 izin bulk status dicabut|$A/middleware/permission_middleware.py|s@items/bulk/(status@items/bulk/(statusX@|$T"
  "s17 bulk tanpa kunci idempotensi wajib|$A/routers/bulk_items.py|s@    if not kunci:@    if False:@|$T"
  "s18 pratinjau bulk tak baca-saja|$A/routers/bulk_items.py|s@baca_saja=True@baca_saja=False@|$T"
- "s19 status bulk keluar daftar putih|$A/services/bulk.py|s@\"share\", \"status\"@\"share\"@|$T"
+ "s19 status bulk keluar daftar putih|$A/services/bulk.py|s@\"harga\", \"status\"@\"harga\"@|$T"
  "s20 riwayat status tak ditulis|$A/services/barang_aksi.py|s@\"activated\" if ke_aktif else \"deactivated\"@\"status_x\"@|$T"
  "s21 pemeriksa ubah dicabut dari PUT|$A/routers/items.py|s@        old_item = await _periksa_ubah(conn, ctx, item_id, body)@        old_item = None@|$T"
  "s22 pratinjau ubah tanpa konversi|$A/routers/items.py|s@            await _periksa_konversi(conn, ctx, item_id, b)@            pass@|$T"
