@@ -43,7 +43,8 @@ def test_kunci_di_badan_buat_daftar_menyertakan_tanggal_mulai():
 
 
 def test_pesan_harga_ganda_menyebut_tanggal_mulai():
-    assert "tanggal mulai" in PL.PESAN_HARGA_GANDA
+    # tanggal mulai harus disebut sebagai BAGIAN KUNCI (b3: pesan lama tanpa tanggal, kalimat saran "Pakai tanggal mulai lain" saja tak cukup)
+    assert "jumlah minimum, dan tanggal mulai itu sudah ada" in PL.PESAN_HARGA_GANDA and "Pakai tanggal mulai lain" in PL.PESAN_HARGA_GANDA
 
 
 # ---- resolve ----

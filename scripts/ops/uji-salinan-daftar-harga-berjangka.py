@@ -67,7 +67,7 @@ async def periksa(pool, tid):
     async with pool.acquire() as c:
         brg = await c.fetchval("""SELECT id FROM products WHERE tenant_id = $1 AND status = 'active' AND COALESCE(for_sales, true)
                                   AND deleted_at IS NULL ORDER BY id LIMIT 1""", tid)
-    r = await PL.create_price_list(req(tid), CreatePriceListRequest(code=f"UJI-BJ-{st}", name="UJI berjangka"))
+    r = await PL.create_price_list(req(tid, f"uji-bj-buat-{st}"), CreatePriceListRequest(code=f"UJI-BJ-{st}", name="UJI berjangka"))  # dengan kunci seperti FE (BUG-250)
     pl = str(r["data"]["id"])
     t1, t2 = date.today() + timedelta(days=30), date.today() + timedelta(days=60)
 
