@@ -39,7 +39,7 @@ def test_pemeriksa_ganda_menyertakan_tanggal_mulai():
 
 def test_kunci_di_badan_buat_daftar_menyertakan_tanggal_mulai():
     s = inspect.getsource(PL.siapkan_buat_daftar)
-    assert "item.start_date" in s.split("k = (")[1].split(")")[0]
+    assert "item.start_date" in s.split("k = (")[1].split("\n")[0]       # tuple kunci satu baris: (pid, satuan, min_quantity, start_date)
 
 
 def test_pesan_harga_ganda_menyebut_tanggal_mulai():
