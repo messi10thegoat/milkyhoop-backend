@@ -86,11 +86,12 @@ async def jumlah_berstok(conn, tid: str, warehouse_id) -> int:
         "HAVING SUM(quantity_in) - SUM(quantity_out) <> 0) x", tid, warehouse_id))
 
 
-def alasan_nonaktif(is_active: bool, berstok: int) -> Optional[str]:
+def alasan_nonaktif(is_active: bool, is_default: bool = False) -> Optional[str]:
+    """Putusan MASTER 15 Nov: gudang UTAMA tak bisa dinonaktifkan (BLOK); gudang BER-STOK boleh (hanya PERINGATAN di rencana, bukan alasan)."""
     if not is_active:
         return "Gudang ini sudah nonaktif."
-    if berstok:
-        return f"Gudang masih berisi stok ({berstok} barang). Pindahkan atau sesuaikan stoknya dulu."
+    if is_default:
+        return "Jadikan gudang lain sebagai Utama dulu."
     return None
 
 
@@ -103,7 +104,7 @@ def alasan_utama(is_active: bool, is_default: bool) -> Optional[str]:
 
 
 async def aksi_tersedia(conn, tid: str, w) -> dict:
-    nonaktif = alasan_nonaktif(w["is_active"], await jumlah_berstok(conn, tid, w["id"]))
+    nonaktif = alasan_nonaktif(w["is_active"], w["is_default"])
     utama = alasan_utama(w["is_active"], w["is_default"])
     return {
         "ubah": aksi(True, None),

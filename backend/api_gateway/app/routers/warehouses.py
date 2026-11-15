@@ -7,14 +7,17 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..services import gudang_daftar as GD
+from ..services import gudang_rencana as GR  # G3: SATU penentu pratinjau + penulis
+from ..services import idem_buat
 from ..schemas.warehouses import (
     CreateWarehouseRequest,
     CreateWarehouseResponse,
     DeleteWarehouseResponse,
     LowStockResponse,
+    SetWarehouseStatusRequest,
     UpdateWarehouseRequest,
     UpdateWarehouseResponse,
     WarehouseData,
@@ -214,63 +217,97 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
             aksi_tersedia=await GD.aksi_tersedia(conn, ctx["tenant_id"], row)))
 
 
-@router.post("", response_model=CreateWarehouseResponse)
-async def create_warehouse(request: Request, body: CreateWarehouseRequest):
-    """Create a new warehouse"""
+async def _gudang(conn, tid: str, warehouse_id):
+    w = await conn.fetchrow("SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, tid)
+    if not w:
+        raise HTTPException(status_code=404, detail="Warehouse not found")
+    return dict(w)
+
+
+async def _data(conn, tid: str, row) -> WarehouseData:
+    """Data gudang sesudah tulis (+ position_text, aksi_tersedia, jenis_text dari server)."""
+    return WarehouseData(**dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+                         aksi_tersedia=await GD.aksi_tersedia(conn, tid, row))
+
+
+async def _tulis_nilai(conn, tid: str, warehouse_id, nilai: dict):
+    """UPDATE bersaring tenant atas nilai rencana (nama kolom dari daftar tetap GR.URUT, bukan masukan pengguna)."""
+    kolom = [k for k in GR.URUT if k in nilai]
+    sets = ", ".join(f"{k} = ${i}" for i, k in enumerate(kolom, 1))
+    return await conn.fetchrow(f"UPDATE warehouses SET {sets}, updated_at = NOW() WHERE id = ${len(kolom) + 1} AND tenant_id = ${len(kolom) + 2} RETURNING *",
+                               *[nilai[k] for k in kolom], warehouse_id, tid)
+
+
+@router.post("/preview")
+async def preview_create_warehouse(request: Request, body: CreateWarehouseRequest):
+    """G3: pratinjau BUAT (read-only; penentu SAMA dgn POST): blok, peringatan, rencana (+ kode otomatis, jenis_text), payload."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
+        return GR.pratinjau(await GR.rencana_buat(conn, ctx["tenant_id"], body.model_dump()), body.model_dump())
 
-        # Check code uniqueness
-        existing = await conn.fetchval(
-            "SELECT id FROM warehouses WHERE tenant_id = $1 AND code = $2",
-            ctx["tenant_id"],
-            body.code,
-        )
-        if existing:
-            raise HTTPException(
-                status_code=400, detail=f"Warehouse code '{body.code}' already exists"
-            )
 
-        row = await conn.fetchrow(
-            """
-            INSERT INTO warehouses (
-                tenant_id, code, name, address, city, province, postal_code, country,
-                phone, email, manager_name, is_default, is_active, is_branch, branch_code,
-                created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-            RETURNING *
-            """,
-            ctx["tenant_id"],
-            body.code,
-            body.name,
-            body.address,
-            body.city,
-            body.province,
-            body.postal_code,
-            body.country,
-            body.phone,
-            body.email,
-            body.manager_name,
-            body.is_default,
-            body.is_active,
-            body.is_branch,
-            body.branch_code,
-            ctx.get("user_id"),
-        )
+@router.post("/{warehouse_id}/edit/preview")
+async def preview_edit_warehouse(request: Request, warehouse_id: UUID, body: UpdateWarehouseRequest):
+    """G3: pratinjau UBAH (badan = PATCH): null/tak dikirim = tak diubah, "" = kosongkan."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+        return GR.pratinjau(await GR.rencana_ubah(conn, ctx["tenant_id"], w, body.model_dump(exclude_unset=True)), body.model_dump(exclude_unset=True))
 
-        return CreateWarehouseResponse(data=WarehouseData(**dict(row)))
+
+@router.post("/{warehouse_id}/status/preview")
+async def preview_status_warehouse(request: Request, warehouse_id: UUID, body: SetWarehouseStatusRequest):
+    """G3: pratinjau aktifkan/nonaktifkan (penentu SAMA dgn POST /status dan DELETE)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+        return GR.pratinjau(await GR.rencana_status(conn, ctx["tenant_id"], w, body.aktif))
+
+
+@router.post("/{warehouse_id}/set-default/preview")
+async def preview_set_default_warehouse(request: Request, warehouse_id: UUID):
+    """G3: pratinjau jadikan utama (penentu SAMA dgn POST /set-default)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+        return GR.pratinjau(await GR.rencana_utama(conn, ctx["tenant_id"], w))
+
+
+@router.post("", response_model=CreateWarehouseResponse)
+async def create_warehouse(request: Request, body: CreateWarehouseRequest, response: Response = None):
+    """Create a new warehouse (G3: penentu bersama pratinjau; kode otomatis GDG-NNN bila kosong; X-Idempotency-Key opsional)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sidik, lama = await idem_buat.mulai(conn, ctx, idem_buat.kunci_dari(request), "WH_CREATE", body, "warehouses", "gudang", response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"GUDANG_KODE:{ctx['tenant_id']}")   # kode otomatis tak bentrok antar permintaan
+            r = await GR.rencana_buat(conn, ctx["tenant_id"], body.model_dump())
+            GR.tolak(r["blocks"])
+            n = r["nilai"]
+            try:
+                row = await conn.fetchrow(
+                    """INSERT INTO warehouses (tenant_id, code, name, address, city, province, postal_code, country, phone, email, manager_name,
+                                               is_default, is_active, is_branch, branch_code, created_by)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *""",
+                    ctx["tenant_id"], n["code"], n["name"], n["address"], n["city"], n["province"], n["postal_code"], n["country"], n["phone"], n["email"],
+                    n["manager_name"], n["is_default"], n["is_active"], n["is_branch"], n["branch_code"], ctx.get("user_id"))
+            except asyncpg.UniqueViolationError:
+                raise GR.GalatBerkode(400, "GUDANG_KODE_SUDAH_ADA", f"Kode gudang '{n['code']}' sudah dipakai.", "code")
+            resp = {"success": True, "message": "Warehouse created successfully", "data": (await _data(conn, ctx["tenant_id"], row)).model_dump(mode="json")}
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "WH_CREATE", resp, row["id"])
 
 
 @router.patch("/{warehouse_id}", response_model=UpdateWarehouseResponse)
-async def update_warehouse(
-    request: Request, warehouse_id: UUID, body: UpdateWarehouseRequest
-):
-    """Update warehouse details"""
+async def update_warehouse(request: Request, warehouse_id: UUID, body: UpdateWarehouseRequest):
+    """Update warehouse details (G3: penentu bersama pratinjau; null = tak diubah, "" = kosongkan)."""
     ctx = get_user_context(request)
     pool = await get_pool()
     # Optimistic concurrency (opt-in If-Match): reject a stale write.
@@ -278,118 +315,49 @@ async def update_warehouse(
     await assert_if_match_row(request, "warehouses", warehouse_id)
 
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        # Check exists
-        existing = await conn.fetchrow(
-            "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id,
-            ctx["tenant_id"],
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Warehouse not found")
-        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
-            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
-
-        # Check code uniqueness if changing
-        if body.code and body.code != existing["code"]:
-            code_exists = await conn.fetchval(
-                "SELECT id FROM warehouses WHERE tenant_id = $1 AND code = $2 AND id != $3",
-                ctx["tenant_id"],
-                body.code,
-                warehouse_id,
-            )
-            if code_exists:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Warehouse code '{body.code}' already exists",
-                )
-
-        # Build update
-        updates = []
-        params = []
-        param_idx = 1
-
-        for field in [
-            "code",
-            "name",
-            "address",
-            "city",
-            "province",
-            "postal_code",
-            "country",
-            "phone",
-            "email",
-            "manager_name",
-            "is_default",
-            "is_active",
-            "is_branch",
-            "branch_code",
-        ]:
-            value = getattr(body, field, None)
-            if value is not None:
-                updates.append(f"{field} = ${param_idx}")
-                params.append(value)
-                param_idx += 1
-
-        if body.is_active is False and existing["is_active"]:  # nonaktif lewat PATCH = penentu SAMA dengan DELETE (U9)
-            alasan = GD.alasan_nonaktif(True, await GD.jumlah_berstok(conn, ctx["tenant_id"], warehouse_id))
-            if alasan:
-                raise HTTPException(status_code=400, detail=alasan)
-
-        if not updates:
-            return UpdateWarehouseResponse(data=WarehouseData(**dict(existing)))
-
-        params.extend([warehouse_id, ctx["tenant_id"]])
-
-        row = await conn.fetchrow(
-            f"""
-            UPDATE warehouses SET {', '.join(updates)}, updated_at = NOW()
-            WHERE id = ${param_idx} AND tenant_id = ${param_idx + 1}
-            RETURNING *
-            """,
-            *params,
-        )
-
-        return UpdateWarehouseResponse(data=WarehouseData(**dict(row)))
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+            r = await GR.rencana_ubah(conn, ctx["tenant_id"], w, body.model_dump(exclude_unset=True))
+            GR.tolak(r["blocks"])
+            row = await _tulis_nilai(conn, ctx["tenant_id"], warehouse_id, r["nilai"]) if r["nilai"] else await conn.fetchrow(
+                "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"])
+            return UpdateWarehouseResponse(data=await _data(conn, ctx["tenant_id"], row))
 
 
 @router.delete("/{warehouse_id}", response_model=DeleteWarehouseResponse)
 async def delete_warehouse(request: Request, warehouse_id: UUID):
-    """Deactivate warehouse (soft delete)"""
+    """Deactivate warehouse (soft delete) = alias /status {aktif:false} (penentu SAMA; peringatan ber-stok = urusan pratinjau FE)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+            r = await GR.rencana_status(conn, ctx["tenant_id"], w, False)
+            GR.tolak(r["blocks"])
+            await _tulis_nilai(conn, ctx["tenant_id"], warehouse_id, r["nilai"])
+            return DeleteWarehouseResponse()
 
-        # Check exists and has no stock
-        existing = await conn.fetchrow(
-            "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id,
-            ctx["tenant_id"],
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Warehouse not found")
-        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
-            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
 
-        # U9: stok dari LEDGER per gudang, bersaring tenant (dulu cache warehouse_stock floor-0 tanpa tenant) -- penentu SAMA dgn
-        # aksi_tersedia.nonaktifkan (services/gudang_daftar)
-        alasan = GD.alasan_nonaktif(existing["is_active"], await GD.jumlah_berstok(conn, ctx["tenant_id"], warehouse_id))
-        if alasan:
-            raise HTTPException(status_code=400, detail=alasan)
-
-        await conn.execute(
-            "UPDATE warehouses SET is_active = false, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
-            warehouse_id, ctx["tenant_id"],
-        )
-
-        return DeleteWarehouseResponse()
+@router.post("/{warehouse_id}/status")
+async def set_warehouse_status(request: Request, warehouse_id: UUID, body: SetWarehouseStatusRequest, response: Response = None):
+    """G3: PENULIS aktifkan/nonaktifkan (penentu SAMA dgn pratinjau); X-Idempotency-Key opsional; keadaan sama = blok GUDANG_SUDAH_*."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "WH_STATUS", warehouse_id, lambda: {"aktif": body.aktif}, response)
+            if lama is not None:
+                return lama
+            w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+            r = await GR.rencana_status(conn, ctx["tenant_id"], w, body.aktif)
+            GR.tolak(r["blocks"])
+            row = await _tulis_nilai(conn, ctx["tenant_id"], warehouse_id, r["nilai"])
+            resp = {"success": True, "message": "Gudang diaktifkan" if body.aktif else "Gudang dinonaktifkan",
+                    "data": (await _data(conn, ctx["tenant_id"], row)).model_dump(mode="json")}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "WH_STATUS", resp, warehouse_id) if kp else resp
 
 
 @router.get("/{warehouse_id}/stock", response_model=WarehouseStockResponse)
@@ -507,32 +475,21 @@ async def get_warehouse_stock_value(request: Request, warehouse_id: UUID):
 
 
 @router.post("/{warehouse_id}/set-default")
-async def set_default_warehouse(request: Request, warehouse_id: UUID):
-    """Set warehouse as default"""
+async def set_default_warehouse(request: Request, warehouse_id: UUID, response: Response = None):
+    """Set warehouse as default (G3: penentu bersama pratinjau; sudah utama = sukses diam; X-Idempotency-Key opsional)."""
     ctx = get_user_context(request)
     pool = await get_pool()
-
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-        )
-
-        existing = await conn.fetchrow(
-            "SELECT * FROM warehouses WHERE id = $1 AND tenant_id = $2",
-            warehouse_id,
-            ctx["tenant_id"],
-        )
-        if not existing:
-            raise HTTPException(status_code=404, detail="Warehouse not found")
-        if existing["is_system"]:  # K8: gudang sistem dikelola otomatis
-            raise HTTPException(status_code=409, detail="Gudang sistem (Transit) dikelola otomatis; tidak bisa diubah, dihapus, atau dijadikan utama.")
-        alasan = GD.alasan_utama(existing["is_active"], False)  # penentu SAMA dgn aksi_tersedia.jadikan_utama; sudah utama = idempoten
-        if alasan:
-            raise HTTPException(status_code=400, detail=alasan)
-
-        # gudang utama lama dicabut trigger DB trg_single_default_warehouse (diukur 9 Nov)
-        await conn.execute(
-            "UPDATE warehouses SET is_default = true WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"]
-        )
-
-        return {"success": True, "message": "Warehouse set as default"}
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "WH_UTAMA", warehouse_id, lambda: {}, response)
+            if lama is not None:
+                return lama
+            w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
+            r = await GR.rencana_utama(conn, ctx["tenant_id"], w)
+            GR.tolak(r["blocks"])
+            if r["nilai"]:
+                # gudang utama lama dicabut trigger DB trg_single_default_warehouse (diukur 9 Nov)
+                await conn.execute("UPDATE warehouses SET is_default = true WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"])
+            resp = {"success": True, "message": "Warehouse set as default"}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "WH_UTAMA", resp, warehouse_id) if kp else resp

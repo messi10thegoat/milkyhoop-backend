@@ -1,6 +1,7 @@
 """Persediaan standar SO gelombang 2 (kontrak backend/docs/KONTRAK-persediaan-standar-so-20261109.md): penentu bersama penyesuaian stok
 (pratinjau == tulis), putusan pemilik 9 Nov (gudang dipilih/bawaan utama + stok per gudang, harga draf + isyarat, void cek periode tanggal
 dokumen), gudang (stok_minus, satu gudang utama, nonaktif dari ledger bersaring tenant). Paritas jurnal/ledger lama vs baru = uji salinan."""
+import inspect
 import asyncio
 import datetime as dt
 import os
@@ -314,7 +315,9 @@ def test_daftar_placeholder_cocok(monkeypatch, aksi):
 def test_gudang_teks_alasan_dan_predikat():
     assert GD.position_text(True, True) == "Utama" and GD.position_text(True, False, True) == "Aktif · cabang"
     assert GD.position_text(False, True) == "Nonaktif"
-    assert GD.alasan_nonaktif(True, 2).startswith("Gudang masih berisi stok (2 barang)") and GD.alasan_nonaktif(True, 0) is None
+    # G3 (putusan MASTER 15 Nov): gudang UTAMA tak bisa dinonaktifkan (blok); gudang BER-STOK hanya peringatan (bukan alasan) -> alasan_nonaktif(is_active, is_default)
+    assert GD.alasan_nonaktif(True, True) == "Jadikan gudang lain sebagai Utama dulu." and GD.alasan_nonaktif(True, False) is None
+    assert GD.alasan_nonaktif(False, False) == "Gudang ini sudah nonaktif."
     assert GD.alasan_utama(True, True) == "Gudang ini sudah gudang utama." and GD.alasan_utama(True, False) is None
     s = GD.sql_stok_minus("w")
     assert "il.tenant_id = w.tenant_id" in s and "< 0" in s and GD.aksi_semua(True) == ["stok_minus"]
@@ -325,7 +328,7 @@ def test_jadikan_utama_penentu_sama_dan_bersaring_tenant():
     yang SAMA dengan aksi_tersedia.jadikan_utama (gudang nonaktif ditolak) dan UPDATE bersaring tenant."""
     assert GD.alasan_utama(False, False) == "Gudang nonaktif tidak bisa jadi gudang utama."
     src = (APP / "routers/warehouses.py").read_text()
-    assert 'GD.alasan_utama(existing["is_active"], False)' in src
+    assert "GR.rencana_utama(" in src and "alasan_utama(" in inspect.getsource(GD.aksi_tersedia)      # G3: penulis memakai rencana_utama; aksi_tersedia tetap alasan_utama
     assert '"UPDATE warehouses SET is_default = true WHERE id = $1 AND tenant_id = $2"' in src and not hasattr(GD, "jadikan_utama")
 
 
@@ -335,7 +338,8 @@ def test_nonaktif_gudang_dari_ledger_bersaring_tenant():
     s, a = k.log[0]
     assert "FROM inventory_ledger WHERE tenant_id = $1 AND warehouse_id = $2" in s and "<> 0" in s and a == (T, G_UTAMA)
     src = (APP / "routers/warehouses.py").read_text()
-    assert "FROM warehouse_stock WHERE warehouse_id = $1 AND quantity > 0" not in src and src.count("GD.alasan_nonaktif(") == 2
+    assert "FROM warehouse_stock WHERE warehouse_id = $1 AND quantity > 0" not in src and src.count("GR.rencana_status(") == 3      # G3: PATCH ubah lewat rencana_ubah; DELETE, /status, pratinjau status
+    assert "GD.jumlah_berstok(" in (APP / "services/gudang_rencana.py").read_text()                                              # peringatan ber-stok tetap dari LEDGER bersaring tenant
 
 
 # ---------------------------------------------------------------- izin
