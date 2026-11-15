@@ -59,7 +59,7 @@ async def hitung(pool, tid):
 
 
 async def buat_daftar(tid, kode, **kw):
-    r = await PL.create_price_list(req(tid), CreatePriceListRequest(code=kode, name=f"UJI {kode}", **kw))
+    r = await PL.create_price_list(req(tid, f"uji-buat-{kode}"), CreatePriceListRequest(code=kode, name=f"UJI {kode}", **kw))
     return str(r["data"]["id"])
 
 

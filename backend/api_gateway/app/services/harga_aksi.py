@@ -5,6 +5,7 @@ Pratinjau = {ok, blocks, peringatan, rencana} dari rencana_* (fungsi murni di at
 (kalimat blok == galat tulis) lalu terapkan_*. Putusan: hapus daftar yang dipakai pelanggan DITOLAK menyebut N pelanggan; nonaktifkan BOLEH
 (peringatan: pelanggan beralih ke daftar bawaan / harga barang). Tanpa jurnal (bukan transaksi uang)."""
 from typing import Optional
+from uuid import UUID
 
 from .galat_berkode import GalatBerkode
 
@@ -179,11 +180,21 @@ async def terapkan_hapus(conn, tid: str, pl_id) -> None:
     await conn.execute("DELETE FROM price_lists WHERE id = $1 AND tenant_id = $2", pl_id, tid)
 
 
+def _uuid_atau_none(x):
+    try:
+        return x if isinstance(x, UUID) else UUID(str(x))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 async def idem_aksi(conn, ctx: dict, request, prefix: str, doc_id, isi, kerja, response=None):
-    """Idempotensi tulis (X-Idempotency-Key opsional): kunci sama + isi sama = respons asli, isi beda = 409. WAJIB di dalam transaksi."""
+    """Idempotensi tulis (X-Idempotency-Key opsional): kunci sama + isi sama = respons asli, isi beda = 409. WAJIB di dalam transaksi.
+    result_id (kolom uuid) = doc_id bila UUID, selain itu id di respons (buat daftar: doc_id "baru"), selain itu None."""
     from . import idem_buat
     kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), prefix, doc_id, isi, response)
     if lama is not None:
         return lama
     resp = await kerja()
-    return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, doc_id)
+    data = resp.get("data") if isinstance(resp, dict) else None
+    rid = _uuid_atau_none(doc_id) or _uuid_atau_none(data.get("id") if isinstance(data, dict) else None)
+    return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, rid)  # result_id = kolom uuid: doc_id teks ("baru") jangan dikirim (BUG-250)

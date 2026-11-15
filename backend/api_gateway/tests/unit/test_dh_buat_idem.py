@@ -114,3 +114,42 @@ def test_idem_aksi_doc_id_uuid_tetap_dipakai_sebagai_result_id():
         return {"success": True}
     asyncio.run(HA.idem_aksi(k, ctx, _req("k3"), "DH_UBAH", did, {"a": 1}, kerja))
     assert _simpan(k)[0][4] == did
+
+
+# ---- jaring umum (BUG-250, permintaan MASTER): result_id idempotency_keys bertipe uuid -- tak boleh ada penyimpan yang mengirim teks non-UUID
+@pytest.mark.parametrize("doc_id", ["baru", "new", "-", 5, None])
+def test_idem_aksi_tak_pernah_menyimpan_result_id_non_uuid(doc_id):
+    k = Konn()
+    ctx = {"tenant_id": "t1", "user_id": "u1"}
+
+    async def kerja():
+        return {"success": True, "data": {"id": "bukan-uuid"}}
+    asyncio.run(HA.idem_aksi(k, ctx, _req("kj"), "X", doc_id, {"a": 1}, kerja))
+    rid = _simpan(k)[0][4]
+    assert rid is None or isinstance(rid, uuid.UUID)
+
+
+def test_tak_ada_penyimpan_idempotensi_di_kode_dengan_result_id_teks_literal():
+    import ast
+    import pathlib
+    app = pathlib.Path(__file__).resolve().parents[2] / "app"
+    # (nama fungsi -> indeks posisi result_id): idem_buat.simpan(conn, ctx, kp, sd, source_type, resp, result_id); simpan_replay_klien(..., respons, result_id)
+    posisi = {"simpan": 6, "simpan_replay_klien": 6}
+    salah = []
+    for p in app.rglob("*.py"):
+        try:
+            pohon = ast.parse(p.read_text())
+        except SyntaxError:
+            continue
+        for n in ast.walk(pohon):
+            if not isinstance(n, ast.Call):
+                continue
+            nama = n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", None)
+            if nama not in posisi:
+                continue
+            args = list(n.args)
+            kandidat = [args[posisi[nama]]] if len(args) > posisi[nama] else []
+            kandidat += [kw.value for kw in n.keywords if kw.arg == "result_id"]
+            if any(isinstance(c, ast.Constant) and isinstance(c.value, str) for c in kandidat):
+                salah.append(f"{p.relative_to(app)}:{n.lineno}")
+    assert not salah, salah

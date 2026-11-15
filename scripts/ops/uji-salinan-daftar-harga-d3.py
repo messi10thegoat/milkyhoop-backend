@@ -62,7 +62,7 @@ async def harga(pool, tid, pl):
 
 
 async def daftar_baru(pool, tid, st, kode, barang):
-    r = await PL.create_price_list(req(tid), CreatePriceListRequest(code=f"UJI-D3-{kode}-{st}", name=f"UJI D3 {kode}"))
+    r = await PL.create_price_list(req(tid, f"uji-d3-buat-{kode}-{st}"), CreatePriceListRequest(code=f"UJI-D3-{kode}-{st}", name=f"UJI D3 {kode}"))
     pl = str(r["data"]["id"])
     for b in barang:
         await PL.add_item_to_price_list(req(tid), uuid.UUID(pl), PriceListItemCreate(item_id=str(b), price=1000, min_quantity=1))
