@@ -1,7 +1,7 @@
 """Gudang G3 uji DB di SALINAN (bukan prod): handler ASLI pratinjau + penulis gudang atas klon, tenant kaos + nyawit. Mutasi HANYA di klon.
 A pratinjau buat read-only (nol baris baru) + kode otomatis GDG-NNN; buat nyata == pratinjau; X-Idempotency-Key: ulang = id sama, satu baris
 B kode ganda -> GalatBerkode 400 GUDANG_KODE_SUDAH_ADA (field code); PATCH: null tak diubah, "" mengosongkan alamat (NULL di DB)
-C status: nonaktif gudang BER-STOK = peringatan (pratinjau ok, penulis jalan); gudang UTAMA nonaktif = blok 400 (pratinjau == penulis); aktifkan; sudah aktif = blok
+C status: nonaktif gudang BER-STOK = peringatan (pratinjau ok, POST /status jalan; DELETE/PATCH lama TETAP 400); gudang UTAMA nonaktif = blok 400 (pratinjau == penulis); aktifkan; sudah aktif = blok
 D jadikan utama: pratinjau memuat GUDANG_UTAMA_DIGANTI; penulis memindahkan; tepat satu utama; Transit (bila ada) = GUDANG_SISTEM 409 di ubah/status/utama
 E jenis_text/jenis_catatan di daftar + detail; aksi_tersedia.nonaktifkan: ber-stok tersedia, utama tidak"""
 import asyncio
@@ -104,6 +104,10 @@ async def main():
                 akt = (await WH.get_warehouse(rq, berstok["id"])).data.aksi_tersedia
                 cek(f"C {tid} nonaktif gudang BER-STOK = pratinjau ok + peringatan GUDANG_BERSTOK_DINONAKTIFKAN (butuh_konfirmasi); aksi_tersedia.nonaktifkan tersedia",
                     pb["ok"] is True and [x["code"] for x in pb["peringatan"]] == ["GUDANG_BERSTOK_DINONAKTIFKAN"] and pb["peringatan"][0]["butuh_konfirmasi"] is True and akt["nonaktifkan"].tersedia is True, f"{pb['peringatan']}")
+                dl = await galat(WH.delete_warehouse(rq, berstok["id"]))
+                pl = await galat(WH.update_warehouse(rq, berstok["id"], UpdateWarehouseRequest(is_active=False)))
+                cek(f"C {tid} jalur LAMA: DELETE dan PATCH is_active:false pada gudang ber-stok TETAP 400 GUDANG_BERSTOK (kalimat Indonesia), tetap aktif",
+                    all(isinstance(e, HTTPException) and e.status_code == 400 and kode(e) == "GUDANG_BERSTOK" and e.detail.startswith("Gudang masih berisi stok (") for e in (dl, pl)) and (await baris(berstok["id"]))["is_active"], f"{getattr(dl, 'detail', dl)}")
                 ws = await galat(WH.set_warehouse_status(req(tid, uid, f"uji-g3-{uuid.uuid4()}"), berstok["id"], SetWarehouseStatusRequest(aktif=False)))
                 cek(f"C {tid} penulis menonaktifkan gudang ber-stok (di klon): is_active false", not isinstance(ws, HTTPException) and not (await baris(berstok["id"]))["is_active"], f"{ws if isinstance(ws, HTTPException) else ''}")
                 await WH.set_warehouse_status(rq, berstok["id"], SetWarehouseStatusRequest(aktif=True))

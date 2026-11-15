@@ -8,6 +8,8 @@ from . import gudang_jenis as GJ
 from .galat_berkode import GalatBerkode
 
 TEKS_UTAMA_TAK_NONAKTIF = "Jadikan gudang lain sebagai Utama dulu."
+# Jalur LAMA (PATCH is_active:false, DELETE; form lama tanpa Tinjau) TETAP menolak gudang ber-stok (putusan MASTER 15 Nov): hanya POST /status (FE baru sesudah pratinjau) memberi peringatan.
+TEKS_BERSTOK_BLOK = "Gudang masih berisi stok ({n} barang). Pindahkan atau sesuaikan stoknya dulu."
 KODE_OTOMATIS = "GDG"
 AWALAN_SISTEM = "SYS-"
 LABEL = {"name": "Nama", "code": "Kode", "address": "Alamat", "city": "Kota", "province": "Provinsi", "postal_code": "Kode pos", "country": "Negara",
@@ -131,18 +133,22 @@ async def rencana_ubah(conn, tid: str, w: dict, b: dict) -> dict:
         else:                                          # sudah utama, dinonaktifkan (tanpa melepas status utama)
             blocks.append(blok("GUDANG_UTAMA_TAK_BISA_NONAKTIF", TEKS_UTAMA_TAK_NONAKTIF, "is_active"))
     elif "is_active" in nilai and not nilai["is_active"] and (n := await GD.jumlah_berstok(conn, tid, w["id"])):
-        perin.append(_berstok(n))
+        blocks.append(_blok_berstok(n))                # PATCH = jalur lama: tetap ditolak (peringatan hanya di POST /status)
     if nilai.get("is_default") and akhir_aktif and (lama := await _utama_lain(conn, tid, w["id"])):
         perin.append(_utama_diganti(lama))
     return _susun(blocks, perin, "ubah", w, _perubahan(w, nilai), f"Ubah gudang {nilai.get('name', w['name'])}", b, nilai,
                   jenis_text=GJ.jenis_text(nilai.get("is_branch", w["is_branch"])), jenis_catatan=GJ.jenis_catatan(nilai.get("is_branch", w["is_branch"])))
 
 
+def _blok_berstok(n: int) -> dict:
+    return blok("GUDANG_BERSTOK", TEKS_BERSTOK_BLOK.format(n=n), "is_active")
+
+
 def _berstok(n: int) -> dict:
     return peringatan("GUDANG_BERSTOK_DINONAKTIFKAN", f"Gudang masih berisi stok ({n} barang). Stoknya tetap tercatat; pindahkan atau sesuaikan bila tidak lagi dipakai.")
 
 
-async def rencana_status(conn, tid: str, w: dict, aktif: bool) -> dict:
+async def rencana_status(conn, tid: str, w: dict, aktif: bool, blok_berstok: bool = False) -> dict:
     blocks, perin = [], []
     payload = {"aktif": aktif}
     if w.get("is_system"):
@@ -154,7 +160,10 @@ async def rencana_status(conn, tid: str, w: dict, aktif: bool) -> dict:
     elif not aktif and w["is_default"]:
         blocks.append(blok("GUDANG_UTAMA_TAK_BISA_NONAKTIF", TEKS_UTAMA_TAK_NONAKTIF, "is_active"))
     elif not aktif and (n := await GD.jumlah_berstok(conn, tid, w["id"])):
-        perin.append(_berstok(n))
+        if blok_berstok:                               # DELETE = jalur lama (tanpa Tinjau): tetap ditolak
+            blocks.append(_blok_berstok(n))
+        else:
+            perin.append(_berstok(n))
     nilai = {"is_active": aktif}
     return _susun(blocks, perin, "aktifkan" if aktif else "nonaktifkan", w, _perubahan(w, nilai), f"{'Aktifkan' if aktif else 'Nonaktifkan'} gudang {w['name']}", payload, nilai)
 

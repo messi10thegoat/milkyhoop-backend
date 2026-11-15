@@ -334,7 +334,7 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             w = await _gudang(conn, ctx["tenant_id"], warehouse_id)
-            r = await GR.rencana_status(conn, ctx["tenant_id"], w, False)
+            r = await GR.rencana_status(conn, ctx["tenant_id"], w, False, blok_berstok=True)   # jalur LAMA: gudang ber-stok tetap ditolak
             GR.tolak(r["blocks"])
             await _tulis_nilai(conn, ctx["tenant_id"], warehouse_id, r["nilai"])
             return DeleteWarehouseResponse()

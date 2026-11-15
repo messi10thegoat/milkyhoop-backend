@@ -26,4 +26,7 @@ SAB=(
  "g19 izin penulis status bukan U|$A/middleware/permission_middleware.py|s#\"warehouse\", \"U\"),  \# G3: penulis aktif/nonaktif#\"warehouse\", \"C\"),  \# G3: penulis aktif/nonaktif#|$T"
  "g20 aksi_tersedia nonaktifkan tak ikut putusan|$A/services/gudang_daftar.py|s#nonaktif = alasan_nonaktif(w\[\"is_active\"\], w\[\"is_default\"\])#nonaktif = alasan_nonaktif(w[\"is_active\"], True)#|$T"
  "g21 idempotensi buat gudang tak terdaftar|$A/services/idem_buat.py|s#, \"warehouses\": \"code\"}#}#|$T"
+ "g22 PATCH lama tak menolak gudang ber-stok|$GRF|s#blocks.append(_blok_berstok(n))                \# PATCH#perin.append(_berstok(n))                \# PATCH#|$T"
+ "g23 DELETE lama tak menolak gudang ber-stok|$WHF|s#w, False, blok_berstok=True)#w, False)#|$T"
+ "g24 kalimat blok ber-stok berubah|$GRF|s#Pindahkan atau sesuaikan stoknya dulu.\"#Gudang berisi stok.\"#|$T"
 )

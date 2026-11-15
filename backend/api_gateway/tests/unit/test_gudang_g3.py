@@ -205,3 +205,17 @@ def test_izin_rute_baru_eksplisit(jalur, harap):
     from app.middleware import permission_middleware as PM
     hit = next(((p, mod, aksi) for p, ms, mod, aksi in PM.ROUTE_PERMISSIONS if re.compile(p).match(jalur) and "POST" in ms), None)
     assert hit is not None and hit[1:] == ("warehouse", harap) and (hit[0] != "^/api/warehouses")
+
+
+def test_jalur_lama_patch_dan_delete_tetap_menolak_gudang_berstok_hanya_status_peringatan():
+    """Putusan MASTER 15 Nov: form lama (PATCH is_active:false, DELETE) tanpa Tinjau TETAP ditolak 400 untuk gudang ber-stok; hanya POST /status memberi peringatan."""
+    pesan = "Gudang masih berisi stok (3 barang). Pindahkan atau sesuaikan stoknya dulu."
+    p = ubah(gud(), Kon(berstok=3), is_active=False)
+    assert p["peringatan"] == [] and [(x["code"], x["message"], x["status"], x["field"]) for x in p["blocks"]] == [("GUDANG_BERSTOK", pesan, 400, "is_active")]
+    d = jalan(GR.rencana_status(Kon(berstok=3), T, gud(), False, blok_berstok=True))
+    assert d["peringatan"] == [] and [(x["code"], x["message"]) for x in d["blocks"]] == [("GUDANG_BERSTOK", pesan)]
+    s = status(gud(), False, Kon(berstok=3))                                                      # POST /status & pratinjau-nya: peringatan, bukan blok
+    assert s["blocks"] == [] and kode(s, "peringatan") == ["GUDANG_BERSTOK_DINONAKTIFKAN"]
+    assert ubah(gud(), Kon(berstok=3), is_active=True)["blocks"] == [] and ubah(gud(), Kon(berstok=0), is_active=False)["blocks"] == []
+    src = inspect.getsource(WH.delete_warehouse)
+    assert "blok_berstok=True" in src and "blok_berstok" not in inspect.getsource(WH.set_warehouse_status) and "blok_berstok" not in inspect.getsource(WH.preview_status_warehouse)
