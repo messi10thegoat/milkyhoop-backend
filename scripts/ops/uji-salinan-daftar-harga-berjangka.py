@@ -88,7 +88,7 @@ async def periksa(pool, tid):
         async def saran(tgl):
             async with pool.acquire() as c:
                 x = await HJ.harga_saran(c, tid, None, tgl, [{"key": "k", "item_id": str(brg), "unit": None, "quantity": 1}])
-            return (x[0] if isinstance(x, list) else x["items"][0])["harga"]
+            return x["lines"][0]["harga"]
         sebelum, pada, sesudah = await saran(t1 - timedelta(days=1)), await saran(t1), await saran(t2)
     finally:
         HJ.daftar_untuk = asli
