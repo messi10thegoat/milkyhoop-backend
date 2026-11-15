@@ -191,6 +191,8 @@ def test_router_memakai_penentu_bersama():
         assert "GR.pratinjau(" in inspect.getsource(f) and "conn.execute(\"UPDATE" not in inspect.getsource(f) and "INSERT" not in inspect.getsource(f)
     src = (APP / "routers/warehouses.py").read_text()
     assert "GD.alasan_nonaktif(True, await GD.jumlah_berstok" not in src
+    from app.services import idem_buat
+    assert idem_buat._TABEL["warehouses"] == "code"                                              # idempotensi buat gudang
 
 
 @pytest.mark.parametrize("jalur,harap", [
