@@ -196,7 +196,7 @@ def test_pratinjau_ubah_mengecualikan_baris_sendiri_dan_tanpa_kunci(monkeypatch)
     r = _pv(c, monkeypatch, {"price": "29500"}, line_id=LINE)
     assert r["ok"]
     dup = [a for s, a in c.sql if "AND ($5::uuid IS NULL OR id <> $5)" in s]
-    assert dup and dup[0][-1] == LINE
+    assert dup and len(dup[0]) == 6 and dup[0][4] == LINE        # $5 = baris sendiri dikecualikan; $6 = start_date (BUG-245)
     assert not any("FOR UPDATE" in s for s, _ in c.sql)
 
 
