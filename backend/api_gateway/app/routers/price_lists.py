@@ -309,7 +309,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
             items = await conn.fetch(  # nama barang lewat JOIN (satu kueri)
                 """SELECT pli.*, p.nama_produk AS item_name, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar FROM price_list_items pli
                    LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = $2
-                   WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.min_quantity""",
+                   WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.unit NULLS FIRST, pli.min_quantity, pli.start_date NULLS FIRST, pli.id""",
                 price_list_id, ctx["tenant_id"],
             )
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
