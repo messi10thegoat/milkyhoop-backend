@@ -20,6 +20,7 @@ from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
 from ..utils.tanggal_tenant import tanggal_dokumen
+from ..services import dh_pelanggan_massal as DHM  # BUG-255 pasang daftar harga massal
 from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pelanggan + Vendor satu penentu
 from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
 from ..services import kontak_detail as KDT  # B2 detail + aksi_tersedia + rename-impact (satu penentu dua modul)
@@ -705,6 +706,83 @@ async def get_customer_price_history(
     except Exception as e:
         logger.error(f"Error price history: {e}")
         raise HTTPException(status_code=500, detail="Gagal memuat riwayat harga")
+
+
+async def _urai_dh_massal(conn, tid: str, body: dict) -> tuple:
+    """BUG-255: badan -> (rencana, target). Tepat satu dari customer_ids / saringan; price_list_id WAJIB ada (null = daftar bawaan). Penentu SATU pratinjau == tulis."""
+    b = body or {}
+    if "price_list_id" not in b:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "price_list_id wajib (null = daftar bawaan).", "field": "price_list_id"})
+    ada_ids, ada_sar = isinstance(b.get("customer_ids"), list), isinstance(b.get("saringan"), dict)
+    if ada_ids == ada_sar:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "Isi tepat satu: customer_ids atau saringan.", "field": "customer_ids"})
+    tujuan = b["price_list_id"]
+    try:
+        tujuan = str(UUID(str(tujuan))) if tujuan else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "price_list_id tidak sah.", "field": "price_list_id"})
+    if ada_ids:
+        try:
+            ids = list(dict.fromkeys(str(UUID(str(x))) for x in b["customer_ids"]))
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "customer_ids berisi id tak sah.", "field": "customer_ids"})
+        diminta = len(ids)
+    else:
+        sar = b["saringan"]
+        sekarang = sar.get("price_list_id_sekarang")
+        where, params, idx = _syarat_pelanggan(tid, sar.get("search"), sar.get("tipe"), sar.get("is_active", True))
+        if sekarang == "bawaan":
+            where += " AND price_list_id IS NULL"
+        elif sekarang:
+            try:
+                params.append(str(UUID(str(sekarang))))
+            except ValueError:
+                raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "price_list_id_sekarang tidak sah.", "field": "saringan"})
+            where += f" AND price_list_id = ${idx}::uuid"
+        ids = [str(r["id"]) for r in await conn.fetch(f"SELECT id FROM customers WHERE {where} ORDER BY lower(nama), id LIMIT {DHM.BATAS_SARINGAN + 1}", *params)]
+        diminta = len(ids)
+    target = await DHM.ukur_target(conn, tid, tujuan)
+    rows = await DHM.ukur_pelanggan(conn, tid, ids[: (DHM.BATAS_SARINGAN if ada_sar else DHM.BATAS_ID)])
+    return DHM.rencana(target, tujuan is not None, rows, diminta, ada_sar), target
+
+
+@router.post("/bulk/price-list/preview")
+async def preview_dh_massal(request: Request, body: dict):
+    """BUG-255: pratinjau pasang daftar harga ke banyak pelanggan (READ ONLY): ringkas, daftar lama->baru, contoh baris, payload (id terurai). Penentu SAMA dgn tulis."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            r, _ = await _urai_dh_massal(conn, ctx["tenant_id"], body)
+        finally:
+            await tr.rollback()
+    r.pop("_semua", None)
+    return {"success": True, "data": r}
+
+
+@router.post("/bulk/price-list")
+async def pasang_dh_massal(request: Request, body: dict, response: Response = None):
+    """BUG-255: pasang daftar harga ke banyak pelanggan, ATOMIK (satu transaksi + kunci advisory, satu UPDATE). Badan = payload pratinjau (customer_ids) atau saringan.
+    X-Idempotency-Key opsional (kunci sama + isi beda = 409). Blok -> 422 BULK_DITOLAK, nol tulis. Aktivitas per pelanggan + satu audit."""
+    from ..services import idem_buat
+    ctx = get_user_context(request)
+    user_id, user_name = _pelaku(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "CUSTOMER_DH_BULK", "batch", lambda: body, response)
+            if lama is not None:
+                return lama
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"CUSTOMER_DH_BULK:{ctx['tenant_id']}")
+            r, _ = await _urai_dh_massal(conn, ctx["tenant_id"], body)      # validasi ULANG di bawah kunci (penentu sama dgn pratinjau)
+            if not r["ok"]:
+                raise HTTPException(status_code=422, detail={"code": "BULK_DITOLAK", "message": "Pemasangan daftar harga ditolak; tidak ada pelanggan yang diubah.", "blocks": r["blocks"]})
+            hasil = await DHM.tulis(conn, {**ctx, "user_id": user_id}, r, user_name)
+            resp = {"success": True, "message": f"Daftar harga '{hasil['target']['nama']}' dipasang ke {hasil['jumlah_berubah']} pelanggan.", "data": {**hasil, "peringatan": r["peringatan"]}}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "CUSTOMER_DH_BULK", resp, None)
 
 
 @router.get("/{customer_id}/balance", response_model=CustomerBalanceResponse)

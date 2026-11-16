@@ -126,7 +126,10 @@ def _satuan_ke(b: dict, unit: str) -> Optional[str]:
 _KATA_MEDAN = re.compile(r"\b(?:jual|beli|stok|kode|kategori|satuan|tipe)\b.*$", re.I | re.S)
 
 
-def _nama_tanpa_sisa(depan: str, galat: list) -> str:
+_KATA_MEDAN_SET = {"jual", "beli", "stok", "kode", "kategori", "satuan", "tipe", "isi", "per"}
+
+
+def _nama_tanpa_sisa(depan: str, galat: list, satuan: Optional[list] = None) -> str:
     """Bagian sebelum medan pertama = NAMA + satu pemisah. Sisanya tak pernah ditelan ke nama diam-diam (temuan FRONTEND 6 Nov:
     "rusak ,,, jual abc" -> nama itu, nol galat): bagian lain sesudah koma/titik koma, kata medan yang nilainya tak terbaca
     ("jual abc", "beli"), dan tanda baca beruntun -> galat per baris (blok TAK_TERBACA di ke_badan)."""
@@ -140,6 +143,12 @@ def _nama_tanpa_sisa(depan: str, galat: list) -> str:
         ekor.insert(0, m.group(0).strip())
         nama = nama[:m.start()].strip()
     sisa = [x for x in ekor if x]
+    # BUG-276 (17 Nov 2026): SATU kata sisa di antara nama dan medan pertama ("UJI Teh Celup, pcs, beli 3rb, jual 4rb" / "Teh Celup, pcs") = SATUAN DASAR
+    # (kasus paling umum toko grosir: satuan tunggal tanpa 'isi'). Hanya satu kata huruf yang bukan kata medan (tanda baca berlebih tetap galat sendiri);
+    # selain itu tetap TAK_TERBACA (tak pernah ditelan diam-diam). Satuan tak dikenal tampil sebagai "satuan baru" di pratinjau (bukan tersembunyi).
+    if satuan is not None and len(sisa) == 1 and re.fullmatch(_KATA, sisa[0]) and sisa[0].lower() not in _KATA_MEDAN_SET:
+        satuan.append(sisa[0])
+        sisa = []
     if sisa:
         galat.append(f"tak terbaca: \"{', '.join(sisa)}\" — tulis mis. jual 35rb, beli 31rb, stok 10")
     return nama
@@ -159,10 +168,12 @@ def tafsir_baris(teks: str) -> dict:
         temuan.append((j, m))
         pos = m.end()
     awal = temuan[0][1].start() if temuan else len(s)
-    galat_nama = []
-    b = {"nama": _nama_tanpa_sisa(s[:awal], galat_nama), "teks": s}
+    galat_nama, satuan_tunggal = [], []
+    b = {"nama": _nama_tanpa_sisa(s[:awal], galat_nama, satuan_tunggal), "teks": s}
     if galat_nama:
         b["_galat"] = galat_nama
+    if satuan_tunggal:   # BUG-276: satuan dasar disebut sebelum medan pertama; "satuan X"/"X isi N Y" sesudahnya tetap menang (menimpa)
+        b["satuan_dasar"] = satuan_tunggal[0]
     sisa = [s[(temuan[i - 1][1].end() if i else awal):m.start()] for i, (_, m) in enumerate(temuan)]
     sisa.append(s[temuan[-1][1].end():] if temuan else "")
     terakhir = None  # satuan yang disebut terakhir: "besar" | "dasar"
