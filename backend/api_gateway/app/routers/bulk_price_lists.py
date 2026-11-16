@@ -8,12 +8,13 @@ from decimal import Decimal
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
 from ..services import bulk
 from ..services import harga_massal as HM
 from ..services import harga_riwayat as HR
+from ..services import harga_salin as HS
 from ..services import idem_buat
 
 logger = logging.getLogger(__name__)
@@ -160,3 +161,51 @@ async def riwayat_daftar(request: Request, price_list_id: UUID, limit: int = Que
         if hasil["total"] == 0:
             raise HTTPException(status_code=404, detail="Daftar harga tidak ditemukan.")
     return {"success": True, "data": {**hasil, "limit": limit, "offset": offset, "aksi_pilihan": [{"aksi": k, "teks": v} for k, v in HR.AKSI_TEKS.items()]}}
+
+
+# =============================================================================
+# SALIN DAFTAR (BUG-256): pratinjau == tulis, atomik, idempoten, riwayat 252 (services/harga_salin)
+# =============================================================================
+def _badan_salin(body: dict) -> tuple:
+    body = body or {}
+    kode, nama = HS.rapikan(body.get("code"), body.get("name"))
+    return kode, nama
+
+
+@router.post("/{price_list_id}/salin/preview")
+async def pratinjau_salin(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau salin (READ ONLY, penentu SAMA dengan tulis): {ok, blocks[], peringatan[], rencana{sumber, baru, jumlah_baris, jumlah_barang, jumlah_berjangka, teks}, payload{code, name}}."""
+    ctx = _ctx(request)
+    kode, nama = _badan_salin(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            r = await HS.rencana(conn, ctx["tenant_id"], price_list_id, kode, nama)
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {**r, "payload": {"code": kode, "name": nama}}}
+
+
+@router.post("/{price_list_id}/salin")
+async def salin_daftar(request: Request, price_list_id: UUID, body: dict, response: Response = None):
+    """Salin ATOMIK. Badan = payload pratinjau {code, name}; X-Idempotency-Key WAJIB (replay = respons asli). 201-gaya: data {id, code, name, jumlah_baris}."""
+    import asyncpg
+    ctx = _ctx(request)
+    kunci = idem_buat.kunci_dari(request)
+    if not kunci:
+        raise HTTPException(status_code=400, detail={"code": "SALIN_KUNCI_WAJIB", "message": "Salin daftar wajib membawa header X-Idempotency-Key."})
+    kode, nama = _badan_salin(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "DH_SALIN", price_list_id, lambda: {"code": kode, "name": nama}, response)
+            if lama is not None:
+                return lama
+            try:
+                data = await HS.tulis(conn, ctx, price_list_id, kode, nama)
+            except asyncpg.exceptions.UniqueViolationError:        # balapan: kode dipakai di antara pemeriksaan dan INSERT
+                raise HTTPException(status_code=409, detail={"code": "KODE_DAFTAR_GANDA", "message": "Kode daftar harga itu sudah dipakai.", "field": "code"})
+            resp = {"success": True, "message": f"Daftar disalin: {data['jumlah_baris']} harga.", "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "DH_SALIN", resp, None)

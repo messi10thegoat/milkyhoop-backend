@@ -864,6 +864,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
     # D2 Daftar Harga (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status/bawaan = ubah
     (r"^/api/price-lists/[^/]+/bulk/price(/preview)?$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/salin(/preview)?$", ["POST"], "price_list", "C"),  # BUG-256 salin daftar = membuat daftar (C); pratinjau = huruf SAMA dgn tulis
     (r"^/api/price-lists/[^/]+/import(/baca|/preview)?$", ["POST"], "price_list", "U"),  # BUG-251 impor harga Excel: baca/pratinjau = huruf SAMA dgn tulis  # D3: ubah harga massal, pratinjau = huruf tulisnya
     (r"^/api/price-lists/[^/]+/status/preview$", ["POST"], "price_list", "U"),
     (r"^/api/price-lists/[^/]+/status$", ["POST"], "price_list", "U"),
