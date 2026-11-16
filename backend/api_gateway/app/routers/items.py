@@ -336,6 +336,7 @@ async def list_items(
     ),
     search: Optional[str] = Query(None, description="Search by name or barcode"),
     kategori: Optional[str] = Query(None, description="Filter by category"),
+    merek: Optional[str] = Query(None, description="BUG-260: saring per merek (cocok persis; nilai dari GET /items/merek)"),
     stock_status: Optional[str] = Query(
         None, description="Filter by stock status: in_stock, low_stock, out_of_stock"
     ),
@@ -430,6 +431,11 @@ async def list_items(
         if kategori:
             query_parts.append(f"AND p.kategori = ${param_idx}")
             params.append(kategori)
+            param_idx += 1
+
+        if merek:
+            query_parts.append(f"AND p.merek = ${param_idx}")
+            params.append(merek.strip())
             param_idx += 1
 
         if status:
@@ -531,6 +537,7 @@ async def list_items(
                     base_unit=row.get("base_unit") or row["satuan"],
                     barcode=row.get("barcode"),
                     kategori=row.get("kategori"),
+                    merek=row.get("merek"),
                     deskripsi=row.get("deskripsi"),
                     is_returnable=row.get("is_returnable", True),
                     track_batches=row.get("track_batches", False),
@@ -906,7 +913,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
                 costing_method, opening_stock, opening_stock_rate, opening_stock_date,
                 for_sales, for_purchases, warehouse_id,
                 track_batches, track_expiry, default_expiry_days,
-                sales_tax_id, purchase_tax_id, bisa_dikirim,
+                sales_tax_id, purchase_tax_id, bisa_dikirim, merek,
                 created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
@@ -919,7 +926,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
                 $27, $28, $29, $30,
                 $31, $32, $33,
                 $34, $35, $36,
-                $37, $38, $39,
+                $37, $38, $39, $40,
                 NOW(), NOW()
             )
             RETURNING id
@@ -966,6 +973,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
             body.purchase_tax_id,
             # V318: flag non-stok bisa dikirim, SATU INSERT (dulu UPDATE kedua); CHECK DB menolak jasa
             bool(body.bisa_dikirim),
+            body.merek,  # V502 (sudah dipangkas oleh skema; None = tanpa merek)
         )
 
         # Insert unit conversions (goods only)
@@ -1263,7 +1271,7 @@ async def _periksa_ubah(conn, ctx: dict, item_id, body):
     old_item = await conn.fetchrow(
         """SELECT nama_produk, sales_price, harga_jual, purchase_price,
                   base_unit, satuan, reorder_level, item_type, track_inventory, bisa_dikirim,
-                  kategori, deskripsi, barcode, is_returnable,
+                  kategori, merek, deskripsi, barcode, is_returnable,
                   sales_tax, purchase_tax, image_url,
                   inventory_account_id, cogs_account_id
            FROM products WHERE id = $1 AND tenant_id = $2""",
@@ -1338,6 +1346,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                 "base_unit": "base_unit",
                 "barcode": "barcode",
                 "kategori": "kategori",
+                "merek": "merek",
                 "deskripsi": "deskripsi",
                 "is_returnable": "is_returnable",
                 "sales_account": "sales_account",
@@ -1521,6 +1530,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                     "base_unit": ("Satuan", "base_unit"),
                     "reorder_level": ("Titik reorder", "reorder_level"),
                     "kategori": ("Kategori", "kategori"),
+                    "merek": ("Merek", "merek"),
                     "deskripsi": ("Deskripsi", "deskripsi"),
                     "barcode": ("Barcode", "barcode"),
                     "sales_tax": ("Pajak jual", "sales_tax"),
@@ -2259,6 +2269,29 @@ async def list_categories(request: Request):
             await conn.close()
 
 
+@router.get("/items/merek")
+async def list_merek(request: Request):
+    """BUG-260: daftar nilai merek tenant (untuk pilihan saringan/isian), urut abjad tanpa peka huruf; hanya barang tak terhapus.
+    -> {success, merek: [{nama, jumlah}]}; jumlah = barang tak terhapus bermerek itu (aktif + nonaktif)."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        rows = await conn.fetch(
+            "SELECT merek AS nama, COUNT(*) AS jumlah FROM products "
+            "WHERE tenant_id = $1 AND deleted_at IS NULL AND merek IS NOT NULL "
+            "GROUP BY merek ORDER BY lower(merek), merek",
+            tenant_id,
+        )
+        return {"success": True, "merek": [{"nama": r["nama"], "jumlah": int(r["jumlah"])} for r in rows]}
+    except Exception as e:
+        logger.error(f"Error listing merek: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            await conn.close()
+
+
 @router.post("/items/categories", response_model=CreateCategoryResponse)
 async def create_category(request: Request, body: CreateCategoryRequest):
     """
@@ -2492,7 +2525,7 @@ async def export_items(
                          WHERE il.product_id = products.id AND il.tenant_id = CAST(products.tenant_id AS TEXT)),
                         0
                     ) as current_stock,
-                    kategori as category, deskripsi as description,
+                    kategori as category, merek, deskripsi as description,
                     CASE WHEN status = 'active' THEN true ELSE false END as is_active
                 FROM products
                 WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -2518,6 +2551,7 @@ async def export_items(
                         "Purchase Price",
                         "Stock",
                         "Category",
+                        "Brand",
                         "Description",
                         "Active",
                     ]
@@ -2534,6 +2568,7 @@ async def export_items(
                             row["purchase_price"],
                             row["current_stock"],
                             row["category"],
+                            row["merek"],
                             row["description"],
                             "Yes" if row["is_active"] else "No",
                         ]
@@ -3166,6 +3201,7 @@ async def get_item(request: Request, item_id: UUID):
                 "base_unit_terpakai": base_unit_terpakai,  # BUG-086: True -> satuan dasar tak bisa diganti (409 SATUAN_DASAR_TERPAKAI)
                 "barcode": row.get("barcode"),
                 "kategori": row.get("kategori"),
+                "merek": row.get("merek"),
                 "deskripsi": row.get("deskripsi"),
                 "is_returnable": row.get("is_returnable", True),
                 "track_batches": row.get("track_batches", False),
@@ -3524,7 +3560,7 @@ async def duplicate_item(request: Request, item_id: UUID, response: Response = N
                 """
                 INSERT INTO products (
                     tenant_id, nama_produk, satuan, base_unit, kategori, deskripsi,
-                    item_type, track_inventory, is_returnable,
+                    item_type, track_inventory, is_returnable, merek,
                     sales_account, purchase_account, sales_tax, purchase_tax,
                     sales_price, purchase_price, harga_jual,
                     reorder_level, preferred_vendor_id,
@@ -3533,7 +3569,7 @@ async def duplicate_item(request: Request, item_id: UUID, response: Response = N
                     created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6,
-                    $7, $8, $9,
+                    $7, $8, $9, $22,
                     $10, $11, $12, $13,
                     $14, $15, $16,
                     $17, $18,
@@ -3570,6 +3606,7 @@ async def duplicate_item(request: Request, item_id: UUID, response: Response = N
                 if item_row.get("purchase_account_id")
                 else None,
                 kode_baru,
+                item_row.get("merek"),
             )
 
             # Duplicate unit conversions

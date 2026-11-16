@@ -86,6 +86,13 @@ class _BadanItem(BaseModel):
     is_matrix_parent: Optional[bool] = None
     _kunci_asing: List[str] = PrivateAttr(default_factory=list)
 
+    @field_validator('merek', check_fields=False)
+    @classmethod
+    def _pangkas_merek(cls, v):
+        """BUG-260/V502: merek dipangkas; kosong/spasi = tanpa merek (None). SATU penentu untuk POST dan ubah (field ada di keduanya)."""
+        v = (v or "").strip()
+        return v or None
+
     @model_validator(mode="wrap")
     @classmethod
     def _catat_kunci_asing(cls, data, handler):
@@ -124,6 +131,7 @@ class CreateItemRequest(_BadanItem):
     base_unit: str = Field(..., min_length=1, max_length=50, description="Base unit of measure")
     barcode: Optional[str] = Field(None, max_length=100, description="Product barcode")
     kategori: Optional[str] = Field(None, max_length=100, description="Category")
+    merek: Optional[str] = Field(None, max_length=100, description="Merek (teks bebas, dipangkas; kosong = tanpa merek)")
     # Chat create_item mengirim `description` (FieldSpec) -- dulu dibuang diam.
     deskripsi: Optional[str] = Field(None, validation_alias=AliasChoices("deskripsi", "description"), description="Description")
     is_returnable: bool = Field(True, description="Whether item can be returned (goods only)")
@@ -222,6 +230,7 @@ class UpdateItemRequest(_BadanItem):
     base_unit: Optional[str] = Field(None, min_length=1, max_length=50)
     barcode: Optional[str] = Field(None, max_length=100)
     kategori: Optional[str] = Field(None, max_length=100)
+    merek: Optional[str] = Field(None, max_length=100)  # BUG-260/V502; "" = hapus merek
     deskripsi: Optional[str] = Field(None, validation_alias=AliasChoices("deskripsi", "description"))
     is_returnable: Optional[bool] = None
 
@@ -326,6 +335,7 @@ class ItemListItem(BaseModel):
     base_unit: str
     barcode: Optional[str] = None
     kategori: Optional[str] = None
+    merek: Optional[str] = None  # BUG-260/V502
     deskripsi: Optional[str] = None
     is_returnable: bool
     track_batches: bool = False
