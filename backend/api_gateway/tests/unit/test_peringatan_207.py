@@ -88,7 +88,7 @@ def test_sajikan_berizin_memuat_angka_tak_berizin_tanpa_angka_dan_kunci_absen():
     assert set(tak) == {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan", "message"} and tak["message"] == tak["pesan"]  # BUG-273: pesan + message sama                              # kunci angka ABSEN (bukan null)
     assert "Rp" not in tak["pesan"] and not any(c.isdigit() for c in tak["pesan"]) and tak["butuh_konfirmasi"] is True
     t2 = JB.sajikan(terima([{"item_id": P1, "quantity": D("1"), "unit": "karton", "nilai": D("375000")}]), False)[0]
-    assert set(t2) == {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan"} and not any(c.isdigit() for c in t2["pesan"])
+    assert set(t2) == {"code", "butuh_konfirmasi", "baris", "product_id", "nama", "pesan", "message"} and t2["message"] == t2["pesan"] and not any(c.isdigit() for c in t2["pesan"])
     t3 = JB.sajikan(terima([{"item_id": P1, "quantity": D("1"), "unit": "karton", "nilai": D("375000")}]), True)[0]
     assert t3["code"] == "BIAYA_TERIMA_JANGGAL" and t3["biaya"] == "6250.00" and "periksa satuan" in t3["pesan"]
 
