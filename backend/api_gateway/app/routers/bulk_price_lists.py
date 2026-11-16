@@ -16,6 +16,7 @@ from ..services import harga_massal as HM
 from ..services import harga_riwayat as HR
 from ..services import harga_salin as HS
 from ..services import idem_buat
+from ..services.galat_berkode import GalatBerkode
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -130,7 +131,7 @@ async def bulk_price(request: Request, price_list_id: UUID, body: BulkHargaReque
     ctx = _ctx(request)
     kunci = idem_buat.kunci_dari(request)
     if not kunci:
-        raise HTTPException(status_code=400, detail={"code": "BULK_KUNCI_WAJIB", "message": "Aksi massal wajib membawa header X-Idempotency-Key."})
+        raise GalatBerkode(400, "BULK_KUNCI_WAJIB", "Aksi massal wajib membawa header X-Idempotency-Key.")
     pool = await get_pool()
     ids, nama = await _siapkan(pool, ctx, price_list_id, body)
     tulis, _ = _fungsi(price_list_id, body)
@@ -150,7 +151,7 @@ async def riwayat_daftar(request: Request, price_list_id: UUID, limit: int = Que
     """BUG-252 riwayat perubahan daftar harga (audit_logs immutable; bersaring tenant + daftar): terbaru dulu, aksi_text + ringkas dari server. Izin R price_list."""
     ctx = _ctx(request)
     if aksi is not None and aksi not in HR.AKSI_TEKS:
-        raise HTTPException(status_code=400, detail={"code": "RIWAYAT_AKSI_TIDAK_DIKENAL", "message": f"Aksi riwayat: {', '.join(HR.AKSI_TEKS)}."})
+        raise GalatBerkode(400, "RIWAYAT_AKSI_TIDAK_DIKENAL", f"Aksi riwayat: {', '.join(HR.AKSI_TEKS)}.", field="aksi")
     pool = await get_pool()
     async with pool.acquire() as conn:
         ada = await conn.fetchrow("SELECT code FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"])
@@ -195,7 +196,7 @@ async def salin_daftar(request: Request, price_list_id: UUID, body: dict, respon
     ctx = _ctx(request)
     kunci = idem_buat.kunci_dari(request)
     if not kunci:
-        raise HTTPException(status_code=400, detail={"code": "SALIN_KUNCI_WAJIB", "message": "Salin daftar wajib membawa header X-Idempotency-Key."})
+        raise GalatBerkode(400, "SALIN_KUNCI_WAJIB", "Salin daftar wajib membawa header X-Idempotency-Key.")
     kode, nama = _badan_salin(body)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -206,6 +207,6 @@ async def salin_daftar(request: Request, price_list_id: UUID, body: dict, respon
             try:
                 data = await HS.tulis(conn, ctx, price_list_id, kode, nama)
             except asyncpg.exceptions.UniqueViolationError:        # balapan: kode dipakai di antara pemeriksaan dan INSERT
-                raise HTTPException(status_code=409, detail={"code": "KODE_DAFTAR_GANDA", "message": "Kode daftar harga itu sudah dipakai.", "field": "code"})
+                raise GalatBerkode(409, "KODE_DAFTAR_GANDA", "Kode daftar harga itu sudah dipakai.", field="code")
             resp = {"success": True, "message": f"Daftar disalin: {data['jumlah_baris']} harga.", "data": data}
             return await idem_buat.simpan(conn, ctx, kp, sd, "DH_SALIN", resp, None)

@@ -183,7 +183,7 @@ def test_rute_riwayat_terdaftar_izin_baca_dan_aksi_tak_dikenal_400():
     assert 'price\\-lists/[^/]+/riwayat$", ["GET"], "price_list", "R"' in pm
     with pytest.raises(HTTPException) as e:
         asyncio.run(BP.riwayat_daftar(type("R", (), {"state": type("S", (), {"user": {"tenant_id": "t", "user_id": "u"}})()})(), uuid4(), limit=50, offset=0, aksi="NGAWUR", dari=None, sampai=None))
-    assert e.value.status_code == 400 and e.value.detail["code"] == "RIWAYAT_AKSI_TIDAK_DIKENAL"
+    assert e.value.status_code == 400 and e.value.code == "RIWAYAT_AKSI_TIDAK_DIKENAL" and e.value.field == "aksi"      # top-level (GalatBerkode)
     s = inspect.getsource(BP.riwayat_daftar)
     assert "p.tenant_id" not in s and "tenant_id" in s and "dihapus" in s
 
