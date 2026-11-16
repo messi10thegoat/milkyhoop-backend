@@ -33,7 +33,7 @@ async def main():
                 p = r["baris"][0]["payload"] if r["baris"] else {}
                 cek(f"A {tid}: baris tiket ok={r['ok']}, blok {bl}, base_unit {p.get('base_unit')}, beli {p.get('purchase_price')}, jual {p.get('sales_price')}",
                     r["ok"] and not bl and str(p.get("base_unit", "")).lower() == "pcs" and float(p.get("purchase_price") or 0) == 3000 and float(p.get("sales_price") or 0) == 4000)
-                r2 = await IB.rencana(c, ctx, IB.tafsir_teks("UJI-276 A, pcs, jual 4rb\\nUJI-276 B, dus isi 12 pcs, jual 40rb\\nUJI-276 C, jual 5rb"))
+                r2 = await IB.rencana(c, ctx, IB.tafsir_teks("UJI-276 A, pcs, jual 4rb\nUJI-276 B, dus isi 12 pcs, jual 40rb\nUJI-276 C, jual 5rb"))
                 satuan = [str(x["payload"].get("base_unit", "")).lower() for x in r2["baris"]]
                 cek(f"B {tid}: tiga baris campur ok={r2['ok']}, satuan dasar {satuan}", r2["ok"] and satuan == ["pcs", "pcs", "pcs"])
                 for t in ("UJI-276 Minyak beli", "UJI-276 Teh, pcs, dus, jual 4rb"):

@@ -99,7 +99,7 @@ async def main():
                     cek(f"I {tid}: nonaktif -> ?aksi=nonaktif memuatnya, pilihan (bentuk lama) tidak", any(b["id"] == str(kat["id"]) for b in nonaktif["items"]) and baru not in pilihan)
                     await KA.tulis_status(c, tid, None, await KA.ukur_kategori(c, tid, kat["id"]), True)
                     rw = await KA.riwayat(c, tid, kat["id"])
-                    cek(f"I {tid}: riwayat memuat aktif+nonaktif+ubah nama ({[r['event'] for r in rw]})", [r["event"] for r in rw][:3] == ["ITEM_CATEGORY_ACTIVATED", "ITEM_CATEGORY_DEACTIVATED", "ITEM_CATEGORY_RENAMED"])
+                    cek(f"I {tid}: riwayat memuat aktif+nonaktif+ubah nama ({[r['event'] for r in rw]})", set(r["event"] for r in rw[:3]) == {"ITEM_CATEGORY_ACTIVATED", "ITEM_CATEGORY_DEACTIVATED", "ITEM_CATEGORY_RENAMED"})   # satu transaksi uji: createdAt kembar, urutan dalam kembar tak dijamin
                     # ---- K-3
                     ks = await c.fetch("/* tenant_id */ SELECT id FROM item_categories WHERE tenant_id = $1 AND is_active ORDER BY name LIMIT 3", tid)
                     if len(ks) >= 2:
@@ -124,6 +124,7 @@ async def main():
                             masih = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, sumber["name"])
                             cek(f"L {tid}: gabung '{sumber['name']}'->'{tujuan['name']}': {dig} barang == {n_semua}, registry asal hilang ({ada}), tak tersisa label lama ({masih})", dig == n_semua and ada == 0 and masih == 0)
                     # ---- K-4
+                    ks = await c.fetch("/* tenant_id */ SELECT id FROM item_categories WHERE tenant_id = $1 AND is_active ORDER BY name LIMIT 3", tid)   # L menghapus ks[0]: ambil ulang
                     if len(ks) >= 2:
                         a, b = await KA.ukur_kategori(c, tid, ks[0]["id"]), await KA.ukur_kategori(c, tid, ks[1]["id"])
                         if not a.get("parent_id") and not b.get("parent_id") and not a["jumlah_anak"] and not b["jumlah_anak"]:
