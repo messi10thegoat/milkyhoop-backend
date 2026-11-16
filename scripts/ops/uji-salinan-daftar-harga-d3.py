@@ -132,8 +132,10 @@ async def periksa(pool, tid):
     tgl = date.today() + timedelta(days=30)
     p7 = (await BP.bulk_price_preview(req(tid), uuid.UUID(pl5), B(mode="persen", nilai=Decimal("5"), berlaku_mulai=tgl)))["data"]
     await BP.bulk_price(req(tid, f"uji-d3t-{st}"), uuid.UUID(pl5), B(mode="persen", nilai=Decimal("5"), berlaku_mulai=tgl))
-    cek(f"{tid} H7 tanggal berlaku: start_date baris = tanggal itu + peringatan DH_BERLAKU_NANTI",
-        all(p[2] == tgl for p in await harga(pool, tid, pl5)) and all(any(x["code"] == "DH_BERLAKU_NANTI" for x in i["preview"]["peringatan"]) for i in p7["items"]))
+    h7 = await harga(pool, tid, pl5)
+    cek(f"{tid} H7 tanggal berlaku masa depan (BUG-245): baris BERJANGKA baru start_date = tanggal itu, baris lama utuh + peringatan DH_BERLAKU_NANTI",
+        len(h7) == 2 * len(brg) and sum(1 for p in h7 if p[2] == tgl) == len(brg) and sum(1 for p in h7 if p[2] is None and p[1] == Decimal("1000")) == len(brg)
+        and all(any(x["code"] == "DH_BERLAKU_NANTI" for x in i["preview"]["peringatan"]) for i in p7["items"]))
     # ---- H8
     async with pool.acquire() as c:
         n = await c.fetchval("""SELECT count(*) FROM audit_logs WHERE tenant_id = $1 AND "eventType" = 'BULK_HARGA'""", tid)
@@ -147,6 +149,8 @@ async def utama():
     if not db_pool.startswith("scratch_dhd3"):
         print(f"TOLAK: bukan salinan (pool={db_pool})")
         return 2
+    async with pool.acquire() as c:  # V500 (BUG-245): indeks berjangka dipasang di salinan; produksi memasangnya lewat window
+        await c.execute(open("/app/backend/migrations/V500__daftar_harga_berjangka.sql").read())
     for tid in TENANT:
         await periksa(pool, tid)
     print(f"HASIL {sum(HASIL)}/{len(HASIL)} PASS", flush=True)

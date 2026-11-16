@@ -2,7 +2,7 @@
 Price Lists Router - Daftar Harga Management
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from typing import Literal, Optional
 from uuid import UUID
 import logging
@@ -22,11 +22,14 @@ from ..schemas.price_lists import (
 from ..services import harga_aksi as HA
 from ..services import harga_daftar as HD
 from ..services import harga_jual as HJ
+from ..services import harga_riwayat as HR
+from ..services import impor_harga as IH
 from ..services import satuan_dasar as SD
 from ..services.galat_berkode import GalatBerkode
 from ..utils.tanggal_tenant import tanggal_dokumen
 
 GAGAL = "Gagal memproses daftar harga."
+PESAN_HARGA_GANDA = "Harga untuk barang, satuan, jumlah minimum, dan tanggal mulai itu sudah ada di daftar ini. Pakai tanggal mulai lain untuk menjadwalkan harga baru."
 TAK_ADA = "Daftar harga tidak ditemukan."
 
 
@@ -36,7 +39,7 @@ def _galat_unik(e) -> GalatBerkode:
     if "bawaan" in n:
         return GalatBerkode(409, "DAFTAR_BAWAAN_GANDA", "Usaha ini sudah punya daftar harga bawaan. Jadikan bawaan yang lama bukan bawaan dulu.")
     if "satuan" in n or "items" in n:
-        return GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+        return GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA)
     return _kode_ganda()
 
 
@@ -50,7 +53,7 @@ def _satuan(unit):
 
 async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
     """PENENTU BERSAMA penulis + pratinjau (BACA SAJA; GalatBerkode, kalimat == tulis): barang milik usaha, satuan dasar/berkonversi
-    (penentu satuan_dasar), unik barang + satuan + qty minimum di daftar ini (baris yang diubah dikecualikan). -> id barang."""
+    (penentu satuan_dasar), unik barang + satuan + qty minimum + TANGGAL MULAI di daftar ini (BUG-245: harga berjangka) (baris yang diubah dikecualikan). -> id barang."""
     try:
         pid = UUID(str(item.item_id))
     except (ValueError, TypeError):
@@ -63,8 +66,11 @@ async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
         await SD.qty_dasar(conn, tid, pid, item.unit, item.min_quantity, "konversi")  # tanpa konversi -> 400 berkalimat
     if await conn.fetchval(
             """SELECT 1 FROM price_list_items WHERE price_list_id = $1 AND item_id = $2 AND unit IS NOT DISTINCT FROM $3
-               AND min_quantity = $4 AND ($5::uuid IS NULL OR id <> $5)""", pl_id, pid, _satuan(item.unit), item.min_quantity, line_id):
-        raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.")
+               AND min_quantity = $4 AND start_date IS NOT DISTINCT FROM $6::date AND ($5::uuid IS NULL OR id <> $5)""",
+            pl_id, pid, _satuan(item.unit), item.min_quantity, line_id, item.start_date):
+        raise GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA)
+    if item.min_price is not None and item.min_price > item.price:  # BUG-040: lantai tak boleh di atas harga baris
+        raise GalatBerkode(400, "HARGA_MINIMUM_DI_ATAS_HARGA", "Harga minimum tidak boleh lebih besar dari harga.", field="min_price")
     return pid
 
 
@@ -78,16 +84,16 @@ async def tulis_baris_harga(conn, tid: str, pl_id, item, line_id=None) -> object
             if line_id is not None:
                 return await conn.fetchval(
                     """UPDATE price_list_items SET unit = $3, price = $4, min_quantity = $5, discount_percent = $6, start_date = $7,
-                              end_date = $8, is_default_unit = $9
+                              end_date = $8, is_default_unit = $9, min_price = $10
                        WHERE id = $1 AND price_list_id = $2 RETURNING id""",
                     line_id, pl_id, unit, item.price, item.min_quantity, item.discount_percent, item.start_date, item.end_date,
-                    item.is_default_unit)
+                    item.is_default_unit, item.min_price)
             return await conn.fetchval(
                 """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent,
-                                                 start_date, end_date, is_default_unit)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
+                                                 start_date, end_date, is_default_unit, min_price)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
                 pl_id, pid, item.item_code, unit, item.price, item.min_quantity,
-                item.discount_percent, item.start_date, item.end_date, item.is_default_unit)
+                item.discount_percent, item.start_date, item.end_date, item.is_default_unit, item.min_price)
     except asyncpg.exceptions.UniqueViolationError as e:
         raise _galat_unik(e)
 
@@ -113,13 +119,13 @@ async def siapkan_buat_daftar(conn, tid: str, b: CreatePriceListRequest) -> dict
             pid = await siapkan_baris_harga(conn, tid, None, item)
         except GalatBerkode as e:
             raise GalatBerkode(e.status_code, e.code, e.detail, field=f"items.{i}.{e.field}" if e.field else f"items.{i}")
-        k = (pid, (_satuan(item.unit) or "").lower(), item.min_quantity)
+        k = (pid, (_satuan(item.unit) or "").lower(), item.min_quantity, item.start_date)
         if k in kunci:
-            raise GalatBerkode(409, "HARGA_GANDA", "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini.",
+            raise GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA,
                                field=f"items.{i}")
         kunci.add(k)
         baris.append({"item_id": str(pid), "item_code": item.item_code, "unit": _satuan(item.unit), "price": item.price,
-                      "min_quantity": item.min_quantity, "discount_percent": item.discount_percent, "start_date": item.start_date,
+                      "min_quantity": item.min_quantity, "discount_percent": item.discount_percent, "min_price": item.min_price, "start_date": item.start_date,
                       "end_date": item.end_date, "is_default_unit": item.is_default_unit})
     return {"code": kode, "name": nama, "price_type": b.price_type, "default_discount": b.default_discount,
             "default_markup": b.default_markup, "start_date": b.start_date, "end_date": b.end_date, "priority": b.priority,
@@ -304,7 +310,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
             items = await conn.fetch(  # nama barang lewat JOIN (satu kueri)
                 """SELECT pli.*, p.nama_produk AS item_name, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar FROM price_list_items pli
                    LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = $2
-                   WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.min_quantity""",
+                   WHERE pli.price_list_id = $1 ORDER BY pli.item_code, p.nama_produk, pli.unit NULLS FIRST, pli.min_quantity, pli.start_date NULLS FIRST, pli.id""",
                 price_list_id, ctx["tenant_id"],
             )
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
@@ -344,8 +350,9 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             "price": i["price"],
                             "min_quantity": float(i["min_quantity"]),
                             "discount_percent": float(i["discount_percent"])
-                            if i["discount_percent"]
+                            if i["discount_percent"] is not None  # BUG-253: 0% eksplisit != tak diatur (dulu 0 -> null)
                             else None,
+                            "min_price": i["min_price"],
                             "start_date": i["start_date"].isoformat()
                             if i["start_date"]
                             else None,
@@ -415,6 +422,9 @@ async def create_price_list(request: Request, body: CreatePriceListRequest):
                     )
                     for item in body.items or []:
                         await tulis_baris_harga(conn, ctx["tenant_id"], pl_id, item)
+                    await HR.catat(conn, ctx, pl_id, r["code"], "BUAT",
+                                   f"Daftar {r['code']} — {r['name']} dibuat" + (f" dengan {len(body.items)} harga" if body.items else ""),
+                                   [{"dari": None, "ke": x} for x in await HR.snapshot_daftar(conn, ctx["tenant_id"], pl_id)], jumlah=len(body.items or []))
                 except asyncpg.exceptions.UniqueViolationError as e:
                     raise _galat_unik(e)
                 return {"success": True, "message": "Daftar harga dibuat.", "data": {"id": str(pl_id), "code": r["code"]}}
@@ -461,6 +471,10 @@ async def update_price_list(
                     )
                 except asyncpg.exceptions.UniqueViolationError as e:  # bawaan / kode ganda -> 409 berkalimat
                     raise _galat_unik(e)
+                dari = {k: HR.jsonable(existing[k]) for k in update_data if k in existing.keys()}
+                ke = {k: HR.jsonable(v) for k, v in update_data.items()}
+                await HR.catat(conn, ctx, price_list_id, str(update_data.get("code") or existing["code"]), "UBAH_HEADER",
+                               "Header diubah: " + ", ".join(f"{k} {dari.get(k)!s} → {ke[k]!s}" for k in ke), header={"dari": dari, "ke": ke})
                 return {"success": True, "message": "Daftar harga diubah.", "data": {"id": str(price_list_id)}}
             async with conn.transaction():
                 return await HA.idem_aksi(conn, ctx, request, "DH_UBAH", price_list_id, body.model_dump(mode="json", exclude_unset=True), kerja)
@@ -483,7 +497,9 @@ async def delete_price_list(request: Request, price_list_id: UUID):
                 r = await HA.ukur_daftar(conn, tid, price_list_id)
                 HA.tolak_bila_blok(HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id),
                                                       await HA.ukur_nama_pelanggan(conn, tid, price_list_id)))
+                n_baris = int(await HA.ukur_baris(conn, tid, price_list_id) or 0)
                 await HA.terapkan_hapus(conn, tid, price_list_id)
+                await HR.catat(conn, ctx, price_list_id, r["code"], "HAPUS", f"Daftar {r['code']} — {r['name']} dihapus ({n_baris} harga ikut terhapus)", jumlah=n_baris)
                 return {"success": True, "message": "Daftar harga dihapus.", "data": {"id": str(price_list_id)}}
             async with conn.transaction():
                 return await HA.idem_aksi(conn, ctx, request, "DH_HAPUS", price_list_id, {"hapus": True}, kerja)
@@ -504,13 +520,15 @@ async def add_item_to_price_list(
         async with pool.acquire() as conn:
             async def kerja():
                 existing = await conn.fetchrow(
-                    "SELECT id FROM price_lists WHERE id = $1 AND tenant_id = $2",
+                    "SELECT id, code FROM price_lists WHERE id = $1 AND tenant_id = $2",
                     price_list_id,
                     ctx["tenant_id"],
                 )
                 if not existing:
                     raise HTTPException(status_code=404, detail=TAK_ADA)
                 item_id = await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, body)
+                ke = await HR.snapshot(conn, ctx["tenant_id"], item_id)
+                await HR.catat(conn, ctx, price_list_id, existing["code"], "TAMBAH_BARIS", HR.ringkas_baris(None, ke), [{"dari": None, "ke": ke}])
                 return {
                     "success": True,
                     "message": "Harga ditambahkan ke daftar.",
@@ -533,7 +551,7 @@ async def _baris_gabungan(conn, tid: str, price_list_id: UUID, line_id: UUID, bo
                             line_id, price_list_id)
     if not r:
         raise HTTPException(status_code=404, detail="Baris harga tidak ditemukan.")
-    lama = {k: r[k] for k in ("unit", "price", "min_quantity", "is_default_unit", "discount_percent", "start_date", "end_date")}
+    lama = {k: r[k] for k in ("unit", "price", "min_quantity", "is_default_unit", "discount_percent", "min_price", "start_date", "end_date")}
     lama["discount_percent"] = float(lama["discount_percent"]) if lama["discount_percent"] is not None else None
     return PriceListItemCreate(item_id=str(r["item_id"]), item_code=r["item_code"], **{**lama, **body.model_dump(exclude_unset=True)})
 
@@ -548,7 +566,7 @@ async def _pratinjau_baris(request: Request, price_list_id: UUID, badan, line_id
         b = (PriceListItemUpdate if line_id else PriceListItemCreate).model_validate(payload)
     except ValidationError as e:
         return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "payload": payload}}
-    bloks = []
+    bloks, rencana = [], None
     pool = await get_pool()
     async with pool.acquire() as conn:
         tr = conn.transaction(readonly=True)
@@ -560,11 +578,12 @@ async def _pratinjau_baris(request: Request, price_list_id: UUID, badan, line_id
                     raise HTTPException(status_code=404, detail=TAK_ADA)
                 item = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, b, False) if line_id else b
                 await siapkan_baris_harga(conn, ctx["tenant_id"], price_list_id, item, line_id)
+                rencana = await HR.rencana_baris(conn, ctx["tenant_id"], item, line_id)       # BUG-275: lama/baru/selisih dari penentu SAMA (FE tak menghitung)
             except HTTPException as e:
                 bloks.append(blok_dari_galat(e))
         finally:
             await tr.rollback()
-    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "payload": payload}}
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "payload": payload, **({"rencana": rencana} if rencana is not None else {})}}
 
 
 @router.post("/{price_list_id}/items/preview")
@@ -588,7 +607,10 @@ async def update_price_list_item(request: Request, price_list_id: UUID, line_id:
         async with pool.acquire() as conn:
             async def kerja():
                 baru = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, body, True)
+                dari = await HR.snapshot(conn, ctx["tenant_id"], line_id)
                 await tulis_baris_harga(conn, ctx["tenant_id"], price_list_id, baru, line_id=line_id)
+                ke = await HR.snapshot(conn, ctx["tenant_id"], line_id)
+                await HR.catat(conn, ctx, price_list_id, None, "UBAH_BARIS", HR.ringkas_baris(dari, ke), [{"dari": dari, "ke": ke}])
                 return {"success": True, "message": "Harga diperbarui.",
                         "data": {"id": str(line_id), **await HD.teks_baris(conn, ctx["tenant_id"], line_id)}}
             async with conn.transaction():
@@ -611,10 +633,12 @@ async def remove_item_from_price_list(
             async def kerja():
                 tid = ctx["tenant_id"]
                 HA.tolak_bila_blok(HA.rencana_hapus_baris(await HA.ukur_baris_harga(conn, tid, price_list_id, item_id)))
+                dari = await HR.snapshot(conn, tid, item_id)
                 await conn.execute(
                     "DELETE FROM price_list_items WHERE id = $1 AND price_list_id = $2 AND price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)",
                     item_id, price_list_id, tid,
                 )
+                await HR.catat(conn, ctx, price_list_id, None, "HAPUS_BARIS", HR.ringkas_baris(dari, None) if dari else "Harga dihapus", [{"dari": dari, "ke": None}] if dari else [])
                 return {"success": True, "message": "Harga dihapus dari daftar.", "data": {"id": str(item_id)}}
             async with conn.transaction():
                 return await HA.idem_aksi(conn, ctx, request, "DH_BARIS_HAPUS", item_id, {"hapus": True}, kerja)
@@ -641,6 +665,96 @@ async def _baca_saja(fungsi):
 def _aktif_dari(body) -> Optional[bool]:
     v = (body or {}).get("aktif")
     return v if isinstance(v, bool) else None
+
+
+# =============================================================================
+# IMPOR / EKSPOR EXCEL HARGA (BUG-251): ekspor == templat impor; baca -> pratinjau -> tulis ATOMIK (services/impor_harga)
+# =============================================================================
+
+
+async def _ada_daftar(conn, tid: str, pl_id):
+    r = await conn.fetchrow("SELECT id, code FROM price_lists WHERE id = $1 AND tenant_id = $2", pl_id, tid)
+    if not r:
+        raise HTTPException(status_code=404, detail=TAK_ADA)
+    return r
+
+
+@router.get("/{price_list_id}/export")
+async def ekspor_harga(request: Request, price_list_id: UUID, format: str = "xlsx"):
+    """Unduh harga daftar: xlsx (bawaan) atau csv. Kolom = templat impor; daftar kosong = hanya judul + petunjuk."""
+    ctx = get_user_context(request)
+    if format not in ("xlsx", "csv"):
+        raise GalatBerkode(400, "FORMAT_TIDAK_DIKENAL", "Format ekspor: xlsx atau csv.", field="format")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        daftar = await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+        baris = await IH.ukur_ekspor(conn, ctx["tenant_id"], price_list_id)
+        hari = (await tanggal_dokumen(conn, ctx["tenant_id"])).strftime("%Y%m%d")
+    nama = "".join(c for c in (daftar["code"] or "daftar") if c.isalnum() or c in "-_") or "daftar"
+    isi, tipe = ((IH.ekspor_xlsx(baris), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") if format == "xlsx"
+                 else (IH.ekspor_csv(baris), "text/csv; charset=utf-8"))
+    return Response(content=isi, media_type=tipe, headers={"Content-Disposition": f'attachment; filename="daftar-harga-{nama}-{hari}.{format}"'})
+
+
+@router.post("/{price_list_id}/import/baca")
+async def baca_impor_harga(request: Request, price_list_id: UUID, berkas: UploadFile = File(...)):
+    """Urai .xlsx -> {baris, pemetaan, tak_dipakai, peringatan} (nol tulis). FE meneruskan `baris` apa adanya ke /import/preview."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+    isi = await berkas.read(IH.MAKS_BYTE + 1)
+    return {"success": True, "data": IH.baca_xlsx(isi)}
+
+
+def _badan_impor(body: dict):
+    body = body or {}
+    baris = body.get("baris")
+    if not isinstance(baris, list):
+        raise GalatBerkode(400, "IMPOR_BARIS_WAJIB", "Badan wajib memuat daftar baris (hasil /import/baca).", field="baris")
+    try:
+        mulai = IH._tgl(body.get("berlaku_mulai"), "berlaku_mulai")
+    except ValueError:
+        raise GalatBerkode(400, "IMPOR_TANGGAL_TIDAK_SAH", "Tanggal mulai berlaku bukan tanggal yang sah.", field="berlaku_mulai")
+    return baris, mulai
+
+
+@router.post("/{price_list_id}/import/preview")
+async def pratinjau_impor_harga(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau impor (READ ONLY, penentu SAMA dengan tulis): {ok, blocks, ringkas, baris[{no, ok, blocks, aksi, rencana, peringatan}], teks, payload}."""
+    ctx = get_user_context(request)
+    baris, mulai = _badan_impor(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+            r = IH.bersih(await IH.rencana(conn, ctx["tenant_id"], price_list_id, baris, mulai))
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {**r, "payload": {"baris": baris, "berlaku_mulai": mulai.isoformat() if mulai else None}}}
+
+
+@router.post("/{price_list_id}/import")
+async def impor_harga(request: Request, price_list_id: UUID, body: dict, response: Response = None):
+    """Tulis impor ATOMIK (semua atau tidak). Badan = payload pratinjau. X-Idempotency-Key WAJIB (replay = respons asli)."""
+    from ..services import idem_buat
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    if not kunci:
+        raise GalatBerkode(400, "IMPOR_KUNCI_WAJIB", "Impor wajib membawa header X-Idempotency-Key.")
+    baris, mulai = _badan_impor(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "DH_IMPOR", price_list_id, lambda: body, response)
+            if lama is not None:
+                return lama
+            data = await IH.tulis(conn, {**ctx, "user_id": ctx.get("user_id")}, price_list_id, baris, mulai)
+            resp = {"success": True, "message": f"{data['tambah']} ditambah, {data['ubah']} diubah.", "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "DH_IMPOR", resp, None)
 
 
 @router.post("/{price_list_id}/status/preview")
@@ -672,6 +786,7 @@ async def ubah_status_daftar(request: Request, price_list_id: UUID, body: dict):
                 r = await HA.ukur_daftar(conn, tid, price_list_id)
                 HA.tolak_bila_blok(HA.rencana_status(r, await HA.ukur_pelanggan(conn, tid, price_list_id), ke))
                 await HA.terapkan_status(conn, tid, price_list_id, ke)
+                await HR.catat(conn, ctx, price_list_id, r["code"], "STATUS", "Daftar diaktifkan" if ke else "Daftar dinonaktifkan", header={"dari": {"aktif": not ke}, "ke": {"aktif": ke}})
                 return {"success": True, "message": "Daftar harga diaktifkan." if ke else "Daftar harga dinonaktifkan.",
                         "data": {"id": str(price_list_id), "aktif": ke}}
             async with conn.transaction():
@@ -705,6 +820,7 @@ async def jadikan_bawaan_daftar(request: Request, price_list_id: UUID, body: Opt
                 r = await HA.ukur_daftar(conn, tid, price_list_id)
                 HA.tolak_bila_blok(HA.rencana_bawaan(r, await HA.ukur_bawaan(conn, tid)))
                 await HA.terapkan_bawaan(conn, tid, price_list_id)
+                await HR.catat(conn, ctx, price_list_id, r["code"], "BAWAAN", "Dijadikan daftar bawaan", header={"dari": {"is_default": False}, "ke": {"is_default": True}})
                 return {"success": True, "message": "Daftar harga dijadikan bawaan.", "data": {"id": str(price_list_id)}}
             async with conn.transaction():
                 return await HA.idem_aksi(conn, ctx, request, "DH_BAWAAN", price_list_id, {"bawaan": True}, kerja)

@@ -46,7 +46,7 @@ class Conn:
         self.sql.append((sql, a))
         if "FROM price_list_items" in sql and self.baris:
             return {"id": LINE, "item_id": ITEM, "item_code": "MG-2L", "unit": None, "price": D("30000"), "min_quantity": D("1"),
-                    "is_default_unit": False, "discount_percent": None, "start_date": None, "end_date": None, "dasar": "Pcs"}
+                    "is_default_unit": False, "discount_percent": None, "min_price": None, "start_date": None, "end_date": None, "dasar": "Pcs"}
         return None
 
 
@@ -67,8 +67,22 @@ def _patch(conn, monkeypatch, **badan):
     return asyncio.run(PL.update_price_list_item(None, PLID, LINE, PL.PriceListItemUpdate(**badan)))
 
 
+def _senyapkan_riwayat(monkeypatch):
+    """BUG-252: penulis riwayat (audit_logs) punya uji sendiri (test_dh_riwayat_252); di sini koneksi tiruan tak punya fetchrow/execute riwayat."""
+    from app.routers import price_lists as _PL
+
+    async def _snap(conn, tid, line_id):
+        return {"nama": "Barang", "satuan": "Pcs", "min_quantity": 1.0, "harga": 1.0, "min_price": None, "diskon_persen": None, "mulai": None, "berakhir": None}
+
+    async def _catat(*a, **k):
+        return None
+    monkeypatch.setattr(_PL.HR, "snapshot", _snap)
+    monkeypatch.setattr(_PL.HR, "catat", _catat)
+
+
 def test_patch_harga_lewat_penulis_sama_update_di_tempat(monkeypatch):
     c = Conn()
+    _senyapkan_riwayat(monkeypatch)
     r = _patch(c, monkeypatch, price=D("29500.50"))
     assert r["data"]["id"] == str(LINE)
     upd = [a for s, a in c.sql if s.lstrip().startswith("UPDATE price_list_items")]
@@ -187,7 +201,7 @@ def test_pratinjau_tambah_ok_dan_ganda_berkalimat_sama(monkeypatch):
     c = ConnPv(ganda=True)
     g = _pv(c, monkeypatch, {"item_id": str(ITEM), "price": "15000"})
     assert not g["ok"] and [b["code"] for b in g["blocks"]] == ["HARGA_GANDA"]
-    assert g["blocks"][0]["message"] == "Harga untuk barang, satuan, dan jumlah minimum itu sudah ada di daftar ini."
+    assert g["blocks"][0]["message"] == PL.PESAN_HARGA_GANDA and "tanggal mulai" in PL.PESAN_HARGA_GANDA
     assert c.ro == [True] and not [s for s, _ in c.sql if s.lstrip().startswith(("UPDATE", "INSERT", "DELETE"))]
 
 
@@ -196,7 +210,7 @@ def test_pratinjau_ubah_mengecualikan_baris_sendiri_dan_tanpa_kunci(monkeypatch)
     r = _pv(c, monkeypatch, {"price": "29500"}, line_id=LINE)
     assert r["ok"]
     dup = [a for s, a in c.sql if "AND ($5::uuid IS NULL OR id <> $5)" in s]
-    assert dup and dup[0][-1] == LINE
+    assert dup and len(dup[0]) == 6 and dup[0][4] == LINE        # $5 = baris sendiri dikecualikan; $6 = start_date (BUG-245)
     assert not any("FOR UPDATE" in s for s, _ in c.sql)
 
 
