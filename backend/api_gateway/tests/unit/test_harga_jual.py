@@ -74,7 +74,7 @@ class Kon:
             kol = "sales_price" if "sales_price AS harga" in q else "purchase_price"
             return [{**k, "harga": k.get(kol)} for k in self.konversi if k.get(kol) is not None]
         if "FROM price_list_items" in q:
-            return [{**b, "start_date": None, "end_date": None} for b in self.baris if b["pl"] == a[0]]
+            return [{**b, "start_date": None, "end_date": None, "min_price": b.get("min_price"), "discount_percent": b.get("discount_percent")} for b in self.baris if b["pl"] == a[0]]
         raise AssertionError(q[:90])
 
 

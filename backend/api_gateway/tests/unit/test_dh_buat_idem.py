@@ -73,6 +73,14 @@ def _jalan(monkeypatch, kunci):
         return {"code": "GRS", "name": "Grosir"}
     monkeypatch.setattr(PL, "get_pool", pool)
     monkeypatch.setattr(PL, "siapkan_buat_daftar", siapkan)
+
+    async def snap_daftar(conn, tid, pl_id, batas=200):          # BUG-252: penulis riwayat diuji di test_dh_riwayat_252 (koneksi tiruan tanpa fetch)
+        return []
+
+    async def catat(*a, **kw):
+        return None
+    monkeypatch.setattr(PL.HR, "snapshot_daftar", snap_daftar)
+    monkeypatch.setattr(PL.HR, "catat", catat)
     r = asyncio.run(PL.create_price_list(_req(kunci), CreatePriceListRequest(code="GRS", name="Grosir")))
     return r, k
 

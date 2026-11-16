@@ -942,8 +942,10 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
                                  shipping_amount=body.shipping_amount, shipping_tax_code_id=body.shipping_tax_code_id)
         from ..services.pkp_guard import tolak_ppn_bila_non_pkp as _non_pkp
         await _non_pkp(conn, ctx["tenant_id"], _doc["tax_amount"])
+        from ..services import harga_minimum as HMN
         from ..services import jual_bawah_hpp as JB
         _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(_doc["items"]))  # BUG-207
+        _peringatan = _peringatan + await HMN.peringatan_jual(conn, ctx["tenant_id"], body.customer_id, body.quote_date, HMN.baris_dari_hasil(_doc["items"]))  # BUG-040
     dp = resolve_dp(_doc["total_amount"], body.dp_amount, body.dp_percent)
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     return {"success": True, "data": {
@@ -1678,8 +1680,10 @@ async def preview_send_quote(request: Request, quote_id: str, body: SendQuoteReq
 
         async def _rencana(conn, ctx):
             hasil = await rencana_kirim_penawaran(conn, ctx, quote_id, kunci=False, send_email=kirim_surel)
+            from ..services import harga_minimum as HMN
             from ..services import jual_bawah_hpp as JB
             _peringatan.extend(await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "penawaran", quote_id))  # BUG-207
+            _peringatan.extend(await HMN.peringatan_tersimpan(conn, ctx["tenant_id"], "penawaran", quote_id))  # BUG-040
             return hasil
         q, blok = await _pratinjau_baca(request, quote_id, _rencana, "QUOTE_TAK_BISA_DIKIRIM")
         return {"success": True, "data": {

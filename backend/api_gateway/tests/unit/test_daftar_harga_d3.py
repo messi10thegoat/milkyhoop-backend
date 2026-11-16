@@ -42,7 +42,7 @@ def test_rencana_barang_daftar_baris_dari_ke_selisih():
     r = x["rencana"]
     assert r["barang"] == "Kaos" and r["jumlah_baris"] == 2 and r["berlaku_mulai"] is None
     assert r["baris"][0] == {"id": "l1", "unit_text": "Pcs", "min_quantity": 1.0, "dari": D("1000"), "ke": D("1100.00"), "selisih": D("100.00"),
-                             "dasar_nilai": D("1000"), "hpp": None, "margin_persen": None}
+                             "dasar_nilai": D("1000"), "hpp": None, "margin_persen": None, "min_price": None}
     assert r["baris"][1]["unit_text"] == "Lusin" and r["baris"][1]["ke"] == D("12100.00")
 
 
