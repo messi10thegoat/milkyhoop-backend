@@ -20,6 +20,7 @@ class PriceListItemCreate(BaseModel):
     min_quantity: Decimal = Field(Decimal("1"), gt=0)  # tingkat qty dalam SATUAN baris ini
     is_default_unit: bool = False  # satuan jual bawaan barang ini di daftar ini (opsional)
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
+    min_price: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)  # BUG-040 harga minimum per baris (null = tak ada lantai)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
 
@@ -31,6 +32,7 @@ class PriceListItemUpdate(BaseModel):
     min_quantity: Optional[Decimal] = Field(None, gt=0)
     is_default_unit: Optional[bool] = None
     discount_percent: Optional[float] = Field(None, ge=0, le=100)
+    min_price: Optional[Decimal] = Field(None, ge=0, max_digits=18, decimal_places=2)  # BUG-040 harga minimum per baris (null = tak ada lantai)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
 
@@ -45,6 +47,7 @@ class PriceListItemResponse(BaseModel):
     price: UangJson  # dulu int (memotong sen, Law 9)
     min_quantity: float = 1
     discount_percent: Optional[float] = None
+    min_price: Optional[UangJson] = None  # BUG-040
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     is_active: bool = True

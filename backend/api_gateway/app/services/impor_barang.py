@@ -55,10 +55,11 @@ def _norm_judul(h) -> str:
     return " ".join(k for k in kata if k not in _PENGISI)
 
 
-def _peta_sinonim() -> dict:
+def _peta_sinonim(kolom=None, sinonim=None) -> dict:
+    kolom, sinonim = kolom or KOLOM, sinonim or SINONIM
     peta: dict = {}
-    for medan, daftar in SINONIM.items():
-        for j in daftar + [j for k, j, _ in KOLOM if k == medan]:
+    for medan, daftar in sinonim.items():
+        for j in daftar + [j for k, j, _ in kolom if k == medan]:
             peta.setdefault(_norm_judul(j), set()).add(medan)
     return peta
 
@@ -237,8 +238,9 @@ def templat_xlsx(satuan: list) -> bytes:
     return buf.getvalue()
 
 
-def baca_xlsx(isi: bytes) -> dict:
-    """Lembar pertama -> {baris, pemetaan, tak_dipakai, peringatan}. Judul berkas bebas (SINONIM, urutan bebas); kolom tak dikenal
+def baca_xlsx(isi: bytes, kolom=None, sinonim=None, wajib=("nama", "satuan_dasar"), nomor: bool = False) -> dict:
+    """(kolom/sinonim/wajib bawaan = Impor Barang; Impor Harga Daftar Harga BUG-251 memakai pembaca YANG SAMA dengan kolomnya.)
+    Lembar pertama -> {baris, pemetaan, tak_dipakai, peringatan}. Judul berkas bebas (SINONIM, urutan bebas); kolom tak dikenal
     DISEBUT (BUG-101: dulu dibuang diam -> "Isi karton wajib diisi"), bukan diabaikan; baris kosong dilewati."""
     from openpyxl import load_workbook
     try:
@@ -248,11 +250,12 @@ def baca_xlsx(isi: bytes) -> dict:
     rows = list(wb.worksheets[0].iter_rows(values_only=True))
     if not rows:
         return {"baris": [], "pemetaan": [], "tak_dipakai": [], "peringatan": []}
-    sinonim, label = _peta_sinonim(), {k: j for k, j, _ in KOLOM}
+    sinonim_peta, label = _peta_sinonim(kolom, sinonim), {k: j for k, j, _ in (kolom or KOLOM)}
+    daftar_sinonim = sinonim or SINONIM
     kepala, pemetaan, tak_dipakai, oleh = [], [], [], {}
     for h in rows[0]:
         judul = str(h).strip() if h is not None else ""
-        cocok = sinonim.get(_norm_judul(judul), set()) if judul else set()
+        cocok = sinonim_peta.get(_norm_judul(judul), set()) if judul else set()
         if len(cocok) > 1:
             raise HTTPException(status_code=400, detail={"code": "KOLOM_AMBIGU", "message": f"Judul kolom '{judul}' cocok ke lebih dari satu isian."})
         medan = next(iter(cocok), None)
@@ -265,15 +268,15 @@ def baca_xlsx(isi: bytes) -> dict:
         elif judul:
             tak_dipakai.append(judul)
         kepala.append(medan)
-    for wajib in ("nama", "satuan_dasar"):
-        if wajib not in oleh:
+    for w in wajib:
+        if w not in oleh:
             raise HTTPException(status_code=400, detail={"code": "KOLOM_TIDAK_DIKENAL", "message":
-                                f"Kolom {label[wajib].lower()} tidak ditemukan. Judul yang dikenali: {', '.join(x.capitalize() for x in SINONIM[wajib][:5])}."})
+                                f"Kolom {label[w].lower()} tidak ditemukan. Judul yang dikenali: {', '.join(x.capitalize() for x in daftar_sinonim[w][:5])}."})
     hasil = []
-    for r in rows[1:]:
+    for no, r in enumerate(rows[1:], start=2):
         b = {k: v for k, v in zip(kepala, r) if k and v is not None and str(v).strip() != ""}
         if b:
-            hasil.append({k: (v.strip() if isinstance(v, str) else v) for k, v in b.items()})
+            hasil.append({**({"_no": no} if nomor else {}), **{k: (v.strip() if isinstance(v, str) else v) for k, v in b.items()}})
     return {"baris": hasil, "pemetaan": pemetaan, "tak_dipakai": tak_dipakai,
             "peringatan": [f"Kolom '{j}' tidak dipakai" for j in tak_dipakai]}
 

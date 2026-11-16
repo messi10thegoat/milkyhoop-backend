@@ -46,7 +46,7 @@ class Conn:
         self.sql.append((sql, a))
         if "FROM price_list_items" in sql and self.baris:
             return {"id": LINE, "item_id": ITEM, "item_code": "MG-2L", "unit": None, "price": D("30000"), "min_quantity": D("1"),
-                    "is_default_unit": False, "discount_percent": None, "start_date": None, "end_date": None, "dasar": "Pcs"}
+                    "is_default_unit": False, "discount_percent": None, "min_price": None, "start_date": None, "end_date": None, "dasar": "Pcs"}
         return None
 
 
@@ -67,8 +67,22 @@ def _patch(conn, monkeypatch, **badan):
     return asyncio.run(PL.update_price_list_item(None, PLID, LINE, PL.PriceListItemUpdate(**badan)))
 
 
+def _senyapkan_riwayat(monkeypatch):
+    """BUG-252: penulis riwayat (audit_logs) punya uji sendiri (test_dh_riwayat_252); di sini koneksi tiruan tak punya fetchrow/execute riwayat."""
+    from app.routers import price_lists as _PL
+
+    async def _snap(conn, tid, line_id):
+        return {"nama": "Barang", "satuan": "Pcs", "min_quantity": 1.0, "harga": 1.0, "min_price": None, "diskon_persen": None, "mulai": None, "berakhir": None}
+
+    async def _catat(*a, **k):
+        return None
+    monkeypatch.setattr(_PL.HR, "snapshot", _snap)
+    monkeypatch.setattr(_PL.HR, "catat", _catat)
+
+
 def test_patch_harga_lewat_penulis_sama_update_di_tempat(monkeypatch):
     c = Conn()
+    _senyapkan_riwayat(monkeypatch)
     r = _patch(c, monkeypatch, price=D("29500.50"))
     assert r["data"]["id"] == str(LINE)
     upd = [a for s, a in c.sql if s.lstrip().startswith("UPDATE price_list_items")]

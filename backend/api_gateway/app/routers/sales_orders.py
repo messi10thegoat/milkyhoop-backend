@@ -15,6 +15,7 @@ from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import harga_minimum as HMN
 from ..services import jual_bawah_hpp as JB
 from ..services import stok_baris as SB
 from ..services import satuan_dasar as SD
@@ -996,6 +997,7 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
         _isyarat = await SB.isyarat(conn, ctx["tenant_id"], body.order_date, await tanggal_dokumen(conn, ctx["tenant_id"]), _items)
         _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(doc["items"]))  # BUG-207
+        _peringatan = _peringatan + await HMN.peringatan_jual(conn, ctx["tenant_id"], body.customer_id, body.order_date, HMN.baris_dari_hasil(doc["items"]))  # BUG-040
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
     return {
@@ -1633,6 +1635,7 @@ async def preview_confirm_sales_order(request: Request, order_id: str):
         async with pool.acquire() as conn, conn.transaction(readonly=True):
             h = await pratinjau_konfirmasi_so(conn, ctx, order_id)
             h = {**h, "peringatan": await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "so", order_id)}  # BUG-207
+            h["peringatan"] = h["peringatan"] + await HMN.peringatan_tersimpan(conn, ctx["tenant_id"], "so", order_id)  # BUG-040
         return SalesOrderResponse(success=True, message="Preview", data={**h, "preview": True})
     except HTTPException:
         raise

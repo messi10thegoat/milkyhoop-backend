@@ -8,11 +8,12 @@ from decimal import Decimal
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 
 from ..services import bulk
 from ..services import harga_massal as HM
+from ..services import harga_riwayat as HR
 from ..services import idem_buat
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,35 @@ def _fungsi(price_list_id: UUID, body: BulkHargaRequest):
     return tulis, pratinjau
 
 
+def baris_riwayat_massal(data: dict) -> list:
+    """Hasil jalankan_per_item (item ok, bukan replay) -> baris riwayat [{dari, ke}] (harga lama/baru per baris; nama barang dari `number`)."""
+    out = []
+    for it in data["items"]:
+        if it["status"] != "ok" or it["replay"] or not it.get("result"):
+            continue
+        for b in it["result"].get("baris") or []:
+            dasar = {"line_id": str(b["id"]), "item_id": it["id"], "kode": None, "nama": it.get("number"), "satuan": b.get("unit_text"), "min_quantity": float(b["min_quantity"]),
+                     "min_price": float(b["min_price"]) if b.get("min_price") is not None else None, "diskon_persen": None, "mulai": None, "berakhir": None}
+            out.append({"dari": {**dasar, "harga": float(b["dari"])}, "ke": {**dasar, "harga": float(b["ke"])}})
+    return out
+
+
+async def _catat_riwayat_massal(pool, ctx: dict, price_list_id: UUID, body: "BulkHargaRequest", data: dict) -> None:
+    baris = baris_riwayat_massal(data)
+    if not baris:
+        return
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                kode = await conn.fetchval("SELECT code FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"])
+                arah = f"{'+' if body.nilai > 0 else ''}{body.nilai:f}{'%' if body.mode == 'persen' else ''}"
+                await HR.catat(conn, ctx, price_list_id, kode, "UBAH_MASSAL",
+                               f"Ubah harga massal {arah}: {sum(1 for i in data['items'] if i['status'] == 'ok' and not i['replay'])} barang, {len(baris)} baris"
+                               + (f", mulai {body.berlaku_mulai.isoformat()}" if body.berlaku_mulai else ""), baris)
+    except Exception:  # noqa: BLE001
+        logger.error("BUG-252 riwayat ubah massal gagal dicatat (harga sudah berubah)", exc_info=True)
+
+
 @router.post("/{price_list_id}/bulk/price/preview")
 async def bulk_price_preview(request: Request, price_list_id: UUID, body: BulkHargaRequest):
     ctx = _ctx(request)
@@ -103,9 +133,30 @@ async def bulk_price(request: Request, price_list_id: UUID, body: BulkHargaReque
     pool = await get_pool()
     ids, nama = await _siapkan(pool, ctx, price_list_id, body)
     tulis, _ = _fungsi(price_list_id, body)
-    return {"success": True, "data": await bulk.jalankan_per_item(
+    data = await bulk.jalankan_per_item(
         pool, ctx, AKSI, "price_lists", ids, tulis, kunci_batch=kunci,
         payload={"price_list_id": str(price_list_id), "mode": body.mode, "nilai": str(body.nilai),
                  "berlaku_mulai": body.berlaku_mulai.isoformat() if body.berlaku_mulai else None,
                  "dasar": body.dasar, "kelipatan": body.pembulatan_kelipatan, "arah": body.pembulatan_arah},
-        nomor=nama)}
+        nomor=nama)
+    await _catat_riwayat_massal(pool, ctx, price_list_id, body, data)   # BUG-252: SATU event berbaris (replay/ditolak tak dicatat ulang)
+    return {"success": True, "data": data}
+
+
+@router.get("/{price_list_id}/riwayat")
+async def riwayat_daftar(request: Request, price_list_id: UUID, limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), aksi: Optional[str] = Query(None),
+                         dari: Optional[date] = Query(None), sampai: Optional[date] = Query(None)):
+    """BUG-252 riwayat perubahan daftar harga (audit_logs immutable; bersaring tenant + daftar): terbaru dulu, aksi_text + ringkas dari server. Izin R price_list."""
+    ctx = _ctx(request)
+    if aksi is not None and aksi not in HR.AKSI_TEKS:
+        raise HTTPException(status_code=400, detail={"code": "RIWAYAT_AKSI_TIDAK_DIKENAL", "message": f"Aksi riwayat: {', '.join(HR.AKSI_TEKS)}."})
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        ada = await conn.fetchrow("SELECT code FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"])
+        hasil = await HR.daftar(conn, ctx["tenant_id"], price_list_id, limit, offset, aksi, dari, sampai) if ada else None
+    if hasil is None:                                   # daftar sudah dihapus: riwayatnya tetap ada (immutable) -> baca tanpa cek daftar
+        async with pool.acquire() as conn:
+            hasil = await HR.daftar(conn, ctx["tenant_id"], price_list_id, limit, offset, aksi, dari, sampai)
+        if hasil["total"] == 0:
+            raise HTTPException(status_code=404, detail="Daftar harga tidak ditemukan.")
+    return {"success": True, "data": {**hasil, "limit": limit, "offset": offset, "aksi_pilihan": [{"aksi": k, "teks": v} for k, v in HR.AKSI_TEKS.items()]}}

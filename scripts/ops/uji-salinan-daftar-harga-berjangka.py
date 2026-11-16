@@ -118,6 +118,7 @@ async def utama():
             print(f"TOLAK: bukan salinan (pool={db})")
             return 2
         await c.execute((MIG / "V500__daftar_harga_berjangka.sql").read_text())
+        await c.execute((MIG / "V501__price_list_items_min_price.sql").read_text())   # puncak rantai: penulis baris/resolve membaca min_price
     ix = await indeks(pool)
     cek("H0 V500 maju: indeks berjangka ada, indeks lama tak ada", "uq_price_list_items_berjangka" in ix and "uq_price_list_items_satuan" not in ix)
     daftar = []

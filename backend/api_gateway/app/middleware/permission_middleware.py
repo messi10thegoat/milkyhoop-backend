@@ -864,7 +864,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R"),
     (r"^/api/price-lists/[^/]+/items/[^/]+/edit/preview$", ["POST"], "price_list", "U"),  # pratinjau ubah baris == PATCH baris
     # D2 Daftar Harga (13 Nov): pratinjau = huruf SAMA dgn tulisnya; status/bawaan = ubah
-    (r"^/api/price-lists/[^/]+/bulk/price(/preview)?$", ["POST"], "price_list", "U"),  # D3: ubah harga massal, pratinjau = huruf tulisnya
+    (r"^/api/price-lists/[^/]+/bulk/price(/preview)?$", ["POST"], "price_list", "U"),
+    (r"^/api/price-lists/[^/]+/import(/baca|/preview)?$", ["POST"], "price_list", "U"),  # BUG-251 impor harga Excel: baca/pratinjau = huruf SAMA dgn tulis  # D3: ubah harga massal, pratinjau = huruf tulisnya
     (r"^/api/price-lists/[^/]+/status/preview$", ["POST"], "price_list", "U"),
     (r"^/api/price-lists/[^/]+/status$", ["POST"], "price_list", "U"),
     (r"^/api/price-lists/[^/]+/default/preview$", ["POST"], "price_list", "U"),
@@ -1236,6 +1237,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price\-lists$", ["GET"], "price_list", "R"),
     (r"^/api/price\-lists/dropdown$", ["GET"], "price_list", "R"),
     (r"^/api/price\-lists/[^/]+$", ["GET"], "price_list", "R"),
+    (r"^/api/price\-lists/[^/]+/riwayat$", ["GET"], "price_list", "R"),  # BUG-252 riwayat perubahan harga (baca)
+    (r"^/api/price\-lists/[^/]+/export$", ["GET"], "price_list", "R"),  # BUG-251 ekspor harga
     (r"^/api/product\-djp\-mapping$", ["GET"], "tax", "R"),
     (r"^/api/production$", ["GET"], "item", "R"),
     (r"^/api/production\-costing/cost\-pools$", ["GET"], "work_order", "R"),
