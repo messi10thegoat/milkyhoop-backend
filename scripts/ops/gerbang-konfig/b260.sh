@@ -14,7 +14,7 @@ SAB=(
  "t5 has_more/offset SQL tertimpa offset asli|$IT|s#params.extend(\[limit, offset_sql\])#params.extend([limit, offset])#|$T1"
  "t6 sort hanya menghitung potongan halaman|$IT|s#SB.hitung(conn, tenant_id, dil_semua#SB.hitung(conn, tenant_id, dil_semua[:limit]#|$T1"
  "m1 merek dibuang dari INSERT|$IT|s#sales_tax_id, purchase_tax_id, bisa_dikirim, merek,#sales_tax_id, purchase_tax_id, bisa_dikirim,#|$T2"
- "m2 ?merek= diabaikan|$IT|s#        if merek:#        if False and merek:#|$T2"
+ "m2 ?merek= diabaikan|$IT|s#        if isinstance(merek, str) and merek.strip():#        if False:#|$T2"
  "m3 rute /items/merek hilang dari urutan (nama rute berubah)|$IT|s#@router.get(\"/items/merek\")#@router.get(\"/items/merek-x\")#|$T2"
  "m3b rute /items/merek DIPINDAH ke sesudah /items/{item_id} (blok dipindah ke akhir berkas)|$IT|/^@router.get(\"\\/items\\/merek\")/,/^            await conn.close()/{H;d;};\$G|$T2"
  "m4 ubah barang tak menulis merek|$IT|s#                \"merek\": \"merek\",#                \"merek_x\": \"merek\",#|$T2"

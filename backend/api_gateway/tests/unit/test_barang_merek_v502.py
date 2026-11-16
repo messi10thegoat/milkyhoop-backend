@@ -44,7 +44,7 @@ def test_insert_buat_barang_kolom_dan_placeholder_sama_banyak():
 
 
 def test_rute_merek_terpasang_dan_urutan_rute():
-    assert '        if merek:\n            query_parts.append(f"AND p.merek = ${param_idx}")\n            params.append(merek.strip())' in RUTE  # saringan terpasang UTUH
+    assert '        if isinstance(merek, str) and merek.strip():' in RUTE and '            query_parts.append(f"AND p.merek = ${param_idx}")\n            params.append(merek.strip())' in RUTE  # saringan terpasang UTUH
     assert RUTE.index('@router.get("/items/merek")') < RUTE.index('@router.get("/items/{item_id}", response_model=ItemDetailResponse)')
     assert '"merek": ("Merek", "merek")' in RUTE and '"merek": "merek"' in RUTE
     assert '                        "Category",\n                        "Merek",' in RUTE and 'row["merek"],\n                            row["description"]' in RUTE   # header + baris ekspor

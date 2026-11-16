@@ -433,7 +433,7 @@ async def list_items(
             params.append(kategori)
             param_idx += 1
 
-        if merek:
+        if isinstance(merek, str) and merek.strip():   # Query() default = objek saat handler dipanggil langsung (tes): cek tipe, bukan truthy
             query_parts.append(f"AND p.merek = ${param_idx}")
             params.append(merek.strip())
             param_idx += 1
