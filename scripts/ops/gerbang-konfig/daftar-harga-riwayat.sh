@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus Daftar Harga RIWAYAT perubahan (BUG-252, 16 Nov 2026): services/harga_riwayat.py (penulis + pembaca audit_logs immutable), hook di tulis/ubah/hapus
 # baris, header, status, bawaan, hapus daftar, impor 251, ubah massal D3, GET /{id}/riwayat. TANPA migrasi (indeks idx_audit_entity ada; audit_logs 6 MB). Cabang turunan urut-start (-> 253 -> 040 -> 251 -> 245-r5).
-# Pemisah sabotase = "|", ekspresi sed memakai "@". Tiap sabotase terbukti MERAH lokal pada tes unit (14/14).
+# Pemisah sabotase = "|", ekspresi sed memakai "@". Tiap sabotase terbukti MERAH lokal pada tes unit (18/18).
 W=/root/mh-dh-riwayat-252; CABANG=feat/daftarharga-riwayat-252; NAMA_JENDELA=daftar-harga-riwayat
 POLA_UNIT='harga_riwayat|dh_riwayat|impor_harga|dh_impor|bulk_price|daftar_harga|dh_berjangka|dh_diskon|dh_harga_minimum|bulk_f1|izin_rute|audit'
 HARNESS=scripts/ops/uji-salinan-daftar-harga-riwayat.sh
@@ -22,4 +22,8 @@ SAB=(
  "r12 pelaku tanpa username|$A/services/harga_riwayat.py|s@r\[\"nama\"\] or r\[\"username\"\]@r[\"nama\"]@|$T"
  "r13 izin baca riwayat dibuang|$A/middleware/permission_middleware.py|s@riwayat\$\", \[\"GET\"\]@riwayatx\$\", [\"GET\"]@|$T"
  "r14 tambah baris tak dicatat|$A/routers/price_lists.py|s@\"TAMBAH_BARIS\", HR.ringkas_baris(None, ke)@\"UBAH_BARIS\", HR.ringkas_baris(None, ke)@|$T"
+ "r15 waktu_text tanpa zona tenant|$A/services/harga_riwayat.py|s@lokal = instant.astimezone(zona)@lokal = instant@|$T"
+ "r16 bulan angka bukan nama Indonesia|$A/services/harga_riwayat.py|s@HD.BULAN\[lokal.month - 1\]@lokal.month@|$T"
+ "r17 waktu_text tak dikirim|$A/services/harga_riwayat.py|s@\"waktu_text\": waktu_text(r\[\"createdAt\"\], zona), @@|$T"
+ "r18 zona dibaca tiap baris|$A/services/harga_riwayat.py|s@    zona = await zona_tenant(conn, tid)@    zona = None@|$T"
 )
