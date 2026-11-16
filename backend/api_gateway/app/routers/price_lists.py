@@ -2,7 +2,7 @@
 Price Lists Router - Daftar Harga Management
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from typing import Literal, Optional
 from uuid import UUID
 import logging
@@ -22,6 +22,7 @@ from ..schemas.price_lists import (
 from ..services import harga_aksi as HA
 from ..services import harga_daftar as HD
 from ..services import harga_jual as HJ
+from ..services import impor_harga as IH
 from ..services import satuan_dasar as SD
 from ..services.galat_berkode import GalatBerkode
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -643,6 +644,96 @@ async def _baca_saja(fungsi):
 def _aktif_dari(body) -> Optional[bool]:
     v = (body or {}).get("aktif")
     return v if isinstance(v, bool) else None
+
+
+# =============================================================================
+# IMPOR / EKSPOR EXCEL HARGA (BUG-251): ekspor == templat impor; baca -> pratinjau -> tulis ATOMIK (services/impor_harga)
+# =============================================================================
+
+
+async def _ada_daftar(conn, tid: str, pl_id):
+    r = await conn.fetchrow("SELECT id, code FROM price_lists WHERE id = $1 AND tenant_id = $2", pl_id, tid)
+    if not r:
+        raise HTTPException(status_code=404, detail=TAK_ADA)
+    return r
+
+
+@router.get("/{price_list_id}/export")
+async def ekspor_harga(request: Request, price_list_id: UUID, format: str = "xlsx"):
+    """Unduh harga daftar: xlsx (bawaan) atau csv. Kolom = templat impor; daftar kosong = hanya judul + petunjuk."""
+    ctx = get_user_context(request)
+    if format not in ("xlsx", "csv"):
+        raise GalatBerkode(400, "FORMAT_TIDAK_DIKENAL", "Format ekspor: xlsx atau csv.", field="format")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        daftar = await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+        baris = await IH.ukur_ekspor(conn, ctx["tenant_id"], price_list_id)
+        hari = (await tanggal_dokumen(conn, ctx["tenant_id"])).strftime("%Y%m%d")
+    nama = "".join(c for c in (daftar["code"] or "daftar") if c.isalnum() or c in "-_") or "daftar"
+    isi, tipe = ((IH.ekspor_xlsx(baris), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") if format == "xlsx"
+                 else (IH.ekspor_csv(baris), "text/csv; charset=utf-8"))
+    return Response(content=isi, media_type=tipe, headers={"Content-Disposition": f'attachment; filename="daftar-harga-{nama}-{hari}.{format}"'})
+
+
+@router.post("/{price_list_id}/import/baca")
+async def baca_impor_harga(request: Request, price_list_id: UUID, berkas: UploadFile = File(...)):
+    """Urai .xlsx -> {baris, pemetaan, tak_dipakai, peringatan} (nol tulis). FE meneruskan `baris` apa adanya ke /import/preview."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+    isi = await berkas.read(IH.MAKS_BYTE + 1)
+    return {"success": True, "data": IH.baca_xlsx(isi)}
+
+
+def _badan_impor(body: dict):
+    body = body or {}
+    baris = body.get("baris")
+    if not isinstance(baris, list):
+        raise GalatBerkode(400, "IMPOR_BARIS_WAJIB", "Badan wajib memuat daftar baris (hasil /import/baca).", field="baris")
+    try:
+        mulai = IH._tgl(body.get("berlaku_mulai"), "berlaku_mulai")
+    except ValueError:
+        raise GalatBerkode(400, "IMPOR_TANGGAL_TIDAK_SAH", "Tanggal mulai berlaku bukan tanggal yang sah.", field="berlaku_mulai")
+    return baris, mulai
+
+
+@router.post("/{price_list_id}/import/preview")
+async def pratinjau_impor_harga(request: Request, price_list_id: UUID, body: dict):
+    """Pratinjau impor (READ ONLY, penentu SAMA dengan tulis): {ok, blocks, ringkas, baris[{no, ok, blocks, aksi, rencana, peringatan}], teks, payload}."""
+    ctx = get_user_context(request)
+    baris, mulai = _badan_impor(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        tr = conn.transaction(readonly=True)
+        await tr.start()
+        try:
+            await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+            r = IH.bersih(await IH.rencana(conn, ctx["tenant_id"], price_list_id, baris, mulai))
+        finally:
+            await tr.rollback()
+    return {"success": True, "data": {**r, "payload": {"baris": baris, "berlaku_mulai": mulai.isoformat() if mulai else None}}}
+
+
+@router.post("/{price_list_id}/import")
+async def impor_harga(request: Request, price_list_id: UUID, body: dict, response: Response = None):
+    """Tulis impor ATOMIK (semua atau tidak). Badan = payload pratinjau. X-Idempotency-Key WAJIB (replay = respons asli)."""
+    from ..services import idem_buat
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    if not kunci:
+        raise GalatBerkode(400, "IMPOR_KUNCI_WAJIB", "Impor wajib membawa header X-Idempotency-Key.")
+    baris, mulai = _badan_impor(body)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _ada_daftar(conn, ctx["tenant_id"], price_list_id)
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "DH_IMPOR", price_list_id, lambda: body, response)
+            if lama is not None:
+                return lama
+            data = await IH.tulis(conn, {**ctx, "user_id": ctx.get("user_id")}, price_list_id, baris, mulai)
+            resp = {"success": True, "message": f"{data['tambah']} ditambah, {data['ubah']} diubah.", "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "DH_IMPOR", resp, None)
 
 
 @router.post("/{price_list_id}/status/preview")
