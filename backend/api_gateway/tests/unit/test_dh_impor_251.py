@@ -68,28 +68,28 @@ def test_baca_bukan_excel_ditolak():
 
 # ---------------------------------------------------------------- ekspor
 RAW = [{"item_code": "A-1", "nama": "Minyak", "unit": None, "min_quantity": Decimal("1.000"), "price": Decimal("12500.00"),
-        "min_price": Decimal("11000"), "start_date": date(2026, 11, 20), "end_date": None, "dasar": "Pcs"},
+        "min_price": Decimal("11000"), "discount_percent": Decimal("5.00"), "start_date": date(2026, 11, 20), "end_date": None, "dasar": "Pcs"},
        {"item_code": "A-1", "nama": "Minyak", "unit": "Dus", "min_quantity": Decimal("10"), "price": Decimal("140000"),
-        "min_price": None, "start_date": None, "end_date": date(2026, 12, 31), "dasar": "Pcs"}]
+        "min_price": None, "discount_percent": None, "start_date": None, "end_date": date(2026, 12, 31), "dasar": "Pcs"}]
 
 
 def test_ekspor_xlsx_dibaca_ulang_oleh_impor_dan_satuan_kosong_jadi_satuan_dasar():
     r = IH.baca_xlsx(IH.ekspor_xlsx(RAW))
-    assert [m["medan"] for m in r["pemetaan"]] == ["kode", "nama", "satuan", "min_qty", "harga", "min_harga", "mulai", "akhir"] and not r["tak_dipakai"]
+    assert [m["medan"] for m in r["pemetaan"]] == ["kode", "nama", "satuan", "min_qty", "harga", "min_harga", "diskon", "mulai", "akhir"] and not r["tak_dipakai"]
     assert r["baris"][0]["satuan"] == "Pcs" and r["baris"][1]["satuan"] == "Dus" and r["baris"][0]["harga"] == 12500
 
 
 def test_ekspor_xlsx_kosong_hanya_judul():
     r = IH.baca_xlsx(IH.ekspor_xlsx([]))
-    assert r["baris"] == [] and len(r["pemetaan"]) == 8
+    assert r["baris"] == [] and len(r["pemetaan"]) == 9
 
 
 def test_ekspor_csv_id_id_bom_titik_koma_koma_desimal():
     b = IH.ekspor_csv(RAW)
     assert b.startswith(b"\xef\xbb\xbf")
     baris = b.decode("utf-8-sig").split("\r\n")
-    assert baris[0] == "Kode barang;Nama;Satuan;Mulai qty;Harga;Harga minimum;Mulai berlaku;Berakhir"
-    assert baris[1] == "A-1;Minyak;Pcs;1;12500,00;11000;2026-11-20;"
+    assert baris[0] == "Kode barang;Nama;Satuan;Mulai qty;Harga;Harga minimum;Diskon %;Mulai berlaku;Berakhir"
+    assert baris[1] == "A-1;Minyak;Pcs;1;12500,00;11000;5,00;2026-11-20;"
 
 
 def test_ekspor_csv_tak_menjalankan_rumus():
@@ -376,3 +376,35 @@ def test_migrasi_v501_maju_dan_rollback_tanpa_transaksi():
     assert "ADD COLUMN IF NOT EXISTS min_price NUMERIC(18,2)" in maju and "CHECK (min_price IS NULL OR min_price >= 0)" in maju
     assert not re.search(r"^\s*(BEGIN|COMMIT)\b", maju + mundur, re.M | re.I)
     assert "DROP COLUMN IF EXISTS min_price" in mundur and "DROP CONSTRAINT IF EXISTS chk_price_list_items_min_price_nonneg" in mundur
+
+
+# ---------------------------------------------------------------- BUG-253 diskon % per baris (resolve + impor/ekspor)
+def test_impor_diskon_tambah_ubah_pertahankan_bila_kolom_tak_ada_dan_kosongkan_bila_kolom_kosong():
+    lama = baris_ada(10000, diskon=Decimal("5"))
+    r1 = run(Konn([lama]), [b(harga=10000)])                                # kolom Diskon % tak ada -> diskon lama utuh, harga sama = tetap
+    assert r1["baris"][0]["aksi"] == "tetap" and r1["baris"][0]["rencana"]["diskon_persen"] == 5.0
+    r2 = run(Konn([lama]), [b(harga=10000, diskon="7,5")])                  # kolom ada -> berubah
+    assert r2["baris"][0]["aksi"] == "ubah" and r2["baris"][0]["rencana"]["diskon_persen"] == 7.5
+    r3 = run(Konn([lama]), [b(harga=10000, diskon=None)])                   # kolom ada tapi kosong -> dikosongkan
+    assert r3["baris"][0]["aksi"] == "ubah" and r3["baris"][0]["rencana"]["diskon_persen"] is None
+    assert run(Konn([lama]), [b(harga=10000, diskon=5)])["baris"][0]["aksi"] == "tetap"
+    assert run(Konn(), [b(diskon=10)])["baris"][0]["rencana"]["diskon_persen"] == 10.0
+
+
+def test_impor_diskon_di_luar_0_100_atau_tak_terbaca_diblok():
+    r = run(Konn(), [b(diskon=-1), b(diskon=100.5), b(diskon="abc"), b(diskon="1,555")])
+    assert [x["blocks"][0]["code"] for x in r["baris"]] == ["IMPOR_DISKON_TIDAK_SAH"] * 4 and all(x["blocks"][0]["field"] == "diskon" for x in r["baris"])
+    assert run(Konn(), [b(diskon=0)])["baris"][0]["ok"] and run(Konn(), [b(diskon=100)])["baris"][0]["ok"]
+
+
+def test_tulis_impor_meneruskan_diskon_ke_penulis_tunggal(stub):
+    asyncio.run(IH.tulis(Konn(), {"tenant_id": TID}, PL_ID, [b(harga=12000, diskon=12.5)]))
+    assert stub["tulis"][0][0].discount_percent == 12.5
+
+
+def test_resolve_mengembalikan_diskon_persen_baris_yang_menang_null_bila_tak_diatur():
+    import inspect
+    from app.services import harga_jual as HJ
+    s = inspect.getsource(HJ)
+    assert "min_price, discount_percent, min_quantity" in s and '"diskon_persen": None' in s
+    assert 'diskon_persen=float(r["discount_percent"]) if r["discount_percent"] is not None else None' in s

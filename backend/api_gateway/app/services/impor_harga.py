@@ -25,7 +25,7 @@ KODE_NOL, KODE_NANTI, KODE_BAWAH_HPP = "DH_HARGA_NOL", "DH_BERLAKU_NANTI", "DH_D
 
 # (kunci, judul templat/ekspor, wajib). Urutan = urutan kolom ekspor.
 KOLOM = [("kode", "Kode barang", True), ("nama", "Nama", False), ("satuan", "Satuan", False), ("min_qty", "Mulai qty", False),
-         ("harga", "Harga", True), ("min_harga", "Harga minimum", False), ("mulai", "Mulai berlaku", False), ("akhir", "Berakhir", False)]
+         ("harga", "Harga", True), ("min_harga", "Harga minimum", False), ("diskon", "Diskon %", False), ("mulai", "Mulai berlaku", False), ("akhir", "Berakhir", False)]
 SINONIM = {
     "kode": ["kode barang", "kode", "sku", "kode produk", "item code", "code"],
     "nama": ["nama", "nama barang", "nama produk", "produk", "item", "barang"],
@@ -33,6 +33,7 @@ SINONIM = {
     "min_qty": ["mulai qty", "mulai kuantitas", "untuk kts diatas", "kts diatas", "min qty", "minimum qty", "qty minimum", "qty", "kuantitas"],
     "harga": ["harga", "harga baru", "harga jual", "price"],
     "min_harga": ["harga minimum", "harga min", "minimum", "min price", "lantai harga"],
+    "diskon": ["diskon", "diskon persen", "disc", "disc persen", "potongan", "potongan persen"],
     "mulai": ["mulai berlaku", "tanggal mulai", "berlaku mulai", "mulai", "start"],
     "akhir": ["berakhir", "tanggal berakhir", "berlaku sampai", "sampai", "akhir", "end"],
 }
@@ -77,13 +78,14 @@ def _tgl(v, medan: str):
 
 def _baris_ekspor(r, dasar) -> list:
     return [r["item_code"], r["nama"], HD.unit_text(r["unit"], dasar), Decimal(str(r["min_quantity"])).normalize(), Decimal(str(r["price"])),
-            Decimal(str(r["min_price"])) if r["min_price"] is not None else None, r["start_date"], r["end_date"]]
+            Decimal(str(r["min_price"])) if r["min_price"] is not None else None,
+            Decimal(str(r["discount_percent"])) if r["discount_percent"] is not None else None, r["start_date"], r["end_date"]]
 
 
 async def ukur_ekspor(conn, tid: str, pl_id) -> list:
     """Baris daftar untuk ekspor (bersaring tenant), urut kode barang, satuan, min qty, mulai berlaku."""
     return [dict(r) for r in await conn.fetch(
-        """SELECT COALESCE(NULLIF(pli.item_code, ''), p.item_code, p.sku) AS item_code, p.nama_produk AS nama, pli.unit, pli.min_quantity, pli.price, pli.min_price,
+        """SELECT COALESCE(NULLIF(pli.item_code, ''), p.item_code, p.sku) AS item_code, p.nama_produk AS nama, pli.unit, pli.min_quantity, pli.price, pli.min_price, pli.discount_percent,
                   pli.start_date, pli.end_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar
            FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
            LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = pl.tenant_id
@@ -117,7 +119,7 @@ def ekspor_xlsx(baris: list) -> bytes:
     ws.append([j for _, j, _ in KOLOM])
     for r in baris:
         ws.append([bulk._sel(x) if isinstance(x, str) else (float(x) if isinstance(x, Decimal) else x) for x in _baris_ekspor(r, r["dasar"])])
-    for k in ("G", "H"):
+    for k in ("H", "I"):
         for c in ws[k][1:]:
             c.number_format = "yyyy-mm-dd"
     pt = wb.create_sheet("Petunjuk")
@@ -162,6 +164,13 @@ def _norm_baris(no: int, b: dict, mulai_bawaan: Optional[date]) -> tuple:
             bl.append(blok("IMPOR_HARGA_TIDAK_SAH", "Harga minimum tidak boleh negatif dan maksimal 2 angka di belakang koma.", "min_harga"))
     except ValueError:
         bl.append(blok("IMPOR_HARGA_TIDAK_SAH", f"Harga minimum '{b.get('min_harga')}' tidak terbaca sebagai angka.", "min_harga"))
+    diskon = None
+    try:
+        diskon = IB.angka(b.get("diskon"))
+        if diskon is not None and (diskon < 0 or diskon > 100 or diskon != diskon.quantize(Decimal("0.01"))):
+            bl.append(blok("IMPOR_DISKON_TIDAK_SAH", "Diskon % harus antara 0 dan 100, maksimal 2 angka di belakang koma.", "diskon"))
+    except ValueError:
+        bl.append(blok("IMPOR_DISKON_TIDAK_SAH", f"Diskon '{b.get('diskon')}' tidak terbaca sebagai angka.", "diskon"))
     mulai = akhir = None
     ada_akhir = "akhir" in b
     for medan, nama in (("mulai", "Mulai berlaku"), ("akhir", "Berakhir")):
@@ -182,7 +191,7 @@ def _norm_baris(no: int, b: dict, mulai_bawaan: Optional[date]) -> tuple:
         return None, bl
     return {"kode": kode, "satuan": " ".join(str(b.get("satuan") or "").split()) or None, "harga": harga, "min_qty": qty,
             "mulai": mulai, "akhir": akhir, "ada_akhir": ada_akhir,
-            "min_harga": minimum, "ada_min": "min_harga" in b}, []
+            "min_harga": minimum, "ada_min": "min_harga" in b, "diskon": diskon, "ada_diskon": "diskon" in b}, []
 
 
 async def _cari_barang(conn, tid: str, kode: str):
@@ -244,16 +253,18 @@ async def rencana(conn, tid: str, pl_id, baris: list, mulai_bawaan: Optional[dat
                       and Decimal(str(a["min_quantity"])).normalize() == k[2] and a["start_date"] == nilai["mulai"]), None)
         unit_tulis = None if kanon == SD.kanon(brg["dasar"], alias) else satuan
         akhir = nilai["akhir"] if (nilai["ada_akhir"] or not cocok) else cocok["end_date"]
+        diskon_lama = float(cocok["discount_percent"]) if cocok and cocok["discount_percent"] is not None else None
+        diskon = (float(nilai["diskon"]) if nilai["diskon"] is not None else None) if (nilai["ada_diskon"] or not cocok) else diskon_lama   # kolom Diskon % tak ada = diskon lama utuh
         minimum = nilai["min_harga"] if (nilai["ada_min"] or not cocok) else cocok["min_price"]   # kolom Harga minimum tak ada = lantai lama utuh; ada tapi kosong = dikosongkan
         try:
             if cocok:
                 item = PriceListItemCreate(item_id=str(pid), item_code=cocok["item_code"], unit=cocok["unit"], price=nilai["harga"],
                                            min_quantity=Decimal(str(cocok["min_quantity"])), is_default_unit=bool(cocok["is_default_unit"]),
-                                           discount_percent=float(cocok["discount_percent"]) if cocok["discount_percent"] is not None else None,
+                                           discount_percent=diskon,
                                            start_date=cocok["start_date"], end_date=akhir, min_price=minimum)
             else:
                 item = PriceListItemCreate(item_id=str(pid), item_code=kode, unit=unit_tulis, price=nilai["harga"], min_quantity=nilai["min_qty"],
-                                           start_date=nilai["mulai"], end_date=akhir, min_price=minimum)
+                                           discount_percent=diskon, start_date=nilai["mulai"], end_date=akhir, min_price=minimum)
             await PL.siapkan_baris_harga(conn, tid, pl_id, item, cocok["id"] if cocok else None)
         except GalatBerkode as e:
             bl.append(blok(e.code, e.detail, e.field))
@@ -267,13 +278,13 @@ async def rencana(conn, tid: str, pl_id, baris: list, mulai_bawaan: Optional[dat
             bl.append(blok("IMPOR_BARIS_TIDAK_SAH", "Isi baris tidak sah (harga/qty di luar batas)."))
             continue
         dari = Decimal(str(cocok["price"])) if cocok else None
-        sama = bool(cocok) and dari == nilai["harga"] and cocok["end_date"] == akhir and (
+        sama = bool(cocok) and dari == nilai["harga"] and cocok["end_date"] == akhir and diskon == diskon_lama and (
             (Decimal(str(cocok["min_price"])) if cocok["min_price"] is not None else None) == minimum)
         row["aksi"] = "tetap" if sama else ("ubah" if cocok else "tambah")
         row["_tulis"] = {"item": item, "line_id": cocok["id"] if cocok else None}
         row["rencana"] = {"barang": brg["nama_produk"], "item_code": kode, "unit_text": HD.unit_text(satuan, brg["dasar"]),
                           "min_quantity": float(nilai["min_qty"]), "dari": dari, "ke": nilai["harga"],
-                          "harga_minimum": minimum,
+                          "harga_minimum": minimum, "diskon_persen": diskon,
                           "selisih": (nilai["harga"] - dari) if dari is not None else None,
                           "berlaku_mulai": nilai["mulai"].isoformat() if nilai["mulai"] else None,
                           "berakhir": akhir.isoformat() if akhir else None}

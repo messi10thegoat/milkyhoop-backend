@@ -86,7 +86,7 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
             harga_konv.setdefault(str(r["product_id"]), {}).setdefault(SD.kanon(r["conversion_unit"], alias), r["harga"])
         if daftar:
             for r in await conn.fetch(
-                    """SELECT item_id, unit, price, min_price, min_quantity, start_date, end_date FROM price_list_items
+                    """SELECT item_id, unit, price, min_price, discount_percent, min_quantity, start_date, end_date FROM price_list_items
                        WHERE price_list_id = $1 AND item_id = ANY($2::uuid[]) AND COALESCE(is_active, true)""", daftar["id"], ids):
                 baris_daftar.setdefault(str(r["item_id"]), []).append(r)
     out = []
@@ -98,7 +98,7 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
         kanon_baris = SD.kanon(b.get("unit") or dasar, alias)
         h = SD.hitung(ktx, pid, b.get("unit"), q, "konversi")
         hasil = {"key": b.get("key"), "item_id": pid, "unit": b.get("unit"), "quantity": float(q), "harga": None, "sumber": "kosong",
-                 "daftar": None, "tingkat_min_qty": None, "harga_minimum": None, "satuan_dasar": dasar, "faktor": float(h["faktor"]),
+                 "daftar": None, "tingkat_min_qty": None, "harga_minimum": None, "diskon_persen": None, "satuan_dasar": dasar, "faktor": float(h["faktor"]),
                  "blok": {"code": h["blok"]["code"], "message": h["blok"]["message"]} if h["blok"] else None}
         cocok = [r for r in baris_daftar.get(pid, []) if SD.kanon(r["unit"] or dasar, alias) == kanon_baris
                  and _berlaku(r, tanggal) and Decimal(str(r["min_quantity"])) <= q]
@@ -106,7 +106,8 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
             r = pilih_baris(cocok)
             hasil.update(harga=float(_r2(r["price"])), sumber="daftar", daftar={"id": str(daftar["id"]), "code": daftar["code"]},
                          tingkat_min_qty=float(r["min_quantity"]),
-                         harga_minimum=float(_r2(r["min_price"])) if r["min_price"] is not None else None)  # BUG-040 lantai baris yang menang (null = tak ada)
+                         harga_minimum=float(_r2(r["min_price"])) if r["min_price"] is not None else None,
+                         diskon_persen=float(r["discount_percent"]) if r["discount_percent"] is not None else None)  # BUG-253 diskon % baris yang menang (null = tak diatur, BUKAN 0)  # BUG-040 lantai baris yang menang (null = tak ada)
         elif SD.normal(b.get("unit")) and kanon_baris != SD.kanon(dasar, alias) and kanon_baris in harga_konv.get(pid, {}):
             hasil.update(harga=float(_r2(harga_konv[pid][kanon_baris])), sumber="harga_satuan")
         elif not h["blok"] and dasar_harga.get(pid) is not None:
