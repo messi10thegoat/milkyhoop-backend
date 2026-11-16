@@ -4,6 +4,8 @@ B per_gudang: Σ nilai baris kelompok=gudang == Σ nilai kelompok=barang (sertak
 C Σ nilai baris kelompok=barang (tanpa saringan) == sub_ledger (toleransi pembulatan 0,01 x jumlah baris)
 D per tanggal mundur 30 hari: sub_ledger diukur ulang SQL independen (Σ qty x HPP gerakan terakhir sampai tanggal itu)
 E waktu (p50/p95, 10 panggilan) per tenant (target < 1000 ms)
+F penjualan per barang (profitability/items): teks aditif ada per baris + ringkasan, medan lama sama dgn sebelum teks (string 2dp), kurung bila gross_profit < 0
+G kartu stok K9 (handler asli GET /items/{id}/history) pada barang dgn gerakan terbanyak: teks per baris + saldo_awal_text, saldo berjalan akhir == Σ(in-out) SQL, medan lama utuh
 Selisih GL nyata (BUG-268, kaos) dicetak sebagai CATATAN lengkap (bukan FAIL): ini bahan analisis penyebab."""
 import asyncio
 import statistics
@@ -13,7 +15,11 @@ from datetime import date, timedelta
 from decimal import Decimal as D
 
 sys.path.insert(0, "/app/backend/api_gateway")
+from starlette.requests import Request  # noqa: E402
+from app.routers import items as RI  # noqa: E402
 from app.routers import reports as RP  # noqa: E402
+from app.services import profitability_query as PQ  # noqa: E402
+from app.services import teks_laporan_persediaan as TLP  # noqa: E402
 from app.services import laporan_nilai_persediaan as LN  # noqa: E402
 from app.services.role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role  # noqa: E402
 
@@ -67,6 +73,31 @@ async def main():
                 t.append(time.perf_counter() - a0)
             t.sort()
             cek(f"E {tid}: p50 {statistics.median(t) * 1000:.0f} ms, p95 {t[8] * 1000:.0f} ms (target < 1000 ms)", t[8] < 1.0)
+            # F penjualan per barang + teks
+            sd, ed = date(hari.year, 1, 1), hari
+            items, summ, n = await PQ.get_item_profitability(c, tid, sd, ed, "revenue_desc", 50, 0)
+            data = {"period": {"start_date": sd.isoformat(), "end_date": ed.isoformat(), "days": (ed - sd).days + 1}, "summary": dict(summ), "items": [dict(i) for i in items],
+                    "pagination": {"total": n}, "reconciliation": None}
+            lama = [dict(i) for i in items]
+            TLP.tambah_teks_penjualan_barang(data, 0)
+            ok = all(("revenue_gross_text" in i and "qty_sold_text" in i and "margin_text" in i) for i in data["items"]) and all(all(i[k] == v for k, v in l.items()) for i, l in zip(data["items"], lama))
+            ok = ok and all((i["gross_profit_text"].startswith("(")) == (D(i["gross_profit"]) < 0) for i in data["items"]) and "total_gross_profit_text" in data["summary"] and bool(data["periode_text"])
+            cek(f"F {tid}: penjualan per barang {len(items)} baris: teks lengkap, medan lama utuh, kurung <=> gross_profit < 0", ok)
+            # G kartu stok K9
+            top = await c.fetchrow("/* tenant_id */ SELECT product_id, count(*) AS n, COALESCE(SUM(COALESCE(quantity_in, 0) - COALESCE(quantity_out, 0)), 0) AS saldo FROM inventory_ledger WHERE tenant_id = $1 GROUP BY product_id ORDER BY n DESC LIMIT 1", tid)
+            if top is None:
+                print(f"CATATAN {tid}: tak ada gerakan ledger, G dilewati", flush=True)
+            else:
+                uid = await c.fetchval("/* tenant_id */ SELECT utr.user_id FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id WHERE utr.tenant_id = $1 AND utr.status = 'ACTIVE' AND r.name ILIKE '%owner%' LIMIT 1", tid)
+                rq = Request({"type": "http", "method": "GET", "path": "/x", "headers": []})
+                rq.state.user = {"tenant_id": tid, "user_id": str(uid), "username": "uji-salinan", "role": "OWNER"}
+                h = await RI.get_item_history(rq, top["product_id"], page=1, limit=200, warehouse_id=None, date_from=None, date_to=None)
+                satu = h["data"]
+                ok = all(k in satu[0] for k in ("tanggal_text", "arah", "quantity_balance_text", "unit_cost_text", "perubahan_text")) and "saldo_awal_text" in h and h["item"].get("satuan") is not None
+                akhir = max(satu, key=lambda m: (m["movement_date"], m["created_at"])) if satu else None
+                cek(f"G {tid}: kartu stok {h['total']} gerakan: teks per baris + satuan, medan lama utuh", ok and "movement_type" in satu[0])
+                if h["total"] <= 200 and akhir is not None:
+                    cek(f"G {tid}: saldo berjalan terakhir {akhir['quantity_balance']} == Σ(in-out) SQL {top['saldo']}", abs(D(str(akhir["quantity_balance"])) - D(str(top["saldo"]))) < D("0.0001"))
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
 

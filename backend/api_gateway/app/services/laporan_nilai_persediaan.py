@@ -85,7 +85,7 @@ async def muat_nilai_persediaan(conn, tid: str, per_tanggal: date, presisi: int,
         nilai = _r2(qty * hpp)
         item = {"item_id": str(r["product_id"]), "kode": b["kode"], "nama": b["nama"], "kategori": b["kategori"], "satuan": b["satuan"],
                 "qty": float(qty), "qty_text": tg.angka_laporan(qty, 0) if qty == qty.to_integral_value() else tg.angka_laporan(qty, 2),
-                "hpp_satuan": float(_r2(hpp)), "hpp_satuan_text": tg.angka_laporan(_r2(hpp), presisi),
+                "hpp_satuan": float(_r2(hpp)), "hpp_satuan_text": tg.angka_laporan(_r2(hpp), 2),
                 "nilai": float(nilai), "nilai_text": tg.angka_laporan(nilai, presisi), "minus": qty < 0}
         if kelompok == "gudang":
             item["gudang"] = {"id": str(r["warehouse_id"]) if r["warehouse_id"] else None, "nama": nama_gudang.get(str(r["warehouse_id"]), "Tanpa gudang")}

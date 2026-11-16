@@ -60,7 +60,7 @@ def test_nilai_per_barang_hpp_terakhir_minus_dan_total():
     r = jalan(kasus_dasar())
     x = {i["kode"]: i for i in r["baris"]}
     assert (x["A-1"]["qty"], x["A-1"]["hpp_satuan"], x["A-1"]["nilai"], x["A-1"]["nilai_text"]) == (10.0, 100.0, 1000.0, "1.000")
-    assert (x["B-1"]["nilai"], x["B-1"]["hpp_satuan"]) == (2002.0, 500.5) and x["C-1"]["minus"] is True and x["C-1"]["nilai_text"] == "(10)"
+    assert (x["B-1"]["nilai"], x["B-1"]["hpp_satuan"], x["B-1"]["hpp_satuan_text"]) == (2002.0, 500.5, "500,50")   # HPP per satuan: sen tak dibulatkan walau presisi tenant 0 and x["C-1"]["minus"] is True and x["C-1"]["nilai_text"] == "(10)"
     assert r["total_nilai"] == 2992.0 and r["total_nilai_text"] == "2.992" and r["jumlah_baris"] == 3 and r["jumlah_minus"] == 1
     assert [i["kode"] for i in r["baris"]] == ["A-1", "B-1", "C-1"]
 

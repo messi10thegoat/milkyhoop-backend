@@ -32,6 +32,8 @@ from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatb
 from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
 from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil, deskripsi Barang
+from ..services import teks_laporan_persediaan as TLP  # BUG-272 teks tampil server (kartu stok, penjualan per barang)
+from ..services.uang_presisi import presisi_tenant
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -2898,7 +2900,7 @@ async def get_item_history(
 
         # Verify item exists
         item = await conn.fetchrow(
-            "SELECT id, item_code, nama_produk FROM products WHERE id = $1 AND tenant_id = $2",
+            "SELECT id, item_code, nama_produk, COALESCE(NULLIF(base_unit, ''), satuan) AS satuan FROM products WHERE id = $1 AND tenant_id = $2",
             str(item_id),
             tenant_id,
         )
@@ -3017,7 +3019,7 @@ async def get_item_history(
                 }
             )
 
-        return {
+        return TLP.tambah_teks_kartu_stok({   # BUG-272: teks tampil server aditif (medan lama utuh)
             "success": True,
             "data": movements,
             "total": total or 0,
@@ -3032,7 +3034,7 @@ async def get_item_history(
                 "code": item["item_code"],
                 "name": item["nama_produk"],
             },
-        }
+        }, item["satuan"], await presisi_tenant(conn, tenant_id))
 
     except HTTPException:
         raise
