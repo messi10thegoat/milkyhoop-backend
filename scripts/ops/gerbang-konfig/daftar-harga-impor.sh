@@ -19,5 +19,5 @@ SAB=(
  "s9 harga negatif lolos|$A/services/impor_harga.py|s@elif harga < 0:@elif False:@|$T"
  "s10 ekspor satuan kosong|$A/services/impor_harga.py|s@HD.unit_text(r\[\"unit\"\], dasar)@r[\"unit\"]@|$T"
  "s11 peringatan HPP dibuang|$A/services/impor_harga.py|s@nilai\[\"harga\"\] < b_hpp\[0\]\[\"hpp\"\]@False@|$T"
- "s12 izin impor dibuang|$A/middleware/permission_middleware.py|s@/import(/baca|/preview)?@/importx(/baca|/preview)?@|$T"
+ "s12 izin impor dibuang|$A/middleware/permission_middleware.py|s@/import(/baca@/importx(/baca@|$T"
 )
