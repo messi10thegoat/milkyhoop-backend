@@ -24,6 +24,9 @@ class Conn:
     def __init__(self, ada=True, galat=None):
         self.ada, self.galat, self.q, self.ditutup = ada, galat, [], False
 
+    async def fetchval(self, sql, *a):      # K-1: pengisi kategori bawaan (KA.kategori_bawaan) membaca satu nilai; fake = tak ada kategori bawaan
+        return None
+
     async def fetchrow(self, sql, *a):
         self.q.append(sql)
         if self.galat is not None:
