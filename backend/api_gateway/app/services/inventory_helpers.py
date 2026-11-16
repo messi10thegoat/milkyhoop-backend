@@ -512,6 +512,17 @@ def label_pembalikan_masuk(source_type: str) -> str:
     return label
 
 
+def hitung_wac_sesudah(nilai_sebelum: Decimal, qty_sebelum: Decimal, masuk: Decimal, keluar: Decimal, unit_cost: Decimal, cadangan: Decimal) -> Decimal:
+    """MURNI (BUG-268b). WAC SESUDAH sebuah gerakan = nilai bersih ÷ qty bersih on-hand (rumus SAMA dengan record_inventory_inbound, get_weighted_average_cost V480 dan
+    guard V181), 2 desimal HALF_UP (Law 9/25, Decimal). nilai_sesudah = nilai_sebelum + masuk×unit_cost − keluar×unit_cost; qty_sesudah = qty_sebelum + masuk − keluar.
+    qty_sesudah <= 0 atau nilai_sesudah < 0 -> `cadangan` (snapshot sebelumnya; milkyhoop-inventory Rule 7: tak pernah 0 / harga jual)."""
+    nilai = nilai_sebelum + masuk * unit_cost - keluar * unit_cost
+    qty = qty_sebelum + masuk - keluar
+    if qty > 0 and nilai >= 0:
+        return (nilai / qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return cadangan
+
+
 async def record_inventory_reversal(
     conn,
     tenant_id: str,
@@ -597,10 +608,11 @@ async def record_inventory_reversal(
         else:
             movement_type = "VOID_REVERSAL"  # Reversing outbound (restoring stock)
 
-        # Calculate current running balance
+        # Saldo qty + nilai bersih SEBELUM baris pembalik (satu kueri; rumus nilai = Σ in×uc − Σ out×uc, sama dgn inbound, V480, guard V181)
         balance_row = await conn.fetchrow(
             """
-            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS balance
+            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS balance,
+                   COALESCE(SUM(quantity_in * unit_cost) - SUM(quantity_out * unit_cost), 0) AS nilai
             FROM inventory_ledger
             WHERE tenant_id = $1 AND product_id = $2
             """,
@@ -610,15 +622,19 @@ async def record_inventory_reversal(
         current_balance = (
             Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
         )
+        nilai_sebelum = Decimal(str(balance_row["nilai"])) if balance_row and balance_row["nilai"] is not None else Decimal("0")
         new_balance = current_balance + rev_qty_in - rev_qty_out
 
-        # WAC snapshot — no recalc on outbound (milkyhoop-inventory Rule 3)
-        avg_cost = await conn.fetchval(
+        # BUG-268b (17 Nov 2026): snapshot average_cost = WAC SESUDAH efek baris pembalik (dulu get_weighted_average_cost SEBELUM insert -> void
+        # penerimaan meninggalkan WAC yang masih memuat penerimaan itu; kolom ini dibaca guard V181, kartu stok, laporan nilai persediaan).
+        # Cadangan (qty <= 0 / nilai < 0) = perilaku lama (snapshot get_weighted_average_cost sebelumnya, lalu unit_cost; tak pernah 0).
+        avg_lama = await conn.fetchval(
             "SELECT get_weighted_average_cost($1, $2)",
             tenant_id,
             product_id,
         )
-        avg_cost = Decimal(str(avg_cost)) if avg_cost else unit_cost
+        cadangan = Decimal(str(avg_lama)) if avg_lama else unit_cost
+        avg_cost = hitung_wac_sesudah(nilai_sebelum, current_balance, rev_qty_in, rev_qty_out, unit_cost, cadangan)
 
         total_cost = quantity_reversed * unit_cost
 
