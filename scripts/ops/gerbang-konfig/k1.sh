@@ -88,4 +88,6 @@ SAB=(
  "b6 buat tanpa baris daftar|$IT|s#, \"data\": baru}#}#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
  "b7 buat tak mengembalikan kolom baris|$IT|s#RETURNING id, name, created_at, is_active, is_default, parent_id, description#RETURNING id, name#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
  "b8 skema buat tanpa id|$A/schemas/items.py|s#    id: Optional\[str\] = None      \# K-3b#    idx: Optional[str] = None      \# K-3b#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "p1 limit contoh tanpa lubang|$AF|s#ORDER BY p.nama_produk, p.id LIMIT \$3\",#ORDER BY p.nama_produk, p.id LIMIT $4\",#|$T3"
+ "p2 set kategori tanpa lubang|$AF|s#UPDATE products p SET kategori = \$3, updated_at = NOW() WHERE p.tenant_id = \$1 AND p.deleted_at IS NULL AND (\$2::uuid\[\] IS NULL OR p.id = ANY(\$2::uuid\[\])) AND \" + _COND_TANPA#UPDATE products p SET kategori = $4, updated_at = NOW() WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[])) AND \" + _COND_TANPA#|$T3"
 )
