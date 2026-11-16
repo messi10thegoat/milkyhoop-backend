@@ -24,6 +24,7 @@ from ..services import kontak_daftar as KD  # B1 4 Nov 2026: daftar/ringkasan Pe
 from ..services import kontak_riwayat as KR  # B4: riwayat + /activity satu sumber
 from ..services import kontak_detail as KDT  # B2 detail + aksi_tersedia + rename-impact (satu penentu dua modul)
 from ..services import alamat_pelanggan as _alamat  # V428 alamat terstruktur
+from ..services import histori_harga_pelanggan as histori_harga  # BUG-257 histori harga per pelanggan
 from ..schemas.customers import (
     CreateCustomerRequest,
     UpdateCustomerRequest,
@@ -678,6 +679,34 @@ async def get_customer_rename_impact(request: Request, customer_id: UUID):
 # =============================================================================
 # GET CUSTOMER BALANCE (AR Balance)
 # =============================================================================
+@router.get("/{customer_id}/price-history")
+async def get_customer_price_history(
+    request: Request,
+    customer_id: UUID,
+    item_id: UUID = Query(..., description="Barang"),
+    unit: Optional[str] = Query(None, description="Satuan tujuan: harga + qty dikonversi di server; kosong = satuan asli baris"),
+    limit: int = Query(10, ge=1, le=50),
+    exclude_doc_id: Optional[UUID] = Query(None, description="Saat UBAH dokumen: jangan tampilkan dokumennya sendiri"),
+):
+    """BUG-257: histori harga jual barang itu ke pelanggan ini (faktur terposting non-void), terbaru dulu. Hanya baca (izin baca faktur)."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            ada = await conn.fetchval("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", str(customer_id), ctx["tenant_id"])
+            if not ada:
+                raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan")
+            brg = await conn.fetchval("SELECT 1 FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL", str(item_id), ctx["tenant_id"])
+            if not brg:
+                raise HTTPException(status_code=404, detail="Barang tidak ditemukan")
+            return {"success": True, "data": await histori_harga.riwayat(conn, ctx["tenant_id"], customer_id, item_id, unit, limit, exclude_doc_id)}
+    except (HTTPException, GalatBerkode):
+        raise
+    except Exception as e:
+        logger.error(f"Error price history: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat harga")
+
+
 @router.get("/{customer_id}/balance", response_model=CustomerBalanceResponse)
 async def get_customer_balance(request: Request, customer_id: str):
     """
