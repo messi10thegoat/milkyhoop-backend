@@ -61,6 +61,7 @@ from ..services.role_precondition import assert_required_roles_for_path
 from ..utils.idempotency import get_idempotency_key
 from ..utils.metode_pembayaran import label_metode, tentukan_metode
 from ..services import uang_presisi as UP  # pembulatan rupiah per tenant (putusan pemilik 4 Nov 2026)
+from ..services import harga_minimum as HMN
 from ..services import jual_bawah_hpp as JB
 from ..services import stok_baris as SB
 from ..services.sales_doc_calc import (
@@ -597,6 +598,9 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             _isyarat = await SB.isyarat(_conn, ctx["tenant_id"], body.invoice_date, await tanggal_dokumen(_conn, ctx["tenant_id"]),
                                         _items, getattr(body, "warehouse_id", None), kecuali_so=getattr(body, "sales_order_id", None))
             _peringatan = await JB.peringatan_jual(_conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(res["items"]))  # BUG-207
+            _peringatan = _peringatan + await HMN.peringatan_jual(  # BUG-040: konversi SO -> Faktur tak mengulang bila harga baris tak berubah
+                _conn, ctx["tenant_id"], body.customer_id, body.invoice_date, HMN.baris_dari_hasil(res["items"]),
+                await HMN.harga_asal_so(_conn, ctx["tenant_id"], getattr(body, "sales_order_id", None)))
         if body.auto_post:  # SI-FPB-RP0: == penulis (create auto_post -> _internal_post_invoice)
             tolak_faktur_nol("si", res["total_amount"])
         return {
@@ -5606,6 +5610,7 @@ async def preview_post_invoice(request: Request, invoice_id: UUID,
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             r = await _ftr.rencana_terbit_ro(conn, ctx, invoice_id, _skip)
             _peringatan = await JB.peringatan_tersimpan(conn, ctx["tenant_id"], request.state.user, "faktur", invoice_id)  # BUG-207
+            _peringatan = _peringatan + await HMN.peringatan_tersimpan(conn, ctx["tenant_id"], "faktur", invoice_id)  # BUG-040
         finally:
             await tr.rollback()  # pratinjau tak pernah menulis
     if r is None:
