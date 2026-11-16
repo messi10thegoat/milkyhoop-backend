@@ -110,6 +110,21 @@ def position_text(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None)
     return utama + (f" · {ket}" if ket else "")
 
 
+def stok_fisik_text(b: dict, stok, satuan: Optional[str] = None) -> Optional[str]:
+    """BUG-260: teks kolom stok fisik per baris daftar ("172 pcs", "-3 pcs", "0 pcs"); None bila barang tak dilacak stoknya (jasa/nonaktif/tanpa stok)."""
+    if not dilacak(b):
+        return None
+    return _q(_d(stok)) + (f" {satuan}" if satuan else "")
+
+
+def bisa_dijual_text(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None) -> Optional[str]:
+    """BUG-260: teks kolom bisa dijual ("160 pcs") SELALU terisi untuk barang dilacak (beda dgn position_text_ket yang None bila sama dgn stok);
+    penentu bisa dijual tak tersedia -> jatuh ke stok fisik. None bila barang tak dilacak."""
+    if not dilacak(b):
+        return None
+    return _q(_d(stok if bisa_dijual is None else bisa_dijual)) + (f" {satuan}" if satuan else "")
+
+
 def position_text_ket(b: dict, stok, bisa_dijual=None, satuan: Optional[str] = None) -> Optional[str]:
     """Keterangan TANPA angka stok ("bisa dijual 160" / "perlu hitung fisik"), untuk subteks strip Stok yang tak mengulang nilai besar; None bila tak ada."""
     return _posisi(b, stok, bisa_dijual, satuan)[1]

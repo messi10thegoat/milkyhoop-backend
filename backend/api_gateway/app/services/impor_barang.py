@@ -24,7 +24,7 @@ KOLOM = [
     ("satuan_dasar", "Satuan dasar", True), ("harga_jual", "Harga jual / satuan dasar", False),
     ("harga_beli", "Harga beli / satuan dasar", False), ("satuan_besar", "Satuan besar", False),
     ("isi", "Isi satuan besar (dalam satuan dasar)", False), ("harga_jual_besar", "Harga jual / satuan besar", False),
-    ("harga_beli_besar", "Harga beli / satuan besar", False), ("kategori", "Kategori", False), ("barcode", "Barcode", False),
+    ("harga_beli_besar", "Harga beli / satuan besar", False), ("kategori", "Kategori", False), ("merek", "Merek", False), ("barcode", "Barcode", False),
     ("stok_awal", "Stok awal (satuan dasar)", False), ("harga_pokok_awal", "Harga pokok awal / satuan dasar", False),
 ]
 # BUG-101 (K-10, MASTER 7 Nov; pola Accurate "Excel apa pun"): judul kolom berkas BEBAS. Judul dinormalisasi (_norm_judul) lalu dicocokkan
@@ -42,6 +42,7 @@ SINONIM = {
     "harga_jual_besar": ["harga jual satuan besar"],
     "harga_beli_besar": ["harga beli satuan besar"],
     "kategori": ["kategori", "category", "kelompok"],
+    "merek": ["merek", "merk", "brand"],
     "barcode": ["barcode", "ean"],
     "stok_awal": ["stok awal satuan dasar", "stok awal", "stok", "qty awal"],
     "harga_pokok_awal": ["harga pokok awal satuan dasar", "harga pokok awal", "hpp awal"],
@@ -289,7 +290,7 @@ def ke_badan(b: dict, no: Optional[int] = None) -> tuple:
         tipe = "goods"
     p = {"name": str(b.get("nama") or "").strip(), "item_type": tipe, "base_unit": str(b.get("satuan_dasar") or "").strip(),
          "track_inventory": tipe == "goods"}
-    for k, kunci_p in (("kode", "item_code"), ("kategori", "kategori"), ("barcode", "barcode")):
+    for k, kunci_p in (("kode", "item_code"), ("kategori", "kategori"), ("merek", "merek"), ("barcode", "barcode")):
         if b.get(k) not in (None, ""):
             p[kunci_p] = str(b[k]).strip()
     for k, kunci_p, arah in (("harga_jual", "sales_price", "jual"), ("harga_beli", "purchase_price", "beli")):
