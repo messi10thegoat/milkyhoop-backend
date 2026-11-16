@@ -14,7 +14,7 @@ _AWAL_RUMUS = ("=", "+", "-", "@", "\t", "\r")
 _TIPE_TEKS = {"goods": "barang", "non_inventory": "non stok", "service": "jasa"}
 
 SQL_BARANG = """
-SELECT p.id, p.item_code, p.nama_produk, p.item_type, p.base_unit, p.sales_price, p.purchase_price, p.kategori, p.barcode, p.status, p.deskripsi,
+SELECT p.id, p.item_code, p.nama_produk, p.item_type, p.base_unit, p.sales_price, p.purchase_price, p.kategori, p.barcode, p.status, p.deskripsi, (to_jsonb(p) ->> 'merek') AS merek,
        COALESCE((SELECT SUM(il.quantity_in) - SUM(il.quantity_out) FROM inventory_ledger il WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id), 0) AS stok_kini,
        COALESCE((SELECT json_agg(json_build_object('u', uc.conversion_unit, 'f', uc.conversion_factor, 'j', uc.sales_price, 'b', uc.purchase_price)
                  ORDER BY uc.conversion_factor, uc.conversion_unit)
@@ -46,7 +46,7 @@ def baris_ekspor(r: dict, konversi: list) -> tuple:
         "harga_jual": _num(r["sales_price"]), "harga_beli": _num(r["purchase_price"]),
         "satuan_besar": k["u"] if k else None, "isi": _num(k["f"]) if k else None,
         "harga_jual_besar": _num(k["j"]) if k else None, "harga_beli_besar": _num(k["b"]) if k else None,
-        "kategori": r["kategori"], "barcode": r["barcode"], "stok_awal": None, "harga_pokok_awal": None,
+        "kategori": r["kategori"], "merek": r.get("merek"), "barcode": r["barcode"], "stok_awal": None, "harga_pokok_awal": None,
     }
     baris = [aman(nilai[kunci]) for kunci, _, _ in IB.KOLOM]
     baris += [stok_teks(r.get("stok_kini"), r["base_unit"], r["item_type"]), "Ya" if r["status"] == "active" else "Tidak", aman(r.get("deskripsi"))]

@@ -13,6 +13,9 @@ from app.services import ekspor_barang as EB
 from app.services import impor_barang as IB
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
+KEY = [k for k, _, _ in IB.KOLOM]
+NK = len(KEY)          # 14 (tanpa V502) atau 15 (dengan kolom Merek, BUG-260): tes mengikuti KOLOM, bukan angka tetap
+XK = {k: i for i, k in enumerate(KEY)}
 
 
 def r(nama="Minyak 2L", kode="BRG-1", tipe="goods", dasar="Botol", jual=35000, beli=31000, kat="Minyak", barcode="899", status="active", konv=None, stok=24, desk="Goreng"):
@@ -24,7 +27,7 @@ KV = [{"u": "Karton", "f": "12", "j": "410000", "b": "365000"}, {"u": "Palet", "
 
 
 def test_judul_empat_belas_templat_lalu_tiga_informatif():
-    assert EB.judul()[:14] == [j for _, j, _ in IB.KOLOM] and EB.judul()[14:] == ["Stok kini (satuan dasar)", "Aktif", "Deskripsi"] and len(EB.judul()) == 17
+    assert EB.judul()[:NK] == [j for _, j, _ in IB.KOLOM] and EB.judul()[NK:] == ["Stok kini (satuan dasar)", "Aktif", "Deskripsi"] and len(EB.judul()) == NK + 3
 
 
 def test_baris_satu_barang_dengan_konversi_pertama_dan_penghitung_lewat():
@@ -34,13 +37,13 @@ def test_baris_satu_barang_dengan_konversi_pertama_dan_penghitung_lewat():
     assert (peta["harga_jual"], peta["harga_beli"], peta["kategori"], peta["barcode"]) == (35000.0, 31000.0, "Minyak", "899")
     assert (peta["satuan_besar"], peta["isi"], peta["harga_jual_besar"], peta["harga_beli_besar"]) == ("Karton", 12.0, 410000.0, 365000.0)
     assert peta["stok_awal"] is None and peta["harga_pokok_awal"] is None and lewat == 1
-    assert b[14:] == ["24 Botol", "Ya", "Goreng"] and len(b) == 17
+    assert b[NK:] == ["24 Botol", "Ya", "Goreng"] and len(b) == NK + 3
 
 
 def test_kolom_informatif_stok_teks_aktif_dan_jasa_tanpa_stok():
-    assert EB.baris_ekspor(r(stok="12.500"), [])[0][14] == "12.5 Botol" and EB.baris_ekspor(r(stok=0), [])[0][14] == "0 Botol"
-    assert EB.baris_ekspor(r(tipe="service", stok=5), [])[0][14] is None and EB.baris_ekspor(r(tipe="non_inventory"), [])[0][14] is None
-    assert EB.baris_ekspor(r(status="inactive"), [])[0][15] == "Tidak" and EB.baris_ekspor(r(desk="=cmd"), [])[0][16] == "'=cmd"
+    assert EB.baris_ekspor(r(stok="12.500"), [])[0][NK] == "12.5 Botol" and EB.baris_ekspor(r(stok=0), [])[0][NK] == "0 Botol"
+    assert EB.baris_ekspor(r(tipe="service", stok=5), [])[0][NK] is None and EB.baris_ekspor(r(tipe="non_inventory"), [])[0][NK] is None
+    assert EB.baris_ekspor(r(status="inactive"), [])[0][NK + 1] == "Tidak" and EB.baris_ekspor(r(desk="=cmd"), [])[0][NK + 2] == "'=cmd"
 
 
 @pytest.mark.parametrize("tipe, teks", [("goods", "barang"), ("non_inventory", "non stok"), ("service", "jasa")])
@@ -51,7 +54,7 @@ def test_tipe_teks_dikenal_impor(tipe, teks):
 
 def test_tanpa_konversi_kolom_besar_kosong():
     b, lewat = EB.baris_ekspor(r(jual=None, beli=None), [])
-    assert b[4:10] == [None] * 6 and lewat == 0
+    assert all(v is None for v in b[XK["harga_jual"]:XK["harga_beli_besar"] + 1]) and lewat == 0
 
 
 @pytest.mark.parametrize("v, hasil", [("=1+1", "'=1+1"), ("+62812", "'+62812"), ("-5", "'-5"), ("@SUM(A1)", "'@SUM(A1)"), ("\tx", "'\tx"), ("\rx", "'\rx"),
@@ -62,7 +65,7 @@ def test_aman_dari_rumus(v, hasil):
 
 def test_nama_dan_kode_berawalan_rumus_diberi_apostrof_di_baris():
     b, _ = EB.baris_ekspor(r(nama='=HYPERLINK("http://x","klik")', kode="+X", kat="@kat", barcode="-1"), [])
-    assert b[0].startswith("'=") and b[1] == "'+X" and b[10] == "'@kat" and b[11] == "'-1"
+    assert b[0].startswith("'=") and b[1] == "'+X" and b[XK["kategori"]] == "'@kat" and b[XK["barcode"]] == "'-1"
 
 
 def test_csv_judul_bom_angka_bersih_dan_baris():
@@ -70,7 +73,7 @@ def test_csv_judul_bom_angka_bersih_dan_baris():
     isi = EB.bangun_csv(baris)
     assert isi.startswith(b"\xef\xbb\xbf")
     rows = list(__import__("csv").reader(io.StringIO(isi.decode("utf-8-sig"))))
-    assert rows[0] == EB.judul() and rows[1][4] == "35000" and rows[1][7] == "12" and rows[1][12] == "" and rows[1][14:] == ["24 Botol", "Ya", "Goreng"] and len(rows) == 2
+    assert rows[0] == EB.judul() and rows[1][XK["harga_jual"]] == "35000" and rows[1][XK["isi"]] == "12" and rows[1][XK["stok_awal"]] == "" and rows[1][NK:] == ["24 Botol", "Ya", "Goreng"] and len(rows) == 2
 
 
 def test_xlsx_bisa_dibaca_balik_oleh_pembaca_impor_dan_petunjuk_menyebut_yang_dilewati():
@@ -170,3 +173,12 @@ def test_rute_lama_tak_berubah_dan_rute_baru_sendiri_sebelum_rute_id():
     assert '"Selling Price"' in lama and "Export format not supported" in lama and "ekspor_barang" not in lama        # kontrak lama utuh (putusan MASTER)
     assert '@router.get("/items/impor/ekspor")' in src and src.index('@router.get("/items/impor/ekspor")') < src.index('@router.get("/items/{item_id}", ')
     assert "SELECT" not in src.split("async def ekspor_barang_impor")[1].split("@router")[0]               # kueri hanya di services (satu tempat)
+
+
+def test_merek_ikut_bila_kolom_merek_ada_di_templat_impor():
+    b, _ = EB.baris_ekspor({**r(), "merek": "Sania"}, [])
+    if "merek" in XK:
+        assert b[XK["merek"]] == "Sania"
+    else:
+        assert "Sania" not in b
+    assert "(to_jsonb(p) ->> 'merek') AS merek" in EB.SQL_BARANG      # aman sebelum/sesudah V502 (kolom products.merek)
