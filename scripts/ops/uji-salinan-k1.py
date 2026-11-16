@@ -33,7 +33,7 @@ async def main():
             cek(f"A {tid}: total {d['total']} == SQL {len(sql)}, baris {len(d['items'])}", d["total"] == len(sql) and len(d["items"]) == min(len(sql), 200))
             cek(f"A {tid}: jumlah_barang/jumlah_aktif tiap baris == SQL independen", all((b["jumlah_barang"], b["jumlah_aktif"]) == sql[b["name"]] for b in d["items"]))
             nama = [b["name"] for b in d["items"]]
-            cek(f"A {tid}: urut lower(nama)", nama == sorted(nama, key=lambda x: (x.lower(),)) or True)
+            cek(f"A {tid}: urut lower(nama)", [n.lower() for n in nama] == sorted(n.lower() for n in nama))
             kosong = [k for k, v in sql.items() if v[0] == 0]
             tb = await KD.muat_daftar(c, tid, kunci_aksi="tanpa_barang", limit=200)
             cek(f"B {tid}: tanpa_barang total {tb['total']} == SQL {len(kosong)}, semua kosong", tb["total"] == len(kosong) and all(b["keadaan"] == "kosong" for b in tb["items"]))
@@ -51,7 +51,7 @@ async def main():
                 off += 3
             cek(f"D {tid}: paginasi limit 3 == daftar penuh ({len(gab)} baris, tanpa duplikat)", gab == [b["id"] for b in d["items"]] and len(set(gab)) == len(gab))
             lama = [x["name"] for x in await c.fetch("/* tenant_id */ SELECT name FROM item_categories WHERE tenant_id = $1 ORDER BY name ASC", tid)]
-            cek(f"E {tid}: bentuk lama {len(lama)} nama == himpunan baris objek", sorted(lama) == sorted(nama) if len(sql) <= 200 else True)
+            cek(f"E {tid}: bentuk lama {len(lama)} nama == himpunan baris objek", sorted(lama)[:len(nama)] == sorted(nama) if len(sql) <= 200 else len(nama) == 200)
             cek(f"F {tid}: hapus tersedia <=> jumlah_aktif == 0", all(b["aksi_tersedia"]["hapus"]["tersedia"] == (b["jumlah_aktif"] == 0) for b in d["items"]))
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
     sys.exit(0 if all(HASIL) else 1)
