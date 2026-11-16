@@ -16,6 +16,7 @@ SAB=(
  "m1 merek dibuang dari INSERT|$IT|s#sales_tax_id, purchase_tax_id, bisa_dikirim, merek,#sales_tax_id, purchase_tax_id, bisa_dikirim,#|$T2"
  "m2 ?merek= diabaikan|$IT|s#        if merek:#        if False and merek:#|$T2"
  "m3 rute /items/merek hilang dari urutan (nama rute berubah)|$IT|s#@router.get(\"/items/merek\")#@router.get(\"/items/merek-x\")#|$T2"
+ "m3b rute /items/merek DIPINDAH ke sesudah /items/{item_id} (blok dipindah ke akhir berkas)|$IT|/^@router.get(\"\\/items\\/merek\")/,/^            await conn.close()/{H;d;};\$G|$T2"
  "m4 ubah barang tak menulis merek|$IT|s#                \"merek\": \"merek\",#                \"merek_x\": \"merek\",#|$T2"
  "m5 duplikat tak menyalin merek|$IT|s#                item_row.get(\"merek\"),#                None,#|$T2"
  "m6 ekspor tanpa kolom Merek|$IT|s#                        \"Merek\",#                        \"Merek-x\",#|$T2"
