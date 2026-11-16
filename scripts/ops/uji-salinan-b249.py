@@ -62,8 +62,10 @@ async def main():
                     nm = dd["billed_to_customer_name"] if isinstance(dd, dict) else dd.billed_to_customer_name
                     cek(f"B {tid}: detail Biaya billed_to_customer_name '{nm}' == customers.nama '{cus['nama']}'", nm == cus["nama"])
                     lst = await daftar_biaya(rq, limit=100)
-                    baris = [i for i in lst.items if str(i.id) == str(eid)]
-                    cek(f"B {tid}: daftar Biaya (100 teratas) baris itu billed_to_customer_name == nama", (not baris) or baris[0].billed_to_customer_name == cus["nama"],
+                    daftar = lst["items"] if isinstance(lst, dict) else lst.items   # handler bisa mengembalikan dict atau model
+                    g = lambda o, k: o[k] if isinstance(o, dict) else getattr(o, k)   # noqa: E731
+                    baris = [i for i in daftar if str(g(i, "id")) == str(eid)]
+                    cek(f"B {tid}: daftar Biaya (100 teratas) baris itu billed_to_customer_name == nama", (not baris) or g(baris[0], "billed_to_customer_name") == cus["nama"],
                         "baris tak di 100 teratas (dilewati)" if not baris else "")
                 except Exception as e:  # noqa: BLE001
                     cek(f"B {tid}: kasus Biaya tak terukur: {type(e).__name__}", False, str(e)[:200])
