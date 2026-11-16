@@ -11,6 +11,10 @@ echo "salinan: $S"
 docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl | psql -q -U postgres -d $S" >/tmp/b276_restore.log 2>&1
 echo "restore galat: $(grep -c ERROR /tmp/b276_restore.log)"
+# Kode paket gabungan membaca kolom V498 (is_default) dan V502 (merek) lewat jalur buat barang: terapkan DI SALINAN (aditif, idempoten)
+for m in V498__item_categories_standar_so V502__products_merek; do
+  docker exec -i $P psql -q -v ON_ERROR_STOP=1 -U postgres -d $S < "${POHON:-/root/mh-b276}/backend/migrations/$m.sql" >/tmp/b276_mig.log 2>&1 || { echo "$m galat"; cat /tmp/b276_mig.log; exit 2; }
+done
 timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S \
   -v "${POHON:-/root/mh-b276}/backend:/app/backend:ro" -v "$D/uji-salinan-b276.py:/uji.py:ro" -w /app/backend/api_gateway \
   --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py > "$O" 2>&1; RC=$?

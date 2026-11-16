@@ -96,7 +96,7 @@ def test_tulis_pindah_kunci_update_atomik_audit_dan_parameter():
     c = Konn(n_update="UPDATE 32")
     n = jalan(KA.tulis_pindah(c, "t1", "u1", None, False, k("Umum", i="c-9"), None))
     assert n == 32 and c.sql[0][0].startswith("SELECT pg_advisory_xact_lock") and c.sql[1][0] == KA.SQL_PINDAH_TULIS["tanpa"]
-    assert c.sql[1][1] == ("t1", None, None, "Umum") and c.sql[2][1][0] == "ITEM_CATEGORY_ITEMS_MOVED" and '"jumlah_barang": 32' in c.sql[2][1][5] and '"dari_tanpa_kategori": true' in c.sql[2][1][5]
+    assert c.sql[1][1] == ("t1", None, "Umum") and c.sql[2][1][0] == "ITEM_CATEGORY_ITEMS_MOVED" and '"jumlah_barang": 32' in c.sql[2][1][5] and '"dari_tanpa_kategori": true' in c.sql[2][1][5]
     c2 = Konn(n_update="UPDATE 2")
     jalan(KA.tulis_pindah(c2, "t1", "u1", "Minuman", True, k("Umum", i="c-9"), ["i1"]))
     assert c2.sql[1][0] == KA.SQL_PINDAH_TULIS["kategori"] and c2.sql[1][1] == ("t1", ["i1"], "Minuman", "Umum") and '"sebagian": true' in c2.sql[2][1][5]
@@ -123,7 +123,7 @@ def test_sql_pindah_berpagar_tenant_tanpa_terhapus_lunak_hanya_tulis_di_update()
             assert "p.tenant_id = $1" in q and "p.deleted_at IS NULL" in q and "($2::uuid[] IS NULL OR p.id = ANY($2::uuid[]))" in q
         assert not re.search(r"\\b(UPDATE|INSERT|DELETE)\\b", KA.SQL_PINDAH_HITUNG[j] + KA.SQL_PINDAH_CONTOH[j])
     assert "(p.kategori IS NULL OR btrim(p.kategori) = '')" in KA.SQL_PINDAH_TULIS["tanpa"] and "lower(p.kategori) = lower($3)" in KA.SQL_PINDAH_TULIS["kategori"]
-    assert KA.SQL_PINDAH_TULIS["tanpa"].startswith("UPDATE products p SET kategori = $4")
+    assert KA.SQL_PINDAH_TULIS["tanpa"].startswith("UPDATE products p SET kategori = $3")
 
 
 def test_rute_izin_dan_isi_bawaan_di_penentu_buat_barang():
@@ -136,3 +136,40 @@ def test_rute_izin_dan_isi_bawaan_di_penentu_buat_barang():
     assert "async def _rencana_pindah" in src and src.count("_rencana_pindah(conn") >= 2 and src.count("_rencana_gabung(conn") >= 2   # pratinjau == tulis
     izin = (APP / "middleware" / "permission_middleware.py").read_text()
     assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/move(/preview)?$", ["POST"], "item", "U")' in izin
+
+
+def test_pindah_nomor_parameter_berurutan_tanpa_lubang():
+    """Regresi harness server 17 Nov: varian 'tanpa' memakai LIMIT $4 / SET kategori = $4 padahal tak ada $3 -> asyncpg IndeterminateDatatypeError.
+    Tiap SQL harus memakai $1..$n berurutan, dan n == jumlah argumen yang dikirim kode."""
+    import re, asyncio
+
+    def nomor(sql):
+        return sorted({int(x) for x in re.findall(r"\$(\d+)", sql)})
+
+    class C:
+        def __init__(self): self.argn = []
+        async def fetchrow(self, sql, *a): self.argn.append((sql, len(a))); return {"n": 1, "a": 1}
+        async def fetch(self, sql, *a): self.argn.append((sql, len(a))); return []
+        async def execute(self, sql, *a): self.argn.append((sql, len(a))); return "UPDATE 1"
+        async def fetchval(self, sql, *a): self.argn.append((sql, len(a))); return None
+
+    for d in (KA.SQL_PINDAH_HITUNG, KA.SQL_PINDAH_CONTOH, KA.SQL_PINDAH_TULIS):
+        for j, sql in d.items():
+            n = nomor(sql)
+            assert n == list(range(1, len(n) + 1)), (j, sql)
+    c = C()
+    for sumber in (False, True):
+        asyncio.run(KA.ukur_pindah(c, "t", "Kain" if sumber else None, sumber))
+    for sql, k in c.argn:
+        assert nomor(sql) == list(range(1, k + 1)), (sql, k)
+    c2 = C()
+    async def tulis():
+        for sumber in (False, True):
+            try:
+                await KA.tulis_pindah(c2, "t", None, "Kain" if sumber else None, sumber, {"id": "i", "name": "Baru"})
+            except Exception:
+                pass
+    asyncio.run(tulis())
+    for sql, k in c2.argn:
+        if sql.startswith("UPDATE products p SET kategori"):
+            assert nomor(sql) == list(range(1, k + 1)), (sql, k)

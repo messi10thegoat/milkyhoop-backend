@@ -185,9 +185,9 @@ _COND_KAT = "lower(p.kategori) = lower($3)"
 _BASE = "FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[])) AND "
 SQL_PINDAH_HITUNG = {"tanpa": "SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE p.status = 'active') AS a " + _BASE + _COND_TANPA,
                      "kategori": "SELECT COUNT(*) AS n, COUNT(*) FILTER (WHERE p.status = 'active') AS a " + _BASE + _COND_KAT}
-SQL_PINDAH_CONTOH = {"tanpa": "SELECT p.id, p.item_code, p.nama_produk, p.status " + _BASE + _COND_TANPA + " ORDER BY p.nama_produk, p.id LIMIT $4",
+SQL_PINDAH_CONTOH = {"tanpa": "SELECT p.id, p.item_code, p.nama_produk, p.status " + _BASE + _COND_TANPA + " ORDER BY p.nama_produk, p.id LIMIT $3",
                      "kategori": "SELECT p.id, p.item_code, p.nama_produk, p.status " + _BASE + _COND_KAT + " ORDER BY p.nama_produk, p.id LIMIT $4"}
-SQL_PINDAH_TULIS = {"tanpa": "UPDATE products p SET kategori = $4, updated_at = NOW() WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[])) AND " + _COND_TANPA,
+SQL_PINDAH_TULIS = {"tanpa": "UPDATE products p SET kategori = $3, updated_at = NOW() WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[])) AND " + _COND_TANPA,
                     "kategori": "UPDATE products p SET kategori = $4, updated_at = NOW() WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[])) AND " + _COND_KAT}
 
 
@@ -256,7 +256,7 @@ async def tulis_pindah(conn, tid: str, user_id, sumber_nama: Optional[str], sumb
     await _kunci(conn, tid)
     j, nama = _kunci_sumber(sumber_nama, sumber_kategori)
     arg = list(ids) if ids else None
-    pr = (tid, arg) + ((nama,) if j == "kategori" else (None,)) + (target["name"],)
+    pr = (tid, arg) + ((nama,) if j == "kategori" else ()) + (target["name"],)     # tiap varian: nomor parameter berurutan tanpa lubang (asyncpg menolak $n tak terpakai)
     r = await conn.execute(SQL_PINDAH_TULIS[j], *pr)
     n = int(r.split()[-1]) if r and r.split()[-1].isdigit() else 0
     await catat_audit(conn, tid, user_id, "pindah", target["id"], target["name"], {"dari": sumber_nama if sumber_kategori else None, "dari_tanpa_kategori": not sumber_kategori, "jumlah_barang": n,
