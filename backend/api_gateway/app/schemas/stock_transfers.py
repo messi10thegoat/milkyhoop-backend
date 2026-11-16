@@ -6,7 +6,7 @@ NO journal entries - internal movement only.
 """
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -190,6 +190,7 @@ class ReceiveTransferResponse(BaseModel):
     data: StockTransferData
     message: str = "Stock transfer received successfully"
     note: str = "No journal entry created - internal stock movement"
+    peringatan: List[Dict[str, Any]] = []   # K8-W: Terima menyisakan barang di Transit ({code PB_TERIMA_KURANG, item_id, nama, selisih, unit, message})
 
 
 class CancelTransferResponse(BaseModel):
