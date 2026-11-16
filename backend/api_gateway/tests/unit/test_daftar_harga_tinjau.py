@@ -137,6 +137,14 @@ def test_tinjau_galat_skema_blok_per_medan_bahasa_indonesia(monkeypatch):
 def test_simpan_memakai_penentu_yang_sama_tolak_sebelum_insert(monkeypatch):
     c = _C(kode={"GRS-01"})
 
+    async def _snap_daftar(conn, tid, pl_id, batas=200):          # BUG-252: penulis riwayat diuji di test_dh_riwayat_252
+        return []
+
+    async def _catat(*a, **k):
+        return None
+    monkeypatch.setattr(RP.HR, "snapshot_daftar", _snap_daftar)
+    monkeypatch.setattr(RP.HR, "catat", _catat)
+
     async def pool():
         return _P(c)
     monkeypatch.setattr(RP, "get_pool", pool)

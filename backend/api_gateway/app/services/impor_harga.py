@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from . import bulk
 from . import harga_daftar as HD
 from . import harga_massal as HM
+from . import harga_riwayat as HR
 from . import impor_barang as IB
 from . import satuan_dasar as SD
 from .galat_berkode import GalatBerkode
@@ -289,6 +290,12 @@ async def rencana(conn, tid: str, pl_id, baris: list, mulai_bawaan: Optional[dat
                           "berlaku_mulai": nilai["mulai"].isoformat() if nilai["mulai"] else None,
                           "berakhir": akhir.isoformat() if akhir else None}
         row["ok"] = True
+        ke_c = {"line_id": None, "item_id": str(pid), "kode": kode, "nama": brg["nama_produk"], "satuan": HD.unit_text(satuan, brg["dasar"]), "min_quantity": float(nilai["min_qty"]),
+                "harga": float(nilai["harga"]), "min_price": float(minimum) if minimum is not None else None, "diskon_persen": diskon,
+                "mulai": nilai["mulai"].isoformat() if nilai["mulai"] else None, "berakhir": akhir.isoformat() if akhir else None}
+        dari_c = ({**ke_c, "line_id": str(cocok["id"]), "harga": float(cocok["price"]), "min_price": float(cocok["min_price"]) if cocok["min_price"] is not None else None,
+                   "diskon_persen": diskon_lama, "berakhir": cocok["end_date"].isoformat() if cocok["end_date"] else None} if cocok else None)
+        row["_riwayat"] = {"dari": dari_c, "ke": ke_c}
         if row["aksi"] != "tetap":
             if nilai["harga"] == 0:
                 row["peringatan"].append(_per(KODE_NOL, f"Harga {brg['nama_produk']} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."))
@@ -309,7 +316,7 @@ def _hasil(bloks: list, baris: list) -> dict:
     teks = (f"{len(baris)} baris dibaca: {n['tambah']} ditambah, {n['ubah']} diubah, {n['tetap']} tak berubah"
             + (f", {len(ditolak)} ditolak." if ditolak else "."))
     return {"ok": not bloks and not ditolak, "blocks": bloks, "ringkas": ringkas, "baris": [
-        {k: v for k, v in r.items() if k != "_tulis"} for r in baris], "teks": teks, "_baris_tulis": baris}
+        {k: v for k, v in r.items() if k not in ("_tulis", "_riwayat")} for r in baris], "teks": teks, "_baris_tulis": baris}
 
 
 def bersih(r: dict) -> dict:
@@ -330,6 +337,9 @@ async def tulis(conn, ctx: dict, pl_id, baris: list, mulai_bawaan: Optional[date
         if row["aksi"] != "tetap":
             await PL.tulis_baris_harga(conn, tid, pl_id, row["_tulis"]["item"], row["_tulis"]["line_id"])
     await bulk.catat_audit(conn, ctx, "impor_harga", "price_list", [pl_id], {"tambah": n["tambah"], "ubah": n["ubah"], "tetap": n["tetap"]})
+    perubahan = [x["_riwayat"] for x in r["_baris_tulis"] if x["aksi"] != "tetap"]
+    await HR.catat(conn, ctx, pl_id, None, "IMPOR", f"Impor Excel: {n['tambah']} ditambah, {n['ubah']} diubah, {n['tetap']} tak berubah", perubahan,
+                   jumlah=n["tambah"] + n["ubah"])
     return {"tambah": n["tambah"], "ubah": n["ubah"], "tetap": n["tetap"], "jumlah": n["tambah"] + n["ubah"] + n["tetap"]}
 
 

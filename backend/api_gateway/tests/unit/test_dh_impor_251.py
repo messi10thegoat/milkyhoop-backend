@@ -150,6 +150,10 @@ def stub(monkeypatch):
     monkeypatch.setattr(PL, "tulis_baris_harga", tulis_baris)
     monkeypatch.setattr(HM, "_hpp_baris", hpp)
     monkeypatch.setattr(IH.bulk, "catat_audit", audit)
+
+    async def riwayat(conn, ctx, pl_id, kode, aksi, ringkas, baris=None, header=None, jumlah=None):
+        calls.setdefault("riwayat", []).append((aksi, ringkas, baris, jumlah))
+    monkeypatch.setattr(IH.HR, "catat", riwayat)
     return calls
 
 
