@@ -34,7 +34,7 @@ class ConnH:
         self._c(sql, a)
         if "AS masuk" in sql:
             return {"masuk": D("30"), "keluar": D("12")}
-        return {"id": a[0], "item_code": "K-1", "nama_produk": "Kaos"}
+        return {"id": a[0], "item_code": "K-1", "nama_produk": "Kaos", "satuan": "Pcs"}
 
     async def fetchval(self, sql, *a):
         self._c(sql, a)
@@ -91,7 +91,7 @@ async def test_kartu_stok_filter_gudang_dan_periode_saldo_awal_dan_ringkasan(mon
     awal = [(s, a) for s, a in zip(c.sql, c.args) if re.search(r"movement_date < \$\d", s)]
     assert len(awal) == 1 and "il.movement_date < $4" in awal[0][0] and awal[0][1] == (str(ITEM), T, str(G), df)   # saldo awal = SEBELUM tanggal mulai, gudang yang sama
     assert r["saldo_awal"] == 10 and r["data"][0]["quantity_balance"] == 18                                       # saldo berjalan MULAI dari saldo awal (8 + 10)
-    assert r["ringkasan"] == {"saldo_awal": D("10"), "total_masuk": D("30"), "total_keluar": D("12"), "saldo_akhir": D("28")}
+    assert {k: v for k, v in r["ringkasan"].items() if not k.endswith("_text")} == {"saldo_awal": D("10"), "total_masuk": D("30"), "total_keluar": D("12"), "saldo_akhir": D("28")}  # BUG-272: *_text aditif ikut ringkasan; angka lama utuh
     assert r["filter"] == {"warehouse_id": str(G), "date_from": "2026-11-01", "date_to": "2026-11-30"}
     sejajar(c)
 

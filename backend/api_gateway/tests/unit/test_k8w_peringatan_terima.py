@@ -21,7 +21,7 @@ def test_peringatan_hanya_untuk_barang_yang_masih_tersisa_format_dan_json_aman()
     assert out[0]["message"] == "Selisih 4 pcs Aqua 600 belum diterima; dapat diterima di penerimaan berikutnya."
     assert out[1]["message"] == "Selisih 1.500,5 kg Beras belum diterima; dapat diterima di penerimaan berikutnya."
     assert (out[0]["code"], out[0]["selisih"], out[0]["unit"], out[1]["selisih"]) == ("PB_TERIMA_KURANG", 4.0, "pcs", 1500.5)
-    assert isinstance(out[0]["item_id"], str) and isinstance(out[0]["selisih"], float)          # aman untuk JSON (tak ada UUID/Decimal mentah)
+    assert isinstance(out[0]["item_id"], str) and isinstance(out[0]["selisih"], D)          # modul nol float (K8); JSON-aman di batas router (_pw)
 
 
 def test_terima_tuntas_tanpa_peringatan_dan_satuan_kosong():
@@ -35,10 +35,16 @@ def test_rencana_terima_dan_terima_membawa_peringatan_router_dan_skema():
     assert '"tuntas": tuntas, "peringatan": peringatan_terima(lines)' in src and '"catatan_fase": catatan, "peringatan": rencana["peringatan"]' in src
     rt = (APP / "routers" / "stock_transfers.py").read_text()
     assert '"bawaan_semua_tertunda", "tujuan", "peringatan")' in rt            # _pv meneruskan ke pratinjau Terima
-    assert 'hasil = await pd2.terima(conn, ctx, transfer_id, _baris_terima(body))' in rt and 'peringatan=hasil.get("peringatan") or []' in rt
+    assert 'hasil = await pd2.terima(conn, ctx, transfer_id, _baris_terima(body))' in rt and 'peringatan=_pw(hasil.get("peringatan"))' in rt
     assert "peringatan" in SCH.ReceiveTransferResponse.model_fields and SCH.ReceiveTransferResponse.model_fields["peringatan"].default == []
 
 
 def test_peringatan_bukan_blok():
     src = (APP / "services" / "pemindahan_dua_langkah.py").read_text().split("def peringatan_terima")[1].split("async def rencana_terima")[0]
     assert "_blok(" not in src and "blocks" not in src      # peringatan tak menggagalkan Terima
+
+
+def test_router_pw_mengubah_decimal_ke_float_di_batas_json():
+    from app.routers import stock_transfers as ST
+    w = ST._pw(D2.peringatan_terima([{"item_id": uuid.uuid4(), "name": "Aqua", "unit": "pcs", "tertunda_sesudah": D("4")}]))
+    assert w[0]["selisih"] == 4.0 and isinstance(w[0]["selisih"], float) and isinstance(w[0]["item_id"], str) and ST._pw(None) == []

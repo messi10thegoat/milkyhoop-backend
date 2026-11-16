@@ -15,7 +15,6 @@ from fastapi.responses import StreamingResponse
 
 from ..services import gudang_daftar as GD
 from ..services import lembar_hitung_stok as LH  # BUG-259 lembar penghitungan stok
-from ..services.pdf_service import get_pdf_service
 from ..services.rekap_pesanan import muat_kop
 from ..utils.content_disposition import pdf_content_disposition
 from ..utils.tanggal_tenant import tanggal_dokumen
@@ -513,6 +512,7 @@ async def get_count_sheet_pdf(
 ):
     """BUG-259: PDF server dari lembar yang SAMA dgn JSON (kolom Fisik kosong untuk tulis tangan)."""
     lembar, kop = await _muat_lembar_hitung(request, warehouse_id, as_of, kategori, merek, sertakan_semua)
+    from ..services.pdf_service import get_pdf_service      # lazy: weasyprint (pango) hanya dimuat saat PDF diminta; modul router tetap bisa diimpor tanpa pango
     pdf = await run_in_threadpool(get_pdf_service().tulis_pdf, get_pdf_service().render_lembar_hitung_stok(lembar, kop))
     return StreamingResponse(BytesIO(pdf), media_type="application/pdf", headers={
         "Content-Disposition": pdf_content_disposition(f"Lembar Hitung Stok {lembar['gudang']['nama']} {lembar['per_tanggal']}")})

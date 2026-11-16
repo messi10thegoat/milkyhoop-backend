@@ -153,14 +153,14 @@ async def kirim(conn, ctx: dict, transfer_id) -> dict:
 # ============================================================================
 def peringatan_terima(lines: List[dict]) -> List[dict]:
     """K8-W (17 Nov 2026; Accurate PT BIS via TESTER): Terima yang MENYISAKAN barang di Transit = PERINGATAN (bukan blok): "Selisih N belum diterima; dapat diterima di penerimaan
-    berikutnya." MURNI. lines = lines rencana_terima (name, unit, tertunda_sesudah, item_id). JSON-aman: item_id str, selisih float. Terima tuntas = daftar kosong."""
+    berikutnya." MURNI. lines = lines rencana_terima (name, unit, tertunda_sesudah, item_id). Modul ini nol float (K8): selisih = Decimal; ROUTER mengubah ke float di batas JSON (stock_transfers._pw). Terima tuntas = daftar kosong."""
     from .barang_daftar import _q
     out = []
     for ln in lines:
         sisa = _d(ln["tertunda_sesudah"])
         if sisa > _NOL:
             satuan = f" {ln['unit']}" if ln.get("unit") else ""
-            out.append({"code": "PB_TERIMA_KURANG", "item_id": str(ln["item_id"]), "nama": ln["name"], "selisih": float(sisa), "unit": ln.get("unit"),
+            out.append({"code": "PB_TERIMA_KURANG", "item_id": str(ln["item_id"]), "nama": ln["name"], "selisih": sisa, "unit": ln.get("unit"),
                         "message": f"Selisih {_q(sisa)}{satuan} {ln['name']} belum diterima; dapat diterima di penerimaan berikutnya."})
     return out
 

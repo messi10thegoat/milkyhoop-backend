@@ -286,6 +286,11 @@ def _f(x):
     return float(x) if isinstance(x, Decimal) else x
 
 
+def _pw(daftar) -> list:
+    """K8-W: peringatan Terima -> JSON-aman di BATAS router (modul layanan nol float): Decimal -> float."""
+    return [{k: _f(v) for k, v in w.items()} for w in (daftar or [])]
+
+
 def _pv(r: dict) -> dict:
     """Bentuk JSON pratinjau (Decimal -> float, UUID -> str)."""
     def baris(ln):
@@ -301,7 +306,7 @@ def _pv(r: dict) -> dict:
     }
     for k in ("status_sesudah", "tuntas", "status_text_sesudah", "catatan", "lokasi_transit", "bawaan_semua_tertunda", "tujuan", "peringatan"):  # K8: pratinjau dua langkah; K8-W: peringatan Terima kurang
         if k in r:
-            out[k] = r[k]
+            out[k] = _pw(r[k]) if k == "peringatan" else r[k]
     return out
 
 
@@ -595,7 +600,7 @@ async def receive_stock_transfer(request: Request, transfer_id: UUID, body: Rece
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
             hasil = await pd2.terima(conn, ctx, transfer_id, _baris_terima(body))
-            return ReceiveTransferResponse(data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Barang pemindahan diterima", peringatan=hasil.get("peringatan") or [])
+            return ReceiveTransferResponse(data=await _detail(conn, ctx["tenant_id"], transfer_id), message="Barang pemindahan diterima", peringatan=_pw(hasil.get("peringatan")))
 
 
 @router.post("/{transfer_id}/cancel", response_model=CancelTransferResponse, dependencies=_TAHAN)

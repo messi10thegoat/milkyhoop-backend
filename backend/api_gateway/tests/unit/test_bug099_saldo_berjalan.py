@@ -15,7 +15,7 @@ class _Conn:
         self.sql = []
 
     async def fetchrow(self, sql, *a):
-        return {"id": PID, "item_code": "MKT-1L", "nama_produk": "Minyakita"}
+        return {"id": PID, "item_code": "MKT-1L", "nama_produk": "Minyakita", "satuan": "Pcs"}
 
     async def fetchval(self, sql, *a):
         return 2
