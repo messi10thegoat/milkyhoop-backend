@@ -9,7 +9,7 @@ SAB=(
  "w2 satuan tak ikut kalimat|$DF|s#satuan = f\" {ln\['unit'\]}\" if ln.get(\"unit\") else \"\"#satuan = \"\"#|$T"
  "w3 pratinjau tak meneruskan peringatan|$RF|s#\"bawaan_semua_tertunda\", \"tujuan\", \"peringatan\")#\"bawaan_semua_tertunda\", \"tujuan\")#|$T"
  "w4 Terima (tulis) tak mengembalikan peringatan|$DF|s#\"catatan_fase\": catatan, \"peringatan\": rencana\[\"peringatan\"\]#\"catatan_fase\": catatan#|$T"
- "w5 respons /receive membuang peringatan|$RF|s#peringatan=hasil.get(\"peringatan\") or \[\]#peringatan=[]#|$T"
+ "w5 respons /receive membuang peringatan|$RF|s#peringatan=_pw(hasil.get(\"peringatan\"))#peringatan=[]#|$T"
  "w6 peringatan jadi blok (menggagalkan Terima)|$DF|s#out.append({\"code\": \"PB_TERIMA_KURANG\"#blocks.append({\"code\": \"PB_TERIMA_KURANG\"#|$T"
  "w7 skema respons kehilangan medan peringatan|$SF|s#    peringatan: List\[Dict\[str, Any\]\] = \[\]#    peringatan_x: List[Dict[str, Any]] = []#|$T"
  "w8 selisih salah hitung|$DF|s#Selisih {_q(sisa)}#Selisih {_q(_d(ln[\"tertunda_sesudah\"]) + 1)}#|$T"

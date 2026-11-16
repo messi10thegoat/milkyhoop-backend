@@ -41,7 +41,7 @@ SAB=(
  "b6 gabung tak memindahkan barang terhapus-lunak|$AF|s#lower(kategori) = lower(\$2)\", tid, sumber#lower(kategori) = lower(\$2) AND deleted_at IS NULL\", tid, sumber#|$T3"
  "b7 gabung tak menghapus registry asal|$AF|s#DELETE FROM item_categories WHERE#SELECT 1 FROM item_categories WHERE#|$T3"
  "b8 tujuan nonaktif diizinkan|$AF|s#    if not target\[\"is_active\"\]:#    if False:#g|$T3"
- "b9 kategori nonaktif boleh jadi bawaan|$AF|s#    if not k\[\"is_active\"\]:#    if False:#|$T3"
+ "b9 kategori nonaktif boleh jadi bawaan|$AF|s#alasan = KD.alasan_bawaan(k\[\"name\"\], bool(k\[\"is_active\"\])#alasan = KD.alasan_bawaan(k[\"name\"], True#|$T3"
  "b10 kategori bawaan boleh digabung|$AF|s#    if sumber\[\"is_default\"\]:#    if False:#|$T3"
  "b11 izin pindah massal hilang|$A/middleware/permission_middleware.py|s#categories/move(/preview)?\$\", \[\"POST\"\], \"item\", \"U\"#categories/move(/preview)?\$\", [\"POST\"], \"item\", \"X\"#|$T3"
  "b12 pindah ke kategori yang sama diizinkan|$AF|s#and sumber_nama.lower() == target\[\"name\"\].lower():#and False:#|$T3"

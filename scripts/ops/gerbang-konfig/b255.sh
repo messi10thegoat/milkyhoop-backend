@@ -21,6 +21,6 @@ SAB=(
  "d14 tulis tanpa idempotensi|$CF|s#\"CUSTOMER_DH_BULK\", \"batch\"#\"CUSTOMER_DH_BULK_X\", \"batch\"#|$T"
  "d15 izin pasang daftar harga massal hilang|$A/middleware/permission_middleware.py|s#bulk/price-list(/preview)?\$\", \\[\"POST\"\\], \"customer\", \"U\"#bulk/price-list(/preview)?\$\", [\"POST\"], \"customer\", \"X\"#|$T"
  "d16 saringan daftar bawaan diabaikan|$CF|s#where += \" AND price_list_id IS NULL\"#where += \"\"#|$T"
- "d17 saringan tanpa batas LIMIT|$CF|s# LIMIT {DHM.BATAS_SARINGAN + 1}\"##|$T"
+ "d17 saringan tanpa batas LIMIT|$CF|s# LIMIT {DHM.BATAS_SARINGAN + 1}\"#\"#|$T"
  "d18 id ganda tak dibuang|$CF|s#list(dict.fromkeys(str(UUID(str(x))) for x in b\\[\"customer_ids\"\\]))#[str(UUID(str(x))) for x in b[\"customer_ids\"]]#|$T"
 )
