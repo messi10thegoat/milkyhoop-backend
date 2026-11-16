@@ -523,6 +523,31 @@ def hitung_wac_sesudah(nilai_sebelum: Decimal, qty_sebelum: Decimal, masuk: Deci
     return cadangan
 
 
+async def saldo_dan_nilai(conn, tenant_id: str, product_id) -> tuple:
+    """(qty bersih, nilai bersih) on-hand barang dari inventory_ledger: Σ in − Σ out dan Σ in×uc − Σ out×uc (rumus SAMA dgn inbound, V480, guard V181). Hanya baca."""
+    r = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS balance,
+               COALESCE(SUM(quantity_in * unit_cost) - SUM(quantity_out * unit_cost), 0) AS nilai
+        FROM inventory_ledger
+        WHERE tenant_id = $1 AND product_id = $2
+        """,
+        tenant_id,
+        product_id,
+    )
+    return (Decimal(str(r["balance"])) if r else Decimal("0"),
+            Decimal(str(r["nilai"])) if r and r["nilai"] is not None else Decimal("0"))
+
+
+async def snapshot_wac_sesudah(conn, tenant_id: str, product_id, masuk, keluar, unit_cost, saldo=None) -> Decimal:
+    """BUG-268b/c: nilai kolom average_cost untuk baris yang AKAN ditulis (masuk/keluar pada unit_cost) = WAC SESUDAH efek baris itu. `saldo` = (qty, nilai) bila pemanggil
+    sudah membacanya. Cadangan (qty<=0 / nilai<0) = get_weighted_average_cost sebelumnya, lalu unit_cost (tak pernah 0). SATU penentu untuk semua penulis baris pembalik."""
+    qty, nilai = saldo if saldo is not None else await saldo_dan_nilai(conn, tenant_id, product_id)
+    lama = await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id)
+    uc = Decimal(str(unit_cost or 0))
+    return hitung_wac_sesudah(nilai, qty, Decimal(str(masuk or 0)), Decimal(str(keluar or 0)), uc, Decimal(str(lama)) if lama else uc)
+
+
 async def record_inventory_reversal(
     conn,
     tenant_id: str,
@@ -608,33 +633,13 @@ async def record_inventory_reversal(
         else:
             movement_type = "VOID_REVERSAL"  # Reversing outbound (restoring stock)
 
-        # Saldo qty + nilai bersih SEBELUM baris pembalik (satu kueri; rumus nilai = Σ in×uc − Σ out×uc, sama dgn inbound, V480, guard V181)
-        balance_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) AS balance,
-                   COALESCE(SUM(quantity_in * unit_cost) - SUM(quantity_out * unit_cost), 0) AS nilai
-            FROM inventory_ledger
-            WHERE tenant_id = $1 AND product_id = $2
-            """,
-            tenant_id,
-            product_id,
-        )
-        current_balance = (
-            Decimal(str(balance_row["balance"])) if balance_row else Decimal("0")
-        )
-        nilai_sebelum = Decimal(str(balance_row["nilai"])) if balance_row and balance_row["nilai"] is not None else Decimal("0")
+        # Saldo qty + nilai bersih SEBELUM baris pembalik (rumus nilai = Σ in×uc − Σ out×uc, sama dgn inbound, V480, guard V181)
+        current_balance, nilai_sebelum = await saldo_dan_nilai(conn, tenant_id, product_id)
         new_balance = current_balance + rev_qty_in - rev_qty_out
 
         # BUG-268b (17 Nov 2026): snapshot average_cost = WAC SESUDAH efek baris pembalik (dulu get_weighted_average_cost SEBELUM insert -> void
         # penerimaan meninggalkan WAC yang masih memuat penerimaan itu; kolom ini dibaca guard V181, kartu stok, laporan nilai persediaan).
-        # Cadangan (qty <= 0 / nilai < 0) = perilaku lama (snapshot get_weighted_average_cost sebelumnya, lalu unit_cost; tak pernah 0).
-        avg_lama = await conn.fetchval(
-            "SELECT get_weighted_average_cost($1, $2)",
-            tenant_id,
-            product_id,
-        )
-        cadangan = Decimal(str(avg_lama)) if avg_lama else unit_cost
-        avg_cost = hitung_wac_sesudah(nilai_sebelum, current_balance, rev_qty_in, rev_qty_out, unit_cost, cadangan)
+        avg_cost = await snapshot_wac_sesudah(conn, tenant_id, product_id, rev_qty_in, rev_qty_out, unit_cost, (current_balance, nilai_sebelum))
 
         total_cost = quantity_reversed * unit_cost
 

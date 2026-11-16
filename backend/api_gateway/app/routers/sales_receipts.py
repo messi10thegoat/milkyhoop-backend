@@ -979,6 +979,9 @@ async def void_sales_receipt(
                     from ..services import satuan_dasar as _SD  # QTY-DASAR R2: pembalik dalam SATUAN DASAR (penentu SAMA dengan jual)
                     _qdv = await _SD.qty_dasar(conn, ctx["tenant_id"], item["item_id"], item.get("unit"), item["quantity"], "konversi")
                     new_balance = current_balance + _qdv["qty_dasar"]
+                    # BUG-268c: snapshot average_cost = WAC SESUDAH restock pada biaya baris (dulu = unit_cost baris asli, bukan WAC)
+                    from ..services import inventory_helpers as _IH
+                    _avg = await _IH.snapshot_wac_sesudah(conn, ctx["tenant_id"], item["item_id"], _qdv["qty_dasar"], 0, item["unit_cost"])
                     await conn.execute(
                         """
                         INSERT INTO inventory_ledger (
@@ -991,7 +994,7 @@ async def void_sales_receipt(
                             $1, $2, $3, $4,
                             'SALE_VOID', $5, 'POS_SALE_VOID', $6,
                             $7, 0, $8,
-                            $9, $10, $9,
+                            $9, $10, $15,
                             $11, $12, $13, $14
                         )
                         """,
@@ -1009,6 +1012,7 @@ async def void_sales_receipt(
                         rev_cogs_id,
                         ctx.get("user_id"),
                         f"Void Sales Receipt {existing['receipt_number']}",
+                        _avg,
                     )
 
             # Update receipt status
