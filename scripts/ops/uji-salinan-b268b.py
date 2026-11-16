@@ -47,7 +47,7 @@ async def main():
     pool = await RI.get_pool()
     async with pool.acquire() as c:
         for tid in (KA, NY):
-            p = await c.fetchrow("/* tenant_id */ SELECT p.id, p.item_code, p.nama_produk FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.item_type = 'goods' AND p.track_inventory = true AND EXISTS (SELECT 1 FROM inventory_ledger il WHERE il.tenant_id = p.tenant_id AND il.product_id = p.id) ORDER BY p.created_at LIMIT 1", tid)
+            p = await c.fetchrow("/* tenant_id */ SELECT p.id, p.item_code, p.nama_produk FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND p.item_type = 'goods' AND p.track_inventory = true AND (SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) FROM inventory_ledger il WHERE il.tenant_id = p.tenant_id AND il.product_id = p.id) > 0 AND (SELECT COALESCE(SUM(il.quantity_in * il.unit_cost) - SUM(il.quantity_out * il.unit_cost), 0) FROM inventory_ledger il WHERE il.tenant_id = p.tenant_id AND il.product_id = p.id) > 0 ORDER BY p.created_at LIMIT 1", tid)
             wh = await c.fetchval("/* tenant_id */ SELECT id FROM warehouses WHERE tenant_id = $1 AND NOT is_system AND is_active ORDER BY is_default DESC, created_at LIMIT 1", tid)
             cek(f"prasyarat {tid}: barang dilacak ber-ledger + gudang", p is not None and wh is not None)
             if p is None or wh is None:

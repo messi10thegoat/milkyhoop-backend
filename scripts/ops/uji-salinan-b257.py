@@ -59,7 +59,8 @@ async def main():
                     ok = True
                     for x, y in zip(r["items"], rk["items"]):
                         if y["dikonversi"]:
-                            ok = ok and abs(D(str(x["harga"])) * D(str(x["qty"])) - D(str(y["harga"])) * D(str(y["qty"]))) <= D("0.01") * (D(str(y["qty"])) + 1)
+                            tol = D("0.005") * (D(str(x["qty"])) + D(str(y["qty"]))) + D(str(y["harga"])) * D("0.0001") + D("0.01")      # harga dibulatkan 2 desimal (x qty) + qty dibulatkan SKALA_QTY (x harga)
+                            ok = ok and abs(D(str(x["harga"])) * D(str(x["qty"])) - D(str(y["harga"])) * D(str(y["qty"]))) <= tol
                     cek(f"D {tag}: konversi ke '{konv[0]['conversion_unit']}': harga x qty tak berubah (toleransi pembulatan)", ok)
             if pas:
                 cus, itm = pas[0]["customer_id"], pas[0]["item_id"]

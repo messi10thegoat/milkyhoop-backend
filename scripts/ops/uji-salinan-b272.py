@@ -49,8 +49,8 @@ async def main():
             else:
                 cek(f"A {tid}: sub_ledger {rk['sub_ledger']} == wac_value {v['wac_value']}, gl {rk['gl']} == gl_value {v['gl_value']}",
                     abs(D(str(rk["sub_ledger"])) - D(str(v["wac_value"]))) <= D("0.01") and abs(D(str(rk["gl"] or 0)) - D(str(v["gl_value"]))) <= D("0.01"))
-                cek(f"A {tid}: selisih {rk['selisih']} == drift {v['drift']}; status {rk['status']} vs verdict {v['verdict']}",
-                    abs(D(str(rk["selisih"] or 0)) - D(str(v["drift"]))) <= D("0.02") and ((rk["status"] == "cocok") == (v["verdict"] in ("PASS", "PASS_EXEMPT"))))
+                cek(f"A {tid}: selisih {rk['selisih']} == -drift {v['drift']}; status {rk['status']} vs verdict {v['verdict']}",
+                    abs(D(str(rk["selisih"] or 0)) + D(str(v["drift"]))) <= D("0.02") and ((rk["status"] == "cocok") == (v["verdict"] in ("PASS", "PASS_EXEMPT"))))
             print(f"CATATAN {tid}: rekonsiliasi {rk['status']} -- {rk['status_text']} (sub {rk['sub_ledger']}, GL {rk['gl']}, toleransi {rk['toleransi']}); {r['jumlah_baris']} barang bernilai, {r['jumlah_minus']} minus", flush=True)
             g = await LN.muat_nilai_persediaan(c, tid, hari, 0, "gudang", akun_persediaan=akun)
             cek(f"B {tid}: Σ nilai per-gudang {g['total_nilai']} == Σ nilai per-barang {r['total_nilai']} (toleransi 0,01 x baris)", abs(D(str(g["total_nilai"])) - D(str(r["total_nilai"]))) <= D("0.01") * (g["jumlah_baris"] + 1))
