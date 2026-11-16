@@ -1,9 +1,9 @@
-# Konfig gerbang unit K-1 + K-2 + K-3 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
+# Konfig gerbang unit K-1..K-4 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung/induk (sub kategori satu tingkat) + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
 W=/root/mh-k1; CABANG=feat/kategori-k1; NAMA_JENDELA=k1
-POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
+POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|k4_kategori|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-k1.sh
 PENANDA_BERKAS=services/kategori_daftar.py; PENANDA='SQL_DAFTAR'
-A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py
+A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py; T4=backend/api_gateway/tests/unit/test_k4_kategori_induk.py
 KF=$A/services/kategori_daftar.py; IT=$A/routers/items.py; AF=$A/services/kategori_aksi.py; MG=backend/migrations/V498__item_categories_standar_so.sql
 SAB=(
  "k1 barang terhapus ikut dihitung|$KF|s# AND p.deleted_at IS NULL##g|$T"
@@ -11,8 +11,8 @@ SAB=(
  "k3 pencocokan teks peka huruf|$KF|s#lower(p.kategori) = lower(c.name)#p.kategori = c.name#g|$T"
  "k4 jumlah aktif = jumlah barang|$KF|s#FILTER (WHERE p.status = 'active')#FILTER (WHERE true)#|$T"
  "k5 saringan tanpa_barang diabaikan|$KF|s#HAVING (\$3::text IS DISTINCT FROM 'tanpa_barang' OR COUNT(p.id) = 0)#HAVING (\$3::text IS DISTINCT FROM 'tanpa_barang' OR TRUE)#g|$T"
- "k6 hapus selalu tersedia|$KF|s#aksi(a == 0, alasan_hapus)#aksi(True, alasan_hapus)#|$T"
- "k7 hapus tak tersedia bila ada barang (bukan aktif)|$KF|s#aksi(a == 0, alasan_hapus)#aksi(n == 0, alasan_hapus)#|$T"
+ "k6 hapus selalu tersedia|$KF|s#aksi(a == 0 and jumlah_anak == 0, alasan_hapus or#aksi(True, alasan_hapus or#|$T"
+ "k7 hapus tak tersedia bila ada barang (bukan aktif)|$KF|s#aksi(a == 0 and jumlah_anak == 0,#aksi(n == 0 and jumlah_anak == 0,#|$T"
  "k8 limit tak dijepit|$KF|s#BATAS_MAKS = 200#BATAS_MAKS = 200000#|$T"
  "k9 aksi tak dikenal diterima|$KF|s#if kunci_aksi and kunci_aksi not in AKSI:#if False:#|$T"
  "k10 urutan peka huruf besar|$KF|s#ORDER BY lower(c.name), c.id#ORDER BY c.name, c.id#|$T"
@@ -46,4 +46,16 @@ SAB=(
  "b11 izin pindah massal hilang|$A/middleware/permission_middleware.py|s#categories/move(/preview)?\$\", \[\"POST\"\], \"item\", \"U\"#categories/move(/preview)?\$\", [\"POST\"], \"item\", \"X\"#|$T3"
  "b12 pindah ke kategori yang sama diizinkan|$AF|s#and sumber_nama.lower() == target\[\"name\"\].lower():#and False:#|$T3"
  "b13 audit pindah memakai event lain|$AF|s#user_id, \"pindah\", target\[\"id\"\]#user_id, \"bawaan\", target[\"id\"]#|$T3"
+ "c1 induk yang sudah sub diterima (dua tingkat)|$AF|s#    if induk.get(\"parent_id\"):#    if False:#|$T4"
+ "c2 kategori jadi sub dari dirinya sendiri|$AF|s#if sendiri is not None and str(induk\[\"id\"\]) == str(sendiri):#if False:#|$T4"
+ "c3 kategori yang punya sub boleh jadi sub|$AF|s#^        if anak:#        if False:#|$T4"
+ "c4 induk nonaktif diterima|$AF|s#    if not induk\[\"is_active\"\]:#    if False:#|$T4"
+ "c5 gabung kategori yang punya sub diterima|$AF|s#    if int(sumber.get(\"jumlah_anak\") or 0):#    if False:#|$T4"
+ "c6 tulis_induk tak menulis parent_id|$AF|s#SET parent_id = \$3#SET parent_id_x = \$3#|$T4"
+ "c7 hapus tak memanggil pengukur sub kategori|$IT|s#KA.jumlah_anak_by_nama(conn, tenant_id, name)#KA.jumlah_anak_by_nama_x(conn, tenant_id, name)#|$T4"
+ "c8 saringan tingkat induk diabaikan|$KF|s#\$4 = 'induk' AND c.parent_id IS NULL#\$4 = 'induk' AND TRUE#g|$T4"
+ "c9 tingkat tak dikenal diterima|$KF|s#if tingkat and tingkat not in TINGKAT:#if False:#|$T4"
+ "c10 teks posisi tanpa induk|$KF|s#f\"Sub {parent_name}\" if parent_name else None#None#|$T4"
+ "c11 event audit induk = ubah nama|$AF|s#\"induk\": \"ITEM_CATEGORY_PARENT_SET\"#\"induk\": \"ITEM_CATEGORY_RENAMED\"#|$T2"
+ "c12 izin atur induk hilang|$A/middleware/permission_middleware.py|s#merge.parent)(/preview)#merge)(/preview)#|$T4"
 )

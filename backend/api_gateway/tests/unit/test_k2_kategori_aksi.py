@@ -22,7 +22,7 @@ def kode(r):
 
 
 def test_rencana_buat():
-    assert KA.rencana_buat("  Minuman  ", False) == {"ok": True, "blocks": [], "peringatan": [], "rencana": {"nama": "Minuman"}}
+    assert KA.rencana_buat("  Minuman  ", False) == {"ok": True, "blocks": [], "peringatan": [], "rencana": {"nama": "Minuman", "induk": None, "induk_id": None}}
     assert kode(KA.rencana_buat("minuman", True)) == ["KATEGORI_GANDA"] and kode(KA.rencana_buat("   ", False)) == ["NAMA_KOSONG"]
     assert kode(KA.rencana_buat("x" * 101, False)) == ["NAMA_TERLALU_PANJANG"] and KA.rencana_buat("x" * 100, False)["ok"]
     assert KA.rencana_buat("Aqua   Gelas", False)["rencana"]["nama"] == "Aqua Gelas"   # spasi ganda dirapikan
@@ -115,5 +115,5 @@ def test_rute_dan_izin():
     assert 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat"' in src and 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "hapus"' in src
     assert "WHERE tenant_id = $1 AND is_active\n            ORDER BY name ASC" in src   # bentuk lama = pilihan: nonaktif tak ikut
     izin = (APP / "middleware" / "permission_middleware.py").read_text()
-    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
+    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
     assert '(r"^/api/items/categories/[^/]+$", ["GET"], "item", "R")' in izin and '(r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R")' in izin

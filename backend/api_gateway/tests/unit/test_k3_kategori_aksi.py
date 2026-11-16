@@ -135,4 +135,4 @@ def test_rute_izin_dan_isi_bawaan_di_penentu_buat_barang():
     assert 'if not (body.kategori or "").strip():' in siap and "KA.kategori_bawaan(conn, tenant_id)" in siap and "body.kategori = _bawaan" in siap   # satu penentu: pratinjau + POST + impor
     assert "async def _rencana_pindah" in src and src.count("_rencana_pindah(conn") >= 2 and src.count("_rencana_gabung(conn") >= 2   # pratinjau == tulis
     izin = (APP / "middleware" / "permission_middleware.py").read_text()
-    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/move(/preview)?$", ["POST"], "item", "U")' in izin
+    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/move(/preview)?$", ["POST"], "item", "U")' in izin

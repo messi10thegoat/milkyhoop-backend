@@ -10,6 +10,7 @@ H UBAH NAMA (penulis asli KA.tulis_ubah_nama di transaksi yang di-rollback): lab
 J (K-3, transaksi di-rollback) bawaan: jadikan bawaan A lalu B -> tepat satu bawaan per usaha (indeks unik), A dicabut, kategori_bawaan() == B; barang baru tanpa kategori terisi bawaan (penentu buat)
 K (K-3) pindah massal: barang TANPA kategori (SQL independen) == ukur_pindah.n; tulis_pindah memindahkan tepat n barang (== label baru), sisa tanpa kategori 0; barang terhapus-lunak tak ikut
 L (K-3) gabung: sumber -> tujuan: jumlah barang bersumber (termasuk terhapus-lunak) berpindah label, baris registry sumber hilang, audit MERGED
+M (K-4, transaksi di-rollback) induk: A dijadikan sub dari B -> ?tingkat=anak&induk_id=B memuat A (parent_name == B), B.jumlah_anak == 1, label barang A tak berubah (SQL), jumlah_anak_by_nama(B) == 1, rencana_gabung(B,...) diblok KATEGORI_PUNYA_ANAK, A tingkat atas lagi setelah parent=None
 I nonaktif/aktif (KA.tulis_status): is_active berubah, daftar ?aksi=nonaktif memuatnya, bentuk lama (pilihan) tak memuatnya, riwayat memuat 2 kejadian terbaru"""
 import asyncio
 import sys
@@ -120,6 +121,20 @@ async def main():
                             ada = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories WHERE tenant_id = $1 AND id = $2", tid, ks[0]["id"])
                             masih = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, sumber["name"])
                             cek(f"L {tid}: gabung '{sumber['name']}'->'{tujuan['name']}': {dig} barang == {n_semua}, registry asal hilang ({ada}), tak tersisa label lama ({masih})", dig == n_semua and ada == 0 and masih == 0)
+                    # ---- K-4
+                    if len(ks) >= 2:
+                        a, b = await KA.ukur_kategori(c, tid, ks[0]["id"]), await KA.ukur_kategori(c, tid, ks[1]["id"])
+                        if not a.get("parent_id") and not b.get("parent_id") and not a["jumlah_anak"] and not b["jumlah_anak"]:
+                            lbl0 = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, a["name"])
+                            await KA.tulis_induk(c, tid, None, a, b)
+                            anak = await KD.muat_daftar(c, tid, tingkat="anak", induk_id=b["id"], limit=200)
+                            b2 = await KA.ukur_kategori(c, tid, b["id"])
+                            lbl1 = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, a["name"])
+                            cek(f"M {tid}: '{a['name']}' sub dari '{b['name']}': filter anak memuatnya, parent_name, jumlah_anak {b2['jumlah_anak']}, label barang tak berubah ({lbl0}=={lbl1})",
+                                [x["id"] for x in anak["items"]] == [str(a["id"])] and anak["items"][0]["parent_name"] == b["name"] and b2["jumlah_anak"] == 1 and lbl0 == lbl1)
+                            cek(f"M {tid}: hapus '{b['name']}' diblok sub ({await KA.jumlah_anak_by_nama(c, tid, b['name'])}), gabung diblok", await KA.jumlah_anak_by_nama(c, tid, b["name"]) == 1 and KA.rencana_gabung(b2, a)["blocks"][0]["code"] == "KATEGORI_PUNYA_ANAK")
+                            await KA.tulis_induk(c, tid, None, await KA.ukur_kategori(c, tid, a["id"]), None)
+                            cek(f"M {tid}: parent=None -> tingkat atas lagi", (await KA.ukur_kategori(c, tid, a["id"]))["parent_id"] is None)
                     raise RuntimeError("ROLLBACK uji")   # SALINAN: semua tulis uji dibatalkan
             except RuntimeError as e:
                 if str(e) != "ROLLBACK uji":

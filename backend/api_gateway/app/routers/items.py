@@ -1719,7 +1719,12 @@ async def preview_hapus_kategori(request: Request, body: dict):
 
     async def f(conn):
         ada, n = await BA.ukur_kategori(conn, ctx["tenant_id"], nama)
-        return BA.rencana_kategori_hapus(nama, n, ada)
+        r = BA.rencana_kategori_hapus(nama, n, ada)
+        anak = await KA.jumlah_anak_by_nama(conn, ctx["tenant_id"], nama) if ada else 0
+        if anak:   # K-4: induk yang masih punya sub kategori tak bisa dihapus (blok pertama = soal sub kategori bila barang tak menghalangi)
+            r["blocks"] = [KA._blok("KATEGORI_PUNYA_ANAK", f"Kategori '{nama}' punya {anak} sub kategori; hapus atau pindahkan sub kategorinya dulu.")] + r["blocks"]
+            r["ok"] = False
+        return r
     return {"success": True, "data": await _baca_saja(f)}
 
 
@@ -1740,6 +1745,9 @@ async def delete_category(request: Request, name: str = Query(..., min_length=1,
                 ada, n = await BA.ukur_kategori(conn, tenant_id, name)   # penentu SAMA dgn pratinjau (barang AKTIF berkategori itu)
                 if n > 0:
                     raise HTTPException(status_code=409, detail=f"Kategori dipakai {n} item")
+                anak = await KA.jumlah_anak_by_nama(conn, tenant_id, name)   # K-4: sub kategori menghalangi hapus (FK parent_id)
+                if anak:
+                    raise HTTPException(status_code=409, detail=f"Kategori punya {anak} sub kategori; hapus atau pindahkan sub kategorinya dulu")
                 deleted = await conn.fetchval(
                     "DELETE FROM item_categories WHERE tenant_id = $1 AND lower(name) = lower($2) RETURNING id",
                     tenant_id,
@@ -2238,6 +2246,16 @@ async def categories_summary(request: Request):
             await conn.close()
 
 
+async def _ukur_induk(conn, tid: str, parent_id) -> tuple:
+    """-> (baris induk|None, diminta). parent_id kosong = tingkat atas (tak diminta); id tak sah/tak ada = diminta tapi None (blok KATEGORI_INDUK_TAK_ADA)."""
+    if parent_id in (None, ""):
+        return None, False
+    try:
+        return await KA.ukur_kategori(conn, tid, UUID(str(parent_id))), True
+    except ValueError:
+        return None, True
+
+
 @router.post("/items/categories/preview")
 async def preview_buat_kategori(request: Request, body: dict):
     """K-2: pratinjau buat kategori (kembar nama beda huruf = blok KATEGORI_GANDA). Nol tulis."""
@@ -2245,7 +2263,8 @@ async def preview_buat_kategori(request: Request, body: dict):
 
     async def f(conn):
         n, _ = KA._nama_sah((body or {}).get("name"))
-        return KA.rencana_buat((body or {}).get("name"), bool(n) and await KA.ada_nama(conn, ctx["tenant_id"], n))
+        induk, diminta = await _ukur_induk(conn, ctx["tenant_id"], (body or {}).get("parent_id"))
+        return KA.rencana_buat((body or {}).get("name"), bool(n) and await KA.ada_nama(conn, ctx["tenant_id"], n), induk, diminta)
     return {"success": True, "data": await _baca_saja(f)}
 
 
@@ -2452,6 +2471,49 @@ async def pindah_barang_kategori(request: Request, body: dict):
             await conn.close()
 
 
+async def _rencana_induk(conn, tid: str, category_id, body: dict) -> tuple:
+    induk, diminta = await _ukur_induk(conn, tid, (body or {}).get("parent_id"))
+    k = await KA.ukur_kategori(conn, tid, category_id)
+    return KA.rencana_induk(k, induk, diminta), k, induk
+
+
+@router.post("/items/categories/{category_id}/parent/preview")
+async def preview_induk_kategori(request: Request, category_id: UUID, body: dict):
+    """K-4: pratinjau atur induk ({parent_id} = jadikan sub; kosong/null = tingkat atas). Satu tingkat; kategori yang punya sub tak bisa menjadi sub. Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        return (await _rencana_induk(conn, ctx["tenant_id"], category_id, body))[0]
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/parent")
+async def set_category_parent(request: Request, category_id: UUID, body: dict):
+    """K-4: atur induk kategori. Barang tak berubah (label barang tetap nama kategorinya). X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                r, k, induk = await _rencana_induk(conn, tenant_id, category_id, body)
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] in ("KATEGORI_TAK_ADA", "KATEGORI_INDUK_TAK_ADA") else 409, detail=b)
+                await KA.tulis_induk(conn, tenant_id, ctx["user_id"], k, induk)
+                return {"success": True, "message": f"Kategori '{k['name']}' kini " + (f"sub dari '{induk['name']}'" if induk else "tingkat atas"), "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_INDUK", f"{category_id}:{(body or {}).get('parent_id')}", {"parent_id": (body or {}).get("parent_id")}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error category parent: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengatur induk kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
 @router.post("/items/categories/{category_id}/default/preview")
 async def preview_bawaan_kategori(request: Request, category_id: UUID):
     """K-3: pratinjau jadikan kategori bawaan (barang BARU tanpa kategori otomatis masuk; barang lama tak berubah). Nol tulis."""
@@ -2542,7 +2604,9 @@ async def list_categories(
     request: Request,
     bentuk: Optional[str] = Query(None, description="objek = daftar standar SO (K-1: id, jumlah barang, keadaan, aksi_tersedia); kosong = array nama (bentuk lama, tak berubah)"),
     search: Optional[str] = Query(None, max_length=100),
-    aksi: Optional[str] = Query(None, description="K-1 kunci aksi: tanpa_barang (hanya bentuk=objek)"),
+    aksi: Optional[str] = Query(None, description="K-1 kunci aksi: tanpa_barang | nonaktif (hanya bentuk=objek)"),
+    tingkat: Optional[str] = Query(None, description="K-4: induk | anak (hanya bentuk=objek)"),
+    induk_id: Optional[UUID] = Query(None, description="K-4: hanya sub kategori dari induk ini (hanya bentuk=objek)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -2554,7 +2618,8 @@ async def list_categories(
         conn = await get_db_connection()
         if bentuk == "objek":
             try:
-                return {"success": True, **await KD.muat_daftar(conn, tenant_id, search, aksi, limit, offset)}
+                return {"success": True, **await KD.muat_daftar(conn, tenant_id, search, aksi, limit, offset, tingkat if isinstance(tingkat, str) else None,
+                                                                 induk_id if isinstance(induk_id, UUID) else None)}
             except ValueError as e:
                 raise HTTPException(status_code=422, detail=str(e))
 
@@ -2593,21 +2658,26 @@ async def create_category(request: Request, body: CreateCategoryRequest):
         conn = await get_db_connection()
         async with conn.transaction():
             async def kerja():
+                induk, diminta = await _ukur_induk(conn, tenant_id, body.parent_id)   # K-4: sub kategori SATU tingkat
+                bi = KA._blok_induk(induk, diminta)
+                if bi:
+                    raise HTTPException(status_code=404 if bi["code"] == "KATEGORI_INDUK_TAK_ADA" else 409, detail=bi)
                 # Simpan ke registry item_categories. Unik case-insensitive; casing input pertama menang.
                 baris_baru = await conn.fetchrow(
-                    """INSERT INTO item_categories (tenant_id, name)
-                       VALUES ($1, $2)
+                    """INSERT INTO item_categories (tenant_id, name, parent_id)
+                       VALUES ($1, $2, $3)
                        ON CONFLICT (tenant_id, lower(name)) DO NOTHING
                        RETURNING id, name""",
                     tenant_id,
                     body.name.strip(),
+                    None if induk is None else induk["id"],
                 )
                 if baris_baru is None:
                     raise HTTPException(status_code=409, detail="Kategori sudah ada")
                 inserted = baris_baru["name"]
-                await KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat", baris_baru["id"], inserted, {"nama": inserted})   # K-2: riwayat/audit semua tulis
+                await KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat", baris_baru["id"], inserted, {"nama": inserted, "induk": induk["name"] if induk else None})   # K-2: riwayat/audit semua tulis
                 return {"success": True, "message": f"Kategori '{inserted}' dibuat", "category": inserted}
-            r = await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BUAT", body.name.strip().lower(), {"name": body.name.strip()}, kerja)
+            r = await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BUAT", body.name.strip().lower(), {"name": body.name.strip(), "parent_id": str(body.parent_id) if body.parent_id else None}, kerja)
         return CreateCategoryResponse(**r)
 
     except HTTPException:

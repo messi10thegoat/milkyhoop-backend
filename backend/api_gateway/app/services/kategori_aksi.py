@@ -11,12 +11,14 @@ from .barang_aksi import _blok, _hasil
 
 NAMA_MAKS = 100
 EVENT = {"buat": "ITEM_CATEGORY_CREATED", "ubah_nama": "ITEM_CATEGORY_RENAMED", "nonaktif": "ITEM_CATEGORY_DEACTIVATED", "aktif": "ITEM_CATEGORY_ACTIVATED",
-         "hapus": "ITEM_CATEGORY_DELETED", "bawaan": "ITEM_CATEGORY_DEFAULT_SET", "pindah": "ITEM_CATEGORY_ITEMS_MOVED", "gabung": "ITEM_CATEGORY_MERGED"}
+         "hapus": "ITEM_CATEGORY_DELETED", "bawaan": "ITEM_CATEGORY_DEFAULT_SET", "pindah": "ITEM_CATEGORY_ITEMS_MOVED", "gabung": "ITEM_CATEGORY_MERGED",
+         "induk": "ITEM_CATEGORY_PARENT_SET"}
 BATAS_ID = 500          # item_ids sebagian pada pindah massal
 CONTOH_MAKS = 20        # contoh barang di pratinjau pindah/gabung
 SUMBER_AUDIT = "api:item-kategori"
 
 SQL_UKUR = ("SELECT c.id, c.name, c.is_active, c.is_default, c.parent_id, c.description, c.created_at, c.updated_at, "
+            "(SELECT pc.name FROM item_categories pc WHERE pc.id = c.parent_id) AS parent_name, (SELECT COUNT(*) FROM item_categories ch WHERE ch.parent_id = c.id) AS jumlah_anak, "
             "(SELECT COUNT(*) FROM products p WHERE p.tenant_id = c.tenant_id AND lower(p.kategori) = lower(c.name) AND p.deleted_at IS NULL) AS jumlah_barang, "
             "(SELECT COUNT(*) FROM products p WHERE p.tenant_id = c.tenant_id AND lower(p.kategori) = lower(c.name) AND p.deleted_at IS NULL AND p.status = 'active') AS jumlah_aktif "
             "FROM item_categories c WHERE c.tenant_id = $1 AND c.id = $2")
@@ -32,13 +34,51 @@ def _nama_sah(nama) -> tuple:
     return n, None
 
 
-def rencana_buat(nama, ada: bool) -> dict:
+def _blok_induk(induk: Optional[dict], diminta: bool, sendiri=None) -> Optional[dict]:
+    """Aturan induk SATU tingkat: induk ada, aktif, bukan sub kategori; bukan diri sendiri."""
+    if not diminta:
+        return None
+    if not induk:
+        return _blok("KATEGORI_INDUK_TAK_ADA", "Kategori induk tidak ditemukan.")
+    if sendiri is not None and str(induk["id"]) == str(sendiri):
+        return _blok("KATEGORI_INDUK_DIRI_SENDIRI", "Kategori tidak bisa menjadi sub dari dirinya sendiri.")
+    if induk.get("parent_id"):
+        return _blok("KATEGORI_INDUK_BUKAN_TINGKAT_ATAS", f"'{induk['name']}' sudah menjadi sub kategori; sub kategori hanya satu tingkat.")
+    if not induk["is_active"]:
+        return _blok("KATEGORI_INDUK_NONAKTIF", f"Kategori induk '{induk['name']}' nonaktif; aktifkan dulu.")
+    return None
+
+
+def rencana_buat(nama, ada: bool, induk: Optional[dict] = None, induk_diminta: bool = False) -> dict:
     n, bl = _nama_sah(nama)
     if bl:
         return _hasil([bl], None)
     if ada:
         return _hasil([_blok("KATEGORI_GANDA", f"Kategori '{n}' sudah ada (huruf besar/kecil tidak dibedakan).")], None)
-    return _hasil([], {"nama": n})
+    bi = _blok_induk(induk, induk_diminta)
+    if bi:
+        return _hasil([bi], None)
+    return _hasil([], {"nama": n, "induk": induk["name"] if induk else None, "induk_id": str(induk["id"]) if induk else None})
+
+
+def rencana_induk(k: Optional[dict], induk: Optional[dict], induk_diminta: bool) -> dict:
+    """Atur induk kategori ke `induk` (induk_diminta=False = jadikan kategori tingkat atas). Satu tingkat: kategori yang punya sub tak bisa menjadi sub."""
+    if not k:
+        return _hasil([_blok("KATEGORI_TAK_ADA", "Kategori tidak ditemukan.")], None)
+    anak = int(k.get("jumlah_anak") or 0)
+    if induk_diminta:
+        bi = _blok_induk(induk, True, k["id"])
+        if bi:
+            return _hasil([bi], None)
+        if anak:
+            return _hasil([_blok("KATEGORI_PUNYA_ANAK", f"Kategori '{k['name']}' punya {anak} sub kategori; sub kategori hanya satu tingkat.")], None)
+        if k.get("parent_id") and str(k["parent_id"]) == str(induk["id"]):
+            return _hasil([_blok("INDUK_TIDAK_BERUBAH", f"Kategori '{k['name']}' sudah menjadi sub dari '{induk['name']}'.")], None)
+        return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": induk["name"], "induk_id": str(induk["id"]), "jumlah_barang": int(k["jumlah_barang"])},
+                      [f"'{k['name']}' menjadi sub kategori dari '{induk['name']}'. Barangnya tetap berkategori '{k['name']}'."])
+    if not k.get("parent_id"):
+        return _hasil([_blok("INDUK_TIDAK_BERUBAH", f"Kategori '{k['name']}' sudah di tingkat atas.")], None)
+    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": None, "induk_id": None, "jumlah_barang": int(k["jumlah_barang"])}, [f"'{k['name']}' menjadi kategori tingkat atas."])
 
 
 def rencana_ubah_nama(k: Optional[dict], nama_baru, bentrok: bool) -> dict:
@@ -66,6 +106,9 @@ def rencana_status(k: Optional[dict], ke_aktif: bool) -> dict:
         return _hasil([_blok("KATEGORI_BAWAAN", f"Kategori '{k['name']}' adalah kategori bawaan; jadikan kategori lain bawaan dulu.")], None)
     a = int(k["jumlah_aktif"])
     per = [f"{a} barang aktif masih memakai kategori '{k['name']}'. Barangnya tetap membawa kategori ini; hanya tak muncul sebagai pilihan baru."] if (not ke_aktif and a) else []
+    anak = int(k.get("jumlah_anak") or 0)
+    if not ke_aktif and anak:
+        per.append(f"'{k['name']}' punya {anak} sub kategori; sub kategorinya tetap aktif dan tetap bisa dipilih.")
     return _hasil([], {"id": str(k["id"]), "nama": k["name"], "ke": "aktif" if ke_aktif else "nonaktif", "jumlah_aktif": a}, per)
 
 
@@ -113,7 +156,7 @@ async def riwayat(conn, tid: str, kategori_id, batas: int = 50) -> list:
              "waktu": r["createdAt"].isoformat() if r["createdAt"] else None, "oleh": r["userId"]} for r in rows]
 
 
-TEKS_EVENT = {"ITEM_CATEGORY_DEFAULT_SET": "Dijadikan kategori bawaan", "ITEM_CATEGORY_ITEMS_MOVED": "Barang dipindahkan ke kategori ini", "ITEM_CATEGORY_MERGED": "Kategori digabung ke kategori ini",
+TEKS_EVENT = {"ITEM_CATEGORY_DEFAULT_SET": "Dijadikan kategori bawaan", "ITEM_CATEGORY_ITEMS_MOVED": "Barang dipindahkan ke kategori ini", "ITEM_CATEGORY_MERGED": "Kategori digabung ke kategori ini", "ITEM_CATEGORY_PARENT_SET": "Induk kategori diubah",
               "ITEM_CATEGORY_CREATED": "Kategori dibuat", "ITEM_CATEGORY_RENAMED": "Nama kategori diubah", "ITEM_CATEGORY_DEACTIVATED": "Kategori dinonaktifkan",
               "ITEM_CATEGORY_ACTIVATED": "Kategori diaktifkan", "ITEM_CATEGORY_DELETED": "Kategori dihapus"}
 
@@ -165,6 +208,8 @@ def rencana_gabung(sumber: Optional[dict], target: Optional[dict]) -> dict:
         return _hasil([_blok("KATEGORI_SAMA", "Kategori asal dan tujuan sama.")], None)
     if sumber["is_default"]:
         return _hasil([_blok("KATEGORI_BAWAAN", f"Kategori '{sumber['name']}' adalah kategori bawaan; jadikan kategori lain bawaan dulu.")], None)
+    if int(sumber.get("jumlah_anak") or 0):
+        return _hasil([_blok("KATEGORI_PUNYA_ANAK", f"Kategori '{sumber['name']}' punya {int(sumber['jumlah_anak'])} sub kategori; pindahkan atau hapus sub kategorinya dulu.")], None)
     if not target["is_active"]:
         return _hasil([_blok("KATEGORI_TUJUAN_NONAKTIF", f"Kategori tujuan '{target['name']}' nonaktif; aktifkan dulu.")], None)
     jb = int(sumber["jumlah_barang"])
@@ -220,3 +265,14 @@ async def tulis_gabung(conn, tid: str, user_id, sumber: dict, target: dict) -> i
     await conn.execute("DELETE FROM item_categories WHERE tenant_id = $1 AND id = $2", tid, str(sumber["id"]))
     await catat_audit(conn, tid, user_id, "gabung", target["id"], target["name"], {"dari": sumber["name"], "dari_id": str(sumber["id"]), "jumlah_barang": n})
     return n
+
+
+async def tulis_induk(conn, tid: str, user_id, k: dict, induk: Optional[dict]) -> None:
+    await _kunci(conn, tid)
+    await conn.execute("UPDATE item_categories SET parent_id = $3, updated_at = NOW() WHERE tenant_id = $1 AND id = $2", tid, str(k["id"]), None if induk is None else str(induk["id"]))
+    await catat_audit(conn, tid, user_id, "induk", k["id"], k["name"], {"induk": induk["name"] if induk else None, "induk_lama": k.get("parent_name")})
+
+
+async def jumlah_anak_by_nama(conn, tid: str, nama: str) -> int:
+    """Untuk hapus per NAMA (rute DELETE lama): sub kategori yang menggantung pada kategori bernama itu."""
+    return int(await conn.fetchval("SELECT COUNT(*) FROM item_categories ch JOIN item_categories pc ON pc.id = ch.parent_id WHERE pc.tenant_id = $1 AND lower(pc.name) = lower($2)", tid, nama) or 0)

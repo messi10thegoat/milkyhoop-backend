@@ -552,6 +552,7 @@ class ItemRelatedResponse(BaseModel):
 class CreateCategoryRequest(BaseModel):
     """Request to create a new category."""
     name: str = Field(..., min_length=1, max_length=100, description="Category name")
+    parent_id: Optional[UUID] = Field(None, description="K-4: induk (sub kategori satu tingkat); kosong = tingkat atas")
 
 
 class CreateCategoryResponse(BaseModel):
