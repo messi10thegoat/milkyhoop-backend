@@ -566,7 +566,7 @@ async def _pratinjau_baris(request: Request, price_list_id: UUID, badan, line_id
         b = (PriceListItemUpdate if line_id else PriceListItemCreate).model_validate(payload)
     except ValidationError as e:
         return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "payload": payload}}
-    bloks = []
+    bloks, rencana = [], None
     pool = await get_pool()
     async with pool.acquire() as conn:
         tr = conn.transaction(readonly=True)
@@ -578,11 +578,12 @@ async def _pratinjau_baris(request: Request, price_list_id: UUID, badan, line_id
                     raise HTTPException(status_code=404, detail=TAK_ADA)
                 item = await _baris_gabungan(conn, ctx["tenant_id"], price_list_id, line_id, b, False) if line_id else b
                 await siapkan_baris_harga(conn, ctx["tenant_id"], price_list_id, item, line_id)
+                rencana = await HR.rencana_baris(conn, ctx["tenant_id"], item, line_id)       # BUG-275: lama/baru/selisih dari penentu SAMA (FE tak menghitung)
             except HTTPException as e:
                 bloks.append(blok_dari_galat(e))
         finally:
             await tr.rollback()
-    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "payload": payload}}
+    return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "payload": payload, **({"rencana": rencana} if rencana is not None else {})}}
 
 
 @router.post("/{price_list_id}/items/preview")

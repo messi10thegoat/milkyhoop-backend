@@ -7,6 +7,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 
+from . import harga_daftar as HD
+
 MAKS_BARIS = 200
 ENTITAS = "price_list"
 AKSI_TEKS = {
@@ -127,3 +129,19 @@ async def daftar(conn, tid: str, pl_id, limit: int = 50, offset: int = 0, aksi: 
     mulai = (RIWAYAT_MULAI_TEKS.format(tanggal=awal.date().isoformat()) if awal else
              "Belum ada perubahan tercatat. Riwayat dicatat sejak fitur ini aktif; perubahan sebelumnya tidak tersimpan.")
     return {"items": items, "total": int(total or 0), "tercatat_sejak": awal.date().isoformat() if awal else None, "mulai_teks": mulai}
+
+
+async def rencana_baris(conn, tid: str, item, line_id=None) -> dict:
+    """BUG-275: rencana Tinjau tambah/ubah SATU baris harga (READ ONLY, bersaring tenant) -- nilai SETELAH normalisasi penentu yang sama dengan tulis.
+    -> {barang, item_code, unit_text, min_quantity, dari:{harga,min_quantity,min_price,diskon_persen,mulai,berakhir}|null, ke:{...}, selisih_harga|null}.
+    dari = baris tersimpan (ubah) / null (tambah); `ke` = badan penulis (ubah: gabungan baris tersimpan + medan terkirim)."""
+    p = await conn.fetchrow("SELECT nama_produk, COALESCE(item_code, sku) AS kode, COALESCE(NULLIF(base_unit, ''), satuan) AS dasar FROM products WHERE id = $1::uuid AND tenant_id = $2",
+                            str(item.item_id), tid)
+    lama = await snapshot(conn, tid, line_id) if line_id else None
+    bentuk_ke = {"harga": float(item.price), "min_quantity": float(item.min_quantity), "min_price": float(item.min_price) if item.min_price is not None else None,
+                 "diskon_persen": float(item.discount_percent) if item.discount_percent is not None else None,
+                 "mulai": item.start_date.isoformat() if item.start_date else None, "berakhir": item.end_date.isoformat() if item.end_date else None}
+    dari = {k: lama[k] for k in bentuk_ke} if lama else None
+    return {"barang": p["nama_produk"] if p else None, "item_code": (item.item_code or (p["kode"] if p else None)),
+            "unit_text": HD.unit_text(item.unit, p["dasar"] if p else None), "min_quantity": bentuk_ke["min_quantity"], "dari": dari, "ke": bentuk_ke,
+            "selisih_harga": round(bentuk_ke["harga"] - dari["harga"], 2) if dari else None}
