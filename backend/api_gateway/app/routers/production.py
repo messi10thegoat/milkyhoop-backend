@@ -1396,6 +1396,9 @@ async def _reverse_inventory_ledger(
         new_bal = (
             Decimal(str(current_bal)) + Decimal(str(new_in)) - Decimal(str(new_out))
         )
+        # BUG-268c: snapshot average_cost = WAC SESUDAH efek pembalik (dulu = unit_cost baris asli, bukan WAC)
+        from ..services import inventory_helpers as _IH
+        avg_sesudah = await _IH.snapshot_wac_sesudah(conn, tenant_id, r["product_id"], new_in, new_out, r["unit_cost"])
         await conn.execute(
             """
             INSERT INTO inventory_ledger (
@@ -1408,7 +1411,7 @@ async def _reverse_inventory_ledger(
                 gen_random_uuid(), $1, $2, $3, $4,
                 $5, $18::date, $6, $7, $8,
                 $9, $10, $11,
-                $12, $13, $12,
+                $12, $13, $19,
                 $14, $15, $16, $17
             )
             """,
@@ -1430,6 +1433,7 @@ async def _reverse_inventory_ledger(
             "Reversal of production cancellation",
             reversal_journal_id,
             hari_ini,
+            avg_sesudah,
         )
 
 
