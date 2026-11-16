@@ -137,3 +137,15 @@ def test_tersimpan_memakai_kalkulator_bersama_dan_saring_tenant():
     s = inspect.getsource(HMN._tersimpan)
     assert "compute_document" in s and "tenant_id = $2" in s and "JENIS_TERSIMPAN" in s
     assert HMN.JENIS_TERSIMPAN["faktur"][2] == "sales_order_id" and HMN.JENIS_TERSIMPAN["so"][2] is None
+
+
+# ---------------------------------------------------------------- BUG-273 kontrak peringatan dokumen: `pesan` DAN `message` (kalimat sama)
+def test_peringatan_dokumen_mengirim_pesan_dan_message_sama_untuk_hpp_terima_dan_minimum():
+    from app.services import jual_bawah_hpp as JB
+    mentah = [{"kode": JB.KODE_JUAL, "baris": 1, "product_id": "p", "nama": "Minyak", "satuan": "Pcs", "harga": Decimal(90), "hpp": Decimal(100), "selisih": Decimal(10)},
+              {"kode": JB.KODE_TERIMA, "baris": 2, "product_id": "q", "nama": "Beras", "satuan": "Kg", "harga": Decimal(50), "hpp": Decimal(100), "selisih": Decimal(50), "murah": True}]
+    for boleh in (True, False):                                           # dengan dan tanpa izin lihat HPP: kunci SAMA
+        for o in JB.sajikan(mentah, boleh):
+            assert o["pesan"] and o["message"] == o["pesan"] and o["butuh_konfirmasi"] is True and o["code"] in (JB.KODE_JUAL, JB.KODE_TERIMA)
+    m = HMN.periksa(9000, 10000, "Minyak")
+    assert m["pesan"] and m["message"] == m["pesan"]                      # JUAL_DI_BAWAH_MINIMUM sudah dari awal

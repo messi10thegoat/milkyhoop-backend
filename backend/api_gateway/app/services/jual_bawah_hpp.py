@@ -124,6 +124,7 @@ def sajikan(mentah: Iterable[dict], boleh_hpp: bool) -> List[dict]:
         else:
             o["pesan"] = (f"Harga jual {m['nama']} di bawah harga pokok barang." if jual
                           else f"Biaya {m['nama']} menyimpang jauh dari harga pokok barang; periksa satuan dan konversi.")
+        o["message"] = o["pesan"]  # BUG-273: kunci `pesan` DAN `message` (kalimat sama) -- FE membaca `message` (VENDOR_BUKAN_PKP, DH); tanpa ini peringatan dibuang diam
         hasil.append(o)
     return hasil
 
