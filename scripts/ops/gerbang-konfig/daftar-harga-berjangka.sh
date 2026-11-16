@@ -1,7 +1,7 @@
 # Konfig gerbang terfokus Daftar Harga BERJANGKA (BUG-245, 15 Nov 2026): V500 (indeks unik + COALESCE(start_date)), HARGA_GANDA per tanggal mulai, resolve mulai terbaru, D3 masa depan = baris berjangka.
 # MIGRASI V500: dipasang MASTER lewat apply_mig (--require-marker); gerbang menguji maju+ROLLBACK di salinan (harness H0/H5).
 # Pemisah sabotase = "|", ekspresi sed memakai "@".
-W=/root/mh-dh-berjangka-r4; CABANG=feat/daftarharga-berjangka-r4; NAMA_JENDELA=daftar-harga-berjangka
+W=/root/mh-dh-berjangka-r5; CABANG=feat/daftarharga-berjangka-r5; NAMA_JENDELA=daftar-harga-berjangka
 POLA_UNIT='harga_massal|harga_jual|price_lists|bulk_price_lists|harga_daftar|daftar_harga|dh_berjangka|satuan_dasar'
 HARNESS=scripts/ops/uji-salinan-daftar-harga-berjangka.sh
 PENANDA_BERKAS=services/harga_massal.py; PENANDA='async def terapkan('

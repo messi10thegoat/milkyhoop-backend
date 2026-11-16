@@ -114,3 +114,28 @@ def test_baris_berjangka_baru_bersaring_tenant_dan_terbuka_ujung():
 def test_peringatan_berlaku_nanti_menyebut_harga_lama_tetap_berlaku():
     s = inspect.getsource(HM.rencana_barang)
     assert "tetap berlaku" in s and "tingkat jumlah yang lebih rendah" not in s
+
+
+# ---- BUG-245 bukti Accurate (PT BIS, 16 Nov 2026): beberapa dokumen beda "Mulai Berlaku" untuk barang+satuan sama saling menggantikan menurut tanggal transaksi ----
+def _harga_pada(baris, tanggal, qty=1):
+    cocok = [r for r in baris if HJ._berlaku(r, tanggal) and Decimal(str(r["min_quantity"])) <= Decimal(str(qty))]
+    return HJ.pilih_baris(cocok)["price"] if cocok else None
+
+
+def test_tiga_tanggal_mulai_berlaku_menggantikan_menurut_tanggal_dokumen():
+    # dasar 75.000 (tanpa tanggal) -> 20/11 90.000 -> 25/11 100.000; urutan baris di database tak boleh memengaruhi hasil
+    dasar, k1, k2 = _r(1, None, 75000), _r(1, date(2026, 11, 20), 90000), _r(1, date(2026, 11, 25), 100000)
+    for urut in ([dasar, k1, k2], [k2, k1, dasar], [k1, dasar, k2]):
+        assert _harga_pada(urut, date(2026, 11, 16)) == 75000
+        assert _harga_pada(urut, date(2026, 11, 19)) == 75000
+        assert _harga_pada(urut, date(2026, 11, 20)) == 90000      # batas: hari mulai ikut baris baru
+        assert _harga_pada(urut, date(2026, 11, 22)) == 90000
+        assert _harga_pada(urut, date(2026, 11, 24)) == 90000
+        assert _harga_pada(urut, date(2026, 11, 25)) == 100000
+        assert _harga_pada(urut, date(2026, 11, 27)) == 100000
+
+
+def test_beda_tanggal_mulai_tidak_dianggap_ganda_oleh_kunci_badan():
+    # kunci HARGA_GANDA = (barang, satuan, min qty, tanggal mulai): tiga tanggal berbeda = tiga kunci berbeda
+    kunci = {("p", "pcs", 1, d) for d in (None, date(2026, 11, 20), date(2026, 11, 25))}
+    assert len(kunci) == 3
