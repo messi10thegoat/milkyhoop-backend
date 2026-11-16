@@ -792,6 +792,49 @@ async def templat_impor_barang(request: Request):
                     headers={"Content-Disposition": 'attachment; filename="templat-impor-barang.xlsx"'})
 
 
+@router.get("/items/impor/ekspor")
+async def ekspor_barang_impor(
+    request: Request,
+    format: str = Query("xlsx", description="xlsx atau csv"),
+    status: str = Query("semua", description="semua | aktif | nonaktif"),
+    kategori: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    """BUG-277: Ekspor Barang = 14 kolom templat Impor Barang + kolom informatif (Stok kini, Aktif, Deskripsi; diabaikan saat impor ulang). Jalur SENDIRI; /items/export lama tak berubah. Baca-saja."""
+    from ..services import ekspor_barang as EB
+    format = format if isinstance(format, str) else "xlsx"
+    status = status if isinstance(status, str) else "semua"
+    kategori = kategori if isinstance(kategori, str) and kategori.strip() else None
+    search = search if isinstance(search, str) and search.strip() else None
+    if format not in ("xlsx", "csv") or status not in ("semua", "aktif", "nonaktif"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx/csv; status: semua/aktif/nonaktif.", "field": "format"})
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sql, params = EB.SQL_BARANG, [ctx["tenant_id"]]
+        if status != "semua":
+            params.append("active" if status == "aktif" else "inactive")
+            sql += f" AND p.status = ${len(params)}"
+        if kategori:
+            params.append(kategori.strip())
+            sql += f" AND p.kategori = ${len(params)}"
+        if search:
+            w, pr = _syarat_cari(search, len(params) + 1)      # SATU predikat dengan daftar (BUG-181)
+            sql += f" {w}"
+            params += list(pr)
+        hari = (await tanggal_dokumen(conn, ctx["tenant_id"])).isoformat()
+        rows = await conn.fetch(sql + f" ORDER BY lower(p.nama_produk), p.id LIMIT {EB.MAKS_BARIS + 1}", *params)
+    if len(rows) > EB.MAKS_BARIS:
+        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {EB.MAKS_BARIS} barang per ekspor; persempit dengan kategori/status/cari."})
+    baris, banyak, lewat = EB.siapkan(rows)
+    if format == "csv":
+        isi, mt, ext = EB.bangun_csv(baris), "text/csv; charset=utf-8", "csv"
+    else:
+        isi, mt, ext = EB.bangun_xlsx(baris, banyak, lewat), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=barang-{hari}.{ext}",
+                                                           "X-Ekspor-Jumlah": str(len(baris)), "X-Ekspor-Konversi-Dilewati": str(lewat)})
+
+
 @router.post("/items/impor/baca")
 async def baca_impor_barang(request: Request, berkas: UploadFile = File(...)):
     """Urai .xlsx -> {baris, pemetaan[{judul_berkas, medan, label}], tak_dipakai, peringatan} (nol DB; BUG-101 judul bebas + kolom tak
@@ -2456,44 +2499,88 @@ async def get_next_item_code(
 @router.get("/items/export")
 async def export_items(
     request: Request,
-    format: str = Query("xlsx", description="xlsx atau csv"),
-    status: str = Query("semua", description="semua | aktif | nonaktif"),
-    kategori: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
+    format: str = Query("csv", description="Export format: csv, xlsx"),
 ):
-    """BUG-277: Ekspor Barang = kolom PERSIS templat Impor Barang (services/ekspor_barang). Baca-saja; sel berawalan rumus diberi '."""
-    from ..services import ekspor_barang as EB
-    format = format if isinstance(format, str) else "xlsx"
-    status = status if isinstance(status, str) else "semua"
-    kategori = kategori if isinstance(kategori, str) and kategori.strip() else None
-    search = search if isinstance(search, str) and search.strip() else None
-    if format not in ("xlsx", "csv") or status not in ("semua", "aktif", "nonaktif"):
-        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx/csv; status: semua/aktif/nonaktif.", "field": "format"})
-    ctx = get_user_context(request)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        sql, params = EB.SQL_BARANG, [ctx["tenant_id"]]
-        if status != "semua":
-            params.append("active" if status == "aktif" else "inactive")
-            sql += f" AND p.status = ${len(params)}"
-        if kategori:
-            params.append(kategori.strip())
-            sql += f" AND p.kategori = ${len(params)}"
-        if search:
-            w, pr = _syarat_cari(search, len(params) + 1)      # SATU predikat dengan daftar (BUG-181)
-            sql += f" {w}"
-            params += list(pr)
-        hari = (await tanggal_dokumen(conn, ctx["tenant_id"])).isoformat()
-        rows = await conn.fetch(sql + f" ORDER BY lower(p.nama_produk), p.id LIMIT {EB.MAKS_BARIS + 1}", *params)
-    if len(rows) > EB.MAKS_BARIS:
-        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {EB.MAKS_BARIS} barang per ekspor; persempit dengan kategori/status/cari."})
-    baris, banyak, lewat = EB.siapkan(rows)
-    if format == "csv":
-        isi, mt, ext = EB.bangun_csv(baris), "text/csv; charset=utf-8", "csv"
-    else:
-        isi, mt, ext = EB.bangun_xlsx(baris, banyak, lewat), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
-    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=barang-{hari}.{ext}",
-                                                           "X-Ekspor-Jumlah": str(len(baris)), "X-Ekspor-Konversi-Dilewati": str(lewat)})
+    """Export items to CSV or Excel format."""
+    try:
+        ctx = get_user_context(request)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    item_code as code, nama_produk as name, item_type, base_unit as unit, sku,
+                    sales_price as selling_price, purchase_price,
+                    COALESCE(
+                        (SELECT SUM(il.quantity_in) - SUM(il.quantity_out) FROM inventory_ledger il
+                         WHERE il.product_id = products.id AND il.tenant_id = CAST(products.tenant_id AS TEXT)),
+                        0
+                    ) as current_stock,
+                    kategori as category, deskripsi as description,
+                    CASE WHEN status = 'active' THEN true ELSE false END as is_active
+                FROM products
+                WHERE tenant_id = $1 AND deleted_at IS NULL
+                ORDER BY item_code ASC
+            """,
+                ctx["tenant_id"],
+            )
+
+            if format == "csv":
+                import io
+                import csv
+
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(
+                    [
+                        "Code",
+                        "Name",
+                        "Type",
+                        "Unit",
+                        "SKU",
+                        "Selling Price",
+                        "Purchase Price",
+                        "Stock",
+                        "Category",
+                        "Description",
+                        "Active",
+                    ]
+                )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row["code"],
+                            row["name"],
+                            row["item_type"],
+                            row["unit"],
+                            row["sku"],
+                            row["selling_price"],
+                            row["purchase_price"],
+                            row["current_stock"],
+                            row["category"],
+                            row["description"],
+                            "Yes" if row["is_active"] else "No",
+                        ]
+                    )
+                content = output.getvalue()
+                from fastapi.responses import Response
+
+                return Response(
+                    content=content,
+                    media_type="text/csv",
+                    headers={
+                        "Content-Disposition": "attachment; filename=items_export.csv"
+                    },
+                )
+            else:
+                return {
+                    "success": True,
+                    "message": "Export format not supported yet",
+                    "count": len(rows),
+                }
+    except Exception as e:
+        logger.error(f"Error exporting items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Export failed")
 
 
 # =============================================================================

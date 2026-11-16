@@ -1,4 +1,4 @@
-"""BUG-277 (17 Nov 2026): Ekspor Barang xlsx/csv = kolom PERSIS templat Impor Barang, aman dari rumus Excel, baca-saja, berpagar tenant."""
+"""BUG-277 (17 Nov 2026): Ekspor Barang xlsx/csv di jalur SENDIRI (GET /items/impor/ekspor): 14 kolom templat Impor + Stok kini/Aktif/Deskripsi (diabaikan saat impor ulang), aman dari rumus, baca-saja, berpagar tenant; /items/export lama TAK berubah."""
 import asyncio
 import io
 import json
@@ -15,16 +15,16 @@ from app.services import impor_barang as IB
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 
 
-def r(nama="Minyak 2L", kode="BRG-1", tipe="goods", dasar="Botol", jual=35000, beli=31000, kat="Minyak", barcode="899", status="active", konv=None):
-    return {"id": "x", "item_code": kode, "nama_produk": nama, "item_type": tipe, "base_unit": dasar, "sales_price": jual, "purchase_price": beli,
+def r(nama="Minyak 2L", kode="BRG-1", tipe="goods", dasar="Botol", jual=35000, beli=31000, kat="Minyak", barcode="899", status="active", konv=None, stok=24, desk="Goreng"):
+    return {"stok_kini": stok, "deskripsi": desk, "id": "x", "item_code": kode, "nama_produk": nama, "item_type": tipe, "base_unit": dasar, "sales_price": jual, "purchase_price": beli,
             "kategori": kat, "barcode": barcode, "status": status, "konversi": json.dumps(konv or [])}
 
 
 KV = [{"u": "Karton", "f": "12", "j": "410000", "b": "365000"}, {"u": "Palet", "f": "240", "j": "8000000", "b": "7000000"}]
 
 
-def test_kolom_dan_judul_persis_templat_impor():
-    assert EB.judul() == [j for _, j, _ in IB.KOLOM] and len(EB.judul()) == 14
+def test_judul_empat_belas_templat_lalu_tiga_informatif():
+    assert EB.judul()[:14] == [j for _, j, _ in IB.KOLOM] and EB.judul()[14:] == ["Stok kini (satuan dasar)", "Aktif", "Deskripsi"] and len(EB.judul()) == 17
 
 
 def test_baris_satu_barang_dengan_konversi_pertama_dan_penghitung_lewat():
@@ -34,6 +34,13 @@ def test_baris_satu_barang_dengan_konversi_pertama_dan_penghitung_lewat():
     assert (peta["harga_jual"], peta["harga_beli"], peta["kategori"], peta["barcode"]) == (35000.0, 31000.0, "Minyak", "899")
     assert (peta["satuan_besar"], peta["isi"], peta["harga_jual_besar"], peta["harga_beli_besar"]) == ("Karton", 12.0, 410000.0, 365000.0)
     assert peta["stok_awal"] is None and peta["harga_pokok_awal"] is None and lewat == 1
+    assert b[14:] == ["24 Botol", "Ya", "Goreng"] and len(b) == 17
+
+
+def test_kolom_informatif_stok_teks_aktif_dan_jasa_tanpa_stok():
+    assert EB.baris_ekspor(r(stok="12.500"), [])[0][14] == "12.5 Botol" and EB.baris_ekspor(r(stok=0), [])[0][14] == "0 Botol"
+    assert EB.baris_ekspor(r(tipe="service", stok=5), [])[0][14] is None and EB.baris_ekspor(r(tipe="non_inventory"), [])[0][14] is None
+    assert EB.baris_ekspor(r(status="inactive"), [])[0][15] == "Tidak" and EB.baris_ekspor(r(desk="=cmd"), [])[0][16] == "'=cmd"
 
 
 @pytest.mark.parametrize("tipe, teks", [("goods", "barang"), ("non_inventory", "non stok"), ("service", "jasa")])
@@ -63,7 +70,7 @@ def test_csv_judul_bom_angka_bersih_dan_baris():
     isi = EB.bangun_csv(baris)
     assert isi.startswith(b"\xef\xbb\xbf")
     rows = list(__import__("csv").reader(io.StringIO(isi.decode("utf-8-sig"))))
-    assert rows[0] == EB.judul() and rows[1][4] == "35000" and rows[1][7] == "12" and rows[1][12] == "" and len(rows) == 2
+    assert rows[0] == EB.judul() and rows[1][4] == "35000" and rows[1][7] == "12" and rows[1][12] == "" and rows[1][14:] == ["24 Botol", "Ya", "Goreng"] and len(rows) == 2
 
 
 def test_xlsx_bisa_dibaca_balik_oleh_pembaca_impor_dan_petunjuk_menyebut_yang_dilewati():
@@ -73,13 +80,15 @@ def test_xlsx_bisa_dibaca_balik_oleh_pembaca_impor_dan_petunjuk_menyebut_yang_di
     out = IB.baca_xlsx(isi)
     rows = out["baris"]
     assert [x["nama"] for x in rows] == ["Minyak 2L", "Teh"] and rows[0]["satuan_besar"] == "Karton" and str(rows[0]["isi"]) in ("12", "12.0")
+    # round-trip: tiga kolom informatif DIABAIKAN (hanya disebut "tidak dipakai"), tak menjadi medan impor
+    assert set(out["tak_dipakai"]) == {"Stok kini (satuan dasar)", "Aktif", "Deskripsi"} and "stok_awal" not in rows[0] and "24 Botol" not in rows[0].values()
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(isi))["Petunjuk"]
     assert "1 barang punya satuan besar lain yang tidak ikut (1 satuan)" in " ".join(str(c.value) for row in ws.iter_rows() for c in row)
 
 
 def test_sql_berpagar_tenant_tanpa_hapus_dan_hanya_baca():
-    assert "p.tenant_id = $1" in EB.SQL_BARANG and "p.deleted_at IS NULL" in EB.SQL_BARANG and "uc.tenant_id = p.tenant_id" in EB.SQL_BARANG and "uc.is_active = true" in EB.SQL_BARANG
+    assert "p.tenant_id = $1" in EB.SQL_BARANG and "p.deleted_at IS NULL" in EB.SQL_BARANG and "uc.tenant_id = p.tenant_id" in EB.SQL_BARANG and "uc.is_active = true" in EB.SQL_BARANG and "il.tenant_id = p.tenant_id" in EB.SQL_BARANG
     assert not re.search(r"\b(INSERT|UPDATE|DELETE)\b", EB.SQL_BARANG)
 
 
@@ -124,7 +133,7 @@ def panggil(rows, **kw):
     RI.tanggal_dokumen = td
     args = dict(format="xlsx", status="semua", kategori=None, search=None)
     args.update(kw)
-    return asyncio.run(RI.export_items(Req(), **args)), pool
+    return asyncio.run(RI.ekspor_barang_impor(Req(), **args)), pool
 
 
 def test_rute_xlsx_default_header_dan_nama_berkas():
@@ -155,7 +164,9 @@ def test_rute_batas_baris():
     assert f"LIMIT {EB.MAKS_BARIS + 1}" in panggil([r()])[1].sql[0][0]
 
 
-def test_rute_lama_berjudul_inggris_hilang():
+def test_rute_lama_tak_berubah_dan_rute_baru_sendiri_sebelum_rute_id():
     src = (APP / "routers" / "items.py").read_text()
-    isi = src.split('@router.get("/items/export")')[1].split("# ====")[0]
-    assert '"Selling Price"' not in isi and "Export format not supported" not in isi and "ekspor_barang" in isi
+    lama = src.split('@router.get("/items/export")')[1].split("# ====")[0]
+    assert '"Selling Price"' in lama and "Export format not supported" in lama and "ekspor_barang" not in lama        # kontrak lama utuh (putusan MASTER)
+    assert '@router.get("/items/impor/ekspor")' in src and src.index('@router.get("/items/impor/ekspor")') < src.index('@router.get("/items/{item_id}", ')
+    assert "SELECT" not in src.split("async def ekspor_barang_impor")[1].split("@router")[0]               # kueri hanya di services (satu tempat)

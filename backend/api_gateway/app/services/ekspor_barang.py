@@ -14,7 +14,8 @@ _AWAL_RUMUS = ("=", "+", "-", "@", "\t", "\r")
 _TIPE_TEKS = {"goods": "barang", "non_inventory": "non stok", "service": "jasa"}
 
 SQL_BARANG = """
-SELECT p.id, p.item_code, p.nama_produk, p.item_type, p.base_unit, p.sales_price, p.purchase_price, p.kategori, p.barcode, p.status,
+SELECT p.id, p.item_code, p.nama_produk, p.item_type, p.base_unit, p.sales_price, p.purchase_price, p.kategori, p.barcode, p.status, p.deskripsi,
+       COALESCE((SELECT SUM(il.quantity_in) - SUM(il.quantity_out) FROM inventory_ledger il WHERE il.product_id = p.id AND il.tenant_id = p.tenant_id), 0) AS stok_kini,
        COALESCE((SELECT json_agg(json_build_object('u', uc.conversion_unit, 'f', uc.conversion_factor, 'j', uc.sales_price, 'b', uc.purchase_price)
                  ORDER BY uc.conversion_factor, uc.conversion_unit)
                  FROM unit_conversions uc WHERE uc.product_id = p.id AND uc.tenant_id = p.tenant_id AND uc.is_active = true), '[]'::json) AS konversi
@@ -47,7 +48,9 @@ def baris_ekspor(r: dict, konversi: list) -> tuple:
         "harga_jual_besar": _num(k["j"]) if k else None, "harga_beli_besar": _num(k["b"]) if k else None,
         "kategori": r["kategori"], "barcode": r["barcode"], "stok_awal": None, "harga_pokok_awal": None,
     }
-    return [aman(nilai[kunci]) for kunci, _, _ in IB.KOLOM], max(0, len(konversi) - 1)
+    baris = [aman(nilai[kunci]) for kunci, _, _ in IB.KOLOM]
+    baris += [stok_teks(r.get("stok_kini"), r["base_unit"], r["item_type"]), "Ya" if r["status"] == "active" else "Tidak", aman(r.get("deskripsi"))]
+    return baris, max(0, len(konversi) - 1)
 
 
 def siapkan(rows: list) -> tuple:
@@ -65,8 +68,18 @@ def siapkan(rows: list) -> tuple:
     return out, banyak, lewat
 
 
+EKSTRA = ["Stok kini (satuan dasar)", "Aktif", "Deskripsi"]      # informatif; tak dikenal pembaca impor -> disebut "tidak dipakai", tak mengganggu
+
+
 def judul() -> list:
-    return [j for _, j, _ in IB.KOLOM]
+    return [j for _, j, _ in IB.KOLOM] + EKSTRA
+
+
+def stok_teks(qty, satuan, tipe) -> Optional[str]:
+    if tipe != "goods" or qty is None:
+        return None      # jasa/non stok tak punya stok
+    d = Decimal(str(qty)).normalize()
+    return f"{format(d, 'f')} {satuan or ''}".strip()
 
 
 def bangun_csv(baris: list) -> bytes:
@@ -90,7 +103,7 @@ def bangun_xlsx(baris: list, banyak: int, lewat: int) -> bytes:
     for b in baris:
         ws.append(b)
     p = wb.create_sheet("Petunjuk")
-    for t in ["Kolom sama dengan templat Impor Barang: berkas ini bisa diimpor lagi (ke usaha lain) tanpa pemetaan ulang.",
+    for t in ["14 kolom pertama sama dengan templat Impor Barang: berkas ini bisa diimpor lagi (ke usaha lain) tanpa pemetaan ulang. Kolom Stok kini, Aktif, Deskripsi hanya informasi dan diabaikan saat impor.",
               "Stok awal dan Harga pokok awal sengaja kosong: ekspor ini master barang, bukan saldo stok.",
               "Bila satu barang punya beberapa satuan besar, hanya yang pertama (isi terkecil) yang ikut."
               + (f" Pada ekspor ini {banyak} barang punya satuan besar lain yang tidak ikut ({lewat} satuan)." if lewat else "")]:

@@ -22,3 +22,11 @@ SAB=(
  "e15 konversi dilewati tak dihitung|$EBF|s#max(0, len(konversi) - 1)#0#|$T"
  "e16 stok awal diisi nilai|$EBF|s#\"stok_awal\": None#\"stok_awal\": 1#|$T"
 )
+
+SAB+=(
+ "e17 rute lama ikut diganti|$IT|s#@router.get(\"/items/impor/ekspor\")#@router.get(\"/items/export\")#|$T"
+ "e18 kolom informatif hilang|$EBF|s#EKSTRA = \[\"Stok kini (satuan dasar)\", \"Aktif\", \"Deskripsi\"\]#EKSTRA = []#|$T"
+ "e19 jasa diberi stok|$EBF|s#if tipe != \"goods\" or qty is None:#if qty is None:#|$T"
+ "e20 stok kini tanpa saring tenant|$EBF|s# AND il.tenant_id = p.tenant_id##|$T"
+ "e21 deskripsi tanpa saring rumus|$EBF|s#aman(r.get(\"deskripsi\"))#r.get(\"deskripsi\")#|$T"
+)
