@@ -1,6 +1,6 @@
 # Konfig gerbang unit K-1..K-5 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung/induk (sub kategori satu tingkat) + impor/ekspor berkas + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
 W=/root/mh-k1; CABANG=feat/kategori-k1; NAMA_JENDELA=k1
-POLA_UNIT='k2b_kategori|k1_kategori|k2_kategori|k3_kategori|k4_kategori|k5_impor|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
+POLA_UNIT='k3b_kategori|k2b_kategori|k1_kategori|k2_kategori|k3_kategori|k4_kategori|k5_impor|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-k1.sh
 PENANDA_BERKAS=services/kategori_daftar.py; PENANDA='SQL_DAFTAR'
 A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py; T4=backend/api_gateway/tests/unit/test_k4_kategori_induk.py; T5=backend/api_gateway/tests/unit/test_k5_impor_kategori.py; IK=$A/services/impor_kategori.py
@@ -80,4 +80,12 @@ SAB=(
  "r3 medan waktu lama dihapus|$AF|s#\"waktu\": r\[\"createdAt\"\].isoformat() if r\[\"createdAt\"\] else None, ##|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
  "r4 riwayat tanpa saring tenant|$AF|s#WHERE tenant_id = \$1 AND entity_type = 'item_category'#WHERE entity_type = 'item_category'#|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
  "r5 jam tak ikut waktu_text|$AF|s# {w:%H:%M}##|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
+ "b1 jadikan_bawaan tak ada di aksi_tersedia|$KF|s#\"jadikan_bawaan\": aksi(#\"jadikan_bawaan_x\": aksi(#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b2 bawaan boleh dijadikan bawaan lagi|$KF|s#    if is_default:#    if False:#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b3 nonaktif boleh dijadikan bawaan|$KF|s#    if not is_active:#    if False:#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b4 planner tak memakai kalimat bersama|$AF|s#alasan = KD.alasan_bawaan(k\[\"name\"\], bool(k\[\"is_active\"\]), bool(k\[\"is_default\"\]))#alasan = None#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b5 buat tanpa id|$IT|s#\"id\": baru\[\"id\"\], ##|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b6 buat tanpa baris daftar|$IT|s#, \"data\": baru}#}#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b7 buat tak mengembalikan kolom baris|$IT|s#RETURNING id, name, created_at, is_active, is_default, parent_id, description#RETURNING id, name#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
+ "b8 skema buat tanpa id|$A/schemas/items.py|s#    id: Optional\[str\] = None      \# K-3b#    idx: Optional[str] = None      \# K-3b#|backend/api_gateway/tests/unit/test_k3b_kategori_bawaan_buat.py"
 )

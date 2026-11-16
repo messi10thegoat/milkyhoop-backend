@@ -81,7 +81,7 @@ def test_daftar_baris_tingkat_parent_name_jumlah_anak_aksi_dan_teks():
     assert d["aksi_tersedia"]["hapus"] == {"tersedia": False, "alasan": "Kategori 'Minuman' punya 2 sub kategori; hapus atau pindahkan sub kategorinya dulu."}
     s = KD.baris(k("Teh", jb=5, ja=5, parent="c-1", pname="Minuman"))
     assert (s["tingkat"], s["parent_id"], s["parent_name"], s["position_text"], s["aksi_tersedia"]["atur_induk"]["tersedia"]) == ("anak", "c-1", "Minuman", "Sub Minuman · 5 barang", True)
-    assert list(s["aksi_tersedia"]) == ["ubah", "nonaktifkan", "aktifkan", "atur_induk", "hapus"]
+    assert list(s["aksi_tersedia"]) == ["ubah", "nonaktifkan", "aktifkan", "jadikan_bawaan", "atur_induk", "hapus"]
     assert KD.baris(k("Kosong", jb=0, ja=0))["aksi_tersedia"]["hapus"]["tersedia"] is True
 
 

@@ -35,12 +35,22 @@ def position_text(jumlah_barang: int, jumlah_aktif: int, is_active: bool = True,
     return " · ".join(x for x in bagian if x)
 
 
+def alasan_bawaan(nama: str, is_active: bool, is_default: bool) -> Optional[str]:
+    """SATU sumber kalimat blok 'jadikan bawaan' (K-3 rencana_bawaan + aksi_tersedia.jadikan_bawaan): nonaktif dulu, lalu sudah bawaan; None = boleh."""
+    if not is_active:
+        return f"Kategori '{nama}' nonaktif; aktifkan dulu sebelum dijadikan bawaan."
+    if is_default:
+        return f"Kategori '{nama}' sudah menjadi kategori bawaan."
+    return None
+
+
 def aksi_tersedia(n: int, a: int, nama: str, is_active: bool, is_default: bool, jumlah_anak: int = 0, parent_id=None) -> dict:
     """SATU bentuk (schemas.aksi_tersedia). Dipakai daftar (K-1) dan detail (K-2)."""
     alasan_hapus = BA.rencana_kategori_hapus(nama, a, True)["blocks"][0]["message"] if a else None
     return {"ubah": aksi(True, None),
             "nonaktifkan": aksi(is_active and not is_default, "Kategori sudah nonaktif." if not is_active else "Kategori bawaan tak bisa dinonaktifkan; jadikan kategori lain bawaan dulu."),
             "aktifkan": aksi(not is_active, "Kategori sudah aktif."),
+            "jadikan_bawaan": aksi(alasan_bawaan(nama, is_active, is_default) is None, alasan_bawaan(nama, is_active, is_default)),
             "atur_induk": aksi(jumlah_anak == 0, f"Kategori '{nama}' punya {jumlah_anak} sub kategori; sub kategori hanya satu tingkat."),
             "hapus": aksi(a == 0 and jumlah_anak == 0, alasan_hapus or f"Kategori '{nama}' punya {jumlah_anak} sub kategori; hapus atau pindahkan sub kategorinya dulu.")}
 

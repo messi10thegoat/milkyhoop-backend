@@ -7,6 +7,7 @@ kategori BAWAAN tak boleh dinonaktifkan (dijaga DB: bawaan harus aktif). product
 import json
 from typing import Optional
 
+from . import kategori_daftar as KD
 from . import nama_pengguna as NP
 from . import teks_galat as tg
 from .barang_aksi import _blok, _hasil
@@ -193,10 +194,9 @@ SQL_PINDAH_TULIS = {"tanpa": "UPDATE products p SET kategori = $4, updated_at = 
 def rencana_bawaan(k: Optional[dict]) -> dict:
     if not k:
         return _hasil([_blok("KATEGORI_TAK_ADA", "Kategori tidak ditemukan.")], None)
-    if not k["is_active"]:
-        return _hasil([_blok("KATEGORI_NONAKTIF", f"Kategori '{k['name']}' nonaktif; aktifkan dulu sebelum dijadikan bawaan.")], None)
-    if k["is_default"]:
-        return _hasil([_blok("KATEGORI_SUDAH_BAWAAN", f"Kategori '{k['name']}' sudah menjadi kategori bawaan.")], None)
+    alasan = KD.alasan_bawaan(k["name"], bool(k["is_active"]), bool(k["is_default"]))     # satu sumber kalimat dgn aksi_tersedia.jadikan_bawaan
+    if alasan:
+        return _hasil([_blok("KATEGORI_NONAKTIF" if not k["is_active"] else "KATEGORI_SUDAH_BAWAAN", alasan)], None)
     return _hasil([], {"id": str(k["id"]), "nama": k["name"]},
                   [f"Barang baru tanpa kategori akan otomatis masuk '{k['name']}'. Barang lama tanpa kategori tidak berubah; pindahkan lewat Pindahkan barang."])
 

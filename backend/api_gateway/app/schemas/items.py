@@ -560,6 +560,8 @@ class CreateCategoryResponse(BaseModel):
     success: bool = True
     message: str = ""
     category: str = ""
+    id: Optional[str] = None      # K-3b: id kategori baru (FE langsung ke detail)
+    data: Optional[dict] = None   # K-3b: baris daftar kategori baru (bentuk KD.baris)
 
 
 class CategoryListResponse(BaseModel):

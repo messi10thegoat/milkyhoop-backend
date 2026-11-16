@@ -2734,7 +2734,7 @@ async def create_category(request: Request, body: CreateCategoryRequest):
                     """INSERT INTO item_categories (tenant_id, name, parent_id)
                        VALUES ($1, $2, $3)
                        ON CONFLICT (tenant_id, lower(name)) DO NOTHING
-                       RETURNING id, name""",
+                       RETURNING id, name, created_at, is_active, is_default, parent_id, description""",
                     tenant_id,
                     body.name.strip(),
                     None if induk is None else induk["id"],
@@ -2743,7 +2743,8 @@ async def create_category(request: Request, body: CreateCategoryRequest):
                     raise HTTPException(status_code=409, detail="Kategori sudah ada")
                 inserted = baris_baru["name"]
                 await KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat", baris_baru["id"], inserted, {"nama": inserted, "induk": induk["name"] if induk else None})   # K-2: riwayat/audit semua tulis
-                return {"success": True, "message": f"Kategori '{inserted}' dibuat", "category": inserted}
+                baru = KD.baris({**dict(baris_baru), "parent_name": induk["name"] if induk else None, "jumlah_anak": 0, "jumlah_barang": 0, "jumlah_aktif": 0})
+                return {"success": True, "message": f"Kategori '{inserted}' dibuat", "category": inserted, "id": baru["id"], "data": baru}
             r = await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BUAT", body.name.strip().lower(), {"name": body.name.strip(), "parent_id": str(body.parent_id) if body.parent_id else None}, kerja)
         return CreateCategoryResponse(**r)
 
