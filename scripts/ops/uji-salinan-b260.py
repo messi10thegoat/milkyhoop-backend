@@ -125,7 +125,7 @@ async def main():
             for k in range(2000):
                 src = sumber[k % len(sumber)]["id"]
                 nid = uuid.uuid4()
-                await c.execute(f"/* tenant_id */ INSERT INTO products (id, item_code, nama_produk, {', '.join(kol_p)}) SELECT $1, 'SYN-' || $2::text, 'SYN barang ' || $2::text, {', '.join(kol_p)} FROM products WHERE id = $3 AND tenant_id = $4", nid, k, src, KA)
+                await c.execute(f"/* tenant_id */ INSERT INTO products (id, item_code, nama_produk, {', '.join(kol_p)}) SELECT $1, 'SYN-' || $2::text, 'SYN barang ' || $2::text, {', '.join(kol_p)} FROM products WHERE id = $3 AND tenant_id = $4", nid, str(k), src, KA)
             n_syn = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND item_code LIKE 'SYN-%'", KA)
             cek(f"E skala: {n_syn} barang sintetis dibuat di salinan", n_syn == 2000)
             uid = await c.fetchval("/* tenant_id */ SELECT utr.user_id FROM user_tenant_roles utr JOIN roles r ON r.id = utr.role_id WHERE utr.tenant_id = $1 AND utr.status = 'ACTIVE' AND r.name ILIKE '%owner%' LIMIT 1", KA)
