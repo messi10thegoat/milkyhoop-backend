@@ -111,7 +111,7 @@ async def periksa(pool, tid):
     for x in kosong:
         x["diskon"] = None
     pk = (await PL.pratinjau_impor_harga(req(tid), pl, {"baris": [{k: v for k, v in x.items() if k != "diskon"} | {"diskon": ""} for x in kosong]}))["data"]
-    cek(f"{tid} D3d kolom Diskon % ada tapi sel kosong: baris berdiskon = 'ubah' (dikosongkan)", sum(1 for x in pk["baris"] if x["aksi"] == "ubah") == 3, f"{pk['ringkas']}")
+    cek(f"{tid} D3d kolom Diskon % ada tapi sel kosong: 4 baris berdiskon (3, 5, 0, 8) = 'ubah' (dikosongkan), baris tanpa diskon tetap", sum(1 for x in pk["baris"] if x["aksi"] == "ubah") == 4 and sum(1 for x in pk["baris"] if x["aksi"] == "tetap") == len(pk["baris"]) - 4, f"{pk['ringkas']}")
     # ---- D4 D3 massal berjangka
     t2 = date.today() + timedelta(days=60)
     B = BP.BulkHargaRequest
@@ -119,8 +119,11 @@ async def periksa(pool, tid):
     await BP.bulk_price(req(tid, f"uji-dsk-d3-{st}"), pl, B(mode="persen", nilai=Decimal("10"), berlaku_mulai=t2))
     d4 = await diskon_db(pool, tid, str(pl))
     baru = [x for x in d4 if x[2] == t2]
-    cek(f"{tid} D4 D3 massal berjangka: baris bertambah ({n0}->{len(d4)}), baris baru membawa diskon baris lama (3, 5, 0, 8) dan harga 11000",
-        len(d4) > n0 and sorted(float(x[1]) for x in baru if x[1] is not None) == [0.0, 3.0, 5.0, 8.0] and all(x[3] == 11000 for x in baru), f"{baru}")
+    # D3 salin per KUNCI (barang, satuan, qty, tanggal): dua baris sumber ber-qty 10 (tanpa tanggal + berjangka t1) bertumbukan di kunci (qty 10, t2) -> SATU baris baru; jadi 3 baris baru
+    per_qty = {float(x[0]): x for x in baru}
+    cek(f"{tid} D4 D3 massal berjangka +10%: baris baru per kunci (qty 1 diskon 3 harga 11000, qty 50 diskon 0 harga 11000, qty 10 membawa diskon 5 atau 8); baris lama utuh",
+        len(d4) == n0 + 3 and len(baru) == 3 and per_qty[1.0][1] == Decimal(3) and per_qty[1.0][3] == 11000 and per_qty[50.0][1] == Decimal(0) and per_qty[50.0][3] == 11000
+        and float(per_qty[10.0][1]) in (5.0, 8.0), f"{baru}")
 
 
 async def utama():
