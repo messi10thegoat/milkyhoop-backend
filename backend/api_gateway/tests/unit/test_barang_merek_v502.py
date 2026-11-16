@@ -44,10 +44,11 @@ def test_insert_buat_barang_kolom_dan_placeholder_sama_banyak():
 
 
 def test_rute_merek_terpasang_dan_urutan_rute():
-    assert "AND p.merek = $" in RUTE and "merek.strip()" in RUTE
+    assert '        if merek:\n            query_parts.append(f"AND p.merek = ${param_idx}")\n            params.append(merek.strip())' in RUTE  # saringan terpasang UTUH
     assert RUTE.index('@router.get("/items/merek")') < RUTE.index('@router.get("/items/{item_id}", response_model=ItemDetailResponse)')
     assert '"merek": ("Merek", "merek")' in RUTE and '"merek": "merek"' in RUTE
-    assert '"Brand"' in RUTE and 'row["merek"]' in RUTE
+    assert '                        "Category",\n                        "Merek",' in RUTE and 'row["merek"],\n                            row["description"]' in RUTE   # header + baris ekspor
+    assert 'item_row["reorder_level"]' in RUTE and 'kode_baru,\n                item_row.get("merek"),' in RUTE   # duplikat menyalin merek
     assert "merek IS NOT NULL" in RUTE and "deleted_at IS NULL" in RUTE.split('@router.get("/items/merek")')[1].split("@router.post")[0]
 
 

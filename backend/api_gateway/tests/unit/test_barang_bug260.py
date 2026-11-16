@@ -46,7 +46,7 @@ def test_rute_sort_bisa_dijual_dan_teks_baris_terpasang():
     src = RUTE.read_text()
     assert 'bisa_dijual"' in src and 'sort_by' in src
     assert "== \"bisa_dijual\"" in src            # cabang urut khusus
-    assert "SB.hitung(conn, tenant_id, dil_semua" in src  # SATU panggilan untuk semua baris tersaring, bukan N+1
+    assert "SB.hitung(conn, tenant_id, dil_semua, await tanggal_dokumen(conn, tenant_id))" in src  # SATU panggilan untuk semua baris tersaring, bukan N+1
     assert "array_position(" in src               # halaman = potongan id yang sudah terurut
     assert "BD.stok_fisik_text(" in src and "BD.bisa_dijual_text(" in src
     assert "params.extend([limit, offset_sql])" in src and "has_more=(offset + limit)" in src  # has_more tetap pakai offset asli

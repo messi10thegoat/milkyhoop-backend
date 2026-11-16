@@ -2551,7 +2551,7 @@ async def export_items(
                         "Purchase Price",
                         "Stock",
                         "Category",
-                        "Brand",
+                        "Merek",
                         "Description",
                         "Active",
                     ]
