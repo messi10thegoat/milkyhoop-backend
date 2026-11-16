@@ -806,7 +806,7 @@ async def get_cheque(request: Request, cheque_id: UUID):
             row = await conn.fetchrow(
                 """
                 SELECT c.*,
-                       cu.name as customer_name,
+                       cu.nama as customer_name,
                        v.name as vendor_name,
                        ba.account_name as bank_account_name
                 FROM cheques c

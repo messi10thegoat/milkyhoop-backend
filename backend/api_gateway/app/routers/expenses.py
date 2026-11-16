@@ -764,7 +764,7 @@ async def list_expenses(
                     reference, notes, has_receipt,
                     created_at, journal_id,
                     {BD.sql_jumlah_bukti("expenses")} AS jumlah_bukti,
-                    (SELECT cu.name FROM customers cu WHERE cu.id = expenses.billed_to_customer_id AND cu.tenant_id = expenses.tenant_id) AS billed_to_customer_name
+                    (SELECT cu.nama FROM customers cu WHERE cu.id = expenses.billed_to_customer_id AND cu.tenant_id = expenses.tenant_id) AS billed_to_customer_name
                 FROM expenses
                 WHERE {where_clause}
                 ORDER BY {sort_column} {sort_order.upper()}, created_at DESC
@@ -1255,7 +1255,7 @@ async def get_expense_detail(request: Request, expense_id: UUID):
             result["position_text"] = BD.position_text(expense["status"], expense["paid_through_name"], bool(result["attachments"]))
             result["vendor"] = {"id": str(expense["vendor_id"]), "name": expense["vendor_name"]} if expense["vendor_id"] else None
             result["billed_to_customer_name"] = (await conn.fetchval(
-                "SELECT name FROM customers WHERE id = $1 AND tenant_id = $2", expense["billed_to_customer_id"], ctx["tenant_id"])
+                "SELECT nama FROM customers WHERE id = $1 AND tenant_id = $2", expense["billed_to_customer_id"], ctx["tenant_id"])
                 if expense["billed_to_customer_id"] else None)
             from ..services.biaya_aksi import aksi_tersedia_biaya   # Biaya t2: penentu SAMA dgn post/void
             return {"success": True, "data": result, "aksi_tersedia": await aksi_tersedia_biaya(conn, ctx["tenant_id"], expense)}
