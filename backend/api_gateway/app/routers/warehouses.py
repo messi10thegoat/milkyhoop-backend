@@ -3,13 +3,22 @@ Warehouses Router
 =================
 Multi-warehouse/location management endpoints.
 """
+from datetime import date
+from io import BytesIO
 from typing import Optional
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from ..services import gudang_daftar as GD
+from ..services import lembar_hitung_stok as LH  # BUG-259 lembar penghitungan stok
+from ..services.pdf_service import get_pdf_service
+from ..services.rekap_pesanan import muat_kop
+from ..utils.content_disposition import pdf_content_disposition
+from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.warehouses import (
     CreateWarehouseRequest,
     CreateWarehouseResponse,
@@ -460,6 +469,53 @@ async def get_warehouse_stock(
             warehouse_id=warehouse_id,
             warehouse_name=wh["name"],
         )
+
+
+async def _muat_lembar_hitung(request: Request, warehouse_id: UUID, as_of: Optional[date], kategori: Optional[str], merek: Optional[str],
+                              sertakan_semua: bool):
+    """BUG-259: SATU pemuat untuk JSON dan PDF -> (lembar, kop usaha). Gudang sistem (Transit) tak bisa dihitung = 404 (sama dgn GET stok)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        wh = await conn.fetchrow("SELECT id, name FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system", warehouse_id, ctx["tenant_id"])
+        if not wh:
+            raise HTTPException(status_code=404, detail="Gudang tidak ditemukan")
+        tgl = as_of or await tanggal_dokumen(conn, ctx["tenant_id"])
+        try:
+            lembar = await LH.muat_lembar(conn, ctx["tenant_id"], {"id": wh["id"], "nama": wh["name"]}, tgl, kategori, merek, sertakan_semua)
+        except LH.LembarTerlaluBesar:
+            raise HTTPException(status_code=422, detail=f"Lebih dari {LH.BATAS_BARIS} barang. Saring per kategori atau merek.")
+        return lembar, await muat_kop(conn, ctx["tenant_id"])
+
+
+@router.get("/{warehouse_id}/count-sheet")
+async def get_count_sheet(
+    request: Request,
+    warehouse_id: UUID,
+    as_of: Optional[date] = Query(None, description="Per tanggal (bawaan: tanggal bisnis tenant)"),
+    kategori: Optional[str] = Query(None, max_length=100),
+    merek: Optional[str] = Query(None, max_length=100),
+    sertakan_semua: bool = Query(False, description="true = semua barang dilacak, bukan hanya yang pernah bergerak di gudang ini"),
+):
+    """BUG-259: Lembar Penghitungan Stok (JSON): stok buku per gudang per tanggal dari inventory_ledger. Hanya baca."""
+    lembar, _ = await _muat_lembar_hitung(request, warehouse_id, as_of, kategori, merek, sertakan_semua)
+    return {"success": True, "data": lembar}
+
+
+@router.get("/{warehouse_id}/count-sheet/pdf")
+async def get_count_sheet_pdf(
+    request: Request,
+    warehouse_id: UUID,
+    as_of: Optional[date] = Query(None),
+    kategori: Optional[str] = Query(None, max_length=100),
+    merek: Optional[str] = Query(None, max_length=100),
+    sertakan_semua: bool = Query(False),
+):
+    """BUG-259: PDF server dari lembar yang SAMA dgn JSON (kolom Fisik kosong untuk tulis tangan)."""
+    lembar, kop = await _muat_lembar_hitung(request, warehouse_id, as_of, kategori, merek, sertakan_semua)
+    pdf = await run_in_threadpool(get_pdf_service().tulis_pdf, get_pdf_service().render_lembar_hitung_stok(lembar, kop))
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf", headers={
+        "Content-Disposition": pdf_content_disposition(f"Lembar Hitung Stok {lembar['gudang']['nama']} {lembar['per_tanggal']}")})
 
 
 @router.get("/{warehouse_id}/stock-value", response_model=WarehouseStockValueResponse)
