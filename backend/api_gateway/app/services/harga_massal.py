@@ -6,6 +6,8 @@
   per barang DH_HPP_TAK_ADA; barang lain tetap bisa diterapkan.
 - Pembulatan: bawaan TANPA (2 desimal HALF_UP, Law 9/25); kelipatan 1/10/100/500/1000 x arah terdekat(HALF_UP)/atas/bawah, SEBELUM cek negatif.
 - Hasil < 0 = blok DH_HARGA_NEGATIF; hasil = 0 = PERINGATAN DH_HARGA_NOL (bentuk BUG-207: butuh_konfirmasi + pesan; FE meminta konfirmasi, tulis TIDAK diblok), tetap boleh.
+- BUG-278: sumber hitung = baris yang BERLAKU pada tanggal berlaku baru (hari ini bila langsung), SATU per kunci (satuan, min qty) -- baris_efektif; baris berjangka masa
+  depan / sudah berakhir bukan sumber. Dulu SETIAP baris barang jadi sumber: dua baris sumber pada kunci yang sama bertumbukan di kunci (qty, tanggal baru), harga dari yang diproses terakhir.
 - Tanggal berlaku = start_date baris. BUG-245 (V500): kunci unik memuat tanggal mulai; tanggal di MASA DEPAN membuat BARIS BERJANGKA (harga lama tetap berlaku
   sampai tanggal itu), tanggal hari ini/lampau menimpa seperti semula. Berlaku di MASA DEPAN: sebelum tanggal itu baris tak berlaku -> (diukur dari harga_jual.harga_saran) tingkat qty lebih rendah di DAFTAR YANG SAMA bila
   ada, selain itu harga barang (harga satuan konversi, lalu harga dasar x faktor); TIDAK pindah ke daftar bawaan (PERINGATAN)."""
@@ -50,12 +52,37 @@ def hitung_baru(dasar_nilai, mode: str, nilai, kelipatan: int = 0, arah: str = "
     return None if baru < 0 else baru
 
 
+def _kunci_baris(b: dict) -> tuple:
+    """Kunci unik baris pada barang yang sama = indeks V500 tanpa tanggal: (satuan lower/btrim, min qty ternormalisasi)."""
+    return (" ".join(str(b.get("unit") or "").split()).lower(), Decimal(str(b["min_quantity"])).normalize())
+
+
+def baris_efektif(baris: list, tanggal: date) -> list:
+    """BUG-278: SATU baris SUMBER per kunci (satuan, min qty) = baris yang BERLAKU pada `tanggal`: start_date <= tanggal (kosong = sejak awal) dan end_date >= tanggal
+    (kosong = tanpa akhir), mulai TERBARU menang (sama dengan harga_jual.pilih_baris; tanpa tanggal = paling lama); seri = id terbesar (deterministik). Hasil urut
+    satuan, min qty, id -- pratinjau dan tulis memakai fungsi YANG SAMA. Baris yang belum berlaku / sudah berakhir pada tanggal itu bukan sumber."""
+    pilih: dict = {}
+    for b in baris:
+        mulai_b, akhir_b = b.get("start_date"), b.get("end_date")
+        if (mulai_b is not None and mulai_b > tanggal) or (akhir_b is not None and akhir_b < tanggal):
+            continue
+        k = _kunci_baris(b)
+        cur = pilih.get(k)
+        if cur is None or ((mulai_b or date.min), str(b["id"])) > ((cur.get("start_date") or date.min), str(cur["id"])):
+            pilih[k] = b
+    return sorted(pilih.values(), key=lambda b: (_kunci_baris(b)[0], _kunci_baris(b)[1], str(b["id"])))
+
+
 def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[date], hari_ini: date,
                    dasar: str = "harga_lama", kelipatan: int = 0, arah: str = "terdekat") -> dict:
     if not baris:
         return _hasil([_blok("DH_BARANG_TAK_DI_DAFTAR", f"{nama or 'Barang'} tidak punya harga di daftar ini.")], None)
     if Decimal(str(nilai)) == 0:
         return _hasil([_blok("DH_TANPA_PERUBAHAN", "Nilai perubahan 0: harga tidak berubah.")], None)
+    tanggal_sumber = mulai if (mulai and mulai > hari_ini) else hari_ini       # BUG-278: harga yang berlaku PADA tanggal berlaku baru (hari ini bila langsung)
+    baris = baris_efektif(baris, tanggal_sumber)
+    if not baris:
+        return _hasil([_blok("DH_TAK_BERLAKU_PADA_TANGGAL", f"{nama or 'Barang'} tidak punya harga yang berlaku pada {tgl_text(tanggal_sumber)}.")], None)
     if dasar == "hpp" and any(b.get("hpp") is None for b in baris):
         return _hasil([_blok("DH_HPP_TAK_ADA", f"{nama} belum punya HPP (belum ada stok masuk, barang tanpa stok, atau satuan tak terkonversi); "
                                                "pakai dasar harga lama.")], None)
@@ -101,11 +128,11 @@ async def ukur_rencana(conn, tid: str, pl_id, item_id, mode: str, nilai, mulai: 
                        dasar: str = "harga_lama", kelipatan: int = 0, arah: str = "terdekat") -> dict:
     """Ukur baris barang itu di daftar (bersaring tenant) lalu rencana_barang -- DIPAKAI pratinjau DAN penulis (kunci=True: FOR UPDATE)."""
     baris = [dict(r) for r in await conn.fetch(
-        f"""SELECT pli.id, pli.unit, pli.price, pli.min_price, pli.min_quantity, pli.start_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar, p.nama_produk
+        f"""SELECT pli.id, pli.unit, pli.price, pli.min_price, pli.min_quantity, pli.start_date, pli.end_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar, p.nama_produk
             FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
             LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = pl.tenant_id
             WHERE pl.tenant_id = $1 AND pli.price_list_id = $2 AND pli.item_id = $3
-            ORDER BY pli.unit NULLS FIRST, pli.min_quantity{' FOR UPDATE OF pli' if kunci else ''}""", tid, pl_id, item_id)]
+            ORDER BY pli.unit NULLS FIRST, pli.min_quantity, pli.start_date NULLS FIRST, pli.id{' FOR UPDATE OF pli' if kunci else ''}""", tid, pl_id, item_id)]
     nama = (baris[0]["nama_produk"] if baris else None) or await conn.fetchval(
         "SELECT nama_produk FROM products WHERE id = $1 AND tenant_id = $2", item_id, tid)
     if dasar == "hpp" and baris:

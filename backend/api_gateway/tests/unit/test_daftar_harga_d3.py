@@ -79,7 +79,7 @@ class _C:
 @pytest.mark.asyncio
 async def test_terapkan_update_harga_tiap_baris_bersaring_tenant_dan_tanggal_berlaku():
     c = _C()
-    r = HM.rencana_barang("Kaos", [_baris(), _baris(id="l2", price=D("2000"))], "persen", D("10"), date(2026, 11, 1), HARI)["rencana"]
+    r = HM.rencana_barang("Kaos", [_baris(), _baris(id="l2", price=D("2000"), min_quantity=D("10"))], "persen", D("10"), date(2026, 11, 1), HARI)["rencana"]
     await HM.terapkan(c, "t1", "pl1", r, hari_ini=HARI)   # tanggal sudah berlaku -> menimpa (tanggal depan = baris berjangka: test_dh_berjangka)
     assert len(c.sql) == 2
     for s, a in c.sql:
