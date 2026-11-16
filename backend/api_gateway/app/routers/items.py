@@ -33,6 +33,7 @@ from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
 from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil, deskripsi Barang
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
+from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -1741,6 +1742,7 @@ async def delete_category(request: Request, name: str = Query(..., min_length=1,
                 )
                 if deleted is None:
                     raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+                await KA.catat_audit(conn, tenant_id, ctx["user_id"], "hapus", deleted, name, {"nama": name})   # K-2: jejak hapus (baris registry hilang, audit tinggal)
                 return {"success": True, "message": f"Kategori '{name}' dihapus"}
             return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_HAPUS", name.lower(), {"hapus": name.lower()}, kerja)
 
@@ -2231,6 +2233,139 @@ async def categories_summary(request: Request):
             await conn.close()
 
 
+@router.post("/items/categories/preview")
+async def preview_buat_kategori(request: Request, body: dict):
+    """K-2: pratinjau buat kategori (kembar nama beda huruf = blok KATEGORI_GANDA). Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        n, _ = KA._nama_sah((body or {}).get("name"))
+        return KA.rencana_buat((body or {}).get("name"), bool(n) and await KA.ada_nama(conn, ctx["tenant_id"], n))
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.get("/items/categories/{category_id}")
+async def get_category_detail(request: Request, category_id: UUID):
+    """K-2: detail kategori = baris daftar standar (id, jumlah barang, keadaan, aksi_tersedia) + deskripsi. Hanya baca."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        k = await KA.ukur_kategori(conn, tenant_id, category_id)
+        if not k:
+            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+        return {"success": True, "data": KD.baris(k)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error category detail: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memuat kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.get("/items/categories/{category_id}/history")
+async def get_category_history(request: Request, category_id: UUID, limit: int = Query(50, ge=1, le=200)):
+    """K-2: riwayat kategori (audit_logs: dibuat, ubah nama, nonaktif/aktif, hapus), terbaru dulu."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        if not await KA.ukur_kategori(conn, tenant_id, category_id):
+            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan")
+        return {"success": True, "data": await KA.riwayat(conn, tenant_id, category_id, limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error category history: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memuat riwayat kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.post("/items/categories/{category_id}/rename/preview")
+async def preview_ubah_nama_kategori(request: Request, category_id: UUID, body: dict):
+    """K-2: pratinjau ubah nama (peringatan N barang ikut berganti label; kembar nama = blok). Penentu SAMA dgn penulis. Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        k = await KA.ukur_kategori(conn, ctx["tenant_id"], category_id)
+        n, _ = KA._nama_sah((body or {}).get("name"))
+        return KA.rencana_ubah_nama(k, (body or {}).get("name"), bool(k and n) and await KA.ada_nama(conn, ctx["tenant_id"], n, category_id))
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/rename")
+async def rename_category(request: Request, category_id: UUID, body: dict):
+    """K-2: ubah nama kategori; label di SEMUA barangnya ikut berganti (atomik). X-Idempotency-Key opsional. Blok pratinjau -> 409/422."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                k = await KA.ukur_kategori(conn, tenant_id, category_id)
+                n, _ = KA._nama_sah((body or {}).get("name"))
+                r = KA.rencana_ubah_nama(k, (body or {}).get("name"), bool(k and n) and await KA.ada_nama(conn, tenant_id, n, category_id))
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] == "KATEGORI_TAK_ADA" else (422 if b["code"] in ("NAMA_KOSONG", "NAMA_TERLALU_PANJANG") else 409), detail=b)
+                diubah = await KA.tulis_ubah_nama(conn, tenant_id, ctx["user_id"], k, r["rencana"]["ke"])
+                return {"success": True, "message": f"Kategori '{k['name']}' diubah menjadi '{r['rencana']['ke']}'", "jumlah_barang_diubah": diubah, "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_UBAH_NAMA", str(category_id), {"name": " ".join(str((body or {}).get("name") or "").split())}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rename category: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengubah nama kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.post("/items/categories/{category_id}/status/preview")
+async def preview_status_kategori(request: Request, category_id: UUID, body: dict):
+    """K-2: pratinjau aktifkan/nonaktifkan kategori (nonaktif ber-barang aktif = PERINGATAN; bawaan = blok). Nol tulis."""
+    ctx = get_user_context(request)
+    ke = _ke_aktif(body)
+
+    async def f(conn):
+        return KA.rencana_status(await KA.ukur_kategori(conn, ctx["tenant_id"], category_id), ke)
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/status")
+async def set_category_status(request: Request, category_id: UUID, body: dict):
+    """K-2: aktifkan/nonaktifkan kategori ({is_active: bool}). Barang tak berubah. X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    ke = _ke_aktif(body)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                k = await KA.ukur_kategori(conn, tenant_id, category_id)
+                r = KA.rencana_status(k, ke)
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] == "KATEGORI_TAK_ADA" else 409, detail=b)
+                await KA.tulis_status(conn, tenant_id, ctx["user_id"], k, ke)
+                return {"success": True, "message": f"Kategori '{k['name']}' {'diaktifkan' if ke else 'dinonaktifkan'}", "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_STATUS", f"{category_id}:{ke}", {"is_active": ke}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error category status: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengubah status kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
 @router.get("/items/categories")
 async def list_categories(
     request: Request,
@@ -2255,9 +2390,9 @@ async def list_categories(
         query = """
             SELECT name
             FROM item_categories
-            WHERE tenant_id = $1
+            WHERE tenant_id = $1 AND is_active
             ORDER BY name ASC
-        """
+        """   # K-2: bentuk lama = PILIHAN (kategori nonaktif tak jadi pilihan baru; barang lamanya tetap membawa label)
         rows = await conn.fetch(query, tenant_id)
         categories = [row["name"] for row in rows]
 
@@ -2288,16 +2423,18 @@ async def create_category(request: Request, body: CreateCategoryRequest):
         async with conn.transaction():
             async def kerja():
                 # Simpan ke registry item_categories. Unik case-insensitive; casing input pertama menang.
-                inserted = await conn.fetchval(
+                baris_baru = await conn.fetchrow(
                     """INSERT INTO item_categories (tenant_id, name)
                        VALUES ($1, $2)
                        ON CONFLICT (tenant_id, lower(name)) DO NOTHING
-                       RETURNING name""",
+                       RETURNING id, name""",
                     tenant_id,
                     body.name.strip(),
                 )
-                if inserted is None:
+                if baris_baru is None:
                     raise HTTPException(status_code=409, detail="Kategori sudah ada")
+                inserted = baris_baru["name"]
+                await KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat", baris_baru["id"], inserted, {"nama": inserted})   # K-2: riwayat/audit semua tulis
                 return {"success": True, "message": f"Kategori '{inserted}' dibuat", "category": inserted}
             r = await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BUAT", body.name.strip().lower(), {"name": body.name.strip()}, kerja)
         return CreateCategoryResponse(**r)

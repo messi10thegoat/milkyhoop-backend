@@ -12,6 +12,10 @@ echo "salinan: $S"
 docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl | psql -q -U postgres -d $S" >/tmp/k1_restore.log 2>&1
 echo "restore galat: $(grep -c ERROR /tmp/k1_restore.log)"
+# V498 DI SALINAN (aditif; diterapkan 2x = idempoten); kode K-1/K-2 membaca kolom barunya
+POHON=${POHON:-/root/mh-k1}
+for i in 1 2; do docker exec -i $P psql -q -v ON_ERROR_STOP=1 -U postgres -d $S < "$POHON/backend/migrations/V498__item_categories_standar_so.sql" >/tmp/k1_v498_$i.log 2>&1 || { echo "V498 galat (jalan $i)"; cat /tmp/k1_v498_$i.log; exit 2; }; done
+echo "V498 diterapkan 2x di salinan (idempoten)"
 timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S \
   -v "${POHON:-/root/mh-k1}/backend:/app/backend:ro" -v "$D/uji-salinan-k1.py:/uji.py:ro" -w /app/backend/api_gateway \
   --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py > "$O" 2>&1; RC=$?
