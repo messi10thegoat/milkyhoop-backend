@@ -344,7 +344,7 @@ async def list_items(
     ),
     sort_by: Optional[str] = Query(
         "created_at",
-        description="Sort column: created_at, name, sku, sales_price, purchase_price, current_stock",
+        description="Sort column: created_at, name, sku, sales_price, purchase_price, current_stock, bisa_dijual",
     ),
     sort_order: Optional[str] = Query(
         "desc", description="Sort direction: asc or desc"
@@ -470,10 +470,25 @@ async def list_items(
         }
         sort_col = SORT_COLUMN_WHITELIST.get((sort_by or "").lower(), "p.created_at")
         sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
+        offset_sql = offset
+        if (sort_by or "").lower() == "bisa_dijual":
+            # BUG-260: bisa dijual = stok - dipesan (stok_baris, SATU penentu; bukan kolom SQL) -> urut lintas halaman: hitung untuk SEMUA
+            # baris tersaring (satu panggilan, kueri tetap), urut di Python, halaman = potongan id; barang tak dilacak di ujung (kedua arah)
+            semua = await conn.fetch("SELECT p.id, p.item_type, p.track_inventory, p.status FROM products p " + " ".join(count_parts[1:]), *params)
+            dil_semua = [r["id"] for r in semua if BD.dilacak(dict(r))]
+            sb_semua = (await SB.hitung(conn, tenant_id, dil_semua, await tanggal_dokumen(conn, tenant_id)))["barang"] if dil_semua else {}
+            nilai = {str(r["id"]): (sb_semua.get(str(r["id"])) or {}).get("bisa_dijual") for r in semua}
+            urut = sorted((r["id"] for r in semua), key=str, reverse=True)  # dasar: id turun (sama dgn tiebreaker SQL), sort stabil di bawah
+            ada = sorted((i for i in urut if nilai[str(i)] is not None), key=lambda i: nilai[str(i)], reverse=(sort_dir == "DESC"))
+            halaman_id = (ada + [i for i in urut if nilai[str(i)] is None])[offset:offset + limit]
+            query_parts.append(f"AND p.id = ANY(${param_idx}::uuid[])")
+            params.append(halaman_id)
+            sort_col, sort_dir, offset_sql = f"array_position(${param_idx}::uuid[], p.id)", "ASC", 0
+            param_idx += 1
         # Tiebreaker p.id DESC for stable pagination
         query_parts.append(f"ORDER BY {sort_col} {sort_dir}, p.id DESC")
         query_parts.append(f"LIMIT ${param_idx} OFFSET ${param_idx + 1}")
-        params.extend([limit, offset])
+        params.extend([limit, offset_sql])
 
         # Execute query
         query = " ".join(query_parts)
@@ -553,6 +568,10 @@ async def list_items(
                     position_text_ket=BD.position_text_ket(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                            sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual=sb.get("bisa_dijual"),
+                    stok_fisik_text=BD.stok_fisik_text(row, row.get("current_stock"),
+                                                       sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
+                    bisa_dijual_text=BD.bisa_dijual_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
+                                                         sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                 )
             )
 

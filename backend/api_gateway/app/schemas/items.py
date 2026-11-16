@@ -364,6 +364,8 @@ class ItemListItem(BaseModel):
     position_text: Optional[str] = None
     position_text_ket: Optional[str] = None  # BUG-236: keterangan tanpa angka stok ("bisa dijual 160"); None bila tak ada
     bisa_dijual: Optional[Decimal] = None
+    stok_fisik_text: Optional[str] = None  # BUG-260: "172 pcs"; None bila barang tak dilacak stoknya
+    bisa_dijual_text: Optional[str] = None  # BUG-260: "160 pcs"; selalu terisi untuk barang ber-stok
 
 
 class ItemListResponse(BaseModel):
