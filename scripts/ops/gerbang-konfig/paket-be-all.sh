@@ -8,5 +8,6 @@ PENANDA_BERKAS=services/barang_daftar.py; PENANDA='bisa_dijual_text'
 UNIT_KONFIG=(b249 b260 b259 b257 b272 k8w b268b k1 b255 b276 b277)
 SAB=()
 for _u in "${UNIT_KONFIG[@]}"; do
-  while IFS= read -r -d '' _e; do SAB+=("$_e"); done < <(bash -c ". \"$W/scripts/ops/gerbang-konfig/$_u.sh\"; printf '%s\\0' \"\${SAB[@]}\"")
+  # gerbang-unit.sh menjalankan tes dari api_gateway: kolom 4 (tes) WAJIB relatif ke api_gateway; konfig per-unit memakai awalan backend/api_gateway/ (kolom 2 = berkas, relatif W, tak disentuh)
+  while IFS= read -r -d '' _e; do _t="${_e##*|}"; SAB+=("${_e%|*}|${_t//backend\/api_gateway\//}"); done < <(bash -c ". \"$W/scripts/ops/gerbang-konfig/$_u.sh\"; printf '%s\\0' \"\${SAB[@]}\"")
 done
