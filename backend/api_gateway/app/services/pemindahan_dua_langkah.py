@@ -151,6 +151,20 @@ async def kirim(conn, ctx: dict, transfer_id) -> dict:
 # ============================================================================
 # TERIMA
 # ============================================================================
+def peringatan_terima(lines: List[dict]) -> List[dict]:
+    """K8-W (17 Nov 2026; Accurate PT BIS via TESTER): Terima yang MENYISAKAN barang di Transit = PERINGATAN (bukan blok): "Selisih N belum diterima; dapat diterima di penerimaan
+    berikutnya." MURNI. lines = lines rencana_terima (name, unit, tertunda_sesudah, item_id). JSON-aman: item_id str, selisih float. Terima tuntas = daftar kosong."""
+    from .barang_daftar import _q
+    out = []
+    for ln in lines:
+        sisa = _d(ln["tertunda_sesudah"])
+        if sisa > _NOL:
+            satuan = f" {ln['unit']}" if ln.get("unit") else ""
+            out.append({"code": "PB_TERIMA_KURANG", "item_id": str(ln["item_id"]), "nama": ln["name"], "selisih": float(sisa), "unit": ln.get("unit"),
+                        "message": f"Selisih {_q(sisa)}{satuan} {ln['name']} belum diterima; dapat diterima di penerimaan berikutnya."})
+    return out
+
+
 async def rencana_terima(conn, tid: str, h, items, baris: Optional[List[dict]], kunci: bool = False) -> dict:
     """baris: [{"item_id": UUID, "qty": Decimal}] atau None/[] = SEMUA tertunda. -> {blocks, lines, status_sesudah, tuntas, ...}. qty <= tertunda; boleh berulang."""
     blocks: list = []
@@ -200,7 +214,7 @@ async def rencana_terima(conn, tid: str, h, items, baris: Optional[List[dict]], 
                       "received_before": _d(i["quantity_received"]), "tertunda": tertunda[iid], "akan_diterima": a,
                       "tertunda_sesudah": tertunda[iid] - a, "unit_cost": _d(i["unit_cost"]), "value": (a * _d(i["unit_cost"])).quantize(Decimal("0.01"))})
     tuntas = all(l["tertunda_sesudah"] <= _NOL for l in lines)
-    return {"blocks": blocks, "lines": lines, "status_sesudah": "received" if tuntas else "in_transit", "tuntas": tuntas,
+    return {"blocks": blocks, "lines": lines, "status_sesudah": "received" if tuntas else "in_transit", "tuntas": tuntas, "peringatan": peringatan_terima(lines),
             "tujuan": {"id": str(h["to_warehouse_id"]), "name": tujuan["name"] if tujuan else None},
             "total_quantity": sum((l["akan_diterima"] for l in lines), _NOL), "total_value": sum((l["value"] for l in lines), _NOL),
             "status_text_sesudah": teks_status("received" if tuntas else "in_transit", sum((l["shipped"] for l in lines), _NOL),
@@ -258,7 +272,7 @@ async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = Non
                         f"{'' if rencana['tuntas'] else ' (sebagian; sisa masih di Transit)'}",
                         {"qty": str(rencana["total_quantity"]), "nilai": str(total), "tuntas": rencana["tuntas"]}, source="api:stock_transfers.receive")
     catatan = await pb._fase_so(conn, ctx, h, "tersedia", h["to_warehouse_id"]) if rencana["tuntas"] else None
-    return {"ulang": False, "catatan_fase": catatan}
+    return {"ulang": False, "catatan_fase": catatan, "peringatan": rencana["peringatan"]}
 
 
 # ============================================================================
