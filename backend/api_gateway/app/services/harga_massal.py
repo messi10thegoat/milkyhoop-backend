@@ -71,12 +71,15 @@ def rencana_barang(nama: str, baris: list, mode: str, nilai, mulai: Optional[dat
         dari = Decimal(str(b["price"]))
         margin = ((ke - hpp) / hpp * Decimal(100)).quantize(SEN, rounding=ROUND_HALF_UP) if hpp else None
         hasil.append({"id": str(b["id"]), "unit_text": ut, "min_quantity": float(b["min_quantity"]), "dari": dari, "ke": ke, "selisih": ke - dari,
-                      "dasar_nilai": dasar_nilai, "hpp": hpp, "margin_persen": margin})
+                      "dasar_nilai": dasar_nilai, "hpp": hpp, "margin_persen": margin,
+                      "min_price": Decimal(str(b["min_price"])) if b.get("min_price") is not None else None})
     if bloks:
         return _hasil(bloks, None)
     per = []
     if mulai and mulai > hari_ini:
         per.append(_per("DH_BERLAKU_NANTI", f"Harga baru {nama} berlaku mulai {tgl_text(mulai)} (baris berjangka baru); harga lama tetap berlaku sampai tanggal itu."))
+    if any(h["min_price"] is not None and h["ke"] < h["min_price"] for h in hasil):  # BUG-040: lantai baris tak diubah D3; harga baru di bawahnya = PERINGATAN
+        per.append(_per("DH_DI_BAWAH_MINIMUM", f"Sebagian harga baru {nama} di bawah harga minimum barisnya. Harga minimum tidak ikut berubah; konfirmasi dulu bila memang disengaja."))
     nol = any(h["ke"] == 0 for h in hasil)
     if nol:
         per.append(_per("DH_HARGA_NOL", f"Sebagian harga {nama} akan jadi Rp 0. Konfirmasi dulu bila memang disengaja."))
@@ -98,7 +101,7 @@ async def ukur_rencana(conn, tid: str, pl_id, item_id, mode: str, nilai, mulai: 
                        dasar: str = "harga_lama", kelipatan: int = 0, arah: str = "terdekat") -> dict:
     """Ukur baris barang itu di daftar (bersaring tenant) lalu rencana_barang -- DIPAKAI pratinjau DAN penulis (kunci=True: FOR UPDATE)."""
     baris = [dict(r) for r in await conn.fetch(
-        f"""SELECT pli.id, pli.unit, pli.price, pli.min_quantity, pli.start_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar, p.nama_produk
+        f"""SELECT pli.id, pli.unit, pli.price, pli.min_price, pli.min_quantity, pli.start_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar, p.nama_produk
             FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
             LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = pl.tenant_id
             WHERE pl.tenant_id = $1 AND pli.price_list_id = $2 AND pli.item_id = $3
@@ -127,8 +130,8 @@ async def terapkan(conn, tid: str, pl_id, rencana: dict, hari_ini: Optional[date
             if sama == "UPDATE 0":
                 await conn.execute(
                     """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent, start_date,
-                                                     end_date, is_default_unit)
-                       SELECT o.price_list_id, o.item_id, o.item_code, o.unit, $4, o.min_quantity, o.discount_percent, $5, NULL, o.is_default_unit
+                                                     end_date, is_default_unit, min_price)
+                       SELECT o.price_list_id, o.item_id, o.item_code, o.unit, $4, o.min_quantity, o.discount_percent, $5, NULL, o.is_default_unit, o.min_price
                        FROM price_list_items o WHERE o.id = $1 AND o.price_list_id = $2
                          AND o.price_list_id IN (SELECT id FROM price_lists WHERE id = $2 AND tenant_id = $3)""", b["id"], pl_id, tid, b["ke"], mulai)
         elif mulai:

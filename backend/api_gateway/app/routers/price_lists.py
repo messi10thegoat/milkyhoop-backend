@@ -68,6 +68,8 @@ async def siapkan_baris_harga(conn, tid: str, pl_id, item, line_id=None):
                AND min_quantity = $4 AND start_date IS NOT DISTINCT FROM $6::date AND ($5::uuid IS NULL OR id <> $5)""",
             pl_id, pid, _satuan(item.unit), item.min_quantity, line_id, item.start_date):
         raise GalatBerkode(409, "HARGA_GANDA", PESAN_HARGA_GANDA)
+    if item.min_price is not None and item.min_price > item.price:  # BUG-040: lantai tak boleh di atas harga baris
+        raise GalatBerkode(400, "HARGA_MINIMUM_DI_ATAS_HARGA", "Harga minimum tidak boleh lebih besar dari harga.", field="min_price")
     return pid
 
 
@@ -81,16 +83,16 @@ async def tulis_baris_harga(conn, tid: str, pl_id, item, line_id=None) -> object
             if line_id is not None:
                 return await conn.fetchval(
                     """UPDATE price_list_items SET unit = $3, price = $4, min_quantity = $5, discount_percent = $6, start_date = $7,
-                              end_date = $8, is_default_unit = $9
+                              end_date = $8, is_default_unit = $9, min_price = $10
                        WHERE id = $1 AND price_list_id = $2 RETURNING id""",
                     line_id, pl_id, unit, item.price, item.min_quantity, item.discount_percent, item.start_date, item.end_date,
-                    item.is_default_unit)
+                    item.is_default_unit, item.min_price)
             return await conn.fetchval(
                 """INSERT INTO price_list_items (price_list_id, item_id, item_code, unit, price, min_quantity, discount_percent,
-                                                 start_date, end_date, is_default_unit)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id""",
+                                                 start_date, end_date, is_default_unit, min_price)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id""",
                 pl_id, pid, item.item_code, unit, item.price, item.min_quantity,
-                item.discount_percent, item.start_date, item.end_date, item.is_default_unit)
+                item.discount_percent, item.start_date, item.end_date, item.is_default_unit, item.min_price)
     except asyncpg.exceptions.UniqueViolationError as e:
         raise _galat_unik(e)
 
@@ -122,7 +124,7 @@ async def siapkan_buat_daftar(conn, tid: str, b: CreatePriceListRequest) -> dict
                                field=f"items.{i}")
         kunci.add(k)
         baris.append({"item_id": str(pid), "item_code": item.item_code, "unit": _satuan(item.unit), "price": item.price,
-                      "min_quantity": item.min_quantity, "discount_percent": item.discount_percent, "start_date": item.start_date,
+                      "min_quantity": item.min_quantity, "discount_percent": item.discount_percent, "min_price": item.min_price, "start_date": item.start_date,
                       "end_date": item.end_date, "is_default_unit": item.is_default_unit})
     return {"code": kode, "name": nama, "price_type": b.price_type, "default_discount": b.default_discount,
             "default_markup": b.default_markup, "start_date": b.start_date, "end_date": b.end_date, "priority": b.priority,
@@ -349,6 +351,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             "discount_percent": float(i["discount_percent"])
                             if i["discount_percent"]
                             else None,
+                            "min_price": i["min_price"],
                             "start_date": i["start_date"].isoformat()
                             if i["start_date"]
                             else None,
@@ -536,7 +539,7 @@ async def _baris_gabungan(conn, tid: str, price_list_id: UUID, line_id: UUID, bo
                             line_id, price_list_id)
     if not r:
         raise HTTPException(status_code=404, detail="Baris harga tidak ditemukan.")
-    lama = {k: r[k] for k in ("unit", "price", "min_quantity", "is_default_unit", "discount_percent", "start_date", "end_date")}
+    lama = {k: r[k] for k in ("unit", "price", "min_quantity", "is_default_unit", "discount_percent", "min_price", "start_date", "end_date")}
     lama["discount_percent"] = float(lama["discount_percent"]) if lama["discount_percent"] is not None else None
     return PriceListItemCreate(item_id=str(r["item_id"]), item_code=r["item_code"], **{**lama, **body.model_dump(exclude_unset=True)})
 

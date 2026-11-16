@@ -68,28 +68,28 @@ def test_baca_bukan_excel_ditolak():
 
 # ---------------------------------------------------------------- ekspor
 RAW = [{"item_code": "A-1", "nama": "Minyak", "unit": None, "min_quantity": Decimal("1.000"), "price": Decimal("12500.00"),
-        "start_date": date(2026, 11, 20), "end_date": None, "dasar": "Pcs"},
+        "min_price": Decimal("11000"), "start_date": date(2026, 11, 20), "end_date": None, "dasar": "Pcs"},
        {"item_code": "A-1", "nama": "Minyak", "unit": "Dus", "min_quantity": Decimal("10"), "price": Decimal("140000"),
-        "start_date": None, "end_date": date(2026, 12, 31), "dasar": "Pcs"}]
+        "min_price": None, "start_date": None, "end_date": date(2026, 12, 31), "dasar": "Pcs"}]
 
 
 def test_ekspor_xlsx_dibaca_ulang_oleh_impor_dan_satuan_kosong_jadi_satuan_dasar():
     r = IH.baca_xlsx(IH.ekspor_xlsx(RAW))
-    assert [m["medan"] for m in r["pemetaan"]] == ["kode", "nama", "satuan", "min_qty", "harga", "mulai", "akhir"] and not r["tak_dipakai"]
+    assert [m["medan"] for m in r["pemetaan"]] == ["kode", "nama", "satuan", "min_qty", "harga", "min_harga", "mulai", "akhir"] and not r["tak_dipakai"]
     assert r["baris"][0]["satuan"] == "Pcs" and r["baris"][1]["satuan"] == "Dus" and r["baris"][0]["harga"] == 12500
 
 
 def test_ekspor_xlsx_kosong_hanya_judul():
     r = IH.baca_xlsx(IH.ekspor_xlsx([]))
-    assert r["baris"] == [] and len(r["pemetaan"]) == 7
+    assert r["baris"] == [] and len(r["pemetaan"]) == 8
 
 
 def test_ekspor_csv_id_id_bom_titik_koma_koma_desimal():
     b = IH.ekspor_csv(RAW)
     assert b.startswith(b"\xef\xbb\xbf")
     baris = b.decode("utf-8-sig").split("\r\n")
-    assert baris[0] == "Kode barang;Nama;Satuan;Mulai qty;Harga;Mulai berlaku;Berakhir"
-    assert baris[1] == "A-1;Minyak;Pcs;1;12500,00;2026-11-20;"
+    assert baris[0] == "Kode barang;Nama;Satuan;Mulai qty;Harga;Harga minimum;Mulai berlaku;Berakhir"
+    assert baris[1] == "A-1;Minyak;Pcs;1;12500,00;11000;2026-11-20;"
 
 
 def test_ekspor_csv_tak_menjalankan_rumus():
@@ -113,9 +113,9 @@ class Konn:
         raise AssertionError(sql)
 
 
-def baris_ada(harga, unit=None, qty=1, mulai=None, akhir=None, diskon=None):
+def baris_ada(harga, unit=None, qty=1, mulai=None, akhir=None, diskon=None, minimum=None):
     return {"id": uuid4(), "item_id": PID, "unit": unit, "min_quantity": Decimal(qty), "price": Decimal(harga), "start_date": mulai,
-            "end_date": akhir, "discount_percent": diskon, "is_default_unit": False, "item_code": "A-1"}
+            "end_date": akhir, "discount_percent": diskon, "is_default_unit": False, "item_code": "A-1", "min_price": minimum}
 
 
 @pytest.fixture(autouse=True)
@@ -284,3 +284,95 @@ def test_tulis_wajib_kunci_idempotensi_dan_badan_wajib_baris():
         PL._badan_impor({"baris": "bukan daftar"})
     assert e.value.code == "IMPOR_BARIS_WAJIB"
     assert PL._badan_impor({"baris": [], "berlaku_mulai": "2026-12-01"}) == ([], date(2026, 12, 1))
+
+
+# ---------------------------------------------------------------- BUG-040 harga minimum
+def test_impor_harga_minimum_tambah_ubah_dan_pertahankan_bila_kolom_tak_ada():
+    lama = baris_ada(10000, minimum=Decimal("8000"))
+    r1 = run(Konn([lama]), [b(harga=11000)])                              # kolom Harga minimum tak ada -> lantai lama utuh
+    assert r1["baris"][0]["rencana"]["harga_minimum"] == Decimal("8000") and r1["baris"][0]["aksi"] == "ubah"
+    r2 = run(Konn([lama]), [b(harga=10000, min_harga="9.000")])           # kolom ada -> lantai berubah (aksi ubah walau harga sama)
+    assert r2["baris"][0]["aksi"] == "ubah" and r2["baris"][0]["rencana"]["harga_minimum"] == Decimal("9000")
+    r3 = run(Konn([lama]), [b(harga=10000, min_harga=None)])              # kolom ada tapi kosong -> dikosongkan
+    assert r3["baris"][0]["aksi"] == "ubah" and r3["baris"][0]["rencana"]["harga_minimum"] is None
+    r4 = run(Konn([lama]), [b(harga=10000, min_harga=8000)])
+    assert r4["baris"][0]["aksi"] == "tetap"
+    assert run(Konn(), [b(min_harga=500)])["baris"][0]["rencana"]["harga_minimum"] == Decimal(500)
+
+
+def test_impor_harga_minimum_tidak_sah_diblok():
+    r = run(Konn(), [b(min_harga=-1), b(min_harga="abc"), b(min_harga="1,555")])
+    assert [x["blocks"][0]["code"] for x in r["baris"]] == ["IMPOR_HARGA_TIDAK_SAH"] * 3 and all(x["blocks"][0]["field"] == "min_harga" for x in r["baris"])
+
+
+def test_tulis_impor_meneruskan_harga_minimum_ke_penulis_tunggal(stub):
+    asyncio.run(IH.tulis(Konn(), {"tenant_id": TID}, PL_ID, [b(harga=12000, min_harga=9000)]))
+    assert stub["tulis"][0][0].min_price == Decimal(9000)
+
+
+class KonnSiap:
+    def __init__(self):
+        self.n = 0
+
+    async def fetchval(self, sql, *a):
+        self.n += 1
+        return 1 if "FROM products" in sql else None
+
+
+def test_penulis_baris_menolak_minimum_di_atas_harga_dan_menerima_sama(monkeypatch):
+    monkeypatch.undo()                                                     # siapkan_baris_harga ASLI (stub autouse dilepas)
+    from app.schemas.price_lists import PriceListItemCreate
+    lantai = lambda p, m: PriceListItemCreate(item_id=str(PID), price=p, min_quantity=1, min_price=m)
+    with pytest.raises(GalatBerkode) as e:
+        asyncio.run(PL.siapkan_baris_harga(KonnSiap(), TID, PL_ID, lantai(1000, 1001), line_id=uuid4()))
+    assert e.value.code == "HARGA_MINIMUM_DI_ATAS_HARGA" and e.value.status_code == 400 and e.value.field == "min_price"
+    assert asyncio.run(PL.siapkan_baris_harga(KonnSiap(), TID, PL_ID, lantai(1000, 1000), line_id=uuid4())) == PID
+    assert asyncio.run(PL.siapkan_baris_harga(KonnSiap(), TID, PL_ID, lantai(1000, None), line_id=uuid4())) == PID
+
+
+def test_skema_min_price_nonnegatif_dua_desimal_dan_aditif():
+    from app.schemas.price_lists import PriceListItemCreate, PriceListItemUpdate
+    assert PriceListItemCreate(item_id="x", price=1).min_price is None and PriceListItemUpdate().min_price is None
+    with pytest.raises(ValueError):
+        PriceListItemCreate(item_id="x", price=1, min_price=-1)
+    with pytest.raises(ValueError):
+        PriceListItemCreate(item_id="x", price=1, min_price=Decimal("1.234"))
+
+
+def test_penentu_harga_minimum_satu_sakelar():
+    from app.services import harga_minimum as HMN
+    assert HMN.MODE_PENEGAKAN == "peringatan"
+    assert HMN.periksa(9000, None) is None and HMN.periksa(10000, 10000) is None and HMN.periksa(None, 10000) is None
+    p = HMN.periksa(9000, 10000, nama="Minyak")
+    assert p["code"] == "JUAL_DI_BAWAH_MINIMUM" and p["butuh_konfirmasi"] is True and p["blok"] is False and p["pesan"] == p["message"] and "Rp 9.000" in p["pesan"] and "Rp 10.000" in p["pesan"]
+    k = HMN.periksa(9000, 10000, mode="blok")
+    assert k["blok"] is True and k["butuh_konfirmasi"] is False
+    with pytest.raises(GalatBerkode) as e:
+        HMN.tolak_bila_blok(k)
+    assert e.value.status_code == 409 and e.value.code == "JUAL_DI_BAWAH_MINIMUM"
+    assert HMN.tolak_bila_blok(p) == p and HMN.periksa(1, 10000, mode="mati") is None
+    with pytest.raises(ValueError):
+        HMN.periksa(1, 2, mode="asal")
+
+
+def test_resolve_mengembalikan_harga_minimum_baris_yang_menang():
+    import inspect
+    from app.services import harga_jual as HJ
+    s = inspect.getsource(HJ)
+    assert "SELECT item_id, unit, price, min_price," in s and '"harga_minimum": None' in s and 'harga_minimum=float(_r2(r["min_price"]))' in s
+
+
+def test_d3_peringatan_di_bawah_minimum_dan_salinan_berjangka_membawa_lantai():
+    import inspect
+    from app.services import harga_massal as HMS
+    s = inspect.getsource(HMS)
+    assert "DH_DI_BAWAH_MINIMUM" in s and "o.is_default_unit, o.min_price" in s and "pli.price, pli.min_price," in s
+
+
+def test_migrasi_v501_maju_dan_rollback_tanpa_transaksi():
+    mig = GW.parent / "migrations"
+    maju = (mig / "V501__price_list_items_min_price.sql").read_text()
+    mundur = (mig / "V501__price_list_items_min_price_ROLLBACK.sql").read_text()
+    assert "ADD COLUMN IF NOT EXISTS min_price NUMERIC(18,2)" in maju and "CHECK (min_price IS NULL OR min_price >= 0)" in maju
+    assert not re.search(r"^\s*(BEGIN|COMMIT)\b", maju + mundur, re.M | re.I)
+    assert "DROP COLUMN IF EXISTS min_price" in mundur and "DROP CONSTRAINT IF EXISTS chk_price_list_items_min_price_nonneg" in mundur
