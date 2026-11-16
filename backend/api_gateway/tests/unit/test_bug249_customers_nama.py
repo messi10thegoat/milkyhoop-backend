@@ -7,14 +7,14 @@ alias yang sama untuk chart_of_accounts di pernyataan lain tidak salah tandai.
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]   # .../backend (berkas ini di backend/api_gateway/tests/unit/)
 BUKAN_ALIAS = {"WHERE", "ON", "LEFT", "JOIN", "SET", "ORDER", "GROUP", "LIMIT", "FOR", "INNER", "AND"}
 
 
 def _berkas():
     for p in ROOT.rglob("*.py"):
         s = str(p.relative_to(ROOT))
-        if s.startswith("tests/") or "/tests/" in s or "/libs/milkyhoop_prisma/" in s:
+        if "/tests/" in s or s.startswith("tests/") or "/libs/milkyhoop_prisma/" in s:
             continue   # tes + kode prisma hasil generate (55rb baris, bukan SQL tulisan tangan)
         yield p
 
