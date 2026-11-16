@@ -11,12 +11,14 @@ J (K-3, transaksi di-rollback) bawaan: jadikan bawaan A lalu B -> tepat satu baw
 K (K-3) pindah massal: barang TANPA kategori (SQL independen) == ukur_pindah.n; tulis_pindah memindahkan tepat n barang (== label baru), sisa tanpa kategori 0; barang terhapus-lunak tak ikut
 L (K-3) gabung: sumber -> tujuan: jumlah barang bersumber (termasuk terhapus-lunak) berpindah label, baris registry sumber hilang, audit MERGED
 M (K-4, transaksi di-rollback) induk: A dijadikan sub dari B -> ?tingkat=anak&induk_id=B memuat A (parent_name == B), B.jumlah_anak == 1, label barang A tak berubah (SQL), jumlah_anak_by_nama(B) == 1, rencana_gabung(B,...) diblok KATEGORI_PUNYA_ANAK, A tingkat atas lagi setelah parent=None
+N (K-5, rollback) ekspor: baris_ekspor == SQL (jumlah kategori, induk lebih dulu); xlsx/csv diurai balik (baca_xlsx) -> rencana(): SEMUA baris diblok KATEGORI_SUDAH_ADA (round-trip kolom) ; impor 1 induk + 2 sub UJI-K5-* lewat tulis(): jumlah +3, hierarki benar (parent_id), 3 audit; impor ulang diblok
 I nonaktif/aktif (KA.tulis_status): is_active berubah, daftar ?aksi=nonaktif memuatnya, bentuk lama (pilihan) tak memuatnya, riwayat memuat 2 kejadian terbaru"""
 import asyncio
 import sys
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import items as RI  # noqa: E402
+from app.services import impor_kategori as IK  # noqa: E402
 from app.services import kategori_aksi as KA  # noqa: E402
 from app.services import kategori_daftar as KD  # noqa: E402
 
@@ -135,6 +137,23 @@ async def main():
                             cek(f"M {tid}: hapus '{b['name']}' diblok sub ({await KA.jumlah_anak_by_nama(c, tid, b['name'])}), gabung diblok", await KA.jumlah_anak_by_nama(c, tid, b["name"]) == 1 and KA.rencana_gabung(b2, a)["blocks"][0]["code"] == "KATEGORI_PUNYA_ANAK")
                             await KA.tulis_induk(c, tid, None, await KA.ukur_kategori(c, tid, a["id"]), None)
                             cek(f"M {tid}: parent=None -> tingkat atas lagi", (await KA.ukur_kategori(c, tid, a["id"]))["parent_id"] is None)
+                    # ---- K-5
+                    be = await IK.baris_ekspor(c, tid)
+                    n_k = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories WHERE tenant_id = $1", tid)
+                    kolom_atas = [i for i, r_ in enumerate(be) if r_[1] == ""]
+                    cek(f"N {tid}: ekspor {len(be)} baris == SQL {n_k}; induk lebih dulu", len(be) == n_k and (not be or all(be[i][1] == "" for i in kolom_atas)) and all(be[j][1] != "" for j in range(max(kolom_atas) + 1, len(be))) if kolom_atas else len(be) == n_k)
+                    if be and len(be) <= IK.MAKS_BARIS:
+                        balik = IK.baca_xlsx(IK.ekspor_xlsx(be))
+                        rr = await IK.rencana(c, {"tenant_id": tid}, balik["baris"])
+                        cek(f"N {tid}: round-trip xlsx: {len(balik['baris'])} baris terbaca, semuanya diblok KATEGORI_SUDAH_ADA", len(balik["baris"]) == len(be) and all(any(b["code"] == "KATEGORI_SUDAH_ADA" for b in x["blocks"]) for x in rr["baris"]))
+                    baru = [{"nama": "UJI-K5-Induk", "deskripsi": "uji"}, {"nama": "UJI-K5-A", "induk": "UJI-K5-Induk"}, {"nama": "UJI-K5-B", "induk": "uji-k5-induk"}]
+                    hasil = await IK.tulis(c, {"tenant_id": tid, "user_id": None}, baru, None)
+                    n_k2 = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories WHERE tenant_id = $1", tid)
+                    anak = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories ch JOIN item_categories pc ON pc.id = ch.parent_id WHERE pc.tenant_id = $1 AND pc.name = 'UJI-K5-Induk'", tid)
+                    aud = await c.fetchval("/* tenant_id */ SELECT count(*) FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'item_category' AND metadata->>'impor' = 'true'", tid)
+                    cek(f"N {tid}: impor 1 induk + 2 sub: jumlah +3 ({n_k}->{n_k2}), sub berinduk benar ({anak}), audit impor {aud}", hasil["jumlah"] == 3 and n_k2 == n_k + 3 and anak == 2 and aud == 3)
+                    ulang = await IK.rencana(c, {"tenant_id": tid}, baru)
+                    cek(f"N {tid}: impor ulang diblok KATEGORI_SUDAH_ADA", not ulang["ok"] and all(any(b["code"] == "KATEGORI_SUDAH_ADA" for b in x["blocks"]) for x in ulang["baris"]))
                     raise RuntimeError("ROLLBACK uji")   # SALINAN: semua tulis uji dibatalkan
             except RuntimeError as e:
                 if str(e) != "ROLLBACK uji":

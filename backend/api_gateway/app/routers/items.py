@@ -34,6 +34,7 @@ from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau stat
 from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil, deskripsi Barang
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
 from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
+from ..services import impor_kategori as IK  # K-5 impor/ekspor master Kategori
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -2226,6 +2227,72 @@ async def get_items_stats(request: Request):
 # =============================================================================
 # CATEGORIES
 # =============================================================================
+
+
+@router.get("/items/categories/impor/templat")
+async def templat_impor_kategori(request: Request):
+    """K-5: templat .xlsx impor kategori (lembar Kategori + Petunjuk). Kolom = services/impor_kategori.KOLOM."""
+    get_user_context(request)
+    return Response(content=IK.templat_xlsx(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="templat-impor-kategori.xlsx"'})
+
+
+@router.get("/items/categories/export")
+async def ekspor_kategori(request: Request, format: str = Query("xlsx", description="xlsx | csv")):
+    """K-5: ekspor master Kategori (kolom = templat impor; induk lebih dulu; aman rumus). Hanya baca."""
+    ctx = get_user_context(request)
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=422, detail={"code": "FORMAT_TAK_DIKENAL", "message": "format harus xlsx atau csv."})
+    conn = await get_db_connection()
+    try:
+        baris = await IK.baris_ekspor(conn, ctx["tenant_id"])
+    finally:
+        await conn.close()
+    if format == "csv":
+        return Response(content=IK.ekspor_csv(baris), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="kategori-barang.csv"'})
+    return Response(content=IK.ekspor_xlsx(baris), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="kategori-barang.xlsx"'})
+
+
+@router.post("/items/categories/impor/baca")
+async def baca_impor_kategori(request: Request, berkas: UploadFile = File(...)):
+    """K-5: urai .xlsx -> {baris, pemetaan, tak_dipakai, peringatan} (nol DB; judul kolom bebas). FE kirim baris ke /impor/pratinjau."""
+    get_user_context(request)
+    isi = await berkas.read(2 * 1024 * 1024 + 1)
+    if len(isi) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail={"code": "BERKAS_TERLALU_BESAR", "message": "Berkas maksimal 2 MB."})
+    return {"success": True, "data": IK.baca_xlsx(isi)}
+
+
+@router.post("/items/categories/impor/pratinjau")
+async def pratinjau_impor_kategori(request: Request, body: dict):
+    """K-5: pratinjau impor (penentu SAMA dgn tulis; transaksi READ ONLY, nol tulis). 200 {data:{ok, blocks, ringkas, baris[{no, ok, blocks, rencana, payload}], payload:{baris}}}."""
+    ctx = get_user_context(request)
+    baris = (body or {}).get("baris") if isinstance((body or {}).get("baris"), list) else []
+
+    async def f(conn):
+        return await IK.rencana(conn, ctx, baris)
+    return {"success": True, "data": {**(await _baca_saja(f)), "payload": {"baris": baris}}}
+
+
+@router.post("/items/categories/impor")
+async def impor_kategori(request: Request, body: dict, response: Response = None):
+    """K-5: tulis impor ATOMIK (semua atau tidak). Badan = payload pratinjau. X-Idempotency-Key opsional (replay = respons asli). Blok -> 422 IMPOR_DITOLAK, nol tulis."""
+    from ..services import idem_buat
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    baris = (body or {}).get("baris") if isinstance((body or {}).get("baris"), list) else []
+    conn = await get_db_connection()
+    try:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "ITEM_KATEGORI_IMPOR", "batch", lambda: body, response)
+            if lama is not None:
+                return lama
+            data = await IK.tulis(conn, ctx, baris, ctx.get("user_id"))
+            resp = {"success": True, "message": f"{data['jumlah']} kategori diimpor.", "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "ITEM_KATEGORI_IMPOR", resp, None)
+    finally:
+        await conn.close()
 
 
 @router.get("/items/categories/summary")

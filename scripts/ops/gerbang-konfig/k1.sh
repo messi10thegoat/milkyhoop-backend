@@ -1,9 +1,9 @@
-# Konfig gerbang unit K-1..K-4 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung/induk (sub kategori satu tingkat) + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
+# Konfig gerbang unit K-1..K-5 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung/induk (sub kategori satu tingkat) + impor/ekspor berkas + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
 W=/root/mh-k1; CABANG=feat/kategori-k1; NAMA_JENDELA=k1
-POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|k4_kategori|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
+POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|k4_kategori|k5_impor|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-k1.sh
 PENANDA_BERKAS=services/kategori_daftar.py; PENANDA='SQL_DAFTAR'
-A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py; T4=backend/api_gateway/tests/unit/test_k4_kategori_induk.py
+A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py; T4=backend/api_gateway/tests/unit/test_k4_kategori_induk.py; T5=backend/api_gateway/tests/unit/test_k5_impor_kategori.py; IK=$A/services/impor_kategori.py
 KF=$A/services/kategori_daftar.py; IT=$A/routers/items.py; AF=$A/services/kategori_aksi.py; MG=backend/migrations/V498__item_categories_standar_so.sql
 SAB=(
  "k1 barang terhapus ikut dihitung|$KF|s# AND p.deleted_at IS NULL##g|$T"
@@ -58,4 +58,21 @@ SAB=(
  "c10 teks posisi tanpa induk|$KF|s#f\"Sub {parent_name}\" if parent_name else None#None#|$T4"
  "c11 event audit induk = ubah nama|$AF|s#\"induk\": \"ITEM_CATEGORY_PARENT_SET\"#\"induk\": \"ITEM_CATEGORY_RENAMED\"#|$T2"
  "c12 izin atur induk hilang|$A/middleware/permission_middleware.py|s#merge.parent)(/preview)#merge)(/preview)#|$T4"
+ "i1 kategori yang sudah ada diterima|$IK|s#if k and k in ada:#if False:#|$T5"
+ "i2 nama ganda di berkas diterima|$IK|s#if k and k in pertama:#if False:#|$T5"
+ "i3 induk tak ada diterima|$IK|s#blok(\"KATEGORI_INDUK_TAK_ADA\"#blok(\"X_TAK_ADA\"#|$T5"
+ "i4 induk yang sudah sub diterima (dua tingkat)|$IK|s#if pa\[\"parent_id\"\]:#if False:#|$T5"
+ "i5 induk nonaktif diterima|$IK|s#elif not pa\[\"is_active\"\]:#elif False:#|$T5"
+ "i6 baris berinduk dianggap induk di berkas|$IK|s#if not str(b.get(\"induk\") or \"\").strip() and _kunci(b.get(\"nama\"))}#if _kunci(b.get(\"nama\"))}#|$T5"
+ "i7 batas baris tak berlaku|$IK|s#if len(baris) > MAKS_BARIS:#if False:#|$T5"
+ "i8 tulis tak menolak saat ada blok|$IK|s#        _tolak(r)#        pass#|$T5"
+ "i9 sub dibuat sebelum induk|$IK|s#for tingkat in (\"induk\", \"anak\"):#for tingkat in (\"anak\", \"induk\"):#|$T5"
+ "i10 tulis tanpa kunci advisory|$IK|s#    await KA._kunci(conn, tid)#    pass#|$T5"
+ "i11 audit impor tak ditulis|$IK|s#await KA.catat_audit(conn, tid, user_id, \"buat\"#pass  \# #|$T5"
+ "i12 tulis boleh di luar transaksi|$IK|s#if not conn.is_in_transaction():#if False:#|$T5"
+ "i13 ekspor xlsx tak aman rumus|$IK|s#ws.append(\[_sel(x) if isinstance(x, str) else x for x in b\])#ws.append(list(b))#|$T5"
+ "i14 ekspor anak sebelum induk|$IK|s#ORDER BY (c.parent_id IS NOT NULL), lower#ORDER BY lower#|$T5"
+ "i15 kolom ekspor tak sama dengan templat|$IK|s#\[r\[\"nama\"\], r\[\"induk\"\] or \"\", r\[\"deskripsi\"\] or \"\"\]#[r[\"nama\"], r[\"deskripsi\"] or \"\"]#|$T5"
+ "i16 izin impor kategori hilang|$A/middleware/permission_middleware.py|s#categories/impor(/baca.*/pratinjau)?\$\", \[\"POST\"\], \"item\", \"C\"#categories/impor(/baca.*/pratinjau)?$\", [\"POST\"], \"item\", \"X\"#|$T5"
+ "i17 impor tanpa idempotensi|$IT|s#\"ITEM_KATEGORI_IMPOR\", \"batch\"#\"ITEM_KATEGORI_IMPOR_X\", \"batch\"#|$T5"
 )

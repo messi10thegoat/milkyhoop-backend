@@ -826,6 +826,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
     (r"^/api/items/bulk-import$", ["POST"], "item", "C"),
     (r"^/api/items/categories/summary$", ["GET"], "item", "R"),  # K-1 ringkasan master Kategori (baca)
+    (r"^/api/items/categories/impor/templat$", ["GET"], "item", "R"),   # K-5 templat impor kategori
+    (r"^/api/items/categories/impor(/baca|/pratinjau)?$", ["POST"], "item", "C"),   # K-5 impor kategori (baca/pratinjau = huruf SAMA dgn tulis)
     (r"^/api/items/categories/[^/]+$", ["GET"], "item", "R"),   # K-2 detail kategori
     (r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R"),   # K-2 riwayat kategori
     (r"^/api/items/categories/preview$", ["POST"], "item", "C"),   # K-2 pratinjau buat (huruf SAMA dgn buat)
