@@ -1,6 +1,6 @@
 # Konfig gerbang unit K-1..K-5 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung/induk (sub kategori satu tingkat) + impor/ekspor berkas + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
 W=/root/mh-k1; CABANG=feat/kategori-k1; NAMA_JENDELA=k1
-POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|k4_kategori|k5_impor|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
+POLA_UNIT='k2b_kategori|k1_kategori|k2_kategori|k3_kategori|k4_kategori|k5_impor|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-k1.sh
 PENANDA_BERKAS=services/kategori_daftar.py; PENANDA='SQL_DAFTAR'
 A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py; T4=backend/api_gateway/tests/unit/test_k4_kategori_induk.py; T5=backend/api_gateway/tests/unit/test_k5_impor_kategori.py; IK=$A/services/impor_kategori.py
@@ -75,4 +75,9 @@ SAB=(
  "i15 kolom ekspor tak sama dengan templat|$IK|s#\[r\[\"nama\"\], r\[\"induk\"\] or \"\", r\[\"deskripsi\"\] or \"\"\]#[r[\"nama\"], r[\"deskripsi\"] or \"\"]#|$T5"
  "i16 izin impor kategori hilang|$A/middleware/permission_middleware.py|s#categories/impor(/baca.*/pratinjau)?\$\", \[\"POST\"\], \"item\", \"C\"#categories/impor(/baca.*/pratinjau)?$\", [\"POST\"], \"item\", \"X\"#|$T5"
  "i17 impor tanpa idempotensi|$IT|s#\"ITEM_KATEGORI_IMPOR\", \"batch\"#\"ITEM_KATEGORI_IMPOR_X\", \"batch\"#|$T5"
+ "r1 riwayat tanpa oleh_nama|$AF|s#\"oleh_nama\": nama.get(str(r\[\"userId\"\])) if r\[\"userId\"\] else None#\"oleh_nama\": None#|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
+ "r2 waktu_text tetap UTC (bukan zona tenant)|$AF|s#w = waktu.astimezone(zona)#w = waktu#|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
+ "r3 medan waktu lama dihapus|$AF|s#\"waktu\": r\[\"createdAt\"\].isoformat() if r\[\"createdAt\"\] else None, ##|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
+ "r4 riwayat tanpa saring tenant|$AF|s#WHERE tenant_id = \$1 AND entity_type = 'item_category'#WHERE entity_type = 'item_category'#|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
+ "r5 jam tak ikut waktu_text|$AF|s# {w:%H:%M}##|backend/api_gateway/tests/unit/test_k2b_kategori_riwayat.py"
 )

@@ -7,6 +7,8 @@ kategori BAWAAN tak boleh dinonaktifkan (dijaga DB: bawaan harus aktif). product
 import json
 from typing import Optional
 
+from . import nama_pengguna as NP
+from . import teks_galat as tg
 from .barang_aksi import _blok, _hasil
 
 NAMA_MAKS = 100
@@ -148,12 +150,25 @@ async def tulis_status(conn, tid: str, user_id, k: dict, ke_aktif: bool) -> None
     await catat_audit(conn, tid, user_id, "aktif" if ke_aktif else "nonaktif", k["id"], k["name"], {"jumlah_aktif": int(k["jumlah_aktif"])})
 
 
+def waktu_teks(waktu, zona) -> Optional[str]:
+    """Waktu audit (UTC) -> teks zona TENANT: '17 Nov 2026 14:05' (tanggal_pendek + jam:menit)."""
+    if not waktu:
+        return None
+    w = waktu.astimezone(zona)
+    return f"{tg.tanggal_pendek(w.date())} {w:%H:%M}"
+
+
 async def riwayat(conn, tid: str, kategori_id, batas: int = 50) -> list:
+    """Aditif (17 Nov 2026, permintaan FE): oleh_nama (rantai nama_pengguna: profil -> fullname -> name -> surel) + waktu_text (zona tenant); waktu/oleh lama utuh."""
+    from ..utils.tanggal_tenant import zona_tenant
     rows = await conn.fetch(
         """SELECT "eventType", metadata, "createdAt", "userId" FROM audit_logs WHERE tenant_id = $1 AND entity_type = 'item_category' AND entity_id = $2::uuid
            ORDER BY "createdAt" DESC, id DESC LIMIT $3""", tid, str(kategori_id), max(1, min(int(batas), 200)))
+    nama = await NP.nama_untuk(conn, [r["userId"] for r in rows])
+    zona = await zona_tenant(conn, tid)
     return [{"event": r["eventType"], "teks": TEKS_EVENT.get(r["eventType"], r["eventType"]), "detail": r["metadata"] if isinstance(r["metadata"], dict) else json.loads(r["metadata"] or "{}"),
-             "waktu": r["createdAt"].isoformat() if r["createdAt"] else None, "oleh": r["userId"]} for r in rows]
+             "waktu": r["createdAt"].isoformat() if r["createdAt"] else None, "waktu_text": waktu_teks(r["createdAt"], zona),
+             "oleh": r["userId"], "oleh_nama": nama.get(str(r["userId"])) if r["userId"] else None} for r in rows]
 
 
 TEKS_EVENT = {"ITEM_CATEGORY_DEFAULT_SET": "Dijadikan kategori bawaan", "ITEM_CATEGORY_ITEMS_MOVED": "Barang dipindahkan ke kategori ini", "ITEM_CATEGORY_MERGED": "Kategori digabung ke kategori ini", "ITEM_CATEGORY_PARENT_SET": "Induk kategori diubah",
