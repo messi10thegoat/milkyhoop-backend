@@ -27,6 +27,7 @@ def test_bersihkan_pemasok_bukan_uuid_dan_terlalu_banyak_ditolak_berkalimat():
     with pytest.raises(HTTPException) as e:
         HF.bersihkan(None, ["bukan-uuid"], None)
     assert e.value.detail["code"] == "FILTER_PEMASOK_TIDAK_SAH" and e.value.status_code == 400
+    assert HF.BATAS_FILTER == 50                                                 # angka kontrak (kontrak FE: maksimal 50 nilai per saringan)
     with pytest.raises(HTTPException) as e2:
         HF.bersihkan([f"k{i}" for i in range(HF.BATAS_FILTER + 1)], None, None)
     assert e2.value.detail["code"] == "FILTER_TERLALU_BANYAK"
@@ -112,4 +113,4 @@ def test_barang_pilihan_membaca_daftar_pilihan_dari_server_dan_tak_bocor_tenant(
     s = inspect.getsource(BP.barang_pilihan)
     for k in ("kategori_pilihan", "pemasok_pilihan", "merek_pilihan", '"total"', "di_daftar", "jumlah_baris"):
         assert k in s
-    assert s.count("WHERE p.tenant_id = $1") >= 4
+    assert s.count("WHERE p.tenant_id = $1") >= 5                                  # total, baris, kategori, merek, pemasok: SEMUA bersaring tenant
