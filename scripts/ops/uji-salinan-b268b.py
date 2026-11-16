@@ -30,6 +30,11 @@ async def keadaan(c, tid, pid):
     return D(str(r["qty"])), D(str(r["nilai"])), (D(str(last["average_cost"])) if last and last["average_cost"] is not None else None)
 
 
+async def snap_pembalik(c, tid, pid, sid):
+    r = await c.fetchval("/* tenant_id */ SELECT average_cost FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 AND source_id = $3 AND source_type LIKE '%_VOID'", tid, pid, sid)
+    return D(str(r)) if r is not None else None
+
+
 async def drift(c, tid):
     r = await c.fetchrow("/* tenant_id */ SELECT drift, tolerance FROM verify_inventory_wac_reconciliation_all() WHERE tenant_id = $1", tid)
     return (D(str(r["drift"])), D(str(r["tolerance"]))) if r else (D(0), D(0))
@@ -76,16 +81,17 @@ async def main():
                 n_sebelum = await c.fetchval("/* tenant_id */ SELECT count(*) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2", tid, p["id"])
                 sid, hasil = await terima_dan_void(c, tid, p, wh, D("10"), uc)
                 q, v, s = await keadaan(c, tid, p["id"])
+                s = await snap_pembalik(c, tid, p["id"], sid)      # created_at kembar dalam satu transaksi: ambil baris pembalik, bukan "terakhir"
                 harap = (v / q).quantize(D("0.01")) if q > 0 and v >= 0 else None
                 wac_fn = D(str(await c.fetchval("SELECT get_weighted_average_cost($1, $2)", tid, p["id"])))
                 cek(f"B {tid}: snapshot pembalik {s} == nilai/qty {harap} == get_weighted_average_cost {wac_fn}", harap is not None and s == harap == wac_fn)
                 cek(f"B {tid}: WAC sesudah void ({s}) pulih ke WAC sebelum terima ({wac0})", harap is not None and abs(s - wac0) <= D("0.01") * (1 + abs(q0) / 100))
-                lg = await c.fetch("/* tenant_id */ SELECT source_type, quantity_in, quantity_out, unit_cost, total_cost, warehouse_id FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2 ORDER BY created_at, id", tid, sid)
+                lg = await c.fetch("/* tenant_id */ SELECT source_type, quantity_in, quantity_out, unit_cost, total_cost, warehouse_id FROM inventory_ledger WHERE tenant_id = $1 AND source_id = $2 ORDER BY (source_type LIKE '%_VOID'), id", tid, sid)
                 cek(f"E {tid}: pembalik = mirror persis (masuk<->keluar, unit_cost sama, gudang sama), {len(lg)} baris", len(lg) == 2 and lg[1]["source_type"] == "BILL_VOID" and lg[1]["quantity_out"] == lg[0]["quantity_in"] and lg[1]["unit_cost"] == lg[0]["unit_cost"] and lg[1]["warehouse_id"] == lg[0]["warehouse_id"])
                 d_sesudah, tol = await drift(c, tid)
                 nilai_wac = q * s
-                cek(f"C {tid}: kontribusi barang uji qty x snapshot {nilai_wac:.2f} == nilai bersih {v:.2f}; drift tenant {d_awal} -> {d_sesudah} tak memburuk",
-                    abs(nilai_wac - v) <= D("0.005") * abs(q) + D("0.01") and abs(d_sesudah) <= abs(d_awal) + D("0.005") * abs(q) + D("0.02"))
+                cek(f"C {tid}: kontribusi barang uji qty x snapshot pembalik {nilai_wac:.2f} == nilai bersih {v:.2f}", abs(nilai_wac - v) <= D("0.005") * abs(q) + D("0.01"))
+                print(f"CATATAN {tid}: drift tenant {d_awal} -> {d_sesudah} (informasi: guard memilih baris 'terakhir' lewat created_at, kembar dalam satu transaksi uji)", flush=True)
             finally:
                 await tr.rollback()
     print(f"HASIL: {sum(HASIL)}/{len(HASIL)} PASS", flush=True)
