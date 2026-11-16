@@ -10,6 +10,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from zoneinfo import ZoneInfo
+
 from app.routers import bulk_price_lists as BP
 from app.routers import price_lists as PL
 from app.services import harga_riwayat as HR
@@ -17,6 +19,13 @@ from app.services import impor_harga as IH
 
 GW = pathlib.Path(__file__).resolve().parents[2]
 PID = uuid4()
+
+
+@pytest.fixture(autouse=True)
+def zona_jakarta(monkeypatch):
+    async def zona(conn, tid):
+        return ZoneInfo("Asia/Jakarta")
+    monkeypatch.setattr(HR, "zona_tenant", zona)
 
 
 def snap(harga=10000, minimum=None, diskon=None, mulai=None, akhir=None, qty=1, nama="Minyak", satuan="Pcs"):
@@ -177,3 +186,24 @@ def test_rute_riwayat_terdaftar_izin_baca_dan_aksi_tak_dikenal_400():
     assert e.value.status_code == 400 and e.value.detail["code"] == "RIWAYAT_AKSI_TIDAK_DIKENAL"
     s = inspect.getsource(BP.riwayat_daftar)
     assert "p.tenant_id" not in s and "tenant_id" in s and "dihapus" in s
+
+
+# ---------------------------------------------------------------- waktu_text zona tenant (permintaan FRONTEND, pola riwayat Kategori)
+def test_waktu_text_zona_tenant_pola_hari_bulan_singkat_tahun_jam():
+    utc = datetime(2026, 11, 17, 8, 5, tzinfo=timezone.utc)
+    assert HR.waktu_text(utc, ZoneInfo("Asia/Jakarta")) == "17 Nov 2026 15:05"                 # UTC+7
+    assert HR.waktu_text(utc, ZoneInfo("Asia/Makassar")) == "17 Nov 2026 16:05"                # WITA UTC+8
+    assert HR.waktu_text(datetime(2026, 12, 31, 20, 30, tzinfo=timezone.utc), ZoneInfo("Asia/Jakarta")) == "1 Jan 2027 03:30"   # lintas hari/tahun
+    assert HR.waktu_text(datetime(2026, 8, 3, 1, 0), ZoneInfo("Asia/Jakarta")) == "3 Agu 2026 08:00"                         # tanpa zona = UTC; bulan Indonesia
+    assert HR.waktu_text(datetime(2026, 5, 9, 0, 7, tzinfo=timezone.utc), ZoneInfo("UTC")) == "9 Mei 2026 00:07"            # jam/menit dua digit
+
+
+def test_daftar_memberi_waktu_text_zona_tenant_di_samping_waktu_iso():
+    c = Konn(rows=[baris_audit()], total=1, awal=datetime(2026, 11, 17, tzinfo=timezone.utc))
+    it = baca(c)["items"][0]
+    assert it["waktu"].startswith("2026-11-20T09:00") and it["waktu_text"] == "20 Nov 2026 16:00"                           # 09:00Z -> 16:00 WIB
+
+
+def test_daftar_membaca_zona_tenant_satu_kali_per_panggilan():
+    s = inspect.getsource(HR.daftar)
+    assert s.count("zona_tenant(conn, tid)") == 1 and 'waktu_text(r["createdAt"], zona)' in s

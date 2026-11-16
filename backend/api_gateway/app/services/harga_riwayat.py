@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 
+from ..utils.tanggal_tenant import zona_tenant
 from . import harga_daftar as HD
 
 MAKS_BARIS = 200
@@ -16,6 +17,15 @@ AKSI_TEKS = {
     "TAMBAH_BARIS": "Harga ditambahkan", "UBAH_BARIS": "Harga diubah", "HAPUS_BARIS": "Harga dihapus", "UBAH_MASSAL": "Ubah harga massal", "IMPOR": "Impor Excel",
 }
 RIWAYAT_MULAI_TEKS = "Riwayat tercatat sejak {tanggal} (perubahan sebelum itu tidak tersimpan)."
+
+
+def waktu_text(instant: datetime, zona) -> str:
+    """Waktu kejadian menurut ZONA TENANT, pola riwayat Kategori: "17 Nov 2026 15:05" (hari bulan-singkat tahun jam:menit). `instant` tanpa zona dianggap UTC."""
+    if instant.tzinfo is None:
+        from datetime import timezone as _tz
+        instant = instant.replace(tzinfo=_tz.utc)
+    lokal = instant.astimezone(zona)
+    return f"{lokal.day} {HD.BULAN[lokal.month - 1]} {lokal.year} {lokal:%H:%M}"
 
 
 def jsonable(v):
@@ -119,10 +129,11 @@ async def daftar(conn, tid: str, pl_id, limit: int = 50, offset: int = 0, aksi: 
             WHERE a.tenant_id = $1 AND a.entity_type = $2 AND a.entity_id = $3::uuid{syarat} ORDER BY a."createdAt" DESC, a.id DESC LIMIT ${len(p) + 1} OFFSET ${len(p) + 2}""",
         *p, limit, offset)
     items = []
+    zona = await zona_tenant(conn, tid)
     for r in rows:
         m = r["metadata"] if isinstance(r["metadata"], dict) else json.loads(r["metadata"] or "{}")
         kode = r["eventType"][len("PRICE_LIST_"):]
-        items.append({"id": r["id"], "waktu": r["createdAt"].isoformat(), "aksi": kode, "aksi_text": AKSI_TEKS.get(kode, kode), "ringkas": m.get("ringkas"),
+        items.append({"id": r["id"], "waktu": r["createdAt"].isoformat(), "waktu_text": waktu_text(r["createdAt"], zona), "aksi": kode, "aksi_text": AKSI_TEKS.get(kode, kode), "ringkas": m.get("ringkas"),
                       "jumlah": m.get("jumlah", 0), "terpotong": bool(m.get("terpotong")), "baris": m.get("baris", []), **({"header": m["header"]} if "header" in m else {}),
                       "oleh": {"id": r["userId"], "nama": r["nama"] or r["username"], "peran": r["peran"]}})
     awal = await conn.fetchval("""SELECT min(a."createdAt") FROM audit_logs a WHERE a.tenant_id = $1 AND a."eventType" LIKE 'PRICE_LIST_%'""", tid)
