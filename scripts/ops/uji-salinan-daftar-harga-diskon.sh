@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# BUG-253 (diskon % per baris) -- harness klon: MEMAKAI harness impor 251 (I1-I7 membuktikan round trip ekspor/impor yang kini memuat kolom Diskon %) + harness harga minimum 040.
-# Pakai: POHON=/root/<worktree> scripts/ops/uji-salinan-daftar-harga-diskon.sh. Tanpa migrasi baru; uji khusus diskon = resolve pada DB nyata (D1) di bawah.
+# Daftar Harga DISKON % (BUG-253) uji di SALINAN: klon penuh milkydb -> scratch_dhdsk_<ts>; tulis HANYA di salinan; HAPUS salinan (trap).
+# Pakai: POHON=/root/<worktree> scripts/ops/uji-salinan-daftar-harga-diskon.sh (cek-sibuk dulu).
 set -u
-D=$(dirname "$0")
-POHON=${POHON:-/root/mh-dh-diskon-253} bash "$D/uji-salinan-daftar-harga-impor.sh"; r1=$?
-POHON=${POHON:-/root/mh-dh-diskon-253} bash "$D/uji-salinan-daftar-harga-min.sh"; r2=$?
-echo "rc=$(( r1 > r2 ? r1 : r2 )) (impor=$r1 min=$r2)"
+python3 "$(dirname "$0")/cek-saring-tenant.py" "$0" "$(dirname "$0")/uji-salinan-daftar-harga-diskon.py" || { echo "rc=3 (SQL tanpa saring tenant)"; exit 3; }
+P=milkyhoop-dev-postgres-1; S=scratch_dhdsk_$(date +%s); POHON=${POHON:-/root/mh-dh-diskon-253}
+hapus() { docker exec $P psql -U postgres -At -c "DROP DATABASE IF EXISTS $S" >/dev/null
+          echo "salinan $S dihapus; sisa DB scratch_dhdsk%: $(docker exec $P psql -U postgres -At -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'scratch_dhdsk%'")"; }
+trap hapus EXIT
+echo "salinan: $S"
+docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
+docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl | psql -q -U postgres -d $S" >/tmp/dhdsk_restore.log 2>&1
+echo "restore galat: $(grep -c ERROR /tmp/dhdsk_restore.log)"
+timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S -e TENANT=${TENANT:-kaos-biru-konveksi,pt-kita-nyawit-bersama} \
+  -v "$POHON/backend:/app/backend:ro" -v "$(cd "$(dirname "$0")" && pwd)/uji-salinan-daftar-harga-diskon.py:/uji.py:ro" -w /app/backend/api_gateway \
+  --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py 2>&1 | grep -E "^(PASS|FAIL|HASIL|TOLAK|INFO|\[|Traceback|  File)|Error"
+echo "rc=${PIPESTATUS[0]}"

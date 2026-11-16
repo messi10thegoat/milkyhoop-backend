@@ -349,7 +349,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             "price": i["price"],
                             "min_quantity": float(i["min_quantity"]),
                             "discount_percent": float(i["discount_percent"])
-                            if i["discount_percent"]
+                            if i["discount_percent"] is not None  # BUG-253: 0% eksplisit != tak diatur (dulu 0 -> null)
                             else None,
                             "min_price": i["min_price"],
                             "start_date": i["start_date"].isoformat()

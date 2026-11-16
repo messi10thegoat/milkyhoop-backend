@@ -78,3 +78,10 @@ def test_diskon_persen_tak_mengubah_harga_atau_lantai():
     rows = [r(10000, 5, minimum=Decimal(9000))]
     x = asyncio.run(HJ.harga_saran(Konn(rows), TID, None, date(2026, 11, 20), [{"key": "k", "item_id": str(PID), "unit": None, "quantity": 1}]))["lines"][0]
     assert x["harga"] == 10000.0 and x["harga_minimum"] == 9000.0 and x["diskon_persen"] == 5.0                 # harga TIDAK dipotong server; FE mengisi diskon baris dari diskon_persen
+
+
+def test_detail_daftar_membedakan_nol_persen_dari_tak_diatur():
+    import inspect
+    from app.routers import price_lists as PL
+    s = inspect.getsource(PL.get_price_list)
+    assert 'if i["discount_percent"] is not None' in s and 'if i["discount_percent"]\n' not in s
