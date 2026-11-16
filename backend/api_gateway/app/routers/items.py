@@ -792,6 +792,49 @@ async def templat_impor_barang(request: Request):
                     headers={"Content-Disposition": 'attachment; filename="templat-impor-barang.xlsx"'})
 
 
+@router.get("/items/impor/ekspor")
+async def ekspor_barang_impor(
+    request: Request,
+    format: str = Query("xlsx", description="xlsx atau csv"),
+    status: str = Query("semua", description="semua | aktif | nonaktif"),
+    kategori: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    """BUG-277: Ekspor Barang = 14 kolom templat Impor Barang + kolom informatif (Stok kini, Aktif, Deskripsi; diabaikan saat impor ulang). Jalur SENDIRI; /items/export lama tak berubah. Baca-saja."""
+    from ..services import ekspor_barang as EB
+    format = format if isinstance(format, str) else "xlsx"
+    status = status if isinstance(status, str) else "semua"
+    kategori = kategori if isinstance(kategori, str) and kategori.strip() else None
+    search = search if isinstance(search, str) and search.strip() else None
+    if format not in ("xlsx", "csv") or status not in ("semua", "aktif", "nonaktif"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx/csv; status: semua/aktif/nonaktif.", "field": "format"})
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sql, params = EB.SQL_BARANG, [ctx["tenant_id"]]
+        if status != "semua":
+            params.append("active" if status == "aktif" else "inactive")
+            sql += f" AND p.status = ${len(params)}"
+        if kategori:
+            params.append(kategori.strip())
+            sql += f" AND p.kategori = ${len(params)}"
+        if search:
+            w, pr = _syarat_cari(search, len(params) + 1)      # SATU predikat dengan daftar (BUG-181)
+            sql += f" {w}"
+            params += list(pr)
+        hari = (await tanggal_dokumen(conn, ctx["tenant_id"])).isoformat()
+        rows = await conn.fetch(sql + f" ORDER BY lower(p.nama_produk), p.id LIMIT {EB.MAKS_BARIS + 1}", *params)
+    if len(rows) > EB.MAKS_BARIS:
+        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {EB.MAKS_BARIS} barang per ekspor; persempit dengan kategori/status/cari."})
+    baris, banyak, lewat = EB.siapkan(rows)
+    if format == "csv":
+        isi, mt, ext = EB.bangun_csv(baris), "text/csv; charset=utf-8", "csv"
+    else:
+        isi, mt, ext = EB.bangun_xlsx(baris, banyak, lewat), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=barang-{hari}.{ext}",
+                                                           "X-Ekspor-Jumlah": str(len(baris)), "X-Ekspor-Konversi-Dilewati": str(lewat)})
+
+
 @router.post("/items/impor/baca")
 async def baca_impor_barang(request: Request, berkas: UploadFile = File(...)):
     """Urai .xlsx -> {baris, pemetaan[{judul_berkas, medan, label}], tak_dipakai, peringatan} (nol DB; BUG-101 judul bebas + kolom tak
