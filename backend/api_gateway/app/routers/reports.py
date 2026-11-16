@@ -4077,6 +4077,40 @@ async def get_profit_loss_query_params(
 # posted − Nota Kredit posted/applied, tanpa pajak, periode tanggal dokumen). SATU sumber dengan Profitabilitas (profitability_query.
 # SQL_BARIS_JUAL) -> Σ penjualan_bersih == Pendapatan L/R; status rekonsiliasi dikirim supaya FE jujur bila ≠ match.
 # ============================================================================
+@router.get("/inventory-valuation")
+async def get_inventory_valuation(
+    request: Request,
+    as_of: Optional[date] = Query(None, description="Per tanggal (bawaan: tanggal bisnis tenant)"),
+    kelompok: Literal["barang", "gudang"] = Query("barang", description="barang = satu baris per barang; gudang = per gudang + barang"),
+    warehouse_id: Optional[uuid.UUID] = Query(None, description="Saring qty ke satu gudang (HPP tetap milik barang)"),
+    kategori: Optional[str] = Query(None, max_length=100),
+    sertakan_nol: bool = Query(False),
+):
+    """BUG-272 (A): Nilai Persediaan per tanggal + rekonsiliasi ke GL (akun peran INVENTORY_MERCHANDISE). Hanya baca."""
+    from ..services import laporan_nilai_persediaan as LNP
+    from ..services.role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True):
+            tgl = as_of or await tanggal_dokumen(conn, ctx["tenant_id"])
+            try:
+                akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE)
+            except AccountRoleUnmappedError:
+                akun = None
+            data = await LNP.muat_nilai_persediaan(conn, ctx["tenant_id"], tgl, await presisi_tenant(conn, ctx["tenant_id"]), kelompok, warehouse_id, kategori,
+                                                   sertakan_nol, akun)
+        return {"success": True, "data": data}
+    except LNP.LaporanTerlaluBesar:
+        raise HTTPException(status_code=422, detail=f"Lebih dari {LNP.BATAS_BARIS} baris. Saring per gudang atau kategori.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error inventory valuation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menyusun laporan nilai persediaan.")
+
+
 @router.get("/sales-by-customer")
 async def penjualan_per_pelanggan(
     request: Request,
