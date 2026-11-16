@@ -32,6 +32,7 @@ from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatb
 from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
 from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil, deskripsi Barang
+from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
 from ..services import stok_baris as SB
 from ..services import stok_sesuai as SS_PEN  # penyesuaian-2: akun lawan pilihan divalidasi (SATU penentu)
@@ -2212,14 +2213,44 @@ async def get_items_stats(request: Request):
 # =============================================================================
 
 
-@router.get("/items/categories", response_model=CategoryListResponse)
-async def list_categories(request: Request):
-    """Get list of categories for the current tenant."""
+@router.get("/items/categories/summary")
+async def categories_summary(request: Request):
+    """K-1: kartu ringkas master Kategori ({total_count, tanpa_barang_count, barang_tanpa_kategori_count, barang_total}). Hanya baca."""
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        return {"success": True, "data": await KD.ringkasan(conn, tenant_id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error categories summary: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memuat ringkasan kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.get("/items/categories")
+async def list_categories(
+    request: Request,
+    bentuk: Optional[str] = Query(None, description="objek = daftar standar SO (K-1: id, jumlah barang, keadaan, aksi_tersedia); kosong = array nama (bentuk lama, tak berubah)"),
+    search: Optional[str] = Query(None, max_length=100),
+    aksi: Optional[str] = Query(None, description="K-1 kunci aksi: tanpa_barang (hanya bentuk=objek)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Get list of categories for the current tenant. Bentuk lama = {success, categories: [nama]}; ?bentuk=objek = daftar standar SO (K-1)."""
     tenant_id = get_tenant_id(request)
     conn = None
 
     try:
         conn = await get_db_connection()
+        if bentuk == "objek":
+            try:
+                return {"success": True, **await KD.muat_daftar(conn, tenant_id, search, aksi, limit, offset)}
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
 
         query = """
             SELECT name
@@ -2232,6 +2263,8 @@ async def list_categories(request: Request):
 
         return CategoryListResponse(success=True, categories=categories)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing categories: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -825,6 +825,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/[^/]+/stock-adjustment$", ["POST"], "item", "P"),
     (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
     (r"^/api/items/bulk-import$", ["POST"], "item", "C"),
+    (r"^/api/items/categories/summary$", ["GET"], "item", "R"),  # K-1 ringkasan master Kategori (baca)
     (r"^/api/items/categories$", ["POST"], "item", "C"),
     (r"^/api/items/categories$", ["DELETE"], "item", "D"),
     # -- Sapu baseline (rute master-data/settings harian Admin; modul resolve utk ADMIN) --
