@@ -233,6 +233,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customers$", ["POST"], "customer", "C"),
     # V428 alamat per baris: ubah alamat = ubah master pelanggan (U), termasuk hapus alamat (bukan hapus pelanggan)
     (r"^/api/customers/[^/]+/addresses$", ["GET"], "customer", "R"),
+    (r"^/api/customers/[^/]+/price-history$", ["GET"], "sales_invoice", "R"),  # BUG-257: riwayat harga jual = baca faktur penjualan
     (r"^/api/customers/[^/]+/addresses$", ["POST"], "customer", "U"),
     (r"^/api/customers/[^/]+/addresses/[^/]+$", ["PATCH", "DELETE"], "customer", "U"),
     (r"^/api/customers/[^/]+/addresses/[^/]+/default$", ["POST"], "customer", "U"),
