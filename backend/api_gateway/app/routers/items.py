@@ -653,6 +653,11 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
     """AS-G14 (Milkybook T0, 24 Okt 2026): aturan BUAT barang SATU untuk pratinjau dan POST /items (pratinjau == tulis). Baca saja;
     galat = HTTPException SAMA dengan sebelum refaktor (409 NAMA/KODE/BARCODE_BARANG_DIPAKAI, pajak, saldo awal stok). Mengisi
     body.sales_tax/purchase_tax/akun persediaan-HPP seperti dulu. -> (item_code, sku)."""
+    # K-3 (putusan pemilik 14 Nov): barang BARU tanpa kategori terisi kategori BAWAAN aktif (aturan di penentu buat barang, bukan FE; barang lama tak diubah)
+    if not (body.kategori or "").strip():
+        _bawaan = await KA.kategori_bawaan(conn, tenant_id)
+        if _bawaan:
+            body.kategori = _bawaan
     # Check for duplicate name (barang aktif saja: V402 indeks unik nama parsial WHERE deleted_at IS NULL)
     existing = await conn.fetchrow(
         f"SELECT {SQL_PEMEGANG} FROM products WHERE tenant_id = $1 AND nama_produk = $2 AND deleted_at IS NULL",
@@ -2361,6 +2366,172 @@ async def set_category_status(request: Request, category_id: UUID, body: dict):
     except Exception as e:
         logger.error(f"Error category status: {e}")
         raise HTTPException(status_code=500, detail="Gagal mengubah status kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+def _sumber_pindah(body: dict) -> tuple:
+    """body.from_category_id = uuid kategori sumber, ATAU body.from_uncategorized = true (barang tanpa kategori). -> (uuid|None, tanpa_kategori: bool)."""
+    b = body or {}
+    tanpa, fid = b.get("from_uncategorized") is True, b.get("from_category_id")
+    if tanpa == bool(fid):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "Isi tepat satu: from_category_id atau from_uncategorized=true.", "field": "from_category_id"})
+    return (None if tanpa else fid), tanpa
+
+
+def _ids_pindah(body: dict):
+    ids = (body or {}).get("item_ids")
+    if ids is None:
+        return None
+    if not isinstance(ids, list) or not ids or len(ids) > KA.BATAS_ID:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": f"item_ids harus daftar 1-{KA.BATAS_ID} id barang.", "field": "item_ids"})
+    try:
+        return [str(UUID(str(x))) for x in ids]
+    except ValueError:
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "item_ids berisi id tak sah.", "field": "item_ids"})
+
+
+async def _rencana_pindah(conn, tid: str, body: dict) -> tuple:
+    """Penentu SATU pratinjau == tulis pindah massal. -> (rencana, sumber_nama, sumber_kategori, ids, target)."""
+    fid, tanpa = _sumber_pindah(body)
+    ids = _ids_pindah(body)
+    tgt = (body or {}).get("to_category_id")
+    try:
+        target = await KA.ukur_kategori(conn, tid, UUID(str(tgt))) if tgt else None
+    except ValueError:
+        target = None
+    sumber_nama = None
+    if not tanpa:
+        try:
+            src = await KA.ukur_kategori(conn, tid, UUID(str(fid)))
+        except ValueError:
+            src = None
+        if not src:
+            return KA._hasil([KA._blok("KATEGORI_TAK_ADA", "Kategori asal tidak ditemukan.")], None), None, True, ids, target
+        sumber_nama = src["name"]
+    n, a, contoh = await KA.ukur_pindah(conn, tid, sumber_nama, not tanpa, ids)
+    return KA.rencana_pindah(sumber_nama, target, n, a, contoh, not tanpa), sumber_nama, not tanpa, ids, target
+
+
+@router.post("/items/categories/move/preview")
+async def preview_pindah_barang_kategori(request: Request, body: dict):
+    """K-3: pratinjau pindah barang massal ke satu kategori (dari kategori lain atau dari 'tanpa kategori'; boleh sebagian lewat item_ids). Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        return (await _rencana_pindah(conn, ctx["tenant_id"], body))[0]
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/move")
+async def pindah_barang_kategori(request: Request, body: dict):
+    """K-3: pindah barang massal (satu transaksi; tanpa jurnal; barang terhapus-lunak tak ikut). X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                r, sumber_nama, sumber_kat, ids, target = await _rencana_pindah(conn, tenant_id, body)
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] in ("KATEGORI_TAK_ADA", "KATEGORI_TUJUAN_TAK_ADA") else 409, detail=b)
+                n = await KA.tulis_pindah(conn, tenant_id, ctx["user_id"], sumber_nama, sumber_kat, target, ids)
+                return {"success": True, "message": f"{n} barang dipindahkan ke kategori '{target['name']}'", "jumlah_barang_dipindah": n, "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_PINDAH", f"{(body or {}).get('from_category_id') or 'tanpa'}:{(body or {}).get('to_category_id')}",
+                                      {k: (body or {}).get(k) for k in ("from_category_id", "from_uncategorized", "to_category_id", "item_ids")}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error move items category: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memindahkan barang")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.post("/items/categories/{category_id}/default/preview")
+async def preview_bawaan_kategori(request: Request, category_id: UUID):
+    """K-3: pratinjau jadikan kategori bawaan (barang BARU tanpa kategori otomatis masuk; barang lama tak berubah). Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        return KA.rencana_bawaan(await KA.ukur_kategori(conn, ctx["tenant_id"], category_id))
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/default")
+async def set_category_default(request: Request, category_id: UUID):
+    """K-3: jadikan kategori bawaan (satu per usaha; yang lama dicabut dalam transaksi yang sama). X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                k = await KA.ukur_kategori(conn, tenant_id, category_id)
+                r = KA.rencana_bawaan(k)
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] == "KATEGORI_TAK_ADA" else 409, detail=b)
+                await KA.tulis_bawaan(conn, tenant_id, ctx["user_id"], k)
+                return {"success": True, "message": f"Kategori '{k['name']}' dijadikan bawaan", "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_BAWAAN", str(category_id), {"bawaan": str(category_id)}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error category default: {e}")
+        raise HTTPException(status_code=500, detail="Gagal menjadikan kategori bawaan")
+    finally:
+        if conn:
+            await conn.close()
+
+
+async def _rencana_gabung(conn, tid: str, category_id, body: dict) -> tuple:
+    tgt = (body or {}).get("into_category_id")
+    try:
+        target = await KA.ukur_kategori(conn, tid, UUID(str(tgt))) if tgt else None
+    except ValueError:
+        target = None
+    sumber = await KA.ukur_kategori(conn, tid, category_id)
+    return KA.rencana_gabung(sumber, target), sumber, target
+
+
+@router.post("/items/categories/{category_id}/merge/preview")
+async def preview_gabung_kategori(request: Request, category_id: UUID, body: dict):
+    """K-3: pratinjau gabung kategori ke kategori lain (semua barangnya pindah, kategori asal dihapus; bawaan tak bisa digabung). Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        return (await _rencana_gabung(conn, ctx["tenant_id"], category_id, body))[0]
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/merge")
+async def merge_category(request: Request, category_id: UUID, body: dict):
+    """K-3: gabung kategori ({into_category_id}); atomik; audit. X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                r, sumber, target = await _rencana_gabung(conn, tenant_id, category_id, body)
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] == "KATEGORI_TAK_ADA" else 409, detail=b)
+                n = await KA.tulis_gabung(conn, tenant_id, ctx["user_id"], sumber, target)
+                return {"success": True, "message": f"Kategori '{sumber['name']}' digabung ke '{target['name']}'", "jumlah_barang_dipindah": n, "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_GABUNG", str(category_id), {"into": (body or {}).get("into_category_id")}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error merge category: {e}")
+        raise HTTPException(status_code=500, detail="Gagal menggabung kategori")
     finally:
         if conn:
             await conn.close()

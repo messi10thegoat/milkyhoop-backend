@@ -829,7 +829,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/categories/[^/]+$", ["GET"], "item", "R"),   # K-2 detail kategori
     (r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R"),   # K-2 riwayat kategori
     (r"^/api/items/categories/preview$", ["POST"], "item", "C"),   # K-2 pratinjau buat (huruf SAMA dgn buat)
-    (r"^/api/items/categories/[^/]+/(rename|status)(/preview)?$", ["POST"], "item", "U"),   # K-2 ubah nama / aktif-nonaktif (pratinjau = huruf SAMA dgn tulis)
+    (r"^/api/items/categories/[^/]+/(rename|status|default|merge)(/preview)?$", ["POST"], "item", "U"),   # K-2/K-3 ubah nama / aktif-nonaktif / bawaan / gabung (pratinjau = huruf SAMA dgn tulis)
+    (r"^/api/items/categories/move(/preview)?$", ["POST"], "item", "U"),   # K-3 pindah barang massal (mengubah kategori barang = ubah barang)
     (r"^/api/items/categories$", ["POST"], "item", "C"),
     (r"^/api/items/categories$", ["DELETE"], "item", "D"),
     # -- Sapu baseline (rute master-data/settings harian Admin; modul resolve utk ADMIN) --

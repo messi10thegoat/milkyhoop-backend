@@ -1,9 +1,9 @@
-# Konfig gerbang unit K-1 + K-2 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
+# Konfig gerbang unit K-1 + K-2 + K-3 (master Kategori barang standar SO: daftar ?bentuk=objek + /summary + detail/riwayat; V498; pratinjau+tulis buat/ubah nama/status/bawaan/pindah massal/gabung + audit). Tiap sabotase WAJIB membuat tes merah. URUTAN RILIS: V498 DULU, baru kode.
 W=/root/mh-k1; CABANG=feat/kategori-k1; NAMA_JENDELA=k1
-POLA_UNIT='k1_kategori|k2_kategori|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
+POLA_UNIT='k1_kategori|k2_kategori|k3_kategori|kategori_daftar|kategori_aksi|kategori|izin_rute|sql_placeholder'
 HARNESS=scripts/ops/uji-salinan-k1.sh
 PENANDA_BERKAS=services/kategori_daftar.py; PENANDA='SQL_DAFTAR'
-A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py
+A=backend/api_gateway/app; T=backend/api_gateway/tests/unit/test_k1_kategori_daftar.py; T2=backend/api_gateway/tests/unit/test_k2_kategori_aksi.py; T3=backend/api_gateway/tests/unit/test_k3_kategori_aksi.py
 KF=$A/services/kategori_daftar.py; IT=$A/routers/items.py; AF=$A/services/kategori_aksi.py; MG=backend/migrations/V498__item_categories_standar_so.sql
 SAB=(
  "k1 barang terhapus ikut dihitung|$KF|s# AND p.deleted_at IS NULL##g|$T"
@@ -33,4 +33,17 @@ SAB=(
  "a12 kolom akun B1 ikut V498|$MG|s#ALTER TABLE item_categories ADD COLUMN IF NOT EXISTS is_active#ALTER TABLE item_categories ADD COLUMN IF NOT EXISTS sales_account_id UUID; ALTER TABLE item_categories ADD COLUMN IF NOT EXISTS is_active#|$T2"
  "a13 pilihan (bentuk lama) memuat kategori nonaktif|$IT|s#WHERE tenant_id = \$1 AND is_active#WHERE tenant_id = \$1#|$T2"
  "a14 audit buat kategori tak ditulis|$IT|s#await KA.catat_audit(conn, tenant_id, ctx\[\"user_id\"\], \"buat\"#pass  \# #|$T2"
+ "b1 bawaan lama tak dicabut|$AF|s#SET is_default = false, updated_at = NOW() WHERE#SET is_default_x = false, updated_at = NOW() WHERE#|$T3"
+ "b2 bawaan baru tak dipasang|$AF|s#UPDATE item_categories SET is_default = true#UPDATE item_categories SET is_default_x = true#|$T3"
+ "b3 barang baru tak terisi bawaan|$IT|s#body.kategori = _bawaan#pass#|$T3"
+ "b4 pindah tanpa saring tenant|$AF|s#p.tenant_id = \$1 AND p.deleted_at IS NULL#p.deleted_at IS NULL#g|$T3"
+ "b5 barang terhapus-lunak ikut pindah|$AF|s# AND p.deleted_at IS NULL##g|$T3"
+ "b6 gabung tak memindahkan barang terhapus-lunak|$AF|s#lower(kategori) = lower(\$2)\", tid, sumber#lower(kategori) = lower(\$2) AND deleted_at IS NULL\", tid, sumber#|$T3"
+ "b7 gabung tak menghapus registry asal|$AF|s#DELETE FROM item_categories WHERE#SELECT 1 FROM item_categories WHERE#|$T3"
+ "b8 tujuan nonaktif diizinkan|$AF|s#    if not target\[\"is_active\"\]:#    if False:#g|$T3"
+ "b9 kategori nonaktif boleh jadi bawaan|$AF|s#    if not k\[\"is_active\"\]:#    if False:#|$T3"
+ "b10 kategori bawaan boleh digabung|$AF|s#    if sumber\[\"is_default\"\]:#    if False:#|$T3"
+ "b11 izin pindah massal hilang|$A/middleware/permission_middleware.py|s#categories/move(/preview)?\$\", \[\"POST\"\], \"item\", \"U\"#categories/move(/preview)?\$\", [\"POST\"], \"item\", \"X\"#|$T3"
+ "b12 pindah ke kategori yang sama diizinkan|$AF|s#and sumber_nama.lower() == target\[\"name\"\].lower():#and False:#|$T3"
+ "b13 audit pindah memakai event lain|$AF|s#user_id, \"pindah\", target\[\"id\"\]#user_id, \"bawaan\", target[\"id\"]#|$T3"
 )

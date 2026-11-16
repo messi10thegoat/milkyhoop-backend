@@ -87,7 +87,7 @@ def test_sql_ukur_dan_bentrok_berpagar_tenant_audit_append_only():
     assert "tenant_id = $1 AND lower(name) = lower($2) AND ($3::uuid IS NULL OR id <> $3)" in KA.SQL_BENTROK
     src = (APP / "services" / "kategori_aksi.py").read_text()
     assert not re.search(r"(UPDATE|DELETE FROM)\s+audit_logs", src, re.I)   # audit hanya INSERT (Law 12)
-    assert set(KA.EVENT) == {"buat", "ubah_nama", "nonaktif", "aktif", "hapus"} and set(KA.EVENT.values()) == set(KA.TEKS_EVENT)
+    assert {"buat", "ubah_nama", "nonaktif", "aktif", "hapus"} <= set(KA.EVENT) and set(KA.EVENT.values()) == set(KA.TEKS_EVENT)
 
 
 def test_migrasi_v498_aditif_tanpa_kolom_akun_idempoten_dengan_pembalik():
@@ -115,5 +115,5 @@ def test_rute_dan_izin():
     assert 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat"' in src and 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "hapus"' in src
     assert "WHERE tenant_id = $1 AND is_active\n            ORDER BY name ASC" in src   # bentuk lama = pilihan: nonaktif tak ikut
     izin = (APP / "middleware" / "permission_middleware.py").read_text()
-    assert '(r"^/api/items/categories/[^/]+/(rename|status)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
+    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
     assert '(r"^/api/items/categories/[^/]+$", ["GET"], "item", "R")' in izin and '(r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R")' in izin

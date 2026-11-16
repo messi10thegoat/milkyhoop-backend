@@ -7,6 +7,9 @@ E bentuk lama: SELECT name ... == nama baris objek (urut abjad) -- paritas isi d
 F hapus tersedia <=> jumlah_aktif == 0 (aturan DELETE /items/categories: hanya barang AKTIF menghalangi)
 G V498: kolom ada, semua baris lama aktif/bukan bawaan/tanpa induk; batas DB: bawaan nonaktif ditolak CHECK, dua bawaan per tenant ditolak indeks unik (dalam savepoint, di SALINAN)
 H UBAH NAMA (penulis asli KA.tulis_ubah_nama di transaksi yang di-rollback): label SEMUA barangnya berganti (== jumlah SQL), registry tak punya duplikat (trigger V257 tak membuat baris kembar), 1 baris audit RENAMED
+J (K-3, transaksi di-rollback) bawaan: jadikan bawaan A lalu B -> tepat satu bawaan per usaha (indeks unik), A dicabut, kategori_bawaan() == B; barang baru tanpa kategori terisi bawaan (penentu buat)
+K (K-3) pindah massal: barang TANPA kategori (SQL independen) == ukur_pindah.n; tulis_pindah memindahkan tepat n barang (== label baru), sisa tanpa kategori 0; barang terhapus-lunak tak ikut
+L (K-3) gabung: sumber -> tujuan: jumlah barang bersumber (termasuk terhapus-lunak) berpindah label, baris registry sumber hilang, audit MERGED
 I nonaktif/aktif (KA.tulis_status): is_active berubah, daftar ?aksi=nonaktif memuatnya, bentuk lama (pilihan) tak memuatnya, riwayat memuat 2 kejadian terbaru"""
 import asyncio
 import sys
@@ -94,6 +97,29 @@ async def main():
                     await KA.tulis_status(c, tid, None, await KA.ukur_kategori(c, tid, kat["id"]), True)
                     rw = await KA.riwayat(c, tid, kat["id"])
                     cek(f"I {tid}: riwayat memuat aktif+nonaktif+ubah nama ({[r['event'] for r in rw]})", [r["event"] for r in rw][:3] == ["ITEM_CATEGORY_ACTIVATED", "ITEM_CATEGORY_DEACTIVATED", "ITEM_CATEGORY_RENAMED"])
+                    # ---- K-3
+                    ks = await c.fetch("/* tenant_id */ SELECT id FROM item_categories WHERE tenant_id = $1 AND is_active ORDER BY name LIMIT 3", tid)
+                    if len(ks) >= 2:
+                        a, b = await KA.ukur_kategori(c, tid, ks[0]["id"]), await KA.ukur_kategori(c, tid, ks[1]["id"])
+                        await KA.tulis_bawaan(c, tid, None, a)
+                        await KA.tulis_bawaan(c, tid, None, b)
+                        n_def = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories WHERE tenant_id = $1 AND is_default", tid)
+                        cek(f"J {tid}: ganti bawaan A->B: tepat 1 bawaan, kategori_bawaan() == B", n_def == 1 and await KA.kategori_bawaan(c, tid) == b["name"])
+                        tanpa = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND (kategori IS NULL OR btrim(kategori) = '')", tid)
+                        n_u, a_u, _ = await KA.ukur_pindah(c, tid, None, False)
+                        cek(f"K {tid}: ukur_pindah(tanpa kategori) {n_u} == SQL {tanpa}", n_u == tanpa)
+                        if tanpa:
+                            dipindah = await KA.tulis_pindah(c, tid, None, None, False, b, None)
+                            sisa = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND (kategori IS NULL OR btrim(kategori) = '')", tid)
+                            cek(f"K {tid}: tulis_pindah {dipindah} == {tanpa}, sisa tanpa kategori {sisa}", dipindah == tanpa and sisa == 0)
+                        sumber = await KA.ukur_kategori(c, tid, ks[0]["id"])
+                        n_semua = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, sumber["name"])
+                        if not sumber["is_default"]:
+                            tujuan = await KA.ukur_kategori(c, tid, ks[1]["id"])
+                            dig = await KA.tulis_gabung(c, tid, None, sumber, tujuan)
+                            ada = await c.fetchval("/* tenant_id */ SELECT count(*) FROM item_categories WHERE tenant_id = $1 AND id = $2", tid, ks[0]["id"])
+                            masih = await c.fetchval("/* tenant_id */ SELECT count(*) FROM products WHERE tenant_id = $1 AND lower(kategori) = lower($2)", tid, sumber["name"])
+                            cek(f"L {tid}: gabung '{sumber['name']}'->'{tujuan['name']}': {dig} barang == {n_semua}, registry asal hilang ({ada}), tak tersisa label lama ({masih})", dig == n_semua and ada == 0 and masih == 0)
                     raise RuntimeError("ROLLBACK uji")   # SALINAN: semua tulis uji dibatalkan
             except RuntimeError as e:
                 if str(e) != "ROLLBACK uji":
