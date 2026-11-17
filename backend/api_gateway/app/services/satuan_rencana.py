@@ -98,7 +98,7 @@ async def rencana_buat(conn, tid: str, b: dict) -> dict:
 
 
 def _bawaan(u: dict) -> bool:
-    return bool(u.get("is_system")) or u["jenis"] == "bawaan"
+    return bool(u.get("is_system") or u.get("bawaan")) or u["jenis"] == "bawaan"    # `bawaan` = nama ada di DEFAULT_UNITS, juga bila tenant punya baris dengan singkatan itu
 
 
 def _blok_bawaan() -> dict:

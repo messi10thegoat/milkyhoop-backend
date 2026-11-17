@@ -306,3 +306,15 @@ def test_aksi_tersedia_daftar_sama_dengan_vonis_rencana_dan_gabung_belum_ada():
         assert b["aksi_tersedia"]["ubah_nama"]["tersedia"] == (not ubah["blocks"]), b["id"]
         assert b["aksi_tersedia"]["nonaktifkan"]["tersedia"] == (not non["blocks"]), b["id"]
         assert b["aksi_tersedia"]["gabung"]["tersedia"] is False and b["aksi_tersedia"]["gabung"]["alasan"]
+
+
+def test_baris_tenant_bernama_bawaan_tetap_dianggap_bawaan_diblok_dan_aksi_sejalan():
+    """Tenant punya baris product_units 'Kg' (bukan is_system, mis. hasil seed): nama ada di DEFAULT_UNITS -> tetap BAWAAN (blok 409, tombol mati)."""
+    kon = Kon([sat(U1, "Kilogram", "Kg", is_system=False)])
+    u = muat(kon, U1)
+    assert u["bawaan"] is True and u["is_system"] is False
+    assert kode(jalan(SR.rencana_ubah(kon, T, u, {"name": "Kilo"}))) == ["SATUAN_BAWAAN_TAK_DAPAT_DIUBAH"]
+    assert kode(jalan(SR.rencana_status(kon, T, u))) == ["SATUAN_BAWAAN_TAK_DAPAT_DIUBAH"]
+    semua = jalan(SM.daftar(kon, T))
+    b = next(x for x in SP.susun(semua, jalan(SP.muat_pemakai(kon, T, semua))) if x["id"] == U1)
+    assert [b["aksi_tersedia"][k]["tersedia"] for k in ("ubah_nama", "gabung", "nonaktifkan")] == [False, False, False]

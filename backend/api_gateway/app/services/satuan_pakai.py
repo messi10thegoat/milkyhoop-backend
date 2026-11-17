@@ -54,7 +54,7 @@ def _aksi(u: dict, p: dict) -> dict:
     ada = lambda: {"tersedia": True, "alasan": None}
     tak = lambda s: {"tersedia": False, "alasan": s}
     pakai = p["jumlah_barang"] + p["jumlah_konversi"]
-    bawaan = bool(u.get("bawaan")) or u["id"].startswith(("bawaan:", "terpakai:"))
+    bawaan = bool(u.get("bawaan"))
     kunci_sistem = u.get("is_system")
     a = {}
     bagian = [f"{p['jumlah_barang']} barang"] if p["jumlah_barang"] else []
@@ -62,7 +62,7 @@ def _aksi(u: dict, p: dict) -> dict:
         bagian.append(f"{p['jumlah_konversi']} konversi")
     dipakai = f"Satuan masih dipakai {' dan '.join(bagian)}."
     # G3-a: aksi_tersedia = hasil penentu yang SAMA dengan pratinjau/penulis (services/satuan_rencana); gabung belum ada (G3-b, tabel alias).
-    if kunci_sistem or u["id"].startswith("bawaan:"):
+    if kunci_sistem or bawaan or u["id"].startswith("bawaan:"):
         a["ubah_nama"] = tak("Satuan bawaan tidak bisa diubah namanya.")
         a["gabung"] = tak("Satuan bawaan tidak bisa digabung.")
         a["nonaktifkan"] = tak("Satuan bawaan tidak bisa dinonaktifkan.")
