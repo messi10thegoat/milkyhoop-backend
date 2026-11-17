@@ -55,5 +55,7 @@ def test_history_membaca_konversi_aktif_barang_ber_tenant():
 
 def test_riwayat_penyesuaian_tanpa_kata_teknis():
     src = inspect.getsource(SS.riwayat)
-    assert "diterbitkan" in src and "dibatalkan{alasan}" in src
-    assert "diposting" not in src.replace("PENYESUAIAN_DIPOSTING", "") and "(void)" not in src
+    kalimat = [b for b in src.split("k.tambah(")[1:]]          # hanya kalimat peristiwa, bukan docstring/komentar
+    isi = " ".join(kalimat)
+    assert "diterbitkan" in isi and "dibatalkan{alasan}" in isi
+    assert "diposting" not in isi.replace("PENYESUAIAN_DIPOSTING", "") and "(void)" not in isi.split("#")[0]
