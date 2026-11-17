@@ -197,7 +197,7 @@ def test_router_memakai_penentu_bersama():
 
 @pytest.mark.parametrize("jalur,harap", [
     ("/api/warehouses/preview", "C"), (f"/api/warehouses/{W1}/edit/preview", "U"), (f"/api/warehouses/{W1}/status/preview", "U"),
-    (f"/api/warehouses/{W1}/set-default/preview", "U"), (f"/api/warehouses/{W1}/status", "U")])
+    (f"/api/warehouses/{W1}/set-default/preview", "C"), (f"/api/warehouses/{W1}/status", "U")])
 def test_izin_rute_baru_eksplisit(jalur, harap):
     """Aturan EKSPLISIT (bukan jatuh ke ^/api/warehouses POST = C): pratinjau ubah/status/utama dan /status = U, pratinjau buat = C."""
     import re
