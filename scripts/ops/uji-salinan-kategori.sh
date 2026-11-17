@@ -15,5 +15,5 @@ docker exec -i $P psql -U postgres -d $S -v ON_ERROR_STOP=1 <"$POHON/backend/mig
 echo "restore galat: $(grep -c ERROR /tmp/kat_restore.log)"; docker exec $P rm -f /tmp/kat_$TS.dump
 timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S -e KELUAR=/o/kat.json \
   -e TENANT=${TENANT:-kaos-biru-konveksi,pt-kita-nyawit-bersama} -v "$POHON/backend:/app/backend:ro" -v "$D/uji-salinan-kategori.py:/uji.py:ro" -v "$O:/o" \
-  -w /app/backend/api_gateway --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py 2>&1 | grep -E "^\[|Traceback|  File|Error|BUKAN"
-echo "rc=${PIPESTATUS[0]} ($POHON @ $(git -C "$POHON" rev-parse --short HEAD))"
+  -w /app/backend/api_gateway --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py 2>&1 | grep -E "^\[|Traceback|  File|Error|BUKAN|^[A-Za-z]*Error"
+rc=${PIPESTATUS[0]}; echo "($POHON @ $(git -C "$POHON" rev-parse --short HEAD))"; echo "rc=$rc"   # baris "rc=N" polos: gerbang-unit.sh mencocokkan ^rc=0$
