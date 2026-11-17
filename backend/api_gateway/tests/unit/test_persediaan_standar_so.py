@@ -98,6 +98,8 @@ class Kon:
     async def fetch(self, sql, *a):
         self._cocok(sql, a)
         self.log.append((sql, a))
+        if "JOIN stock_transfers" in sql:   # BUG-261: pemeriksaan batal-bertaut-Pemindahan (rencana_batal); dokumen uji ini tak bertaut -> kosong
+            return []
         if "FROM stock_adjustment_items" in sql and "FROM stock_adjustments" not in sql:   # BUG-197: daftar kini memuat subkueri baris untuk ?search= (bukan pembacaan baris dokumen)
             return self.items
         if "FROM journal_lines" in sql:

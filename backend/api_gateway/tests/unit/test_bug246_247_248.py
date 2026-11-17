@@ -27,11 +27,16 @@ def jalan(aw):
 
 # ------------------------------------------------------------------ 246
 class KonDaftar:
-    def __init__(self, diterima):
-        self.diterima, self.q = diterima, []
+    """selesai = {transfer_id: diselesaikan}; dikirim = {transfer_id: dikirim} (BUG-261: kueri tambahan per HALAMAN, bukan per baris)."""
+    def __init__(self, diterima, selesai=None, dikirim=None):
+        self.diterima, self.selesai, self.dikirim, self.q = diterima, selesai or {}, dikirim or {}, []
 
     async def fetch(self, sql, *a):
         self.q.append((sql, a))
+        if "stock_adjustment_items" in sql:
+            return [{"tid": k, "selesai": v} for k, v in self.selesai.items()]
+        if "stock_transfer_items" in sql:
+            return [{"tid": k, "dikirim": v} for k, v in self.dikirim.items()]
         return [{"source_id": k, "diterima": v} for k, v in self.diterima.items()]
 
 
@@ -40,11 +45,31 @@ def test_teks_daftar_satu_kueri_untuk_in_transit_dan_teks_turunan():
     rows = [{"id": a, "status": "in_transit"}, {"id": b, "status": "in_transit"}, {"id": c, "status": "received"}, {"id": d, "status": "draft"}]
     k = KonDaftar({a: D("4")})
     out = jalan(D2.teks_daftar(k, T, rows))
-    assert len(k.q) == 1 and "ANY($3" in k.q[0][0] and set(k.q[0][1][2]) == {a, b}                       # SATU kueri, hanya pemindahan in_transit
+    ledger = [q for q in k.q if "inventory_ledger" in q[0]]
+    assert len(ledger) == 1 and "ANY($3" in ledger[0][0] and set(ledger[0][1][2]) == {a, b}              # SATU kueri ledger, hanya pemindahan in_transit
+    assert len(k.q) == 2                                                                                   # + SATU kueri penyelesaian (BUG-261) utk seluruh halaman; tanpa penyelesaian tak ada kueri dikirim
     assert out[a] == ("Dikirim · diterima sebagian", True) and out[b] == ("Dikirim", False)
     assert out[c] == ("Diterima", False) and out[d] == ("Draf", False)
     k2 = KonDaftar({})
-    assert jalan(D2.teks_daftar(k2, T, [{"id": c, "status": "received"}])) == {c: ("Diterima", False)} and k2.q == []   # tanpa in_transit: nol kueri
+    assert jalan(D2.teks_daftar(k2, T, [{"id": c, "status": "received"}])) == {c: ("Diterima", False)}
+    assert not [q for q in k2.q if "inventory_ledger" in q[0]]                                             # tanpa in_transit: nol kueri ledger
+
+
+def test_teks_daftar_selisih_diselesaikan_bug261():
+    a, b, c = (uuid.uuid4() for _ in range(3))
+    rows = [{"id": a, "status": "in_transit"}, {"id": b, "status": "in_transit"}, {"id": c, "status": "received"}]
+    # a: dikirim 10, diterima 8, diselesaikan 2 -> tertunda 0; b: dikirim 10, diterima 8, diselesaikan 1 -> tertunda 1; c: received, dikirim 10, diselesaikan 2 (diterima 8)
+    out = jalan(D2.teks_daftar(KonDaftar({a: D("8"), b: D("8")}, {a: D("2"), b: D("1"), c: D("2")}, {a: D("10"), b: D("10"), c: D("10")}), T, rows))
+    assert out[a] == ("Diterima · selisih diselesaikan", True)
+    assert out[b] == ("Dikirim · diterima sebagian", True)
+    assert out[c] == ("Diterima · selisih diselesaikan", False)
+
+
+def test_teks_status_selisih_diselesaikan():
+    assert D2.teks_status("in_transit", 10, 8, 2) == "Diterima · selisih diselesaikan"
+    assert D2.teks_status("in_transit", 10, 8, 1) == "Dikirim · diterima sebagian"
+    assert D2.teks_status("received", 10, 10, 0) == "Diterima" and D2.teks_status("received", 10, 8, 2) == "Diterima · selisih diselesaikan"
+    assert D2.teks_status("in_transit", 10, 0, 0) == "Dikirim"
 
 
 def test_daftar_pemindahan_memakai_teks_daftar():
