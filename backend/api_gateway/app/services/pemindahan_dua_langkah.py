@@ -24,8 +24,11 @@ def _d(x) -> Decimal:
     return Decimal(str(x if x is not None else 0))
 
 
-def teks_status(status: str, dikirim, diterima) -> str:
-    """Teks status dari server (pemindahan dua langkah). Diterima sebagian = TURUNAN, bukan status tersimpan."""
+def teks_status(status: str, dikirim, diterima, diselesaikan=0) -> str:
+    """Teks status dari server (pemindahan dua langkah). Diterima sebagian = TURUNAN, bukan status tersimpan.
+    BUG-261: tertunda (dikirim - diterima - diselesaikan lewat Penyesuaian) = 0 dan ada penyelesaian -> "Diterima · selisih diselesaikan"."""
+    if status in ("in_transit", "received") and _d(diselesaikan) > _NOL and _d(dikirim) - _d(diterima) - _d(diselesaikan) <= _NOL:
+        return "Diterima · selisih diselesaikan"
     if status == "in_transit":
         return "Dikirim · diterima sebagian" if _d(diterima) > _NOL else "Dikirim"
     return {"draft": "Draf", "received": "Diterima", "completed": "Selesai", "voided": "Dibatalkan", "cancelled": "Dibatalkan"}.get(status, status)
@@ -46,25 +49,60 @@ async def diterima_per_barang(conn, tid: str, transfer_id) -> dict:
     return {r["product_id"]: _d(r["diterima"]) for r in await conn.fetch(SQL_DITERIMA, tid, SUMBER_TERIMA, transfer_id)}
 
 
+# BUG-261 (V503): selisih terima yang DISELESAIKAN lewat Penyesuaian Persediaan = Σ |qty| baris penyesuaian POSTED (bukan void/draf) yang bertaut source_transfer_id.
+# Void penyesuaian mengubah status ke 'void' -> otomatis tak terhitung (tertunda kembali).
+SQL_DISELESAIKAN = ("SELECT i.product_id, COALESCE(SUM(ABS(i.quantity_adjustment)), 0) AS selesai FROM stock_adjustment_items i "
+                    "JOIN stock_adjustments s ON s.id = i.stock_adjustment_id WHERE s.tenant_id = $1 AND s.status = 'posted' AND i.source_transfer_id = $2 "
+                    "GROUP BY i.product_id")
+SQL_DISELESAIKAN_BANYAK = ("SELECT i.source_transfer_id AS tid, COALESCE(SUM(ABS(i.quantity_adjustment)), 0) AS selesai FROM stock_adjustment_items i "
+                           "JOIN stock_adjustments s ON s.id = i.stock_adjustment_id WHERE s.tenant_id = $1 AND s.status = 'posted' "
+                           "AND i.source_transfer_id = ANY($2::uuid[]) GROUP BY i.source_transfer_id")
+
+
+async def diselesaikan_per_barang(conn, tid: str, transfer_id) -> dict:
+    return {r["product_id"]: _d(r["selesai"]) for r in await conn.fetch(SQL_DISELESAIKAN, tid, transfer_id)}
+
+
 async def teks_daftar(conn, tid: str, rows) -> dict:
-    """BUG-246: {id: (status_text, diterima_sebagian)} untuk daftar. SATU kueri ledger untuk semua pemindahan in_transit di halaman (bukan N kueri)."""
+    """BUG-246: {id: (status_text, diterima_sebagian)} untuk daftar. SATU kueri ledger untuk semua pemindahan in_transit di halaman (bukan N kueri).
+    BUG-261: + status 'received' dan penyelesaian lewat Penyesuaian (dua kueri tambahan, tetap per HALAMAN): teks 'Diterima · selisih diselesaikan'."""
     ids = [r["id"] for r in rows if r["status"] == "in_transit"]
     ada = {}
     if ids:
         for r in await conn.fetch("SELECT il.source_id, COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il "
                                   "WHERE il.tenant_id = $1 AND il.source_type = $2 AND il.source_id = ANY($3::uuid[]) GROUP BY il.source_id", tid, SUMBER_TERIMA, ids):
             ada[r["source_id"]] = _d(r["diterima"])
-    return {r["id"]: (teks_status(r["status"], _NOL, ada.get(r["id"], _NOL)), r["status"] == "in_transit" and ada.get(r["id"], _NOL) > _NOL) for r in rows}
+    kirim_ids = [r["id"] for r in rows if r["status"] in ("in_transit", "received")]
+    selesai, dikirim = {}, {}
+    if kirim_ids:
+        for r in await conn.fetch(SQL_DISELESAIKAN_BANYAK, tid, kirim_ids):
+            selesai[r["tid"]] = _d(r["selesai"])
+        if selesai:   # jumlah dikirim hanya perlu utk yang punya penyelesaian
+            for r in await conn.fetch("SELECT stock_transfer_id AS tid, COALESCE(SUM(quantity_shipped), 0) AS dikirim FROM stock_transfer_items "
+                                      "WHERE stock_transfer_id = ANY($1::uuid[]) GROUP BY stock_transfer_id", list(selesai)):
+                dikirim[r["tid"]] = _d(r["dikirim"])
+    hasil = {}
+    for r in rows:
+        diterima = ada.get(r["id"], _NOL)
+        sel = selesai.get(r["id"], _NOL)
+        dik = dikirim.get(r["id"], _NOL)
+        if r["status"] == "received" and sel > _NOL:
+            diterima = dik - sel    # diterima penuh (= dikirim - diselesaikan) bila 'received' dan ada penyelesaian: tertunda 0 pasti
+        hasil[r["id"]] = (teks_status(r["status"], dik, diterima, sel), r["status"] == "in_transit" and ada.get(r["id"], _NOL) > _NOL)
+    return hasil
 
 
 async def item_baris(conn, tid: str, transfer_id) -> list:
     """Baris item (dict) + quantity_received/quantity_variance DITURUNKAN dari ledger."""
     ada = await diterima_per_barang(conn, tid, transfer_id)
+    selesai = await diselesaikan_per_barang(conn, tid, transfer_id)
     hasil = []
     for i in await conn.fetch("SELECT * FROM stock_transfer_items WHERE stock_transfer_id = $1 ORDER BY line_number, id", transfer_id):
         d = dict(i)
         d["quantity_received"] = ada.get(d["item_id"], _NOL)
         d["quantity_variance"] = _d(d["quantity_shipped"]) - d["quantity_received"]
+        d["quantity_resolved"] = selesai.get(d["item_id"], _NOL)                        # BUG-261
+        d["quantity_pending"] = d["quantity_variance"] - d["quantity_resolved"]          # tertunda = dikirim - diterima - diselesaikan
         hasil.append(d)
     return hasil
 
@@ -74,9 +112,12 @@ async def terapkan_diterima(conn, tid: str, transfer_id, status: str, items: lis
     items = [dict(i) for i in items]
     if status in ("in_transit", "received"):
         ada = await diterima_per_barang(conn, tid, transfer_id)
+        selesai = await diselesaikan_per_barang(conn, tid, transfer_id)
         for d in items:
             d["quantity_received"] = ada.get(d["item_id"], _NOL)
             d["quantity_variance"] = _d(d["quantity_shipped"]) - ada.get(d["item_id"], _NOL)
+            d["quantity_resolved"] = selesai.get(d["item_id"], _NOL)                    # BUG-261
+            d["quantity_pending"] = d["quantity_variance"] - d["quantity_resolved"]
     return items
 
 
@@ -173,7 +214,7 @@ async def rencana_terima(conn, tid: str, h, items, baris: Optional[List[dict]], 
                       if h["status"] != "received" else
                       _blok("PB_SUDAH_DITERIMA", f"Pemindahan {h['transfer_number']} sudah diterima seluruhnya."))
     by = {i["item_id"]: i for i in items}
-    tertunda = {i["item_id"]: _d(i["quantity_shipped"]) - _d(i["quantity_received"]) for i in items}
+    tertunda = {i["item_id"]: _d(i["quantity_shipped"]) - _d(i["quantity_received"]) - _d(i.get("quantity_resolved")) for i in items}   # BUG-261: dikurangi yang diselesaikan Penyesuaian
     if not baris:
         baris = [{"item_id": k, "qty": v} for k, v in tertunda.items() if v > _NOL]
     transit_id = await GT.id_transit(conn, tid)
@@ -211,14 +252,15 @@ async def rencana_terima(conn, tid: str, h, items, baris: Optional[List[dict]], 
         if a > ada_transit:
             blocks.append(_blok("PB_STOK_TRANSIT_KURANG", f"Stok {i['item_name']} di Transit hanya {ada_transit:f}, diminta {a:f}.", 409, iid))
         lines.append({"item_id": iid, "name": i["item_name"], "item_code": i["item_code"], "unit": i["unit"], "shipped": _d(i["quantity_shipped"]),
-                      "received_before": _d(i["quantity_received"]), "tertunda": tertunda[iid], "akan_diterima": a,
+                      "received_before": _d(i["quantity_received"]), "resolved": _d(i.get("quantity_resolved")), "tertunda": tertunda[iid], "akan_diterima": a,
                       "tertunda_sesudah": tertunda[iid] - a, "unit_cost": _d(i["unit_cost"]), "value": (a * _d(i["unit_cost"])).quantize(Decimal("0.01"))})
     tuntas = all(l["tertunda_sesudah"] <= _NOL for l in lines)
     return {"blocks": blocks, "lines": lines, "status_sesudah": "received" if tuntas else "in_transit", "tuntas": tuntas, "peringatan": peringatan_terima(lines),
             "tujuan": {"id": str(h["to_warehouse_id"]), "name": tujuan["name"] if tujuan else None},
             "total_quantity": sum((l["akan_diterima"] for l in lines), _NOL), "total_value": sum((l["value"] for l in lines), _NOL),
             "status_text_sesudah": teks_status("received" if tuntas else "in_transit", sum((l["shipped"] for l in lines), _NOL),
-                                               sum((l["received_before"] + l["akan_diterima"] for l in lines), _NOL))}
+                                               sum((l["received_before"] + l["akan_diterima"] for l in lines), _NOL),
+                                               sum((l["resolved"] for l in lines), _NOL))}
 
 
 async def pratinjau_terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]]) -> dict:
@@ -286,6 +328,8 @@ async def rencana_void_kirim(conn, tid: str, h, kunci: bool) -> dict:
         blocks.append(_blok("PB_DUA_LANGKAH_SUDAH_DITERIMA", f"Pemindahan {h['transfer_number']} sudah diterima; buat pemindahan balik untuk mengembalikan barangnya."))
     elif h["status"] != "in_transit":
         blocks.append(_blok("PB_STATUS_TIDAK_BOLEH", f"Pemindahan {h['transfer_number']} berstatus {h['status']}; hanya yang sedang dikirim bisa di-void."))
+    elif any(_d(i.get("quantity_resolved")) > _NOL for i in items):
+        blocks.append(_blok("PB_SUDAH_ADA_PENYELESAIAN", f"Pemindahan {h['transfer_number']} punya selisih yang sudah diselesaikan lewat Penyesuaian; batalkan penyesuaiannya dulu."))
     elif any(_d(i["quantity_received"]) > _NOL for i in items):
         blocks.append(_blok("PB_SUDAH_ADA_PENERIMAAN", f"Pemindahan {h['transfer_number']} sudah diterima sebagian; terima sisanya atau buat pemindahan balik."))
     else:

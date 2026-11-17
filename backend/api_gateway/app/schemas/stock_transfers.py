@@ -110,6 +110,8 @@ class StockTransferItemData(BaseModel):
     quantity_shipped: Optional[float] = None
     quantity_received: Optional[float] = None
     quantity_variance: Optional[float] = None  # shipped - received
+    quantity_resolved: Optional[float] = None  # BUG-261: diselesaikan lewat Penyesuaian Persediaan (baris POSTED bertaut)
+    quantity_pending: Optional[float] = None   # BUG-261: tertunda = shipped - received - resolved
     unit: Optional[str] = None
     unit_cost: Optional[float] = None
     total_value: Optional[float] = None
