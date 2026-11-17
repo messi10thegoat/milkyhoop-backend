@@ -648,10 +648,10 @@ async def riwayat(conn, tid: str, sa_id, limit: int = 200) -> Optional[dict]:
     n, k = sa["adjustment_number"], _Kumpul()
     k.tambah(sa["created_at"], "PENYESUAIAN_DIBUAT", f"Penyesuaian stok {n} ({jenis_text(sa['adjustment_type']).lower()}) dibuat",
              sa["created_by"], "stock_adjustment", sa["id"], n)
-    k.tambah(sa["posted_at"], "PENYESUAIAN_DIPOSTING", f"Penyesuaian stok {n} {_rp(sa['total_value'])} diposting", sa["posted_by"],
+    k.tambah(sa["posted_at"], "PENYESUAIAN_DIPOSTING", f"Penyesuaian stok {n} {_rp(sa['total_value'])} diterbitkan", sa["posted_by"],   # BUG-221: tanpa kata "diposting"
              "stock_adjustment", sa["id"], n)
     alasan = f": {sa['voided_reason']}" if sa["voided_reason"] else ""
-    k.tambah(sa["voided_at"], "PENYESUAIAN_DIBATALKAN", f"Penyesuaian stok {n} dibatalkan (void){alasan}", sa["voided_by"],
+    k.tambah(sa["voided_at"], "PENYESUAIAN_DIBATALKAN", f"Penyesuaian stok {n} dibatalkan{alasan}", sa["voided_by"],   # BUG-221: tanpa "(void)"
              "stock_adjustment", sa["id"], n)
     keluar, total = await _selesaikan(conn, tid, k, {"stock_adjustment": [sa["id"]]}, {"stock_adjustment": True}, limit)    # BUG-197: ikut audit_logs (ubah/hapus draf)
     return {"adjustment_id": str(sa["id"]), "adjustment_number": n, "events": keluar, "total": total, "omitted": []}

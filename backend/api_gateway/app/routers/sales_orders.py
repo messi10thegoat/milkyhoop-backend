@@ -995,7 +995,8 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
         doc = _so_doc(_items, body.discount_amount, body.shipping_amount, _ship,
                       presisi=await UP.presisi_tenant(conn, ctx["tenant_id"]))
         await tolak_ppn_bila_non_pkp(conn, ctx["tenant_id"], doc["tax_amount"])  # #34
-        _isyarat = await SB.isyarat(conn, ctx["tenant_id"], body.order_date, await tanggal_dokumen(conn, ctx["tenant_id"]), _items)
+        _isyarat = await SB.isyarat(conn, ctx["tenant_id"], body.order_date, await tanggal_dokumen(conn, ctx["tenant_id"]), _items,
+                                    getattr(body, "warehouse_id", None))  # BE-B: gudang kepala bila baris tanpa gudang
         _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(doc["items"]))  # BUG-207
         _peringatan = _peringatan + await HMN.peringatan_jual(conn, ctx["tenant_id"], body.customer_id, body.order_date, HMN.baris_dari_hasil(doc["items"]))  # BUG-040
     f = lambda v: float(v) if v is not None else None  # noqa: E731

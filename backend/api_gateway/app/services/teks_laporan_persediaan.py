@@ -31,6 +31,26 @@ def qty(x, satuan: Optional[str] = None) -> Optional[str]:
     return BD._q(_d(x)) + (f" {satuan}" if satuan else "")
 
 
+def campur(x, satuan: Optional[str], konversi) -> Optional[str]:
+    """BUG-108: jumlah dalam satuan besar campuran, mis. 172 Pcs dgn 1 Karton = 120, 1 Dus = 12 -> "1 Karton 4 Dus 4 Pcs" (negatif: "-1 Dus"). konversi = [(nama, faktor>1)];
+    tiap tingkat diambil serakah dari faktor terbesar. None bila tak ada konversi / tak muat satuan besar mana pun (FE jatuh ke teks satuan dasar). Hanya penyajian; Decimal."""
+    if x is None or not konversi:
+        return None
+    d = _d(x)
+    sisa = abs(d)
+    bagian = []
+    for nama, faktor in sorted(((n, _d(f)) for n, f in konversi if n and _d(f) > 1), key=lambda t: t[1], reverse=True):
+        if sisa >= faktor:
+            besar = int(sisa // faktor)
+            bagian.append(f"{besar} {nama}")
+            sisa -= besar * faktor
+    if not bagian:
+        return None
+    if sisa:
+        bagian.append(BD._q(sisa) + (f" {satuan}" if satuan else ""))
+    return ("-" if d < 0 else "") + " ".join(bagian)
+
+
 def persen(x) -> Optional[str]:
     if x is None:
         return None
@@ -64,24 +84,28 @@ def tambah_teks_penjualan_barang(data: dict, presisi: int) -> dict:
     return data
 
 
-def tambah_teks_kartu_stok(hasil: dict, satuan: Optional[str], presisi: int) -> dict:
-    """hasil = respons history K9 (data[], saldo_awal, ringkasan, filter, item). Mengubah di tempat; item.satuan dipasang."""
+def tambah_teks_kartu_stok(hasil: dict, satuan: Optional[str], presisi: int, konversi=None) -> dict:
+    """hasil = respons history K9 (data[], saldo_awal, ringkasan, filter, item). Mengubah di tempat; item.satuan dipasang.
+    konversi (BUG-108) = [(nama satuan besar, faktor)] barang itu -> medan *_campur_text ("14 Karton 4 Pcs"), None bila tak berlaku."""
     hasil["item"]["satuan"] = satuan
     hasil["satuan_text"] = SATUAN_TEXT
     f = hasil["filter"]
     hasil["periode_text"] = tg.rentang_tanggal(f["date_from"], f["date_to"]) if f["date_from"] and f["date_to"] else (
         f"Sejak {tg.tanggal_pendek(f['date_from'])}" if f["date_from"] else (f"Sampai {tg.tanggal_pendek(f['date_to'])}" if f["date_to"] else None))
     hasil["saldo_awal_text"] = qty(hasil["saldo_awal"], satuan)
+    hasil["saldo_awal_campur_text"] = campur(hasil["saldo_awal"], satuan, konversi)
     for m in hasil["data"]:
         masuk, keluar = _d(m["quantity_in"]), _d(m["quantity_out"])
         m.update(tanggal_text=tg.tanggal_pendek(m["movement_date"]) if m["movement_date"] else None,
                  arah="masuk" if masuk > 0 and keluar == 0 else ("keluar" if keluar > 0 and masuk == 0 else "campur" if masuk > 0 else "nol"),
                  quantity_in_text=qty(masuk, satuan) if masuk else None, quantity_out_text=qty(keluar, satuan) if keluar else None,
                  perubahan_text=(f"+{qty(masuk - keluar, satuan)}" if masuk - keluar > 0 else qty(masuk - keluar, satuan)),
+                 quantity_in_campur_text=campur(masuk, satuan, konversi) if masuk else None, quantity_out_campur_text=campur(keluar, satuan, konversi) if keluar else None,
+                 quantity_balance_campur_text=campur(m["quantity_balance"], satuan, konversi),
                  quantity_balance_text=qty(m["quantity_balance"], satuan), unit_cost_text=harga(m["unit_cost"]), total_cost_text=uang(m["total_cost"], presisi),
                  average_cost_text=harga(m["average_cost"]) if m["average_cost"] is not None else None)
     rg = hasil.get("ringkasan")
     if rg:
         rg.update(saldo_awal_text=qty(rg["saldo_awal"], satuan), total_masuk_text=qty(rg["total_masuk"], satuan), total_keluar_text=qty(rg["total_keluar"], satuan),
-                  saldo_akhir_text=qty(rg["saldo_akhir"], satuan))
+                  saldo_akhir_text=qty(rg["saldo_akhir"], satuan), saldo_akhir_campur_text=campur(rg["saldo_akhir"], satuan, konversi))
     return hasil

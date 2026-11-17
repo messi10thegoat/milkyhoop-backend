@@ -85,5 +85,5 @@ def test_rute_memakai_teks_dan_k9_membaca_satuan_barang():
     pj = (APP / "routers" / "reports_profitability.py").read_text()
     assert "TLP.tambah_teks_penjualan_barang({" in pj and "}, presisi)" in pj and "presisi = await presisi_tenant(conn, tenant_id)" in pj
     it = (APP / "routers" / "items.py").read_text()
-    assert "TLP.tambah_teks_kartu_stok({" in it and 'item["satuan"], await presisi_tenant(conn, tenant_id))' in it
+    assert "TLP.tambah_teks_kartu_stok({" in it and 'item["satuan"], await presisi_tenant(conn, tenant_id), konv)' in it
     assert "COALESCE(NULLIF(base_unit, ''), satuan) AS satuan FROM products WHERE id = $1 AND tenant_id = $2" in it
