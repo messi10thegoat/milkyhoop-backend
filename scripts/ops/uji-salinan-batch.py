@@ -13,7 +13,9 @@ from starlette.requests import Request
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import item_batches as IB, stock_adjustments as SA  # noqa: E402
-from app.schemas.item_batches import AdjustBatchQuantityRequest  # noqa: E402
+from app.schemas.item_batches import AdjustBatchQuantityRequest, SetBatchStatusRequest  # noqa: E402
+from app.services import batch_aksi as BA  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
 from app.schemas.stock_adjustments import VoidStockAdjustmentRequest  # noqa: E402
 
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
@@ -115,6 +117,46 @@ async def satu(conn, tid):
     k1 = await coba(IB.update_item_batch(req(tid, "PATCH"), bid, UpdateItemBatchRequest(status="quarantine")))
     k2 = await coba(IB.update_item_batch(req(tid, "PATCH"), bid, UpdateItemBatchRequest(status="quarantine")))
     cek(f"{tid} karantina: pertama ok, kedua 409", k1["ok"] and k1["hasil"]["data"]["status_text"] == "Karantina" and not k2["ok"] and k2["status"] == 409, (k1, k2))
+
+    # ---- BE-A tambahan: ringkasan == saringan ?aksi= == penentu Python; teks gudang; pratinjau + penulis status
+    h0 = date.today()
+    for no, st, hari in (("EXP", "active", -3), ("SEGERA", "active", 10), ("JAUH", "active", 90), ("KAR", "quarantine", -5), ("HABIS", "depleted", None), ("BASI", "expired", -9)):
+        await conn.execute(
+            "INSERT INTO item_batches (id, tenant_id, item_id, batch_number, initial_quantity, current_quantity, unit_cost, total_value, status, received_date, expiry_date) "
+            "VALUES ($1, $2, $3, $4, 5, 0, 0, 0, $5, CURRENT_DATE, $6)", uuid.uuid4(), tid, pid, f"UJI-{no}", st, (h0 + timedelta(days=hari)) if hari is not None else None)
+    sm = (await coba(IB.get_batches_summary(req(tid), pid)))
+    cek(f"{tid} summary ok", sm["ok"], sm)
+    ringk = sm["hasil"]["data"] if sm["ok"] else {}
+    semua = (await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None, aksi=None)))["hasil"]["data"]
+    py = {k: 0 for k in BA.KUNCI}
+    for x in semua:
+        py[BA.kunci_dari_baris(x["status"], date.fromisoformat(x["expiry_date"]) if x["expiry_date"] else None, h0)] += 1
+    py["semua"] = len(semua)
+    cek(f"{tid} ringkasan == penentu Python atas semua baris", all(ringk.get(k) == py[k] for k in BA.KUNCI), (ringk, py))
+    for k in BA.KUNCI:
+        ls = await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None, aksi=k))
+        cek(f"{tid} ?aksi={k}: jumlah == ringkasan == Python", ls["ok"] and len(ls["hasil"]["data"]) == ringk.get(k) == py[k], (k, ls.get("hasil", ls) if not ls["ok"] else len(ls["hasil"]["data"]), ringk.get(k), py[k]))
+    ex = await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status="expired", search=None, aksi=None))
+    cek(f"{tid} ?status=expired ikut menangkap 'active' yang lewat tanggal", ex["ok"] and {"UJI-EXP", "UJI-BASI"} <= {x["batch_number"] for x in ex["hasil"]["data"]}, ex)
+    bad = await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None, aksi="ngawur"))
+    cek(f"{tid} ?aksi tak sah -> 422 AKSI_TAK_SAH", not bad["ok"] and bad["status"] == 422 and bad["code"] == "AKSI_TAK_SAH", bad)
+
+    # teks stok per gudang di detail
+    d2 = await coba(IB.get_item_batch(req(tid), bid))
+    wsl = d2["hasil"]["data"]["warehouse_stock"] if d2["ok"] else []
+    cek(f"{tid} detail warehouse_stock[] memuat stock_text", bool(wsl) and all(w.get("stock_text") and w.get("available_text") for w in wsl), wsl)
+
+    # pratinjau status + penulis (bid sedang karantina dari langkah sebelumnya)
+    sd = await sidik(conn, tid)
+    pa = await coba(IB.preview_status_batch(req(tid, "POST"), bid, SetBatchStatusRequest(status="active")))
+    cek(f"{tid} pratinjau aktifkan: ok, nol tulis", pa["ok"] and pa["hasil"]["data"]["ok"] and sd == await sidik(conn, tid), pa)
+    pk = await coba(IB.preview_status_batch(req(tid, "POST"), bid, SetBatchStatusRequest(status="quarantine")))
+    cek(f"{tid} pratinjau karantina saat sudah karantina: blok BATCH_AKSI_TIDAK_TERSEDIA + field", pk["ok"] and pk["hasil"]["data"]["blocks"][0]["code"] == "BATCH_AKSI_TIDAK_TERSEDIA"
+        and pk["hasil"]["data"]["blocks"][0]["field"] == "status", pk)
+    ps = await coba(IB.set_batch_status(req(tid, "POST"), bid, SetBatchStatusRequest(status="active")))
+    cek(f"{tid} POST status active ok -> Aktif", ps["ok"] and ps["hasil"]["data"]["status_text"] == "Aktif", ps)
+    ps2 = await coba(IB.set_batch_status(req(tid, "POST"), bid, SetBatchStatusRequest(status="active")))
+    cek(f"{tid} POST status active lagi -> 409", not ps2["ok"] and ps2["status"] == 409 and ps2["code"] == "BATCH_AKSI_TIDAK_TERSEDIA", ps2)
 
 
 async def utama():
