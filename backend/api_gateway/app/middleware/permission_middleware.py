@@ -1249,6 +1249,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/price\-lists/[^/]+$", ["GET"], "price_list", "R"),
     (r"^/api/price\-lists/[^/]+/riwayat$", ["GET"], "price_list", "R"),  # BUG-252 riwayat perubahan harga (baca)
     (r"^/api/price\-lists/[^/]+/export$", ["GET"], "price_list", "R"),  # BUG-251 ekspor harga
+    (r"^/api/price\-lists/[^/]+/barang\-pilihan$", ["GET"], "price_list", "R"),  # BUG-254 pilihan barang (baca)
     (r"^/api/product\-djp\-mapping$", ["GET"], "tax", "R"),
     (r"^/api/production$", ["GET"], "item", "R"),
     (r"^/api/production\-costing/cost\-pools$", ["GET"], "work_order", "R"),

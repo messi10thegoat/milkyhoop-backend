@@ -48,7 +48,7 @@ def test_validasi_kosong_tak_valid_duplikat_dan_batas():
     assert e2.value.status_code == 400 and e2.value.detail["code"] == "BULK_ID_TAK_VALID"
     a, b = _id(), _id()
     assert B.validasi_ids([str(a), str(b), str(a)], "csv") == [a, b]  # duplikat dibuang, urutan dipertahankan
-    assert B.BATAS == {"tulis": 50, "csv": 500, "pdf": 25}
+    assert B.BATAS == {"tulis": 50, "csv": 500, "pdf": 25, "harga": 500}  # harga: ubah harga massal D3 (BUG-254)
     assert len(B.validasi_ids([str(_id()) for _ in range(500)], "csv")) == 500
     with pytest.raises(HTTPException) as e3:
         B.validasi_ids([str(_id()) for _ in range(501)], "csv")

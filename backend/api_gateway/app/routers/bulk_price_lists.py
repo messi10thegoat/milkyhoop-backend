@@ -12,10 +12,12 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
 from ..services import bulk
+from ..services import harga_filter as HF
 from ..services import harga_massal as HM
 from ..services import harga_riwayat as HR
 from ..services import harga_salin as HS
 from ..services import idem_buat
+from ..services.galat_berkode import GalatBerkode
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,8 +37,17 @@ def _ctx(request: Request) -> dict:
     return {"tenant_id": user["tenant_id"], "user_id": user.get("user_id") or user.get("id"), "username": user.get("username")}
 
 
+class FilterBarang(BaseModel):
+    """BUG-254: saringan pilihan barang (server meresolusi ke id; pratinjau mengembalikan item_ids terselesaikan, tulis memakai ids itu apa adanya)."""
+    kategori: List[str] = Field(default_factory=list)
+    pemasok_id: List[str] = Field(default_factory=list)
+    merek: List[str] = Field(default_factory=list)
+    di_daftar: bool = Field(True, description="true = hanya barang yang sudah punya baris di daftar ini (bawaan untuk ubah harga)")
+
+
 class BulkHargaRequest(BaseModel):
-    item_ids: Optional[List[str]] = Field(None, max_length=2000, description="barang terpilih; kosong/null = semua barang di daftar")
+    item_ids: Optional[List[str]] = Field(None, max_length=2000, description="barang terpilih; kosong/null = semua barang di daftar (atau hasil `filter`)")
+    filter: Optional[FilterBarang] = Field(None, description="saringan kategori/pemasok/merek; diabaikan bila item_ids diisi")
     mode: Literal["persen", "nominal"]
     nilai: Decimal = Field(..., description="persen (mis. 10 = naik 10%, -5 = turun 5%) atau nominal Rupiah (+/-)")
     berlaku_mulai: Optional[date] = Field(None, description="start_date baris yang diubah; kosong = harga langsung berlaku")
@@ -59,12 +70,18 @@ async def _siapkan(pool, ctx: dict, price_list_id: UUID, body: BulkHargaRequest)
     async with pool.acquire() as conn:
         if not await conn.fetchval("SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"]):
             raise HTTPException(status_code=404, detail="Daftar harga tidak ditemukan.")
+        f = HF.bersihkan(body.filter.kategori, body.filter.pemasok_id, body.filter.merek) if body.filter else None
         if body.item_ids:
-            ids = bulk.validasi_ids(body.item_ids, "tulis")
+            ids = bulk.validasi_ids(body.item_ids, "harga")
+        elif f is not None and HF.ada_filter(f):
+            hasil = [str(i) for i in await HF.resolusi(conn, ctx["tenant_id"], price_list_id, f, body.filter.di_daftar, bulk.BATAS["harga"])]
+            if not hasil:
+                raise HTTPException(status_code=400, detail={"code": "FILTER_TAK_ADA_BARANG", "message": "Tidak ada barang yang cocok dengan saringan ini."})
+            ids = bulk.validasi_ids(hasil, "harga")
         else:
             ids = bulk.validasi_ids([str(r["item_id"]) for r in await conn.fetch(
                 """SELECT DISTINCT pli.item_id FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
-                   WHERE pl.tenant_id = $1 AND pli.price_list_id = $2""", ctx["tenant_id"], price_list_id)] or [], "tulis")
+                   WHERE pl.tenant_id = $1 AND pli.price_list_id = $2""", ctx["tenant_id"], price_list_id)] or [], "harga")
         nama = {str(r["id"]): r["nama_produk"] for r in await conn.fetch(
             "SELECT id, nama_produk FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])", ctx["tenant_id"], ids)}
     return ids, nama
@@ -122,7 +139,10 @@ async def bulk_price_preview(request: Request, price_list_id: UUID, body: BulkHa
     pool = await get_pool()
     ids, nama = await _siapkan(pool, ctx, price_list_id, body)
     _, pratinjau = _fungsi(price_list_id, body)
-    return {"success": True, "data": await bulk.pratinjau_per_item(pool, ctx, AKSI, ids, pratinjau, nama, baca_saja=True)}
+    data = await bulk.pratinjau_per_item(pool, ctx, AKSI, ids, pratinjau, nama, baca_saja=True)
+    # BUG-254: id terselesaikan dikembalikan; tulis dikirim dengan item_ids ini (bukan menyaring ulang) supaya pratinjau == tulis
+    data["payload"] = {"item_ids": [str(i) for i in ids], "jumlah": len(ids)}
+    return {"success": True, "data": data}
 
 
 @router.post("/{price_list_id}/bulk/price")
@@ -130,7 +150,7 @@ async def bulk_price(request: Request, price_list_id: UUID, body: BulkHargaReque
     ctx = _ctx(request)
     kunci = idem_buat.kunci_dari(request)
     if not kunci:
-        raise HTTPException(status_code=400, detail={"code": "BULK_KUNCI_WAJIB", "message": "Aksi massal wajib membawa header X-Idempotency-Key."})
+        raise GalatBerkode(400, "BULK_KUNCI_WAJIB", "Aksi massal wajib membawa header X-Idempotency-Key.")
     pool = await get_pool()
     ids, nama = await _siapkan(pool, ctx, price_list_id, body)
     tulis, _ = _fungsi(price_list_id, body)
@@ -150,7 +170,7 @@ async def riwayat_daftar(request: Request, price_list_id: UUID, limit: int = Que
     """BUG-252 riwayat perubahan daftar harga (audit_logs immutable; bersaring tenant + daftar): terbaru dulu, aksi_text + ringkas dari server. Izin R price_list."""
     ctx = _ctx(request)
     if aksi is not None and aksi not in HR.AKSI_TEKS:
-        raise HTTPException(status_code=400, detail={"code": "RIWAYAT_AKSI_TIDAK_DIKENAL", "message": f"Aksi riwayat: {', '.join(HR.AKSI_TEKS)}."})
+        raise GalatBerkode(400, "RIWAYAT_AKSI_TIDAK_DIKENAL", f"Aksi riwayat: {', '.join(HR.AKSI_TEKS)}.", field="aksi")
     pool = await get_pool()
     async with pool.acquire() as conn:
         ada = await conn.fetchrow("SELECT code FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"])
@@ -163,8 +183,8 @@ async def riwayat_daftar(request: Request, price_list_id: UUID, limit: int = Que
     return {"success": True, "data": {**hasil, "limit": limit, "offset": offset, "aksi_pilihan": [{"aksi": k, "teks": v} for k, v in HR.AKSI_TEKS.items()]}}
 
 
-# =============================================================================
-# SALIN DAFTAR (BUG-256): pratinjau == tulis, atomik, idempoten, riwayat 252 (services/harga_salin)
+# ======================================================================
+
 # =============================================================================
 def _badan_salin(body: dict) -> tuple:
     body = body or {}
@@ -195,7 +215,7 @@ async def salin_daftar(request: Request, price_list_id: UUID, body: dict, respon
     ctx = _ctx(request)
     kunci = idem_buat.kunci_dari(request)
     if not kunci:
-        raise HTTPException(status_code=400, detail={"code": "SALIN_KUNCI_WAJIB", "message": "Salin daftar wajib membawa header X-Idempotency-Key."})
+        raise GalatBerkode(400, "SALIN_KUNCI_WAJIB", "Salin daftar wajib membawa header X-Idempotency-Key.")
     kode, nama = _badan_salin(body)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -206,6 +226,50 @@ async def salin_daftar(request: Request, price_list_id: UUID, body: dict, respon
             try:
                 data = await HS.tulis(conn, ctx, price_list_id, kode, nama)
             except asyncpg.exceptions.UniqueViolationError:        # balapan: kode dipakai di antara pemeriksaan dan INSERT
-                raise HTTPException(status_code=409, detail={"code": "KODE_DAFTAR_GANDA", "message": "Kode daftar harga itu sudah dipakai.", "field": "code"})
+                raise GalatBerkode(409, "KODE_DAFTAR_GANDA", "Kode daftar harga itu sudah dipakai.", field="code")
             resp = {"success": True, "message": f"Daftar disalin: {data['jumlah_baris']} harga.", "data": data}
             return await idem_buat.simpan(conn, ctx, kp, sd, "DH_SALIN", resp, None)
+
+
+@router.get("/{price_list_id}/barang-pilihan")
+async def barang_pilihan(request: Request, price_list_id: UUID, kategori: List[str] = Query(default=[]), pemasok_id: List[str] = Query(default=[]),
+                         merek: List[str] = Query(default=[]), q: Optional[str] = Query(None, max_length=100), di_daftar: Optional[bool] = Query(None),
+                         limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    """BUG-254 "Ambil Barang": barang aktif+dijual dengan saringan Kategori/Pemasok/Merek + cari (SATU penentu dengan resolusi ubah massal) + kotak pilihan saringan dari
+    server. -> {items[{id, item_code, nama, kategori, merek, pemasok{id,nama}|null, satuan_dasar, di_daftar, jumlah_baris}], total, kategori_pilihan[], pemasok_pilihan[], merek_pilihan[]}."""
+    from .items import _syarat_cari  # satu predikat cari-per-kata dengan daftar barang (BUG-181)
+    ctx = _ctx(request)
+    f = HF.bersihkan(kategori, pemasok_id, merek)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM price_lists WHERE id = $1 AND tenant_id = $2", price_list_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Daftar harga tidak ditemukan.")
+        tid = ctx["tenant_id"]
+        s, p, idx = HF.syarat(f, price_list_id, di_daftar, 2)
+        cari_sql, cari_p = _syarat_cari(q, idx)
+        s += cari_sql or ""
+        p += cari_p
+        idx += len(cari_p)
+        dasar = "p.deleted_at IS NULL"  # status/for_sales: HF.syarat (aktif+dijual kecuali di_daftar=True)
+        total = await conn.fetchval(f"SELECT count(*) FROM products p WHERE p.tenant_id = $1 AND {dasar}{s}", tid, *p)
+        rows = await conn.fetch(
+            f"""SELECT p.id, COALESCE(p.item_code, p.sku) AS kode, p.nama_produk AS nama, p.kategori, p.merek AS merek,
+                       p.preferred_vendor_id, v.name AS pemasok, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar,
+                       (SELECT count(*) FROM price_list_items pli WHERE pli.price_list_id = ${idx} AND pli.item_id = p.id) AS n
+                FROM products p LEFT JOIN vendors v ON v.id = p.preferred_vendor_id AND v.tenant_id = p.tenant_id
+                WHERE p.tenant_id = $1 AND {dasar}{s} ORDER BY p.nama_produk, p.id LIMIT ${idx + 1} OFFSET ${idx + 2}""",
+            tid, *p, price_list_id, limit, offset)
+        kat = await conn.fetch("SELECT p.kategori AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.kategori, '') <> '' "
+                               "GROUP BY p.kategori ORDER BY lower(p.kategori)", tid)
+        mer = await conn.fetch("SELECT p.merek AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.merek, '') <> '' "
+                               "GROUP BY p.merek ORDER BY lower(p.merek)", tid)  # V502 (BACKEND): products.merek
+        pem = await conn.fetch("SELECT v.id, v.name AS nama, count(*) AS n FROM products p JOIN vendors v ON v.id = p.preferred_vendor_id AND v.tenant_id = p.tenant_id "
+                               "WHERE p.tenant_id = $1 AND p.deleted_at IS NULL GROUP BY v.id, v.name ORDER BY lower(v.name)", tid)
+    return {"success": True, "data": {
+        "items": [{"id": str(r["id"]), "item_code": r["kode"], "nama": r["nama"], "kategori": r["kategori"], "merek": r["merek"],
+                   "pemasok": {"id": str(r["preferred_vendor_id"]), "nama": r["pemasok"]} if r["preferred_vendor_id"] else None,
+                   "satuan_dasar": r["dasar"], "di_daftar": r["n"] > 0, "jumlah_baris": int(r["n"])} for r in rows],
+        "total": int(total or 0), "limit": limit, "offset": offset,
+        "kategori_pilihan": [{"nama": r["nilai"], "jumlah": int(r["n"])} for r in kat],
+        "pemasok_pilihan": [{"id": str(r["id"]), "nama": r["nama"], "jumlah": int(r["n"])} for r in pem],
+        "merek_pilihan": [{"nama": r["nilai"], "jumlah": int(r["n"])} for r in mer]}}

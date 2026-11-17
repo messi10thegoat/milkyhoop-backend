@@ -21,7 +21,7 @@ from fastapi import HTTPException
 logger = logging.getLogger(__name__)
 
 # Batas jumlah per permintaan (putusan MASTER): tulis 50, CSV 500, PDF 25 (F5).
-BATAS = {"tulis": 50, "csv": 500, "pdf": 25}
+BATAS = {"tulis": 50, "csv": 500, "pdf": 25, "harga": 500}  # harga: ubah harga massal D3 (BUG-254; tiap barang transaksi sendiri; naik hanya bila diukur aman di harness)
 
 # DAFTAR PUTIH aksi massal. Tambah aksi = sengaja, lewat putusan; aksi uang (terbit faktur, penerimaan, uang muka, refund,
 # void/apply NK, terbit proforma) TIDAK BOLEH ada di sini -- test_bulk_f1 memindai rute + impor.
