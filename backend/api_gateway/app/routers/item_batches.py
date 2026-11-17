@@ -95,11 +95,13 @@ async def list_item_batches(
             params.append(status)
             param_idx += 1
         kunci_saring = ([BA.STATUS_KE_KUNCI[status]] if status in BA.STATUS_KE_KUNCI else []) + ([aksi] if aksi else [])
+        pakai_hari = any(k in BA.KUNCI_BERTANGGAL for k in kunci_saring)   # parameter tanggal HANYA bila ada potongan yang memakainya (asyncpg menolak argumen menggantung)
         potongan = [x for x in (BA.syarat(k, f"${param_idx}") for k in kunci_saring) if x]
-        if potongan:   # satu parameter tanggal dipakai bersama; tanpa potongan (mis. aksi=semua) tak ada parameter menggantung
-            params.append(hari_ini)
+        if potongan:
+            if pakai_hari:
+                params.append(hari_ini)
+                param_idx += 1
             where_clauses.extend(potongan)
-            param_idx += 1
 
         if search:
             where_clauses.append(f"ib.batch_number ILIKE ${param_idx}")

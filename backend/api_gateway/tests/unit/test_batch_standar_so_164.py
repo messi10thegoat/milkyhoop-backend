@@ -387,3 +387,16 @@ def test_pratinjau_status_bentuk_g3_dan_penulis_memakai_rencana_sama(monkeypatch
     src_patch, src_post = inspect.getsource(IB.update_item_batch), inspect.getsource(IB.set_batch_status)
     assert "BA.rencana_status(" in src_patch and "Blok(False)" in src_patch               # penulis PATCH: rencana yang SAMA
     assert "update_item_batch(" in src_post                                                # POST /status = PATCH status (satu penulis)
+
+
+def test_daftar_parameter_cocok_dengan_placeholder_untuk_semua_kunci(monkeypatch):
+    """Temuan harness salinan: ?aksi=karantina/habis mengirim parameter tanggal yang tak dipakai SQL -> asyncpg menolak. Placeholder tertinggi == jumlah argumen."""
+    import re
+    for kunci in BA.KUNCI:
+        for status in (None, "active", "expired", "quarantine", "depleted", "lain"):
+            k = daftar(monkeypatch, aksi=kunci, status=status)
+            sql, args = k.sql[0]
+            tertinggi = max([int(x) for x in re.findall(r"\$(\d+)", sql)] or [0])
+            assert tertinggi == len(args), (kunci, status, sql, args)
+    for kunci in BA.KUNCI:
+        assert (kunci in BA.KUNCI_BERTANGGAL) == ("{h}" in (BA.syarat(kunci, "{h}") or "")), kunci   # daftar kunci bertanggal == syarat yang memakai placeholder

@@ -128,6 +128,7 @@ async def rencana_sesuaikan(conn, tid: str, batch_id, body, bl, kunci: bool = Fa
 # ---------------------------------------------------------------- keadaan sebagai SATU penentu: ringkasan + saringan ?aksi= / ?status=
 KUNCI = ("semua", "aktif", "kedaluwarsa", "segera_kedaluwarsa", "karantina", "habis")
 BATAS_SEGERA = 30                                  # hari ke depan untuk "segera kedaluwarsa"
+KUNCI_BERTANGGAL = ("aktif", "kedaluwarsa", "segera_kedaluwarsa")   # potongan syarat() yang memakai placeholder tanggal
 STATUS_KE_KUNCI = {"active": "aktif", "expired": "kedaluwarsa", "depleted": "habis", "quarantine": "karantina"}
 KUNCI_KE_STATUS = {"aktif": "active", "kedaluwarsa": "expired", "habis": "depleted", "karantina": "quarantine"}
 KODE_FIELD = {"BATCH_STOK_TIDAK_CUKUP": "quantity_change", "STOK_TIDAK_CUKUP": "quantity_change", "JUMLAH_NOL": "quantity_change",

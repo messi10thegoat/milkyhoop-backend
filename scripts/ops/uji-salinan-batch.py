@@ -130,7 +130,10 @@ async def satu(conn, tid):
     semua = (await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None, aksi=None)))["hasil"]["data"]
     py = {k: 0 for k in BA.KUNCI}
     for x in semua:
-        py[BA.kunci_dari_baris(x["status"], date.fromisoformat(x["expiry_date"]) if x["expiry_date"] else None, h0)] += 1
+        kb = BA.kunci_dari_baris(x["status"], date.fromisoformat(x["expiry_date"]) if x["expiry_date"] else None, h0)
+        py[kb] += 1
+        if kb == "segera_kedaluwarsa":
+            py["aktif"] += 1          # kontrak: segera_kedaluwarsa adalah BAGIAN dari aktif
     py["semua"] = len(semua)
     cek(f"{tid} ringkasan == penentu Python atas semua baris", all(ringk.get(k) == py[k] for k in BA.KUNCI), (ringk, py))
     for k in BA.KUNCI:
