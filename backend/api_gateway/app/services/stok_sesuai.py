@@ -159,11 +159,54 @@ def barang_bertstok(p) -> bool:
     return bool(p and p["item_type"] == "goods" and (p["track_inventory"] if p["track_inventory"] is not None else True))
 
 
+async def _gudang_baris(conn, tid: str, item, gudang_id, bl: Blok, idx: int, nama: str, cache: dict):
+    """BUG-261: gudang EFEKTIF satu baris. -> (gudang_id_efektif, warehouse_id_simpan|None, transfer|None) atau None (blok sudah dicatat).
+    Baris penyelesaian Pemindahan (source_transfer_id): gudang = Transit, TERKUNCI (warehouse_id lain ditolak). Baris biasa: warehouse_id baris (milik tenant, aktif, bukan gudang sistem)
+    atau gudang dokumen; warehouse_id kosong = NULL tersimpan = ikut gudang dokumen (perilaku lama utuh)."""
+    wid, st_id = getattr(item, "warehouse_id", None), getattr(item, "source_transfer_id", None)
+    if not st_id:
+        if not wid:
+            return gudang_id, None, None
+        g = await gudang(conn, tid, wid, bl)
+        return (g["id"], g["id"], None) if g else None
+    from . import gudang_transit as GT
+    try:
+        uid = UUID(str(st_id))
+    except (ValueError, TypeError):
+        uid = None
+    t = await conn.fetchrow("SELECT id, transfer_number, status FROM stock_transfers WHERE id = $1 AND tenant_id = $2", uid, tid) if uid else None
+    if not t:
+        bl.galat("PENYESUAIAN_PEMINDAHAN_TIDAK_ADA", 404, f"Pemindahan baris {idx} tidak ditemukan.")
+        return None
+    if t["status"] != "in_transit":
+        bl.galat("PENYESUAIAN_PEMINDAHAN_STATUS", 409,
+                 f"Pemindahan {t['transfer_number']} berstatus {t['status']}; hanya yang masih di Transit (dikirim, belum diterima seluruhnya) yang selisihnya bisa diselesaikan.")
+        return None
+    transit = cache.get("transit") or await GT.id_transit(conn, tid)
+    cache["transit"] = transit
+    if not transit:
+        bl.galat("PENYESUAIAN_TRANSIT_TAK_ADA", 409, "Gudang Transit belum ada; tak ada selisih yang bisa diselesaikan.")
+        return None
+    if wid and str(wid) != str(transit):
+        bl.galat("PENYESUAIAN_GUDANG_TERKUNCI", 422, f"Gudang baris {idx} ({nama}) terkunci ke Transit karena menyelesaikan selisih Pemindahan {t['transfer_number']}.")
+        return None
+    return transit, transit, t
+
+
+async def _tertunda_barang(conn, tid: str, transfer_id, product_id, cache: dict) -> Decimal:
+    """Tertunda SAAT INI barang di pemindahan (dikirim - diterima - diselesaikan POSTED). Barang bukan bagian pemindahan = -1 (ditolak pemanggil)."""
+    from . import pemindahan_dua_langkah as pd2
+    k = ("tertunda", str(transfer_id))
+    if k not in cache:
+        cache[k] = {i["item_id"]: i["quantity_pending"] for i in await pd2.item_baris(conn, tid, transfer_id)}
+    return cache[k].get(product_id, Decimal(-1))
+
+
 async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isyarat: Optional[list] = None) -> list:
     """Baris draf: stok sebelum PER gudang, selisih (hitung ulang: fisik − sistem), nilai = |selisih| × harga pokok saat ini (dibekukan).
     BUG-204: + aturan jenis/tanda/non-stok/selisih 0/ganda/fisik (blok berkode) dan isyarat harga pokok 0 (ke `isyarat` bila diberikan)."""
     from ..routers.stock_adjustments import get_product_info
-    hasil, terlihat = [], set()
+    hasil, terlihat, cache = [], set(), {}
     for idx, item in enumerate(items or [], 1):
         try:
             pid = UUID(str(item.product_id))
@@ -178,11 +221,15 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
         if not barang_bertstok(tipe_brg):
             bl.galat("PENYESUAIAN_BARANG_NON_STOK", 409, f"{nama} tidak melacak stok; penyesuaian stok hanya untuk barang ber-stok.")
             continue
-        if pid in terlihat:
+        gb = await _gudang_baris(conn, tid, item, gudang_id, bl, idx, nama, cache)
+        if gb is None:
+            continue
+        gid, wid_simpan, transfer = gb
+        if (pid, gid) in terlihat:     # BUG-261: ganda = barang yang sama di gudang yang sama (gudang beda antar baris boleh)
             bl.galat("PENYESUAIAN_BARANG_GANDA", 409, f"{nama} muncul lebih dari sekali di dokumen ini (baris {idx}); gabungkan jadi satu baris.")
             continue
-        terlihat.add(pid)
-        sebelum = await stok_gudang(conn, tid, pid, gudang_id) if gudang_id else NOL
+        terlihat.add((pid, gid))
+        sebelum = await stok_gudang(conn, tid, pid, gid) if gid else NOL
         ubah = _d(item.quantity_adjustment)
         sistem = fisik = None
         if tipe == "recount":
@@ -201,13 +248,29 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
         if ubah == 0:
             bl.galat("PENYESUAIAN_SELISIH_NOL", 422, f"Selisih {nama} nol; tak ada yang disesuaikan.")
             continue
+        alasan = item.reason_detail
+        if transfer is not None:   # BUG-261: penyelesaian selisih terima Pemindahan = PENGURANGAN <= tertunda
+            if tipe != "decrease":
+                bl.galat("PENYESUAIAN_PEMINDAHAN_JENIS", 422, f"Baris {idx} ({nama}) menyelesaikan selisih Pemindahan {transfer['transfer_number']}; jenis harus Pengurangan.")
+                continue
+            tertunda = await _tertunda_barang(conn, tid, transfer["id"], pid, cache)
+            if tertunda < 0:
+                bl.galat("PENYESUAIAN_BARANG_BUKAN_PEMINDAHAN", 422, f"{nama} bukan barang di Pemindahan {transfer['transfer_number']}.")
+                continue
+            if -ubah > tertunda:
+                bl.galat("PENYESUAIAN_MELEBIHI_TERTUNDA", 409,
+                         f"Jumlah {nama} ({-ubah:f}) melebihi selisih tertunda Pemindahan {transfer['transfer_number']} ({tertunda:f}).")
+                continue
+            alasan = alasan or f"Hilang (selisih terima {transfer['transfer_number']})"
         harga = Decimal(int(p["unit_cost"] or 0))
         if harga == 0 and isyarat is not None:
             isyarat.append(isyarat_tanpa_harga(nama))
         hasil.append({"product_id": pid, "product_code": p["code"], "product_name": nama, "unit": p["unit"],
                       "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
-                      "reason_detail": item.reason_detail, "system_quantity": sistem, "physical_quantity": fisik, "line_number": idx})
+                      "reason_detail": alasan, "system_quantity": sistem, "physical_quantity": fisik, "line_number": idx,
+                      "warehouse_id": wid_simpan, "source_transfer_id": transfer["id"] if transfer is not None else None,
+                      "source_transfer_number": transfer["transfer_number"] if transfer is not None else None})
     return hasil
 
 
@@ -355,24 +418,59 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, 
     hasil["tanpa_jurnal"] = not hasil["baris"]  # BUG-212 (putusan pemilik 13 Nov): total nilai 0 = TANPA jurnal; stok tetap bergerak
     if not g:
         return hasil
+    # BUG-261: kunci + revalidasi baris penyelesaian Pemindahan (tertunda bisa berubah sejak draf: Terima / penyesuaian lain). Kunci STOCK:<barang>:<Transit> SAMA dengan Terima.
+    await _revalidasi_pemindahan(conn, tid, items, bl, kunci)
+    nama_gudang = {g["id"]: g["name"]}
     for i in items:
         p = await conn.fetchrow("SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", i["product_id"], tid)
         if not (p and p["item_type"] == "goods" and (p["track_inventory"] if p["track_inventory"] is not None else True)):
             continue
         q = _d(i["quantity_adjustment"])
-        sebelum = await stok_gudang(conn, tid, i["product_id"], g["id"])
+        gid = i.get("warehouse_id") or g["id"]     # BUG-261: gudang PER BARIS (NULL = gudang dokumen)
+        if gid not in nama_gudang:
+            nama_gudang[gid] = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", gid, tid) or "gudang"
+        sebelum = await stok_gudang(conn, tid, i["product_id"], gid)
         hasil["gerak"].append({"product_id": i["product_id"], "product_code": i["product_code"], "product_name": i["product_name"],
                                "masuk": q if q > 0 else NOL, "keluar": -q if q < 0 else NOL, "unit_cost": _d(i["unit_cost"]),
-                               "stok_sebelum": sebelum, "stok_sesudah": sebelum + q})
+                               "stok_sebelum": sebelum, "stok_sesudah": sebelum + q, "warehouse_id": gid, "gudang": nama_gudang[gid]})
         if q != 0 and _d(i["unit_cost"]) == 0:
             hasil["isyarat"].append(isyarat_tanpa_harga(i["product_name"]))
-        if q < 0 and sebelum + q < 0:
-            hasil["isyarat"].append(f"Stok {i['product_name']} di {g['name']} akan minus ({sebelum + q}).")
+        if i.get("source_transfer_id") and sebelum + q < 0:
+            bl.galat("PENYESUAIAN_STOK_TRANSIT_KURANG", 409, f"Stok {i['product_name']} di {nama_gudang[gid]} hanya {sebelum:f}, penyesuaian mengurangi {-q:f}.")
+        elif q < 0 and sebelum + q < 0:
+            hasil["isyarat"].append(f"Stok {i['product_name']} di {nama_gudang[gid]} akan minus ({sebelum + q}).")
         kini = await harga_pokok(conn, tid, i["product_id"])
         if q != 0 and kini != _d(i["unit_cost"]):
             hasil["isyarat"].append(f"Harga pokok {i['product_name']} berubah sejak draf dibuat ({tg.rp(i['unit_cost'])} → {tg.rp(kini)}); "
                                     "nilai memakai harga draf.")
     return hasil
+
+
+async def _revalidasi_pemindahan(conn, tid: str, items, bl: Blok, kunci: bool) -> None:
+    """BUG-261: tiap baris bertaut Pemindahan: status masih in_transit dan qty <= tertunda SAAT POSTING (kunci advisory bila `kunci`). Pratinjau == tulis (penentu sama)."""
+    from . import gudang_transit as GT
+    from . import pemindahan_barang as pb
+    terkait = [i for i in items if i.get("source_transfer_id")]
+    if not terkait:
+        return
+    transit = await GT.id_transit(conn, tid)
+    if kunci and transit:
+        for pid in sorted({str(i["product_id"]) for i in terkait}):
+            await pb._kunci(conn, f"STOCK:{pid}:{transit}")
+    cache: dict = {}
+    for i in terkait:
+        t = await conn.fetchrow("SELECT id, transfer_number, status FROM stock_transfers WHERE id = $1 AND tenant_id = $2", i["source_transfer_id"], tid)
+        if not t or t["status"] != "in_transit":
+            bl.galat("PENYESUAIAN_PEMINDAHAN_STATUS", 409,
+                     f"Pemindahan {t['transfer_number'] if t else ''} tidak lagi di Transit (status {t['status'] if t else 'hilang'}); selisihnya tak bisa diselesaikan lewat penyesuaian ini.")
+            continue
+        tertunda = await _tertunda_barang(conn, tid, t["id"], i["product_id"], cache)
+        qty = abs(_d(i["quantity_adjustment"]))
+        if tertunda < 0:
+            bl.galat("PENYESUAIAN_BARANG_BUKAN_PEMINDAHAN", 422, f"{i['product_name']} bukan barang di Pemindahan {t['transfer_number']}.")
+        elif qty > tertunda:
+            bl.galat("PENYESUAIAN_MELEBIHI_TERTUNDA", 409,
+                     f"Jumlah {i['product_name']} ({qty:f}) melebihi selisih tertunda Pemindahan {t['transfer_number']} ({tertunda:f}).")
 
 
 # ---------------------------------------------------------------- batal
@@ -395,6 +493,11 @@ async def rencana_batal(conn, tid: str, sa_id, alasan, bl: Blok, kunci: bool = F
     await periode(conn, tid, sa["adjustment_date"], bl)
     hari_ini = hasil["hari_ini"] = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis: jurnal pembalik bertanggal hari ini
     await periode(conn, tid, hari_ini, bl)
+    for t in await conn.fetch("SELECT DISTINCT t.transfer_number, t.status FROM stock_adjustment_items i JOIN stock_transfers t ON t.id = i.source_transfer_id "
+                              "AND t.tenant_id = $2 WHERE i.stock_adjustment_id = $1", sa_id, tid):   # BUG-261: pembalik mengembalikan barang ke Transit -> pemindahan harus masih di Transit
+        if t["status"] != "in_transit":
+            bl.galat("PENYESUAIAN_PEMINDAHAN_STATUS", 409,
+                     f"Pemindahan {t['transfer_number']} berstatus {t['status']}; pembatalan ini akan mengembalikan barang ke Transit yang sudah tak dipakai pemindahan itu.")
     hasil["tanpa_jurnal"] = not sa["journal_id"]  # BUG-212: dokumen nilai 0 tak punya jurnal -> tanpa jurnal pembalik, gerak stok TETAP dibalik
     if sa["journal_id"]:
         lines = await conn.fetch("SELECT l.* FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_id AND e.tenant_id = $2 "
@@ -452,13 +555,17 @@ async def aksi_tersedia(conn, tid: str, sa, izin: Optional[dict] = None) -> dict
 
 def _gerak_json(g: dict) -> dict:
     return {"product_id": str(g["product_id"]), "product_name": g["product_name"], "masuk": str(g["masuk"]), "keluar": str(g["keluar"]),
-            "stok_sebelum": str(g["stok_sebelum"]), "stok_sesudah": str(g["stok_sesudah"]), "minus": g["stok_sesudah"] < 0}
+            "stok_sebelum": str(g["stok_sebelum"]), "stok_sesudah": str(g["stok_sesudah"]), "minus": g["stok_sesudah"] < 0,
+            "warehouse_id": str(g["warehouse_id"]) if g.get("warehouse_id") else None, "gudang": g.get("gudang")}
 
 
 def _draf_json(b: dict) -> dict:
     return {"product_id": str(b["product_id"]), "product_name": b["product_name"], "unit": b["unit"],
             "quantity_before": str(b["quantity_before"]), "quantity_adjustment": str(b["quantity_adjustment"]),
-            "quantity_after": str(b["quantity_after"]), "unit_cost": rp(b["unit_cost"]), "total_value": rp(b["total_value"])}
+            "quantity_after": str(b["quantity_after"]), "unit_cost": rp(b["unit_cost"]), "total_value": rp(b["total_value"]),
+            "warehouse_id": str(b["warehouse_id"]) if b.get("warehouse_id") else None, "gudang_terkunci": bool(b.get("source_transfer_id")),
+            "source_transfer_id": str(b["source_transfer_id"]) if b.get("source_transfer_id") else None, "source_transfer_number": b.get("source_transfer_number"),
+            "reason_detail": b.get("reason_detail")}
 
 
 async def pratinjau(pool, tid: str, rencana, payload) -> dict:
@@ -548,3 +655,72 @@ async def riwayat(conn, tid: str, sa_id, limit: int = 200) -> Optional[dict]:
              "stock_adjustment", sa["id"], n)
     keluar, total = await _selesaikan(conn, tid, k, {"stock_adjustment": [sa["id"]]}, {"stock_adjustment": True}, limit)    # BUG-197: ikut audit_logs (ubah/hapus draf)
     return {"adjustment_id": str(sa["id"]), "adjustment_number": n, "events": keluar, "total": total, "omitted": []}
+
+
+# ---------------------------------------------------------------- BUG-261: "Ambil dari Pemindahan" (selisih terima -> baris Pengurangan di Transit)
+_SQL_TERTUNDA = """
+    SELECT st.id, st.transfer_number, st.shipped_date, fw.name AS dari, tw.name AS ke,
+           COUNT(*) AS n_barang, SUM(i.quantity_shipped - d.diterima - r.selesai) AS total_tertunda
+    FROM stock_transfers st
+    JOIN stock_transfer_items i ON i.stock_transfer_id = st.id
+    LEFT JOIN warehouses fw ON fw.id = st.from_warehouse_id AND fw.tenant_id = st.tenant_id
+    LEFT JOIN warehouses tw ON tw.id = st.to_warehouse_id AND tw.tenant_id = st.tenant_id
+    LEFT JOIN LATERAL (SELECT COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il
+                       WHERE il.tenant_id = st.tenant_id AND il.source_type = 'RELOKASI_TERIMA' AND il.source_id = st.id AND il.product_id = i.item_id) d ON true
+    LEFT JOIN LATERAL (SELECT COALESCE(SUM(ABS(sai.quantity_adjustment)), 0) AS selesai FROM stock_adjustment_items sai
+                       JOIN stock_adjustments sa ON sa.id = sai.stock_adjustment_id AND sa.tenant_id = st.tenant_id AND sa.status = 'posted'
+                       WHERE sai.source_transfer_id = st.id AND sai.product_id = i.item_id) r ON true
+    WHERE st.tenant_id = $1 AND st.status = 'in_transit' AND COALESCE(i.quantity_shipped, 0) > d.diterima + r.selesai
+    GROUP BY st.id, st.transfer_number, st.shipped_date, fw.name, tw.name
+    ORDER BY st.shipped_date, st.transfer_number LIMIT $2"""
+
+
+async def pemindahan_tertunda(conn, tid: str, batas: int = 100) -> list:
+    """Pemindahan yang masih di Transit dengan selisih tertunda > 0 (dikirim - diterima - diselesaikan). Teks dari server; angka string."""
+    from .barang_daftar import _q
+    hasil = []
+    for r in await conn.fetch(_SQL_TERTUNDA, tid, batas):
+        total = _d(r["total_tertunda"])
+        hasil.append({"id": str(r["id"]), "transfer_number": r["transfer_number"], "shipped_date": r["shipped_date"].isoformat() if r["shipped_date"] else None,
+                      "dari": r["dari"], "ke": r["ke"], "jumlah_barang": int(r["n_barang"]), "total_tertunda": str(total),
+                      "teks": f"{int(r['n_barang'])} barang · tertunda {_q(total)}"})
+    return hasil
+
+
+async def tarik_pemindahan(conn, tid: str, transfer_id) -> Optional[dict]:
+    """Baris siap-pakai untuk satu Pemindahan (putusan pemilik 17 Nov, ikut Accurate): tiap barang bertertunda > 0 -> baris PENGURANGAN qty = tertunda, gudang = Transit
+    TERKUNCI, source_transfer_id, alasan 'Hilang (selisih terima <no>)'. Penentu tertunda = pd2.item_baris (SATU sumber dgn Terima/K9). None = pemindahan tak ada (404)."""
+    from . import gudang_transit as GT
+    from . import pemindahan_dua_langkah as pd2
+    t = await conn.fetchrow("SELECT id, transfer_number, status, shipped_date FROM stock_transfers WHERE id = $1 AND tenant_id = $2", transfer_id, tid)
+    if not t:
+        return None
+    transit = await GT.id_transit(conn, tid)
+    blocks, baris = [], []
+    if t["status"] != "in_transit":
+        blocks.append({"code": "PENYESUAIAN_PEMINDAHAN_STATUS", "status": 409,
+                       "message": f"Pemindahan {t['transfer_number']} berstatus {t['status']}; hanya yang masih di Transit yang selisihnya bisa diselesaikan."})
+    elif not transit:
+        blocks.append({"code": "PENYESUAIAN_TRANSIT_TAK_ADA", "status": 409, "message": "Gudang Transit belum ada."})
+    else:
+        for n, i in enumerate(await pd2.item_baris(conn, tid, transfer_id), 1):
+            tertunda = i["quantity_pending"]
+            if tertunda <= NOL:
+                continue
+            p = await conn.fetchrow("SELECT item_type, track_inventory, unit FROM products WHERE id = $1 AND tenant_id = $2", i["item_id"], tid)
+            if not barang_bertstok(p):
+                continue
+            harga = await harga_pokok(conn, tid, i["item_id"])
+            sebelum = await stok_gudang(conn, tid, i["item_id"], transit)
+            baris.append({"product_id": str(i["item_id"]), "product_code": i["item_code"], "product_name": i["item_name"], "unit": i["unit"] or p["unit"],
+                          "quantity_adjustment": str(-tertunda), "quantity_tertunda": str(tertunda), "quantity_before": str(sebelum),
+                          "unit_cost": rp(harga), "total_value": rp((tertunda * harga).quantize(Decimal("1"))),
+                          "warehouse_id": str(transit), "gudang": GT.NAMA, "gudang_terkunci": True,
+                          "source_transfer_id": str(t["id"]), "source_transfer_number": t["transfer_number"],
+                          "reason_detail": f"Hilang (selisih terima {t['transfer_number']})"})
+        if not baris:
+            blocks.append({"code": "PENYESUAIAN_TIDAK_ADA_TERTUNDA", "status": 409, "message": f"Pemindahan {t['transfer_number']} tidak punya selisih tertunda."})
+    return {"transfer": {"id": str(t["id"]), "transfer_number": t["transfer_number"], "status": t["status"]},
+            "adjustment_type": "decrease", "jenis_text": JENIS_TEXT["decrease"], "gudang": {"id": str(transit) if transit else None, "name": GT.NAMA, "terkunci": True},
+            "baris": baris, "blocks": blocks, "ok": not blocks}
+
