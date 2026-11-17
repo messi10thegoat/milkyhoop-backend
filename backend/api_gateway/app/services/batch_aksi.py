@@ -123,3 +123,88 @@ async def rencana_sesuaikan(conn, tid: str, batch_id, body, bl, kunci: bool = Fa
     if stok + ubah < 0:
         bl.galat("STOK_TIDAK_CUKUP", 422, f"Stok {b['item_name']} di {g['name']} tidak cukup: tersedia {angka(stok)}, dikurangi {angka(abs(ubah))}.")
     return hasil
+
+
+# ---------------------------------------------------------------- keadaan sebagai SATU penentu: ringkasan + saringan ?aksi= / ?status=
+KUNCI = ("semua", "aktif", "kedaluwarsa", "segera_kedaluwarsa", "karantina", "habis")
+BATAS_SEGERA = 30                                  # hari ke depan untuk "segera kedaluwarsa"
+STATUS_KE_KUNCI = {"active": "aktif", "expired": "kedaluwarsa", "depleted": "habis", "quarantine": "karantina"}
+KUNCI_KE_STATUS = {"aktif": "active", "kedaluwarsa": "expired", "habis": "depleted", "karantina": "quarantine"}
+KODE_FIELD = {"BATCH_STOK_TIDAK_CUKUP": "quantity_change", "STOK_TIDAK_CUKUP": "quantity_change", "JUMLAH_NOL": "quantity_change",
+              "GUDANG_TIDAK_DITEMUKAN": "warehouse_id", "GUDANG_NONAKTIF": "warehouse_id", "GUDANG_TIDAK_ADA": "warehouse_id",
+              "BATCH_AKSI_TIDAK_TERSEDIA": "status", "STATUS_TAK_SAH": "status"}
+
+
+def kunci_dari_baris(status: str, expiry: Optional[date], hari_ini: date) -> str:
+    """Kunci keadaan satu baris -- cermin Python dari syarat() (diuji harness salinan: ringkasan == saringan == ini). Memakai keadaan() yang sama."""
+    st = keadaan(status, expiry, hari_ini)
+    if st == "active" and expiry and 0 <= (expiry - hari_ini).days <= BATAS_SEGERA:
+        return "segera_kedaluwarsa"
+    return STATUS_KE_KUNCI.get(st, "aktif")
+
+
+def syarat(kunci: str, h: str, a: str = "ib") -> Optional[str]:
+    """Potongan SQL keadaan; h = placeholder tanggal hari ini ('$3'). None untuk 'semua'. Tak pernah memuat masukan pengguna (kunci dari daftar tetap)."""
+    if kunci == "aktif":
+        return f"({a}.status = 'active' AND ({a}.expiry_date IS NULL OR {a}.expiry_date >= {h}::date))"
+    if kunci == "kedaluwarsa":
+        return f"({a}.status = 'expired' OR ({a}.status = 'active' AND {a}.expiry_date < {h}::date))"
+    if kunci == "segera_kedaluwarsa":
+        return f"({a}.status = 'active' AND {a}.expiry_date >= {h}::date AND {a}.expiry_date <= {h}::date + {BATAS_SEGERA})"
+    if kunci == "karantina":
+        return f"{a}.status = 'quarantine'"
+    if kunci == "habis":
+        return f"{a}.status = 'depleted'"
+    return None
+
+
+async def ringkasan(conn, tid: str, hari_ini: date, item_id=None) -> dict:
+    """{semua, aktif, kedaluwarsa, segera_kedaluwarsa, karantina, habis} + *_text. 'segera_kedaluwarsa' adalah bagian dari 'aktif'."""
+    kolom = ", ".join(f"COUNT(*) FILTER (WHERE {syarat(k, '$2')}) AS {k}" for k in KUNCI if k != "semua")
+    r = await conn.fetchrow(
+        f"SELECT COUNT(*) AS semua, {kolom} FROM item_batches ib WHERE ib.tenant_id = $1 AND ($3::uuid IS NULL OR ib.item_id = $3)",
+        tid, hari_ini, item_id)
+    out = {k: int(r[k]) for k in KUNCI}
+    out["teks"] = {k: f"{out[k]} batch" for k in KUNCI}
+    return out
+
+
+def gudang_text(ws: dict, unit: Optional[str]) -> dict:
+    """stock_text/available_text/reserved_text satu baris stok batch per gudang."""
+    return {"stock_text": stock_text(ws.get("quantity"), unit), "available_text": stock_text(ws.get("available_quantity"), unit),
+            "reserved_text": stock_text(ws.get("reserved_quantity"), unit) if _d(ws.get("reserved_quantity")) else None}
+
+
+# ---------------------------------------------------------------- pratinjau status (karantina / aktifkan) -- penentu SAMA dgn penulis
+async def rencana_status(conn, tid: str, batch_id, status, bl, hari_ini: date, kunci: bool = False) -> dict:
+    hasil = {"blocks": bl.daftar, "peringatan": [], "rencana": None, "batch": None}
+    if status not in ("quarantine", "active"):
+        bl.galat("STATUS_TAK_SAH", 422, "Status batch yang bisa diatur di sini: karantina atau aktif.")
+        return hasil
+    b = await muat_batch(conn, tid, batch_id, kunci)
+    if not b:
+        bl.galat("BATCH_TIDAK_DITEMUKAN", 404, "Batch tidak ditemukan.")
+        return hasil
+    hasil["batch"] = b
+    bd = dict(b)
+    aksi = "karantina" if status == "quarantine" else "aktifkan"
+    a = aksi_tersedia(bd, hari_ini)[aksi]
+    if not a["tersedia"]:
+        bl.galat("BATCH_AKSI_TIDAK_TERSEDIA", 409, a["alasan"])
+    sesudah = "Karantina" if status == "quarantine" else status_text("active", b["expiry_date"], hari_ini)
+    if status == "quarantine" and _d(b["current_quantity"]) > 0:
+        hasil["peringatan"].append(f"Stok batch {b['batch_number']} ({stock_text(b['current_quantity'], b['base_unit'])}) tidak bisa dijual selama karantina.")
+    if status == "active" and b["expiry_date"] and b["expiry_date"] < hari_ini:
+        hasil["peringatan"].append(f"Batch {b['batch_number']} sudah lewat tanggal kedaluwarsa; setelah diaktifkan tetap tampil Kedaluwarsa.")
+    hasil["rencana"] = {"batch_number": b["batch_number"], "item_name": b["item_name"], "aksi": aksi,
+                        "status_sebelum_text": status_text(b["status"], b["expiry_date"], hari_ini), "status_sesudah_text": sesudah,
+                        "stock_text": stock_text(b["current_quantity"], b["base_unit"]),
+                        "ringkas": f"Batch {b['batch_number']}: {status_text(b['status'], b['expiry_date'], hari_ini)} → {sesudah}"}
+    return hasil
+
+
+def pratinjau(r: dict, payload=None) -> dict:
+    """Bentuk pratinjau seragam dgn G3 Gudang: {success, data:{ok, blocks[{code,message,field}], peringatan[], rencana, payload}}."""
+    return {"success": True, "data": {"ok": not r["blocks"],
+                                      "blocks": [{"code": x["code"], "message": x["message"], "field": KODE_FIELD.get(x["code"])} for x in r["blocks"]],
+                                      "peringatan": r.get("peringatan", []), "rencana": r.get("rencana"), "payload": payload}}

@@ -30,6 +30,7 @@ from ..schemas.item_batches import (
     ItemBatchDetailData,
     ItemBatchDetailResponse,
     ItemBatchListResponse,
+    SetBatchStatusRequest,
     UpdateItemBatchRequest,
     UpdateItemBatchResponse,
 )
@@ -66,8 +67,9 @@ async def list_item_batches(
     item_id: Optional[UUID] = None,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    aksi: Optional[str] = Query(None, description="Kunci keadaan (== /summary): semua|aktif|kedaluwarsa|segera_kedaluwarsa|karantina|habis"),
 ):
-    """List all batches"""
+    """List all batches (?status= dan ?aksi= memakai penentu keadaan YANG SAMA dgn /summary: batch 'active' yang lewat tanggal terhitung kedaluwarsa)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
@@ -85,9 +87,18 @@ async def list_item_batches(
             params.append(item_id)
             param_idx += 1
 
-        if status:
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+        if aksi and aksi not in BA.KUNCI:
+            raise GalatBerkode(422, "AKSI_TAK_SAH", f"Kunci saringan tidak dikenal. Pilih: {', '.join(BA.KUNCI)}.", field="aksi")
+        if status and status not in BA.STATUS_KE_KUNCI:   # status di luar daftar: perilaku lama (kolom persis)
             where_clauses.append(f"ib.status = ${param_idx}")
             params.append(status)
+            param_idx += 1
+        kunci_saring = ([BA.STATUS_KE_KUNCI[status]] if status in BA.STATUS_KE_KUNCI else []) + ([aksi] if aksi else [])
+        potongan = [x for x in (BA.syarat(k, f"${param_idx}") for k in kunci_saring) if x]
+        if potongan:   # satu parameter tanggal dipakai bersama; tanpa potongan (mis. aksi=semua) tak ada parameter menggantung
+            params.append(hari_ini)
+            where_clauses.extend(potongan)
             param_idx += 1
 
         if search:
@@ -115,11 +126,20 @@ async def list_item_batches(
             skip,
         )
 
-        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
         data = [ItemBatchData(**dict(row), **BA.hiasi(dict(row), hari_ini)) for row in rows]
         return ItemBatchListResponse(
             data=data, total=total, has_more=(skip + limit) < total
         )
+
+
+@router.get("/summary")
+async def get_batches_summary(request: Request, item_id: Optional[UUID] = None):
+    """Ringkasan keadaan batch -- SATU penentu dgn saringan ?aksi= di daftar: {semua, aktif, kedaluwarsa, segera_kedaluwarsa (bagian dari aktif, 30 hari), karantina, habis}."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        return {"success": True, "data": await BA.ringkasan(conn, ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), item_id)}
 
 
 @router.get("/expiring", response_model=ExpiringBatchesResponse)
@@ -222,7 +242,7 @@ async def get_item_batch(request: Request, batch_id: UUID):
         hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
         data = ItemBatchDetailData(
             **dict(row), **BA.hiasi(dict(row), hari_ini),
-            warehouse_stock=[BatchWarehouseStock(**dict(ws)) for ws in warehouse_stock],
+            warehouse_stock=[BatchWarehouseStock(**dict(ws), **BA.gudang_text(dict(ws), row["base_unit"])) for ws in warehouse_stock],
         )
 
         return ItemBatchDetailResponse(data=data)
@@ -316,6 +336,25 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
             )
 
 
+@router.post("/{batch_id}/status/preview")
+async def preview_status_batch(request: Request, batch_id: UUID, body: SetBatchStatusRequest):
+    """Pratinjau karantina / aktifkan (BACA SAJA; penentu BA.rencana_status == POST /status dan PATCH status). Bentuk G3."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            bl = Blok(True)
+            r = await BA.rencana_status(conn, ctx["tenant_id"], batch_id, body.status, bl, await tanggal_dokumen(conn, ctx["tenant_id"]))
+            return BA.pratinjau({"blocks": bl.daftar, "peringatan": r["peringatan"], "rencana": r["rencana"]}, body.model_dump(mode="json"))
+
+
+@router.post("/{batch_id}/status", response_model=UpdateItemBatchResponse)
+async def set_batch_status(request: Request, batch_id: UUID, body: SetBatchStatusRequest):
+    """Karantina / aktifkan batch (penentu SAMA dgn pratinjau; blok pertama -> galat berkode)."""
+    return await update_item_batch(request, batch_id, UpdateItemBatchRequest(status=body.status))
+
+
 @router.patch("/{batch_id}", response_model=UpdateItemBatchResponse)
 async def update_item_batch(
     request: Request, batch_id: UUID, body: UpdateItemBatchRequest
@@ -357,10 +396,8 @@ async def update_item_batch(
                 params.append(value)
                 param_idx += 1
 
-        if body.status == "quarantine":
-            ket = BA.aksi_tersedia(dict(existing), await tanggal_dokumen(conn, ctx["tenant_id"]))["karantina"]
-            if not ket["tersedia"]:
-                raise GalatBerkode(409, "BATCH_AKSI_TIDAK_TERSEDIA", ket["alasan"], field="status")
+        if body.status in ("quarantine", "active"):   # penentu SAMA dgn POST /{id}/status dan pratinjaunya
+            await BA.rencana_status(conn, ctx["tenant_id"], batch_id, body.status, Blok(False), await tanggal_dokumen(conn, ctx["tenant_id"]))
 
         if not updates:
             return UpdateItemBatchResponse(data=ItemBatchData(**dict(existing)))
@@ -396,7 +433,8 @@ async def update_item_batch(
 
 @router.post("/{batch_id}/adjust/preview")
 async def preview_adjust_batch(request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest):
-    """Pratinjau penyesuaian batch (BACA SAJA, nol tulis; penentu BA.rencana_sesuaikan == penulis): saldo batch + stok barang sebelum/sesudah, blok, isyarat."""
+    """Pratinjau penyesuaian batch (BACA SAJA, nol tulis; penentu BA.rencana_sesuaikan == penulis). Bentuk seragam dgn G3 Gudang:
+    {success, data:{ok, blocks[{code,message,field}], peringatan[], rencana, payload}}."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -405,18 +443,18 @@ async def preview_adjust_batch(request: Request, batch_id: UUID, body: AdjustBat
             bl = Blok(True)
             r = await BA.rencana_sesuaikan(conn, ctx["tenant_id"], batch_id, body, bl)
             b, g = r["batch"], r["gudang"]
-            return {
-                "success": True, "can_proceed": not bl.daftar, "blocks": bl.untuk_respons(),
-                "batch_number": b["batch_number"] if b else None, "item_name": b["item_name"] if b else None,
-                "warehouse_name": g["name"] if g else None, "quantity_change": str(r["ubah"]),
-                "batch_before": str(r["batch_sebelum"]) if r["batch_sebelum"] is not None else None,
-                "batch_after": str(r["batch_sesudah"]) if r["batch_sesudah"] is not None else None,
-                "stock_before": str(r["stok_sebelum"]) if r["stok_sebelum"] is not None else None,
-                "stock_after": str(r["stok_sesudah"]) if r["stok_sesudah"] is not None else None,
-                "summary_text": (f"Batch {b['batch_number']} di {g['name']}: {BA.angka(r['batch_sebelum'])} \u2192 {BA.angka(r['batch_sesudah'])} "
-                                 f"{b['base_unit'] or ''}".strip()) if b and g else None,
-                "document_text": "Dibuat dokumen Penyesuaian Stok bernomor + jurnal persediaan + kartu stok." if not bl.daftar else None,
-            }
+            rencana = None
+            if b and g:
+                u = b["base_unit"]
+                rencana = {
+                    "batch_number": b["batch_number"], "item_name": b["item_name"], "warehouse_name": g["name"], "quantity_change": str(r["ubah"]),
+                    "batch_before": str(r["batch_sebelum"]), "batch_after": str(r["batch_sesudah"]), "stock_before": str(r["stok_sebelum"]), "stock_after": str(r["stok_sesudah"]),
+                    "batch_before_text": BA.stock_text(r["batch_sebelum"], u), "batch_after_text": BA.stock_text(r["batch_sesudah"], u),
+                    "stock_before_text": BA.stock_text(r["stok_sebelum"], u), "stock_after_text": BA.stock_text(r["stok_sesudah"], u),
+                    "ringkas": f"Batch {b['batch_number']} di {g['name']}: {BA.stock_text(r['batch_sebelum'], u)} \u2192 {BA.stock_text(r['batch_sesudah'], u)}",
+                    "document_text": "Dibuat dokumen Penyesuaian Stok bernomor + jurnal persediaan + kartu stok.",
+                }
+            return BA.pratinjau({"blocks": bl.daftar, "peringatan": [], "rencana": rencana}, body.model_dump(mode="json"))
 
 
 @router.post("/{batch_id}/adjust", response_model=AdjustBatchResponse)
@@ -489,7 +527,7 @@ async def adjust_batch_quantity(
                 data=ItemBatchData(
                     **dict(row), item_code=b["item_code"], item_name=b["item_name"], base_unit=b["base_unit"],
                     **BA.hiasi(dict(row) | {"base_unit": b["base_unit"]}, tgl)),
-                warehouse_stock=BatchWarehouseStock(**dict(ws)),
+                warehouse_stock=BatchWarehouseStock(**dict(ws), **BA.gudang_text(dict(ws), b["base_unit"])),
                 adjustment_id=sa_id, adjustment_number=sa_number, journal_id=journal_id, journal_number=journal_number)
             return await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_BATCH_ADJ", hasil.model_dump(mode="json"), sa_id)
 
