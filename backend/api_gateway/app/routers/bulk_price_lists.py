@@ -259,12 +259,14 @@ async def barang_pilihan(request: Request, price_list_id: UUID, kategori: List[s
                 FROM products p LEFT JOIN vendors v ON v.id = p.preferred_vendor_id AND v.tenant_id = p.tenant_id
                 WHERE p.tenant_id = $1 AND {dasar}{s} ORDER BY p.nama_produk, p.id LIMIT ${idx + 1} OFFSET ${idx + 2}""",
             tid, *p, price_list_id, limit, offset)
-        kat = await conn.fetch("SELECT p.kategori AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.kategori, '') <> '' "
-                               "GROUP BY p.kategori ORDER BY lower(p.kategori)", tid)
-        mer = await conn.fetch("SELECT p.merek AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL AND COALESCE(p.merek, '') <> '' "
-                               "GROUP BY p.merek ORDER BY lower(p.merek)", tid)  # V502 (BACKEND): products.merek
-        pem = await conn.fetch("SELECT v.id, v.name AS nama, count(*) AS n FROM products p JOIN vendors v ON v.id = p.preferred_vendor_id AND v.tenant_id = p.tenant_id "
-                               "WHERE p.tenant_id = $1 AND p.deleted_at IS NULL GROUP BY v.id, v.name ORDER BY lower(v.name)", tid)
+        # kotak pilihan = predikat SAMA dengan resolusi (HF.syarat tanpa saringan): barang yang tak bisa dipilih tak dihitung (BUG-254 temuan kotak vs resolusi)
+        sb, pb, _ = HF.syarat({"kategori": [], "pemasok": [], "merek": []}, price_list_id, di_daftar, 2)
+        kat = await conn.fetch(f"SELECT p.kategori AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL{sb} AND COALESCE(p.kategori, '') <> '' "
+                               "GROUP BY p.kategori ORDER BY lower(p.kategori)", tid, *pb)
+        mer = await conn.fetch(f"SELECT p.merek AS nilai, count(*) AS n FROM products p WHERE p.tenant_id = $1 AND p.deleted_at IS NULL{sb} AND COALESCE(p.merek, '') <> '' "
+                               "GROUP BY p.merek ORDER BY lower(p.merek)", tid, *pb)  # V502 (BACKEND): products.merek
+        pem = await conn.fetch(f"SELECT v.id, v.name AS nama, count(*) AS n FROM products p JOIN vendors v ON v.id = p.preferred_vendor_id AND v.tenant_id = p.tenant_id "
+                               f"WHERE p.tenant_id = $1 AND p.deleted_at IS NULL{sb} GROUP BY v.id, v.name ORDER BY lower(v.name)", tid, *pb)
     return {"success": True, "data": {
         "items": [{"id": str(r["id"]), "item_code": r["kode"], "nama": r["nama"], "kategori": r["kategori"], "merek": r["merek"],
                    "pemasok": {"id": str(r["preferred_vendor_id"]), "nama": r["pemasok"]} if r["preferred_vendor_id"] else None,

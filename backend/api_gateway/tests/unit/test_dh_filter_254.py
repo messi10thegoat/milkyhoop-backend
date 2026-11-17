@@ -114,3 +114,56 @@ def test_barang_pilihan_membaca_daftar_pilihan_dari_server_dan_tak_bocor_tenant(
     for k in ("kategori_pilihan", "pemasok_pilihan", "merek_pilihan", '"total"', "di_daftar", "jumlah_baris"):
         assert k in s
     assert s.count("WHERE p.tenant_id = $1") >= 5                                  # total, baris, kategori, merek, pemasok: SEMUA bersaring tenant
+
+
+# ---------------------------------------------------------------- kotak pilihan == resolusi (temuan prod kaos 17 Nov: "Bahan Kain (4)" dihitung padahal tak dijual -> 0 barang)
+class _ConnKotak:
+    def __init__(self):
+        self.sql = []
+
+    async def fetchval(self, q, *a):
+        self.sql.append((q, a))
+        return 1
+
+    async def fetch(self, q, *a):
+        self.sql.append((q, a))
+        return []
+
+
+def _jalankan_barang_pilihan(monkeypatch, di_daftar):
+    conn = _ConnKotak()
+
+    class _Acq:
+        async def __aenter__(s):
+            return conn
+
+        async def __aexit__(s, *e):
+            return False
+
+    class _Pool:
+        def acquire(s):
+            return _Acq()
+
+    async def _pool():
+        return _Pool()
+
+    monkeypatch.setattr(BP, "get_pool", _pool)
+    monkeypatch.setattr(BP, "_ctx", lambda r: {"tenant_id": TID})
+    asyncio.run(BP.barang_pilihan(None, PL_ID, kategori=[], pemasok_id=[], merek=[], q=None, di_daftar=di_daftar, limit=50, offset=0))
+    return conn.sql
+
+
+@pytest.mark.parametrize("di_daftar", [None, False])
+def test_kotak_pilihan_memakai_predikat_resolusi_aktif_dan_dijual(monkeypatch, di_daftar):
+    kotak = [(q, a) for q, a in _jalankan_barang_pilihan(monkeypatch, di_daftar) if "GROUP BY" in q]
+    assert len(kotak) == 3                                                          # kategori, merek, pemasok
+    for q, a in kotak:
+        assert "p.status = 'active' AND COALESCE(p.for_sales, true)" in q and "p.tenant_id = $1" in q
+    syarat_sql = HF.syarat({"kategori": [], "pemasok": [], "merek": []}, PL_ID, di_daftar, 2)[0]
+    assert all(syarat_sql in q for q, _ in kotak)                                   # SATU penentu: string yang sama dengan resolusi
+
+
+def test_kotak_pilihan_di_daftar_true_membatasi_ke_barang_di_daftar(monkeypatch):
+    kotak = [(q, a) for q, a in _jalankan_barang_pilihan(monkeypatch, True) if "GROUP BY" in q]
+    for q, a in kotak:
+        assert "EXISTS (SELECT 1 FROM price_list_items pli WHERE pli.price_list_id = $2" in q and a[-1] == PL_ID
