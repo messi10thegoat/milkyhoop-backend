@@ -49,7 +49,10 @@ async def muat(conn, tid: str, uid: str) -> Optional[dict]:
     u = next((x for x in semua if x["id"] == uid), None)
     if u is not None:
         pakai = await SP.muat_pemakai(conn, tid, semua)
-        return {**u, "is_active": True, "jenis": jenis_id(uid), "pemakai": pakai.get(uid, dict(SP.NOL))}
+        jenis = jenis_id(uid)
+        if jenis == "terpakai" and u.get("bawaan"):          # nama bawaan yang baru tertulis di barang (belum punya baris master): tetap BAWAAN (diblok sebagai sumber; tujuan gabung = dibuat otomatis)
+            jenis = "bawaan"
+        return {**u, "is_active": True, "jenis": jenis, "pemakai": pakai.get(uid, dict(SP.NOL))}
     if jenis_id(uid) != "master":
         return None
     baris = await conn.fetchrow("SELECT id::text AS id, name, abbreviation, is_system, COALESCE(is_active, true) AS is_active FROM product_units "

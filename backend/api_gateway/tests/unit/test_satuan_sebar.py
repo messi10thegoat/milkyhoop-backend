@@ -230,3 +230,12 @@ def test_rute_ubah_terpakai_menulis_penyebaran_dan_alias_sebelum_baris(kon):
     jalan(U.update_unit(Req({"abbreviation": "krng"}), U1))
     sql = [x[0] for x in kon.exec]
     assert sql[0].startswith("UPDATE products t SET") and sql[-1].startswith("UPDATE product_units SET") and any(q.startswith("INSERT INTO product_unit_aliases") for q in sql)
+
+
+def test_nama_bawaan_yang_baru_tertulis_di_barang_tetap_bawaan_dan_bisa_jadi_tujuan_gabung():
+    kon = Kon([sat(U1, "Ikat", "ikt")], barang=[("Box", 3)], turunan=["Box"], dampak={"products": 1})
+    u = muat(kon, SM.ID_TERPAKAI + "Box")
+    assert u["jenis"] == "bawaan" and u["bawaan"] is True
+    assert kode(jalan(SR.rencana_ubah(kon, T, u, {"name": "Kotak"}))) == ["SATUAN_BAWAAN_TAK_DAPAT_DIUBAH"]
+    r = jalan(SR.rencana_gabung(kon, T, muat(kon, U1), u, u["id"]))
+    assert r["blocks"] == [] and r["rencana"]["tujuan"]["dibuat_otomatis"] is True
