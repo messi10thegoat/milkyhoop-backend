@@ -206,7 +206,7 @@ def test_adjust_menulis_dokumen_sa_menandai_kartu_dan_menggeser_batch(monkeypatc
     hasil = panggil({"warehouse_id": str(G_ID), "quantity_change": "-4", "reason": "Rusak"})
     assert [p[0] for p in pangg] == ["buat", "lawan", "post"]
     body = pangg[0][1]
-    assert body.adjustment_type == "decrease" and body.items[0]["quantity_adjustment"] == D("-4") and "LOT-A" in body.notes
+    assert body.adjustment_type == "decrease" and body.items[0].quantity_adjustment == D("-4") and "LOT-A" in body.notes
     sql = " ".join(s for s, _ in k.exe)
     assert "UPDATE inventory_ledger SET batch_id" in sql            # kartu stok dokumen ditandai batch -> void SA membalik batch
     assert "INSERT INTO batch_warehouse_stock" in sql
