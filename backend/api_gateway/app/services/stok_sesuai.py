@@ -682,9 +682,14 @@ async def pemindahan_tertunda(conn, tid: str, batas: int = 100) -> list:
     for r in await conn.fetch(_SQL_TERTUNDA, tid, batas):
         total = _d(r["total_tertunda"])
         hasil.append({"id": str(r["id"]), "transfer_number": r["transfer_number"], "shipped_date": r["shipped_date"].isoformat() if r["shipped_date"] else None,
-                      "dari": r["dari"], "ke": r["ke"], "jumlah_barang": int(r["n_barang"]), "total_tertunda": str(total),
+                      "dari": r["dari"], "ke": r["ke"], "jumlah_barang": int(r["n_barang"]), "total_tertunda": _n(total),
                       "teks": f"{int(r['n_barang'])} barang · tertunda {_q(total)}"})
     return hasil
+
+
+def _n(x: Decimal) -> str:
+    """Angka JSON sebagai string tanpa nol ekor ('-1', bukan '-1.0000' dari NUMERIC(15,4))."""
+    return format(x.normalize(), "f") if x != 0 else "0"
 
 
 async def tarik_pemindahan(conn, tid: str, transfer_id) -> Optional[dict]:
@@ -713,7 +718,7 @@ async def tarik_pemindahan(conn, tid: str, transfer_id) -> Optional[dict]:
             harga = await harga_pokok(conn, tid, i["item_id"])
             sebelum = await stok_gudang(conn, tid, i["item_id"], transit)
             baris.append({"product_id": str(i["item_id"]), "product_code": i["item_code"], "product_name": i["item_name"], "unit": i["unit"],
-                          "quantity_adjustment": str(-tertunda), "quantity_tertunda": str(tertunda), "quantity_before": str(sebelum),
+                          "quantity_adjustment": _n(-tertunda), "quantity_tertunda": _n(tertunda), "quantity_before": _n(sebelum),
                           "unit_cost": rp(harga), "total_value": rp((tertunda * harga).quantize(Decimal("1"))),
                           "warehouse_id": str(transit), "gudang": GT.NAMA, "gudang_terkunci": True,
                           "source_transfer_id": str(t["id"]), "source_transfer_number": t["transfer_number"],
