@@ -707,12 +707,12 @@ async def tarik_pemindahan(conn, tid: str, transfer_id) -> Optional[dict]:
             tertunda = i["quantity_pending"]
             if tertunda <= NOL:
                 continue
-            p = await conn.fetchrow("SELECT item_type, track_inventory, unit FROM products WHERE id = $1 AND tenant_id = $2", i["item_id"], tid)
+            p = await conn.fetchrow("SELECT item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", i["item_id"], tid)
             if not barang_bertstok(p):
                 continue
             harga = await harga_pokok(conn, tid, i["item_id"])
             sebelum = await stok_gudang(conn, tid, i["item_id"], transit)
-            baris.append({"product_id": str(i["item_id"]), "product_code": i["item_code"], "product_name": i["item_name"], "unit": i["unit"] or p["unit"],
+            baris.append({"product_id": str(i["item_id"]), "product_code": i["item_code"], "product_name": i["item_name"], "unit": i["unit"],
                           "quantity_adjustment": str(-tertunda), "quantity_tertunda": str(tertunda), "quantity_before": str(sebelum),
                           "unit_cost": rp(harga), "total_value": rp((tertunda * harga).quantize(Decimal("1"))),
                           "warehouse_id": str(transit), "gudang": GT.NAMA, "gudang_terkunci": True,
