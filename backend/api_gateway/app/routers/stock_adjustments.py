@@ -382,6 +382,28 @@ async def daftar_akun_lawan_penyesuaian(request: Request):
         return {"success": True, "data": await SS.daftar_akun_lawan(conn, ctx["tenant_id"])}
 
 
+@router.get("/dari-pemindahan")
+async def daftar_pemindahan_tertunda(request: Request):
+    """BUG-261 (Ambil > Pemindahan Barang, ikut Accurate): pemindahan di Transit yang masih punya selisih terima tertunda. Baca saja."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        return {"success": True, "data": await SS.pemindahan_tertunda(conn, ctx["tenant_id"])}
+
+
+@router.get("/dari-pemindahan/{transfer_id}")
+async def tarik_dari_pemindahan(request: Request, transfer_id: UUID):
+    """BUG-261: baris Pengurangan siap pakai (gudang Transit terkunci, qty = tertunda, source_transfer_id, alasan 'Hilang (selisih terima <no>)'); kirim apa adanya
+    (qty boleh diperkecil = tarik sebagian) ke POST /stock-adjustments + /preview. Baca saja."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        d = await SS.tarik_pemindahan(conn, ctx["tenant_id"], transfer_id)
+    if d is None:
+        raise GalatBerkode(404, "PEMINDAHAN_TIDAK_DITEMUKAN", "Pemindahan barang tidak ditemukan.")
+    return {"success": True, "data": d}
+
+
 @router.get("/{adjustment_id}", response_model=StockAdjustmentDetailResponse)
 async def get_stock_adjustment(request: Request, adjustment_id: UUID):
     """Get detailed information for a stock adjustment."""
@@ -407,11 +429,15 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
 
             items = await conn.fetch(
                 """
-                SELECT * FROM stock_adjustment_items
-                WHERE stock_adjustment_id = $1
-                ORDER BY line_number
+                SELECT i.*, w.name AS warehouse_name, t.transfer_number AS source_transfer_number
+                FROM stock_adjustment_items i
+                LEFT JOIN warehouses w ON w.id = i.warehouse_id AND w.tenant_id = $2
+                LEFT JOIN stock_transfers t ON t.id = i.source_transfer_id AND t.tenant_id = $2
+                WHERE i.stock_adjustment_id = $1
+                ORDER BY i.line_number
             """,
                 adjustment_id,
+                ctx["tenant_id"],
             )
 
             return {
@@ -452,6 +478,11 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             if item["physical_quantity"]
                             else None,  # Law 25: read path
                             "line_number": item["line_number"],
+                            "warehouse_id": str(item["warehouse_id"]) if item["warehouse_id"] else None,      # BUG-261: NULL = gudang dokumen
+                            "warehouse_name": item["warehouse_name"] or sa["warehouse_name"],
+                            "gudang_terkunci": bool(item["source_transfer_id"]),
+                            "source_transfer_id": str(item["source_transfer_id"]) if item["source_transfer_id"] else None,
+                            "source_transfer_number": item["source_transfer_number"],
                         }
                         for item in items
                     ],
@@ -497,12 +528,13 @@ async def _tulis_baris_draf(conn, sa_id, baris) -> None:
                 id, stock_adjustment_id, product_id, product_code, product_name,
                 quantity_before, quantity_adjustment, quantity_after, unit,
                 unit_cost, total_value, reason_detail,
-                system_quantity, physical_quantity, line_number
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                system_quantity, physical_quantity, line_number, warehouse_id, source_transfer_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         """,
             uuid_module.uuid4(), sa_id, b["product_id"], b["product_code"], b["product_name"],
             b["quantity_before"], b["quantity_adjustment"], b["quantity_after"], b["unit"],
             b["unit_cost"], b["total_value"], b["reason_detail"], b["system_quantity"], b["physical_quantity"], b["line_number"],
+            b.get("warehouse_id"), b.get("source_transfer_id"),     # BUG-261 (V503): NULL = ikut gudang dokumen / baris biasa
         )
 
 
@@ -811,8 +843,8 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
 
 
     # inventory_ledger per gerak penentu (barang goods + track_inventory), di gudang penyesuaian
-    adj_warehouse_id = r["gudang"]["id"]
     for g in r["gerak"]:
+        adj_warehouse_id = g.get("warehouse_id") or r["gudang"]["id"]     # BUG-261: gudang PER BARIS (kosong = gudang dokumen)
         unit_cost = g["unit_cost"]
         if g["masuk"] > 0:
             # INBOUND: WAC recompute + ledger insert lewat helper KANONIK (milkyhoop-inventory Rule 3, L09)
@@ -918,7 +950,7 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
         adjustment_id,
         journal_id,
         ctx["user_id"],
-        adj_warehouse_id,
+        r["gudang"]["id"],
         ctx["tenant_id"],
     )
 

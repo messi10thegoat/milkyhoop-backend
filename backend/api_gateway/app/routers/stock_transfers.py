@@ -97,8 +97,9 @@ async def _detail(conn, tenant_id: str, transfer_id: UUID) -> StockTransferDetai
     items = await pd2.terapkan_diterima(conn, tenant_id, transfer_id, row["status"], items)   # kolom DB beku sesudah Kirim -> diterima dari ledger
     dikirim = sum(float(i["quantity_shipped"] or 0) for i in items)
     diterima = sum(float(i["quantity_received"] or 0) for i in items)
+    selesai = sum(float(i.get("quantity_resolved") or 0) for i in items)
     return StockTransferDetailData(**dict(row), items=[StockTransferItemData(**dict(i)) for i in items],
-                                   status_text=pd2.teks_status(row["status"], dikirim, diterima),             # K8: diterima sebagian = turunan
+                                   status_text=pd2.teks_status(row["status"], dikirim, diterima, selesai),     # K8: diterima sebagian = turunan; BUG-261: + selisih diselesaikan
                                    diterima_sebagian=(row["status"] == "in_transit" and diterima > 0))
 
 
@@ -252,7 +253,7 @@ async def get_transfer_variance(request: Request):
             """
             SELECT st.id AS transfer_id, st.transfer_number, st.shipped_date, st.status,
                    fw.name AS from_warehouse_name, tw.name AS to_warehouse_name,
-                   i.item_id, i.item_code, i.item_name, i.unit, i.quantity_shipped, d.diterima AS quantity_received, i.unit_cost
+                   i.item_id, i.item_code, i.item_name, i.unit, i.quantity_shipped, d.diterima AS quantity_received, r.selesai AS quantity_resolved, i.unit_cost
             FROM stock_transfers st
             JOIN stock_transfer_items i ON i.stock_transfer_id = st.id
             LEFT JOIN warehouses fw ON st.from_warehouse_id = fw.id
@@ -260,15 +261,18 @@ async def get_transfer_variance(request: Request):
             LEFT JOIN LATERAL (SELECT COALESCE(SUM(il.quantity_in), 0) AS diterima FROM inventory_ledger il
                                WHERE il.tenant_id = st.tenant_id AND il.source_type = 'RELOKASI_TERIMA' AND il.source_id = st.id
                                  AND il.product_id = i.item_id) d ON true
+            LEFT JOIN LATERAL (SELECT COALESCE(SUM(ABS(sai.quantity_adjustment)), 0) AS selesai FROM stock_adjustment_items sai
+                               JOIN stock_adjustments sa ON sa.id = sai.stock_adjustment_id AND sa.tenant_id = st.tenant_id AND sa.status = 'posted'
+                               WHERE sai.source_transfer_id = st.id AND sai.product_id = i.item_id) r ON true   -- BUG-261: selisih diselesaikan Penyesuaian
             WHERE st.tenant_id = $1 AND st.status = 'in_transit'
-              AND COALESCE(i.quantity_shipped, 0) > d.diterima
+              AND COALESCE(i.quantity_shipped, 0) > d.diterima + r.selesai
             ORDER BY st.shipped_date ASC, st.transfer_number ASC, i.line_number ASC
             """,
             ctx["tenant_id"],
         )
     data, total_q, total_n, nomor = [], Decimal("0"), Decimal("0"), set()
     for r in rows:
-        tertunda = Decimal(str(r["quantity_shipped"] or 0)) - Decimal(str(r["quantity_received"] or 0))
+        tertunda = Decimal(str(r["quantity_shipped"] or 0)) - Decimal(str(r["quantity_received"] or 0)) - Decimal(str(r.get("quantity_resolved") or 0))
         biaya = Decimal(str(r["unit_cost"] or 0))
         nilai = (tertunda * biaya).quantize(Decimal("0.01"))
         total_q += tertunda
@@ -277,7 +281,7 @@ async def get_transfer_variance(request: Request):
         data.append({"transfer_id": str(r["transfer_id"]), "transfer_number": r["transfer_number"], "shipped_date": r["shipped_date"].isoformat() if r["shipped_date"] else None,
                      "from_warehouse_name": r["from_warehouse_name"], "to_warehouse_name": r["to_warehouse_name"], "item_id": str(r["item_id"]),
                      "item_code": r["item_code"], "item_name": r["item_name"], "unit": r["unit"], "quantity_shipped": _f(Decimal(str(r["quantity_shipped"] or 0))),
-                     "quantity_received": _f(Decimal(str(r["quantity_received"] or 0))), "quantity_tertunda": _f(tertunda), "nilai_tertunda": _f(nilai),
+                     "quantity_received": _f(Decimal(str(r["quantity_received"] or 0))), "quantity_resolved": _f(Decimal(str(r.get("quantity_resolved") or 0))), "quantity_tertunda": _f(tertunda), "nilai_tertunda": _f(nilai),
                      "diterima_sebagian": Decimal(str(r["quantity_received"] or 0)) > 0})
     return {"success": True, "data": data, "summary": {"jumlah_pemindahan": len(nomor), "jumlah_baris": len(data), "total_tertunda": _f(total_q), "total_nilai_tertunda": _f(total_n)}}
 
@@ -453,9 +457,10 @@ async def get_stock_transfer(request: Request, transfer_id: UUID):
         items = await pd2.terapkan_diterima(conn, ctx["tenant_id"], transfer_id, row["status"], items)   # K8: diterima dari ledger
         _dik = sum(float(i["quantity_shipped"] or 0) for i in items)
         _dit = sum(float(i["quantity_received"] or 0) for i in items)
+        _sel = sum(float(i.get("quantity_resolved") or 0) for i in items)
         data = StockTransferDetailData(
             **dict(row), items=[StockTransferItemData(**dict(item)) for item in items],
-            status_text=pd2.teks_status(row["status"], _dik, _dit), diterima_sebagian=(row["status"] == "in_transit" and _dit > 0)
+            status_text=pd2.teks_status(row["status"], _dik, _dit, _sel), diterima_sebagian=(row["status"] == "in_transit" and _dit > 0)
         )
 
         return StockTransferDetailResponse(data=data)
