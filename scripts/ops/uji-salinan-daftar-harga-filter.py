@@ -65,7 +65,10 @@ async def periksa(pool, tid):
                            kategori = CASE WHEN g <= 400 THEN 'Uji-Flt-A' ELSE 'UJI-FLT-b' END, preferred_vendor_id = CASE WHEN g % 2 = 0 THEN $2::uuid ELSE NULL END
                            WHERE tenant_id = $3""", str(st), vendor, tid)
         await c.execute("ALTER TABLE tmp_uji_flt DROP COLUMN g")
-        await c.execute("INSERT INTO products SELECT * FROM tmp_uji_flt WHERE tenant_id = $1", tid)
+        # kolom GENERATED ALWAYS (mis. track_lot_numbers) tak boleh diisi eksplisit: daftar kolom dibuat dari katalog, bukan SELECT *
+        kol = ", ".join('"' + r["attname"] + '"' for r in await c.fetch(
+            "SELECT attname FROM pg_catalog.pg_attribute WHERE attrelid = 'public.products'::regclass AND attnum > 0 AND NOT attisdropped AND attgenerated = '' ORDER BY attnum"))
+        await c.execute(f"INSERT INTO products ({kol}) SELECT {kol} FROM tmp_uji_flt WHERE tenant_id = $1", tid)
     r = await PL.create_price_list(req(tid, f"uji-flt-buat-{st}"), CreatePriceListRequest(code=f"UJI-FLT-{st}", name="UJI filter"))
     pl = uuid.UUID(str(r["data"]["id"]))
     async with pool.acquire() as c:

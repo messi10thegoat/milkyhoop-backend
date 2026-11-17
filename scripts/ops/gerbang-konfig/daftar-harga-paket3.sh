@@ -1,6 +1,6 @@
 # Konfig gerbang GABUNGAN paket DH 3 (17 Nov 2026): galat berkode seragam + BUG-254 saringan/batas 500/barang-pilihan. SATU gerbang, SATU rilis. Cabang LINEAR di atas master 151e0d602
 # (paket-be-all, V502 merek sudah ada); TANPA migrasi baru. Sabotase = gabungan daftar-harga-galat.sh (g1-g5) + daftar-harga-filter.sh (n1-n12); harness = salin + filter (UKUR 500 barang).
-W=/root/mh-dh-paket3; CABANG=feat/daftarharga-paket3; NAMA_JENDELA=daftar-harga-paket3
+W=/root/mh-dh-paket3-r2; CABANG=feat/daftarharga-paket3-r2; NAMA_JENDELA=daftar-harga-paket3
 POLA_UNIT='dh_galat_seragam|dh_salin|dh_riwayat|dh_filter|harga_filter|daftar_harga|bulk_price|bulk_f1|dh_berjangka|barang_pilihan|cari_kata|items|izin_rute'
 HARNESS=scripts/ops/uji-salinan-daftar-harga-paket3.sh
 PENANDA_BERKAS=services/harga_filter.py; PENANDA='async def resolusi('
