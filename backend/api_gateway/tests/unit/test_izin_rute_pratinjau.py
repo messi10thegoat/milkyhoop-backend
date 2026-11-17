@@ -76,6 +76,8 @@ KHUSUS = {
     # Penyesuaian stok standar SO (9 Nov): ubah draf = PATCH, hapus draf = DELETE (penentu bersama services/stok_sesuai)
     "POST /api/stock-adjustments/{adjustment_id}/edit/preview": "PATCH /api/stock-adjustments/{adjustment_id}",
     "POST /api/stock-adjustments/{adjustment_id}/delete/preview": "DELETE /api/stock-adjustments/{adjustment_id}",
+    # Satuan G3 (17 Nov): ubah = PATCH /units/{id} (penentu bersama services/satuan_rencana); buat/status = jalur tanpa /preview
+    "POST /api/units/{unit_id}/edit/preview": "PATCH /api/units/{unit_id}",
     # Gudang G3 (15 Nov): ubah = PATCH /warehouses/{id} (penentu bersama services/gudang_rencana); buat/status/set-default = jalur tanpa /preview
     "POST /api/warehouses/{warehouse_id}/edit/preview": "PATCH /api/warehouses/{warehouse_id}",
     "POST /api/customers/{customer_id}/status/preview": "PATCH /api/customers/{customer_id}/status",

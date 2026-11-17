@@ -327,3 +327,10 @@ def test_baris_teks_baris_tenant_bernama_bawaan_jenis_bawaan():
     baris = {b["id"]: b for b in SP.susun(semua, jalan(SP.muat_pemakai(kon, T, semua)))}
     assert SR.baris_teks(baris[U1])["jenis"] == "bawaan" and SR.baris_teks(baris[U1])["jenis_text"] == "Bawaan"
     assert SR.baris_teks(baris[U2])["jenis_text"] == "Kustom"
+
+
+def test_izin_pratinjau_dan_penulis_status_sama():
+    pm = (APP / "middleware/permission_middleware.py").read_text()
+    assert '(r"^/api/units/[^/]+/edit/preview$", ["POST"], "unit", "U")' in pm                    # = izin PATCH
+    assert '(r"^/api/units/[^/]+/status(/preview)?$", ["POST"], "unit", "D")' in pm              # = izin DELETE lama (nonaktif = hapus lunak)
+    assert pm.index("/edit/preview$\", [\"POST\"], \"unit\"") < pm.index('(r"^/api/units", ["POST"], "unit", "C")')   # pola khusus SEBELUM prefiks umum
