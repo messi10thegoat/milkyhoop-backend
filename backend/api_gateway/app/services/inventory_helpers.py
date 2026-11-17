@@ -558,9 +558,14 @@ async def record_inventory_reversal(
     reversal_date=None,
     notes_prefix: str = "VOID",
     journal_id: Optional[UUID] = None,
+    pindah_batch: bool = True,
 ) -> list:
     """
     Reverse all inventory_ledger entries for a given source.
+
+    pindah_batch (BE-A, 17 Nov 2026): True (bawaan, perilaku lama) = helper ikut menggeser batch_warehouse_stock. Trigger DB trg_update_batch_stock
+    (V047/V204) SUDAH menggeser batch pada INSERT ledger ber-batch_id -> pembalik ber-batch_id tergeser DUA kali (temuan harness salinan 17 Nov).
+    Penyesuaian stok (SA) memakai False: cukup trigger. Faktur/lainnya TIDAK diubah di sini (keputusan MASTER; lihat laporan BE-A).
 
     journal_id (VOID-SJ-FAKTUR 15 Okt 2026): bila diisi, HANYA baris sumber itu dengan journal_id tsb. Satu faktur bisa punya
     beberapa Surat Jalan yang semuanya ber-source_id = id faktur; pembalik per SJ dibedakan oleh jurnal HPP-nya. None = perilaku lama.
@@ -688,7 +693,7 @@ async def record_inventory_reversal(
         batch_id = (
             entry.get("batch_id") or entry["batch_id"] if entry["batch_id"] else None
         )
-        if batch_id:
+        if batch_id and pindah_batch:
             if orig_qty_in > 0:
                 # Was inbound (purchase) — reverse = reduce stock
                 qty_to_reverse = orig_qty_in

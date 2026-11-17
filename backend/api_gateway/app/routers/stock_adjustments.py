@@ -1178,7 +1178,13 @@ async def void_stock_adjustment(
                     created_by=ctx["user_id"],
                     reversal_date=hari_ini,  # t10-tanggal-bisnis
                     notes_prefix=f"VOID {sa['adjustment_number']}",
+                    pindah_batch=False,  # BE-A: trigger trg_update_batch_stock sudah menggeser batch dari baris pembalik ber-batch_id
                 )
+                # batch yang sempat 'depleted' oleh penyesuaian dokumen ini aktif lagi bila saldonya pulih
+                await conn.execute(
+                    "UPDATE item_batches SET status = 'active', updated_at = NOW() WHERE tenant_id = $1 AND status = 'depleted' AND current_quantity > 0 "
+                    "AND id IN (SELECT batch_id FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 AND batch_id IS NOT NULL)",
+                    ctx["tenant_id"], adjustment_id)
 
                 # Update status
                 await conn.execute(
