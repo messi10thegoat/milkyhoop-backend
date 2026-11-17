@@ -246,3 +246,11 @@ def test_sumber_adjust_memakai_penulis_sa_bukan_update_batch_saja():
     src = inspect.getsource(IB.adjust_batch_quantity)
     assert "SAR._buat_draf" in src and "SAR._tulis_posting" in src
     assert "pg_advisory_xact_lock" in src and "idem_buat" in src
+
+
+def test_void_sa_tak_menggeser_batch_dua_kali():
+    """Trigger DB trg_update_batch_stock sudah menggeser batch dari baris pembalik ber-batch_id; helper tak boleh menambah lagi untuk SA (temuan harness salinan)."""
+    from app.services import inventory_helpers as IH
+    assert inspect.signature(IH.record_inventory_reversal).parameters["pindah_batch"].default is True      # perilaku lama bagi pemanggil lain tak berubah
+    assert "pindah_batch=False" in inspect.getsource(SAR.void_stock_adjustment)
+    assert "if batch_id and pindah_batch" in inspect.getsource(IH.record_inventory_reversal)
