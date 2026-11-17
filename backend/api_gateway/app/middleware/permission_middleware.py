@@ -656,7 +656,8 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/vendor-credits/[^/]+", ["DELETE"], "debit_note", "D"),
     # Units
     (r"^/api/units/[^/]+/edit/preview$", ["POST"], "unit", "U"),  # Satuan G3: pratinjau ubah = izin PATCH
-    (r"^/api/units/[^/]+/status(/preview)?$", ["POST"], "unit", "D"),  # Satuan G3: nonaktifkan (+ pratinjau) = izin DELETE lama (hapus lunak)
+    (r"^/api/units/[^/]+/status(/preview)?$", ["POST"], "unit", "D"),
+    (r"^/api/units/[^/]+/merge(/preview)?$", ["POST"], "unit", "U"),  # Satuan G3-b: gabung (+ pratinjau) = izin ubah (menulis ulang teks master)  # Satuan G3: nonaktifkan (+ pratinjau) = izin DELETE lama (hapus lunak)
     (r"^/api/units", ["GET"], "unit", "R"),
     (r"^/api/units", ["POST"], "unit", "C"),
     (r"^/api/units/[^/]+", ["PATCH", "PUT"], "unit", "U"),

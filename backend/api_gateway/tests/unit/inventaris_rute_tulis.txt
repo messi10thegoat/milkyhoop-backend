@@ -676,6 +676,8 @@ POST /api/units/conversions/{product_id}
 POST /api/units/seed
 POST /api/units/preview
 POST /api/units/{unit_id}/edit/preview
+POST /api/units/{unit_id}/merge
+POST /api/units/{unit_id}/merge/preview
 POST /api/units/{unit_id}/status
 POST /api/units/{unit_id}/status/preview
 POST /api/uploads/document
