@@ -80,6 +80,7 @@ class Kon:
 
     async def execute(self, sql, *a):
         self.exe.append((sql, a))
+        return "UPDATE 1"
 
     async def fetchrow(self, sql, *a):
         if "FROM item_batches ib JOIN products" in sql:
@@ -209,8 +210,9 @@ def test_adjust_menulis_dokumen_sa_menandai_kartu_dan_menggeser_batch(monkeypatc
     assert body.adjustment_type == "decrease" and body.items[0].quantity_adjustment == D("-4") and "LOT-A" in body.notes
     sql = " ".join(s for s, _ in k.exe)
     assert "UPDATE inventory_ledger SET batch_id" in sql            # kartu stok dokumen ditandai batch -> void SA membalik batch
-    assert "INSERT INTO batch_warehouse_stock" in sql
-    geser = [a for s, a in k.exe if "INSERT INTO batch_warehouse_stock" in s][0]
+    assert "UPDATE batch_warehouse_stock SET quantity = quantity + $4" in sql
+    assert "ON CONFLICT" not in sql                                # INSERT..ON CONFLICT dgn jumlah negatif melanggar chk_bws_qty (temuan harness salinan)
+    geser = [a for s, a in k.exe if "UPDATE batch_warehouse_stock SET quantity = quantity + $4" in s][0]
     assert geser[3] == D("-4")
     assert hasil["adjustment_number"] == "SA-2611-0001" and hasil["journal_number"] == "SAJ-1"
     assert hasil["data"]["position_text"]

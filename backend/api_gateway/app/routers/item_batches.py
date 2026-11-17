@@ -464,15 +464,14 @@ async def adjust_batch_quantity(
             await conn.execute(
                 "UPDATE inventory_ledger SET batch_id = $3 WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 AND product_id = $4",
                 tid, sa_id, batch_id, b["item_id"])
-            await conn.execute(
-                """
-                INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (batch_id, warehouse_id)
-                DO UPDATE SET quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
-                              last_movement_date = NOW(), updated_at = NOW()
-                """,
-                tid, batch_id, g["id"], ubah)
+            # UPDATE dulu: INSERT .. ON CONFLICT dgn jumlah NEGATIF melanggar chk_bws_qty pada baris usulan SEBELUM konflik diperiksa (kurang selalu gagal).
+            diubah = await conn.execute(
+                "UPDATE batch_warehouse_stock SET quantity = quantity + $4, last_movement_date = NOW(), updated_at = NOW() "
+                "WHERE tenant_id = $1 AND batch_id = $2 AND warehouse_id = $3", tid, batch_id, g["id"], ubah)
+            if diubah.endswith(" 0"):   # belum ada baris batch di gudang itu: hanya penambahan yang lolos rencana
+                await conn.execute(
+                    "INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity, last_movement_date) VALUES ($1, $2, $3, $4, NOW())",
+                    tid, batch_id, g["id"], ubah)
             await conn.execute(
                 "UPDATE item_batches SET status = 'depleted' WHERE id = $1 AND tenant_id = $2 AND current_quantity <= 0 AND status = 'active'",
                 batch_id, tid)
