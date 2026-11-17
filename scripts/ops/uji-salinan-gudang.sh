@@ -12,6 +12,8 @@ echo "salinan: $S"
 docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl | psql -q -U postgres -d $S" >/tmp/bgudang_restore.log 2>&1
 echo "restore galat: $(grep -c ERROR /tmp/bgudang_restore.log)"
+# V504 (alias satuan; idempoten) dipasang di SALINAN: satuan_dasar._alias dipakai jalur gudang/barang dan butuh tabelnya
+docker exec -i $P psql -q -v ON_ERROR_STOP=1 -U postgres -d $S < "${POHON:-/root/mh-bgud}/backend/migrations/V504__product_unit_aliases.sql" || { echo "rc=4 (V504 gagal di salinan)"; exit 4; }
 timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S \
   -v "${POHON:-/root/mh-bgud}/backend:/app/backend:ro" -v "$D/uji-salinan-gudang.py:/uji.py:ro" -w /app/backend/api_gateway \
   --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py > "$O" 2>&1; RC=$?
