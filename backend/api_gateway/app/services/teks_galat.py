@@ -242,15 +242,16 @@ def _qty2(x) -> str:
     return qty(_desimal(x).quantize(Decimal("0.01")))
 
 
-def stok_per_tanggal(nama, tanggal, stok_tanggal, stok_kini, satuan) -> str:
-    """BUG-075 (pola Accurate "Stok : 0" oranye): transaksi bertanggal mundur melebihi stok pada tanggal dokumen. ISYARAT, bukan tolak."""
+def stok_per_tanggal(nama, tanggal, stok_tanggal, stok_kini, satuan, gudang=None) -> str:
+    """BUG-075 (pola Accurate "Stok : 0" oranye): transaksi bertanggal mundur melebihi stok pada tanggal dokumen. ISYARAT, bukan tolak.
+    gudang (BE-B, putusan MASTER 17 Nov: stok PER GUDANG dokumen) bila diisi -> "Stok X di <gudang> per ..."."""
     from .tanggal_uang_muka import tgl
-    return f"Stok {nama} per {tgl(tanggal)}: {_qty2(stok_tanggal)} {satuan} (hari ini {_qty2(stok_kini)})."
+    return f"Stok {nama}{f' di {gudang}' if gudang else ''} per {tgl(tanggal)}: {_qty2(stok_tanggal)} {satuan} (hari ini {_qty2(stok_kini)})."
 
 
-def stok_bisa_dijual(nama, bisa, dipesan, diminta, satuan) -> str:
-    """BUG-049: bisa dijual = stok kini - dipesan pesanan terbuka. ISYARAT, bukan tolak."""
-    return f"Bisa dijual {nama}: {_qty2(bisa)} {satuan} (dipesan {_qty2(dipesan)}), diminta {_qty2(diminta)} {satuan}."
+def stok_bisa_dijual(nama, bisa, dipesan, diminta, satuan, gudang=None) -> str:
+    """BUG-049: bisa dijual = stok kini - dipesan pesanan terbuka. ISYARAT, bukan tolak. gudang (BE-B): "Bisa dijual X di <gudang>: ..."."""
+    return f"Bisa dijual {nama}{f' di {gudang}' if gudang else ''}: {_qty2(bisa)} {satuan} (dipesan {_qty2(dipesan)}), diminta {_qty2(diminta)} {satuan}."
 
 
 def stok_so_tanpa_gudang(n) -> str:

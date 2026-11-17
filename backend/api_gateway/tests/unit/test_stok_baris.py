@@ -39,6 +39,10 @@ class _K:
             {"so_id": SO2, "warehouse_id": W, "soi_id": L2, "item_id": P, "quantity": D("5"), "unit": "botol"}]
         self.args = {}
 
+    async def fetchval(self, sql, *a):   # BE-B: nama gudang untuk kalimat isyarat per gudang
+        assert "FROM warehouses" in sql
+        return {str(W): "Gudang Utama", str(uuid.UUID(int=32)): "Gudang Cabang"}.get(str(a[0]))
+
     async def fetch(self, sql, *a):
         if sql == SB.SQL_STOK:
             self.args["stok"] = a
@@ -183,3 +187,30 @@ def test_empat_tinjau_memanggil_penentu_yang_sama():
     from app.routers import sales_orders as SO
     for fn in (SO.calculate_sales_order, SO._baca_pratinjau, SI.calculate_invoice, SI._pratinjau_dari_posting):
         assert "SB.isyarat(" in inspect.getsource(fn), fn.__name__
+
+
+# ---------------- BE-B (17 Nov): isyarat PER GUDANG dokumen -- gudang baris bila ada, kepala bila tidak
+def test_isyarat_gudang_kepala_menyebut_gudang_dan_menyaring_stok():
+    k = _K()
+    r = _jalan(SB.isyarat(k, T, date(2026, 10, 31), HARI, [{"item_id": P, "quantity": 1, "unit": None}], W))
+    assert r == [{"item_id": str(P), "kalimat": "Stok Minyak 1L di Gudang Utama per 31 Okt 2026: 0 botol (hari ini 211)."}]
+    assert str(k.args["stok"][3]) == str(W)                      # ledger disaring gudang itu
+
+
+def test_isyarat_gudang_baris_menang_atas_kepala_satu_kelompok_per_gudang():
+    W2 = uuid.UUID(int=32)
+    k = _K()
+    lines = [{"item_id": P, "quantity": 1, "unit": None, "warehouse_id": W2}, {"item_id": P, "quantity": 1, "unit": None}]   # baris 2 = gudang kepala W
+    r = _jalan(SB.isyarat(k, T, date(2026, 10, 31), HARI, lines, W))
+    assert [x["kalimat"].split(" per ")[0] for x in r] == ["Stok Minyak 1L di Gudang Cabang", "Stok Minyak 1L di Gudang Utama"]
+
+
+def test_isyarat_tanpa_gudang_perilaku_lama_tanpa_nama_gudang():
+    r = _jalan(SB.isyarat(_K(), T, HARI, HARI, [{"item_id": P, "quantity": 195, "unit": None}]))
+    assert " di " not in r[0]["kalimat"] and r[0]["kalimat"].startswith("Bisa dijual Minyak 1L:")
+
+
+def test_so_pratinjau_meneruskan_gudang_kepala():
+    from app.routers import sales_orders as SOR
+    src = inspect.getsource(SOR.calculate_sales_order)
+    assert 'getattr(body, "warehouse_id", None)' in src and "SB.isyarat(" in src
