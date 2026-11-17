@@ -282,3 +282,41 @@ def test_variance_k9_mengurangi_penyelesaian():
 def test_detail_pemindahan_meneruskan_diselesaikan_ke_teks_status():
     src = inspect.getsource(RT)
     assert src.count("pd2.teks_status(row[\"status\"], dikirim, diterima, selesai)") == 1 and 'pd2.teks_status(row["status"], _dik, _dit, _sel)' in src
+
+
+# ------------------------------------------------------------------ SQL tertunda: hanya POSTED (void/draf tak terhitung), tenant disaring
+def test_sql_diselesaikan_hanya_posted_dan_tersaring_tenant():
+    for sql in (D2.SQL_DISELESAIKAN, D2.SQL_DISELESAIKAN_BANYAK):
+        assert "s.status = 'posted'" in sql and "s.tenant_id = $1" in sql and "ABS(i.quantity_adjustment)" in sql and "i.source_transfer_id" in sql
+    assert "sa.status = 'posted'" in SS._SQL_TERTUNDA and "sa.tenant_id = st.tenant_id" in SS._SQL_TERTUNDA and "st.status = 'in_transit'" in SS._SQL_TERTUNDA
+    assert "st.tenant_id = $1" in SS._SQL_TERTUNDA and "fw.tenant_id = st.tenant_id" in SS._SQL_TERTUNDA
+
+
+# ------------------------------------------------------------------ batal penyesuaian bertaut: pemindahan harus masih di Transit
+class KonBatal(KonPosting):
+    SA = dict(KonPosting.SA, status="posted", journal_id=None)
+
+    def __init__(self, status_pm="in_transit", **kw):
+        super().__init__(**kw)
+        self.status_pm = status_pm
+
+    async def fetchrow(self, sql, *a):
+        if "FROM stock_adjustments WHERE id = $1" in sql:
+            return self.SA
+        return await super().fetchrow(sql, *a)
+
+    async def fetch(self, sql, *a):
+        if "SELECT DISTINCT t.transfer_number, t.status" in sql:
+            return [{"transfer_number": "IT-1", "status": self.status_pm}]
+        if "FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT'" in sql:
+            return []
+        return await super().fetch(sql, *a)
+
+
+def test_batal_penyesuaian_diblok_bila_pemindahan_tak_lagi_transit():
+    bl = Blok(True)
+    jalan(SS.rencana_batal(KonBatal(status_pm="received"), T, KonBatal.SA["id"], "salah", bl))
+    assert [b["code"] for b in bl.daftar] == ["PENYESUAIAN_PEMINDAHAN_STATUS"]
+    bl2 = Blok(True)
+    jalan(SS.rencana_batal(KonBatal(), T, KonBatal.SA["id"], "salah", bl2))
+    assert bl2.daftar == []
