@@ -27,6 +27,8 @@ class StockAdjustmentItemCreate(BaseModel):
     quantity_adjustment: Decimal = Field(..., description="Adjustment quantity (positive=increase, negative=decrease)")
     reason_detail: Optional[str] = Field(None, max_length=500)
     physical_quantity: Optional[Decimal] = Field(None, description="Actual counted quantity for recount")
+    warehouse_id: Optional[str] = Field(None, description="BUG-261: gudang baris; kosong = gudang dokumen")
+    source_transfer_id: Optional[str] = Field(None, description="BUG-261: baris penyelesaian selisih terima Pemindahan (gudang = Transit, terkunci)")
 
     @field_validator('product_id')
     @classmethod
@@ -42,6 +44,8 @@ class StockAdjustmentItemUpdate(BaseModel):
     quantity_adjustment: Decimal
     reason_detail: Optional[str] = None
     physical_quantity: Optional[Decimal] = None
+    warehouse_id: Optional[str] = None            # BUG-261
+    source_transfer_id: Optional[str] = None      # BUG-261
 
 
 # =============================================================================
@@ -106,6 +110,11 @@ class StockAdjustmentItemResponse(BaseModel):
     system_quantity: Optional[float] = None
     physical_quantity: Optional[float] = None
     line_number: int = 1
+    warehouse_id: Optional[str] = None            # BUG-261 (NULL = gudang dokumen)
+    warehouse_name: Optional[str] = None
+    gudang_terkunci: bool = False                 # baris penyelesaian Pemindahan: gudang Transit tak bisa diganti
+    source_transfer_id: Optional[str] = None
+    source_transfer_number: Optional[str] = None
 
 
 # =============================================================================
