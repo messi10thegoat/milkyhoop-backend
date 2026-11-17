@@ -3,7 +3,7 @@
 # Pakai: POHON=/root/<worktree> scripts/ops/uji-salinan-satuan-g3.sh (cek-sibuk dulu).
 set -u
 python3 "$(dirname "$0")/cek-saring-tenant.py" "$0" "$(dirname "$0")/uji-salinan-satuan-g3.py" || { echo "rc=3 (SQL tanpa saring tenant)"; exit 3; }
-P=milkyhoop-dev-postgres-1; S=scratch_sg3_$(date +%s); POHON=${POHON:-/root/mh-satuan-g3}
+P=milkyhoop-dev-postgres-1; S=scratch_sg3_$(date +%s); POHON=${POHON:-/root/mh-satuan-g3-r2}
 hapus() { docker exec $P psql -U postgres -At -c "DROP DATABASE IF EXISTS $S" >/dev/null
           echo "salinan $S dihapus; sisa DB scratch_sg3%: $(docker exec $P psql -U postgres -At -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'scratch_sg3%'")"; }
 trap hapus EXIT

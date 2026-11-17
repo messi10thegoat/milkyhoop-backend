@@ -671,6 +671,10 @@ POST /api/transactions/sales
 POST /api/units
 POST /api/units/conversions/{product_id}
 POST /api/units/seed
+POST /api/units/preview
+POST /api/units/{unit_id}/edit/preview
+POST /api/units/{unit_id}/status
+POST /api/units/{unit_id}/status/preview
 POST /api/uploads/document
 POST /api/v3/chat/action/edit
 POST /api/v3/chat/cancel

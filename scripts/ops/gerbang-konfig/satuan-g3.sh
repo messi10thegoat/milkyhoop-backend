@@ -1,6 +1,6 @@
 # Konfig gerbang terfokus Satuan G3-a aksi tulis (17 Nov 2026): services/satuan_rencana.py (pratinjau + penulis SATU penentu), routers/units.py (POST /preview, /{id}/edit/preview, /{id}/status/preview,
 # POST /{id}/status, POST/PATCH/DELETE memakai rencana), satuan_pakai.aksi_tersedia sejalan dengan blok. TANPA migrasi (G3-b = V504 alias). Pemisah sabotase = "|", sed memakai "@".
-W=/root/mh-satuan-g3; CABANG=feat/satuan-g3; NAMA_JENDELA=satuan-g3
+W=/root/mh-satuan-g3-r2; CABANG=feat/satuan-g3-r2; NAMA_JENDELA=satuan-g3
 POLA_UNIT='satuan_g3|satuan_pakai|satuan_master|satuan_tersimpan|satuan_baris|satuan_dasar|routers.units|izin_rute|bawaan_berlaku'
 HARNESS=scripts/ops/uji-salinan-satuan-g3.sh
 PENANDA_BERKAS=services/satuan_rencana.py; PENANDA='async def rencana_status('

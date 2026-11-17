@@ -318,3 +318,12 @@ def test_baris_tenant_bernama_bawaan_tetap_dianggap_bawaan_diblok_dan_aksi_sejal
     semua = jalan(SM.daftar(kon, T))
     b = next(x for x in SP.susun(semua, jalan(SP.muat_pemakai(kon, T, semua))) if x["id"] == U1)
     assert [b["aksi_tersedia"][k]["tersedia"] for k in ("ubah_nama", "gabung", "nonaktifkan")] == [False, False, False]
+
+
+def test_baris_teks_baris_tenant_bernama_bawaan_jenis_bawaan():
+    """Tenant punya baris 'Pcs' (uuid, bukan is_system): daftar harus mengatakan Bawaan (konsisten dengan blok rencana), bukan Kustom."""
+    kon = Kon([sat(U1, "Pieces", "Pcs", is_system=False), sat(U2, "Karung", "krg")])
+    semua = jalan(SM.daftar(kon, T))
+    baris = {b["id"]: b for b in SP.susun(semua, jalan(SP.muat_pemakai(kon, T, semua)))}
+    assert SR.baris_teks(baris[U1])["jenis"] == "bawaan" and SR.baris_teks(baris[U1])["jenis_text"] == "Bawaan"
+    assert SR.baris_teks(baris[U2])["jenis_text"] == "Kustom"

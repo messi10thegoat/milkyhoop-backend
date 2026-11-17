@@ -56,12 +56,15 @@ async def periksa(pool, tid, lain):
     n0 = await jumlah_unit(pool, tid)
     p1 = await U.preview_buat_satuan(Req(tid, {"name": f"UJI-SG3 {st}", "abbreviation": f"ujisg3{st}"}))
     p2 = await U.preview_buat_satuan(Req(tid, {"name": "Kilogram", "abbreviation": "kg"}))
-    p3 = await U.preview_ubah_satuan(Req(tid, {"name": "Biji"}), SM.ID_BAWAAN + "Pcs")
-    p4 = await U.preview_nonaktif_satuan(Req(tid), SM.ID_BAWAAN + "Kg")
+    daftar0 = (await U.list_units(Req(tid), search=None, is_active=None, aksi=None, limit=500))["items"]
+    bw = [x["id"] for x in daftar0 if x["jenis"] == "bawaan"]               # id bawaan:… ATAU uuid baris tenant ber-nama bawaan (data nyata beragam)
+    cek(f"{tid} H1 daftar memuat satuan bawaan ({len(bw)})", len(bw) >= 2, str(bw[:2]))
+    p3 = await U.preview_ubah_satuan(Req(tid, {"name": "Biji"}), bw[0])
+    p4 = await U.preview_nonaktif_satuan(Req(tid), bw[1])
     cek(f"{tid} H1 pratinjau read-only + buat ok", await jumlah_unit(pool, tid) == n0 and p1["data"]["ok"] is True and p1["data"]["rencana"]["teks"].startswith("Buat satuan"))
     cek(f"{tid} H1 bentrok bawaan = blok SATUAN_SUDAH_ADA", [b["code"] for b in p2["data"]["blocks"]] == ["SATUAN_SUDAH_ADA"])
     cek(f"{tid} H1 ubah/nonaktif bawaan = SATUAN_BAWAAN_TAK_DAPAT_DIUBAH", [b["code"] for b in p3["data"]["blocks"] + p4["data"]["blocks"]] == ["SATUAN_BAWAAN_TAK_DAPAT_DIUBAH"] * 2)
-    e = await galat(U.update_unit(Req(tid, {"name": "Biji"}), SM.ID_BAWAAN + "Pcs"))
+    e = await galat(U.update_unit(Req(tid, {"name": "Biji"}), bw[0]))
     cek(f"{tid} H1 tulis bawaan ditolak 409 berkode", isinstance(e, GalatBerkode) and (e.status_code, e.code) == (409, "SATUAN_BAWAAN_TAK_DAPAT_DIUBAH"), repr(e))
     # ---- H2 buat idempoten + ubah
     kunci = f"uji-sg3-{st}"

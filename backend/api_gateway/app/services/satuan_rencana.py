@@ -175,5 +175,7 @@ def tolak(blocks: list) -> None:
 def baris_teks(u: dict) -> dict:
     """Medan *_text aditif untuk baris daftar/detail (dihitung dari baris satuan_pakai.susun)."""
     j = jenis_id(u["id"])
+    if u.get("is_system") or u.get("bawaan"):       # baris tenant yang namanya ada di DEFAULT_UNITS juga bawaan (sama dengan _bawaan -> diblok)
+        j = "bawaan"
     return {"pemakai_text": pemakai_text(u), "jenis": j, "status_text": "Aktif",
-            "jenis_text": "Bawaan" if j == "bawaan" or u.get("is_system") else "Belum terdaftar" if j == "terpakai" else "Kustom"}
+            "jenis_text": "Bawaan" if j == "bawaan" else "Belum terdaftar" if j == "terpakai" else "Kustom"}
