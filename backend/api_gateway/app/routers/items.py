@@ -3595,6 +3595,9 @@ async def get_item_history(
                 }
             )
 
+        konv = [(r["conversion_unit"], r["conversion_factor"]) for r in await conn.fetch(   # BUG-108: satuan besar campuran ("14 Karton 4 Pcs")
+            "SELECT conversion_unit, conversion_factor FROM unit_conversions WHERE tenant_id = $1 AND product_id = $2 AND COALESCE(is_active, true) "
+            "AND conversion_factor > 1 ORDER BY conversion_factor DESC", tenant_id, item_id)]
         return TLP.tambah_teks_kartu_stok({   # BUG-272: teks tampil server aditif (medan lama utuh)
             "success": True,
             "data": movements,
@@ -3610,7 +3613,7 @@ async def get_item_history(
                 "code": item["item_code"],
                 "name": item["nama_produk"],
             },
-        }, item["satuan"], await presisi_tenant(conn, tenant_id))
+        }, item["satuan"], await presisi_tenant(conn, tenant_id), konv)
 
     except HTTPException:
         raise

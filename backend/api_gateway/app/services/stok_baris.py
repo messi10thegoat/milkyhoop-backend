@@ -144,14 +144,10 @@ def baris(h: dict, item_id, unit: Optional[str]) -> dict:
     return out
 
 
-async def isyarat(conn, tid: str, tanggal: date, hari_ini: date, lines: Iterable[dict], warehouse_id=None, kecuali_so=None,
-                  kecuali_sumber: Iterable = ()) -> list:
+async def _isyarat_satu(conn, tid: str, tanggal: date, hari_ini: date, lines: list, warehouse_id, gudang_nama, kecuali_so, kecuali_sumber) -> list:
     """B2: [{item_id, kalimat}] -- ISYARAT, bukan blok. Satu kalimat per barang ber-lacak-stok (baris ganda dijumlah dalam satuan
     dasar). Tanggal mundur dan qty > stok per tanggal -> kalimat tanggal; selain itu qty > bisa dijual -> kalimat bisa dijual.
     lines = [{item_id, quantity, unit}]; baris tanpa barang / satuan tak terkonversi dilewati (penjaga satuan dokumen yang menolak)."""
-    lines = [x for x in lines if x.get("item_id")]
-    if not lines:
-        return []
     h = await hitung(conn, tid, [x["item_id"] for x in lines], tanggal, warehouse_id, kecuali_so, kecuali_sumber)
     minta, satuan = {}, {}
     for x in lines:
@@ -170,10 +166,29 @@ async def isyarat(conn, tid: str, tanggal: date, hari_ini: date, lines: Iterable
         # satu satuan di semua baris barang ini -> kalimat dalam satuan itu; campuran -> satuan dasar
         f, nama_satuan = next(iter(satuan[i].values())) if len(satuan[i]) == 1 else (SD.SATU, b["satuan_dasar"])
         if tanggal < hari_ini and q > b["stok_tanggal"]:
-            k = tg.stok_per_tanggal(b["nama"], tanggal, b["stok_tanggal"] / f, b["stok_kini"] / f, nama_satuan)
+            k = tg.stok_per_tanggal(b["nama"], tanggal, b["stok_tanggal"] / f, b["stok_kini"] / f, nama_satuan, gudang_nama)
         elif q > b["bisa_dijual"]:
-            k = tg.stok_bisa_dijual(b["nama"], b["bisa_dijual"] / f, b["dipesan"] / f, q / f, nama_satuan)
+            k = tg.stok_bisa_dijual(b["nama"], b["bisa_dijual"] / f, b["dipesan"] / f, q / f, nama_satuan, gudang_nama)
         else:
             continue
         out.append({"item_id": i, "kalimat": k})
+    return out
+
+
+async def isyarat(conn, tid: str, tanggal: date, hari_ini: date, lines: Iterable[dict], warehouse_id=None, kecuali_so=None,
+                  kecuali_sumber: Iterable = ()) -> list:
+    """B2 + BE-B (putusan MASTER 17 Nov, ikut Accurate): stok PER GUDANG dokumen -- gudang BARIS (lines[].warehouse_id) bila ada, kepala (`warehouse_id`) bila tidak;
+    tak satu pun = semua gudang (perilaku lama). Satu kelompok per gudang efektif; kalimat menyebut gudang hanya bila gudangnya tertentu.
+    [{item_id, kalimat}] -- ISYARAT, bukan blok."""
+    lines = [x for x in lines if x.get("item_id")]
+    if not lines:
+        return []
+    kelompok: dict = {}
+    for x in lines:
+        eff = x.get("warehouse_id") or warehouse_id
+        kelompok.setdefault(str(eff) if eff else None, []).append(x)
+    out = []
+    for w, baris_w in kelompok.items():
+        nama = await nama_gudang(conn, tid, w) if w else None
+        out += await _isyarat_satu(conn, tid, tanggal, hari_ini, baris_w, w, nama, kecuali_so, kecuali_sumber)
     return out
