@@ -4,7 +4,7 @@ Units Router - Product Units (Satuan) Master Data Management
 CRUD endpoints for managing units of measure with conversion support.
 """
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Response
 from typing import Optional
 from uuid import UUID
 import logging
@@ -13,6 +13,9 @@ from ..services.db_pool import get_db_pool
 from ..services import satuan_dasar as SD  # P1: konversi terpakai terkunci
 from ..services import satuan_master as SM
 from ..services import satuan_pakai as SP  # S-1: SATU penentu pemakai
+from ..services import satuan_rencana as SR  # G3: SATU penentu pratinjau + penulis
+from ..services import idem_buat
+from ..services.galat_berkode import GalatBerkode
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,7 +62,7 @@ async def list_units(
             raise HTTPException(status_code=400, detail="Filter satuan tidak dikenal. Pilihan: semua, terpakai, tak_terpakai, duplikat.")
         return {
             "items": [{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"], "is_system": u["is_system"], "is_active": True,
-                       **{k: u[k] for k in ("jumlah_barang", "jumlah_konversi", "terpakai", "duplikat", "kelompok_duplikat", "aksi_tersedia", "aksi_semua")}}
+                       **{k: u[k] for k in ("jumlah_barang", "jumlah_konversi", "terpakai", "duplikat", "kelompok_duplikat", "aksi_tersedia", "aksi_semua")}, **SR.baris_teks(u)}
                       for u in baris[:limit]],
             "total": len(baris),
         }
@@ -92,137 +95,119 @@ async def units_dropdown(request: Request, search: Optional[str] = Query(None)):
 # =============================================================================
 # CREATE UNIT
 # =============================================================================
+async def _satuan_atau_404(conn, tid: str, unit_id: str) -> dict:
+    u = await SR.muat(conn, tid, unit_id)
+    if u is None:
+        raise GalatBerkode(404, "SATUAN_TIDAK_ADA", "Satuan tidak ditemukan.")
+    return u
+
+
+async def _badan(request: Request) -> dict:
+    try:
+        b = await request.json()
+    except Exception:
+        b = None
+    if not isinstance(b, dict):
+        raise GalatBerkode(400, "BADAN_TIDAK_VALID", "Badan permintaan harus objek JSON.")
+    return b
+
+
+# =============================================================================
+# G3 PRATINJAU (READ ONLY; penentu SAMA dengan penulis di bawah: services/satuan_rencana)
+# =============================================================================
+@router.post("/preview")
+async def preview_buat_satuan(request: Request):
+    """Pratinjau Buat satuan: {ok, blocks[], peringatan[], rencana{aksi, satuan, perubahan[], teks}, payload}."""
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        return SR.pratinjau(await SR.rencana_buat(conn, ctx["tenant_id"], body), body)
+
+
+@router.post("/{unit_id}/edit/preview")
+async def preview_ubah_satuan(request: Request, unit_id: str):
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        u = await _satuan_atau_404(conn, ctx["tenant_id"], unit_id)
+        return SR.pratinjau(await SR.rencana_ubah(conn, ctx["tenant_id"], u, body), body)
+
+
+@router.post("/{unit_id}/status/preview")
+async def preview_nonaktif_satuan(request: Request, unit_id: str):
+    ctx = get_user_context(request)
+    async with (await get_pool()).acquire() as conn:
+        u = await _satuan_atau_404(conn, ctx["tenant_id"], unit_id)
+        return SR.pratinjau(await SR.rencana_status(conn, ctx["tenant_id"], u))
+
+
+# =============================================================================
+# G3 TULIS (penentu = rencana yang sama; blok -> galat berkode; X-Idempotency-Key opsional = replay respons asli)
+# =============================================================================
 @router.post("", status_code=201)
-async def create_unit(request: Request):
-    """Create a custom unit (services/satuan_master.buat, sama dengan POST /api/items/units)."""
-    try:
-        ctx = get_user_context(request)
-        body = await request.json()
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            u = await SM.buat(conn, ctx["tenant_id"], body.get("name"), body.get("abbreviation"))
-            return {"success": True, "message": "Satuan berhasil dibuat", "data": u}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating unit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Gagal membuat satuan")
+async def create_unit(request: Request, response: Response = None):
+    """Buat satuan kustom (rencana_buat -> SM.buat)."""
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "UNIT_CREATE", "baru", body, response)
+            if lama is not None:
+                return lama
+            r = await SR.rencana_buat(conn, ctx["tenant_id"], body)
+            SR.tolak(r["blocks"])
+            u = await SM.buat(conn, ctx["tenant_id"], r["nilai"]["name"], r["nilai"]["abbreviation"])
+            resp = {"success": True, "message": "Satuan berhasil dibuat", "data": u}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "UNIT_CREATE", resp, u["id"]) if kp else resp
 
 
-# =============================================================================
-# UPDATE UNIT
-# =============================================================================
 @router.patch("/{unit_id}")
-async def update_unit(request: Request, unit_id: UUID):
-    """Update a custom unit (name/abbreviation)."""
-    try:
-        ctx = get_user_context(request)
-        body = await request.json()
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id, is_system, abbreviation FROM product_units WHERE id = $1 AND tenant_id = $2",
-                unit_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
-
-            updates = []
-            params = []
-            idx = 1
-
-            if "name" in body:
-                updates.append(f"name = ${idx}")
-                params.append(body["name"].strip())
-                idx += 1
-
-            if "abbreviation" in body:
-                new_abbr = " ".join(body["abbreviation"].split())  # apa adanya; bentrok dicocokkan tanpa beda huruf (BUG-014)
-                if new_abbr != existing["abbreviation"]:
-                    dup = await conn.fetchval(
-                        "SELECT id FROM product_units WHERE tenant_id = $1 AND LOWER(abbreviation) = LOWER($2) AND id != $3",
-                        ctx["tenant_id"],
-                        new_abbr,
-                        unit_id,
-                    )
-                    if dup:
-                        raise HTTPException(
-                            status_code=400, detail=f"Satuan '{new_abbr}' sudah ada"
-                        )
-                updates.append(f"abbreviation = ${idx}")
-                params.append(new_abbr)
-                idx += 1
-
-            if not updates:
-                return {"success": True, "message": "Tidak ada perubahan"}
-
-            updates.append("updated_at = NOW()")
-            params.extend([unit_id, ctx["tenant_id"]])
-
-            await conn.execute(
-                f"""
-                UPDATE product_units SET {', '.join(updates)}
-                WHERE id = ${idx} AND tenant_id = ${idx + 1}
-            """,
-                *params,
-            )
-
-            return {
-                "success": True,
-                "message": "Satuan berhasil diperbarui",
-                "data": {"id": str(unit_id)},
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating unit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Gagal memperbarui satuan")
+async def update_unit(request: Request, unit_id: str, response: Response = None):
+    """Ubah nama/singkatan satuan kustom (rencana_ubah; satuan terpakai/bawaan diblok berkalimat)."""
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "UNIT_EDIT", unit_id, body, response)
+            if lama is not None:
+                return lama
+            u = await _satuan_atau_404(conn, ctx["tenant_id"], unit_id)
+            r = await SR.rencana_ubah(conn, ctx["tenant_id"], u, body)
+            SR.tolak(r["blocks"])
+            if not r["nilai"]:
+                return {"success": True, "message": "Tidak ada perubahan", "data": {"id": unit_id}}
+            kolom = [k for k in SR.URUT if k in r["nilai"]]         # nama kolom dari daftar tetap, bukan masukan pengguna
+            await conn.execute(f"UPDATE product_units SET {', '.join(f'{k} = ${i + 1}' for i, k in enumerate(kolom))}, updated_at = NOW() "
+                               f"WHERE id::text = ${len(kolom) + 1} AND tenant_id = ${len(kolom) + 2}", *[r["nilai"][k] for k in kolom], unit_id, ctx["tenant_id"])
+            resp = {"success": True, "message": "Satuan berhasil diperbarui", "data": {"id": unit_id}}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "UNIT_EDIT", resp, unit_id) if kp else resp
 
 
-# =============================================================================
-# DELETE UNIT (soft deactivate, guarded)
-# =============================================================================
+async def _nonaktifkan(request: Request, unit_id: str, response, pesan: str, prefix: str) -> dict:
+    ctx = get_user_context(request)
+    async with (await get_pool()).acquire() as conn:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), prefix, unit_id, {"aktif": False}, response)
+            if lama is not None:
+                return lama
+            u = await _satuan_atau_404(conn, ctx["tenant_id"], unit_id)
+            r = await SR.rencana_status(conn, ctx["tenant_id"], u)
+            SR.tolak(r["blocks"])
+            await conn.execute("UPDATE product_units SET is_active = false, updated_at = NOW() WHERE id::text = $1 AND tenant_id = $2", unit_id, ctx["tenant_id"])
+            resp = {"success": True, "message": pesan, "data": {"id": unit_id}}
+            return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, unit_id) if kp else resp
+
+
+@router.post("/{unit_id}/status")
+async def nonaktifkan_satuan(request: Request, unit_id: str, response: Response = None):
+    """G3: nonaktifkan satuan (hanya aktif=false; penentu SAMA dengan /status/preview)."""
+    return await _nonaktifkan(request, unit_id, response, "Satuan berhasil dinonaktifkan", "UNIT_STATUS")
+
+
 @router.delete("/{unit_id}")
-async def delete_unit(request: Request, unit_id: UUID):
-    """Deactivate a unit — guarded against is_system and product references."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            existing = await conn.fetchrow(
-                "SELECT id, name, abbreviation, is_system FROM product_units WHERE id = $1 AND tenant_id = $2",
-                unit_id,
-                ctx["tenant_id"],
-            )
-            if not existing:
-                raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
-            if existing["is_system"]:
-                raise HTTPException(
-                    status_code=400, detail="Tidak dapat menghapus satuan sistem"
-                )
-
-            semua = await SM.daftar(conn, ctx["tenant_id"])
-            pakai = (await SP.muat_pemakai(conn, ctx["tenant_id"], semua)).get(str(unit_id), SP.NOL)
-            if pakai["jumlah_barang"] or pakai["jumlah_konversi"]:
-                alasan = SP.susun([u for u in semua if u["id"] == str(unit_id)], {str(unit_id): pakai})[0]["aksi_tersedia"]["nonaktifkan"]["alasan"]
-                raise HTTPException(status_code=400, detail=f"Satuan '{existing['name']}' tidak bisa dihapus. {alasan}")
-
-            await conn.execute(
-                "UPDATE product_units SET is_active = false, updated_at = NOW() WHERE id = $1",
-                unit_id,
-            )
-
-            return {
-                "success": True,
-                "message": "Satuan berhasil dihapus",
-                "data": {"id": str(unit_id)},
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting unit: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Gagal menghapus satuan")
+async def delete_unit(request: Request, unit_id: str, response: Response = None):
+    """Jalur lama = alias POST /{id}/status (penentu SAMA)."""
+    return await _nonaktifkan(request, unit_id, response, "Satuan berhasil dihapus", "UNIT_DELETE")
 
 
 # =============================================================================
@@ -577,5 +562,5 @@ async def get_unit(request: Request, unit_id: str):
         baris = SP.susun(semua, await SP.muat_pemakai(conn, ctx["tenant_id"], semua))
     for b in baris:
         if b["id"] == unit_id:
-            return {"success": True, "data": b}
-    raise HTTPException(status_code=404, detail="Satuan tidak ditemukan")
+            return {"success": True, "data": {**b, **SR.baris_teks(b)}}
+    raise GalatBerkode(404, "SATUAN_TIDAK_ADA", "Satuan tidak ditemukan.")

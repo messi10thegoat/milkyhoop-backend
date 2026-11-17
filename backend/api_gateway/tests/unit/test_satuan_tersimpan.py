@@ -31,8 +31,19 @@ class _Db:
               for u in self.units if u["tenant_id"] == t and u.get("is_active", True)]
         return pu + [{"id": None, "name": x, "abbreviation": x, "is_system": False} for tt, x in self.terpakai if tt == t]
 
+    def transaction(self):                               # G3: tulis dibungkus transaksi (idempotensi aksi)
+        class _T:
+            async def __aenter__(s):
+                return None
+
+            async def __aexit__(s, *e):
+                return False
+        return _T()
+
     async def fetchval(self, sql, *a):
         self.sql.append(sql)
+        if "lower(abbreviation) = lower($2)" in sql:     # G3 rencana_buat: bentrok singkatan (tenant, aktif)
+            return next((u["id"] for u in self.units if u["tenant_id"] == a[0] and u["abbreviation"].lower() == a[1].lower() and u.get("is_active", True)), None)
         assert "INSERT INTO product_units" in sql and "ON CONFLICT (tenant_id, lower(abbreviation)) DO NOTHING" in sql
         t, nama, singkatan = a
         if any(u["tenant_id"] == t and u["abbreviation"].lower() == singkatan.lower() for u in self.units):

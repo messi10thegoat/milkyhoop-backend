@@ -57,17 +57,21 @@ def _aksi(u: dict, p: dict) -> dict:
     bawaan = bool(u.get("bawaan")) or u["id"].startswith(("bawaan:", "terpakai:"))
     kunci_sistem = u.get("is_system")
     a = {}
-    a["ubah_nama"] = tak("Satuan bawaan tidak bisa diubah namanya.") if kunci_sistem else ada()
-    a["gabung"] = tak("Satuan bawaan tidak bisa digabung.") if kunci_sistem else ada()
-    if kunci_sistem:
+    bagian = [f"{p['jumlah_barang']} barang"] if p["jumlah_barang"] else []
+    if p["jumlah_konversi"]:
+        bagian.append(f"{p['jumlah_konversi']} konversi")
+    dipakai = f"Satuan masih dipakai {' dan '.join(bagian)}."
+    # G3-a: aksi_tersedia = hasil penentu yang SAMA dengan pratinjau/penulis (services/satuan_rencana); gabung belum ada (G3-b, tabel alias).
+    if kunci_sistem or u["id"].startswith("bawaan:"):
+        a["ubah_nama"] = tak("Satuan bawaan tidak bisa diubah namanya.")
+        a["gabung"] = tak("Satuan bawaan tidak bisa digabung.")
         a["nonaktifkan"] = tak("Satuan bawaan tidak bisa dinonaktifkan.")
-    elif pakai:
-        bagian = [f"{p['jumlah_barang']} barang"] if p["jumlah_barang"] else []
-        if p["jumlah_konversi"]:
-            bagian.append(f"{p['jumlah_konversi']} konversi")
-        a["nonaktifkan"] = tak(f"Satuan masih dipakai {' dan '.join(bagian)}.")
+    elif u["id"].startswith("terpakai:"):
+        a["ubah_nama"] = a["gabung"] = a["nonaktifkan"] = tak("Satuan belum terdaftar di master; daftarkan dulu lewat Buat satuan.")
     else:
-        a["nonaktifkan"] = ada()
+        a["ubah_nama"] = tak(f"{dipakai} Nama belum bisa diganti agar barang tidak kehilangan satuan.") if pakai else ada()
+        a["gabung"] = tak("Gabung satuan belum tersedia.")
+        a["nonaktifkan"] = tak(dipakai) if pakai else ada()
     return a
 
 

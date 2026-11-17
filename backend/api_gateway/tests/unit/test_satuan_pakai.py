@@ -83,11 +83,13 @@ def test_router_summary_sebelum_rute_unit_id_dan_detail_terakhir():
 def test_router_hapus_dan_daftar_memakai_satu_penentu():
     import inspect
     from app.routers import units as UN
-    for f in (UN.delete_unit, UN.list_units, UN.units_summary, UN.get_unit):
+    from app.services import satuan_rencana as SR
+    for f in (UN.list_units, UN.units_summary, UN.get_unit):
         s = inspect.getsource(f)
         assert "SP." in s, f.__name__
-    assert "LOWER(satuan)" not in inspect.getsource(UN.delete_unit)
-    assert "SP.muat_pemakai(" in inspect.getsource(UN.delete_unit)
+    assert "SR.rencana_status(" in inspect.getsource(UN._nonaktifkan) and "_nonaktifkan(" in inspect.getsource(UN.delete_unit)   # G3: hapus = penentu rencana
+    assert "LOWER(satuan)" not in inspect.getsource(UN.delete_unit) + inspect.getsource(SR)
+    assert "SP.muat_pemakai(" in inspect.getsource(SR.muat)                                                                     # pemakai dari SATU penentu
 
 
 def test_router_filter_ngawur_400(monkeypatch):
