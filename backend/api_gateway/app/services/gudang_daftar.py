@@ -44,6 +44,21 @@ def kolom_turunan(a: str = "warehouses") -> str:
     return f"{sql_stok_minus(a)} AS stok_minus, {sql_nilai(a)} AS nilai_stok"
 
 
+# BUG-289 (17 Nov 2026): teks negara SIAP TAMPIL dari server. warehouses.country bisa berisi nama ("Indonesia", bawaan G3) ATAU kode ISO-3166 alfa-2 ("ID", data lama/stub).
+# Kode dikenal -> nama Indonesia; selain itu (nama, kode tak dikenal) dikembalikan apa adanya (dipangkas); kosong -> None (FE menampilkan strip).
+NEGARA = {"ID": "Indonesia", "MY": "Malaysia", "SG": "Singapura", "TH": "Thailand", "VN": "Vietnam", "PH": "Filipina", "BN": "Brunei Darussalam", "TL": "Timor Leste",
+          "KH": "Kamboja", "LA": "Laos", "MM": "Myanmar", "CN": "Tiongkok", "HK": "Hong Kong", "TW": "Taiwan", "JP": "Jepang", "KR": "Korea Selatan", "IN": "India",
+          "AU": "Australia", "NZ": "Selandia Baru", "US": "Amerika Serikat", "CA": "Kanada", "GB": "Inggris", "DE": "Jerman", "FR": "Prancis", "NL": "Belanda",
+          "IT": "Italia", "ES": "Spanyol", "TR": "Turki", "SA": "Arab Saudi", "AE": "Uni Emirat Arab", "EG": "Mesir", "ZA": "Afrika Selatan", "BR": "Brasil"}
+
+
+def negara_text(kode) -> Optional[str]:
+    t = " ".join(str(kode or "").split())
+    if not t:
+        return None
+    return NEGARA.get(t.upper(), t) if len(t) == 2 else t
+
+
 def turunan(row) -> dict:
     """Baris hasil `SELECT *, kolom_turunan()` -> {aksi, aksi_semua, ada_stok_minus, nilai_stok} (daftar dan detail)."""
     semua = aksi_semua(bool(row["stok_minus"]), not row["is_active"])

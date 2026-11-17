@@ -87,6 +87,7 @@ class WarehouseData(BaseModel):
     province: Optional[str] = None
     postal_code: Optional[str] = None
     country: Optional[str] = None
+    country_text: Optional[str] = None   # BUG-289: teks negara siap tampil (kode ISO -> nama; services/gudang_daftar.negara_text)
     phone: Optional[str] = None
     email: Optional[str] = None
     manager_name: Optional[str] = None
