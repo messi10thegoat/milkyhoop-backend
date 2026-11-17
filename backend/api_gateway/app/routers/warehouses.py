@@ -135,7 +135,7 @@ async def list_warehouses(
             skip,
         )
 
-        data = [WarehouseData(**{**dict(row), **GD.turunan(row)}, position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]))
+        data = [WarehouseData(**{**dict(row), **GD.turunan(row)}, country_text=GD.negara_text(row["country"]), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]))
                 for row in rows]
 
         return WarehouseListResponse(data=data, total=total, sum_nilai=sum_nilai)
@@ -220,7 +220,7 @@ async def get_warehouse(request: Request, warehouse_id: UUID):
             raise HTTPException(status_code=404, detail="Warehouse not found")
 
         return WarehouseDetailResponse(data=WarehouseData(
-            **{**dict(row), **GD.turunan(row)}, position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+            **{**dict(row), **GD.turunan(row)}, country_text=GD.negara_text(row["country"]), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
             barang_minus=await GD.barang_minus(conn, ctx["tenant_id"], warehouse_id) if row["stok_minus"] else [],  # K7 + P5
             aksi_tersedia=await GD.aksi_tersedia(conn, ctx["tenant_id"], row)))
 
@@ -234,7 +234,7 @@ async def _gudang(conn, tid: str, warehouse_id):
 
 async def _data(conn, tid: str, row) -> WarehouseData:
     """Data gudang sesudah tulis (+ position_text, aksi_tersedia, jenis_text dari server)."""
-    return WarehouseData(**dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]),
+    return WarehouseData(**dict(row), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]), country_text=GD.negara_text(row["country"]),
                          aksi_tersedia=await GD.aksi_tersedia(conn, tid, row))
 
 
