@@ -855,6 +855,8 @@ POST /api/items/categories/{category_id}/merge
 POST /api/items/categories/{category_id}/merge/preview
 POST /api/items/categories/{category_id}/parent
 POST /api/items/categories/{category_id}/parent/preview
+POST /api/items/categories/{category_id}/accounts
+POST /api/items/categories/{category_id}/accounts/preview
 POST /api/items/categories/{category_id}/rename
 POST /api/items/categories/{category_id}/rename/preview
 POST /api/items/categories/{category_id}/status
