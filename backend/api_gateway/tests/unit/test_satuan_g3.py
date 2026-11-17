@@ -24,12 +24,18 @@ def jalan(aw):
 
 class Kon:
     """Fake koneksi: satuan tenant = units [{id,name,abbreviation,is_system,is_active}], teks pemakai = barang/konv [(teks, n)]."""
-    def __init__(self, units=(), barang=(), konv=(), turunan=()):
+    def __init__(self, units=(), barang=(), konv=(), turunan=(), dampak=None, alias=()):
         self.units, self.barang, self.konv, self.turunan = list(units), list(barang), list(konv), list(turunan)
+        self.dampak, self.alias = dict(dampak or {}), list(alias)         # dampak = {tabel: jumlah baris yang berubah} untuk hitungan satuan_sebar
         self.sql, self.exec = [], []
 
     async def fetch(self, sql, *a):
         self.sql.append(sql)
+        if "FROM product_unit_aliases WHERE tenant_id = $1 AND unit_id" in sql:     # SS.alias_unit
+            return [{"alias": x} for x in self.alias]
+        if "FROM unit_conversions" in sql and "product_id IN" in sql or "FROM price_list_items t JOIN" in sql or "FROM products WHERE tenant_id = $1 AND id::text" in sql \
+                or "FROM price_lists WHERE tenant_id = $1 AND id::text" in sql:        # pemuat konflik satuan_sebar (data konflik diuji murni di test_satuan_sebar)
+            return []
         if "UNION ALL" in sql:                                  # SM.daftar
             return [{**{"id": u["id"], "name": u["name"], "abbreviation": u["abbreviation"], "is_system": u.get("is_system", False)}} for u in self.units if u.get("is_active", True)] + \
                    [{"id": None, "name": t, "abbreviation": t, "is_system": False} for t in self.turunan]
@@ -41,6 +47,8 @@ class Kon:
 
     async def fetchval(self, sql, *a):
         self.sql.append(sql)
+        if sql.startswith("SELECT count(*) FROM"):                                  # SS.siapkan: hitungan per tabel
+            return next((n for t, n in self.dampak.items() if f"FROM {t} t" in sql), 0)
         assert "FROM product_units WHERE tenant_id = $1 AND lower(abbreviation)" in sql
         for u in self.units:
             if u.get("is_active", True) and u["abbreviation"].lower() == a[1].lower() and (a[2] is None or u["id"] != a[2]):
@@ -129,11 +137,28 @@ def test_ubah_tanpa_perubahan_nilai_kosong_idempoten():
     assert r["blocks"] == [] and r["nilai"] == {}
 
 
-def test_ubah_satuan_terpakai_diblok_agar_barang_tak_yatim():
-    kon = Kon([sat(U1, "Karung", "krg")], barang=[("krg", 4)], konv=[("krg", 2)])
+def test_ubah_satuan_terpakai_menyebar_dengan_peringatan_dan_nama_lama_jadi_alias():
+    kon = Kon([sat(U1, "Karung", "krg")], barang=[("krg", 4)], konv=[("krg", 2)], dampak={"products": 4, "unit_conversions": 2, "price_list_items": 1})
     r = jalan(SR.rencana_ubah(kon, T, muat(kon, U1), {"abbreviation": "krng"}))
-    assert kode(r) == ["SATUAN_TERPAKAI_UBAH"] and "4 barang dan 2 konversi" in r["blocks"][0]["message"] and r["blocks"][0]["field"] == "abbreviation"
-    assert r["rencana"]["pemakai"] == {"jumlah_barang": 4, "jumlah_konversi": 2, "teks": "Dipakai 4 barang dan 2 konversi"}
+    assert r["blocks"] == [] and kode(r, "peringatan") == ["SATUAN_NAMA_MENYEBAR"] and r["peringatan"][0]["butuh_konfirmasi"] is True
+    assert r["rencana"]["penyebaran"] == {"barang": 4, "konversi": 2, "harga": 1, "bom": 0, "teks": "4 barang, 2 konversi, 1 baris harga"}
+    assert "4 barang, 2 konversi, 1 baris harga ikut memakai 'krng'" in r["peringatan"][0]["message"] and "Dokumen lama tidak diubah" in r["peringatan"][0]["message"]
+    p = r["sebar"]["peta"]
+    assert p["bentuk_singkatan"] == ["krg"] and p["bentuk_nama"] == ["karung"] and p["teks_singkatan"] == "krng" and p["teks_nama"] == "Karung"
+    assert r["alias_baru"] == ["Karung", "krg"] or r["alias_baru"] == ["krg"]                                  # nama lama (singkatan) -> alias
+    assert "krg" in r["alias_baru"] and r["rencana"]["pemakai"] == {"jumlah_barang": 4, "jumlah_konversi": 2, "teks": "Dipakai 4 barang dan 2 konversi"}
+
+
+def test_ubah_satuan_belum_dipakai_tetap_mencatat_alias_tanpa_peringatan():
+    kon = Kon([sat(U1, "Karung", "krg")])
+    r = jalan(SR.rencana_ubah(kon, T, muat(kon, U1), {"abbreviation": "krng"}))
+    assert r["blocks"] == [] and r["peringatan"] == [] and r["alias_baru"] == ["krg"] and r["rencana"]["penyebaran"]["teks"].startswith("Tidak ada")
+
+
+def test_ubah_bentuk_alias_lama_ikut_dipetakan():
+    kon = Kon([sat(U1, "Karung", "krg")], alias=["kg-lama"], dampak={"products": 1})
+    r = jalan(SR.rencana_ubah(kon, T, muat(kon, U1), {"abbreviation": "krng"}))
+    assert r["sebar"]["peta"]["bentuk_singkatan"] == ["kg-lama", "krg"]
 
 
 def test_ubah_blok_bentrok_singkatan_lain_dan_validasi():
@@ -292,7 +317,7 @@ def test_daftar_dan_detail_memuat_teks(kon):
     assert all({"pemakai_text", "jenis_text", "status_text", "jenis"} <= set(x) for x in l["items"])
 
 
-def test_aksi_tersedia_daftar_sama_dengan_vonis_rencana_dan_gabung_belum_ada():
+def test_aksi_tersedia_daftar_sama_dengan_vonis_rencana_dan_gabung_bawaan_mati():
     """aksi_tersedia (satuan_pakai.susun) harus sejalan dengan blok rencana: tak ada tombol yang pasti ditolak penulis."""
     kon = Kon([sat(U1, "Karung", "krg"), sat(U2, "Kardus", "krd", is_system=False)], barang=[("krd", 2)], turunan=["ikat"])
     semua = jalan(SM.daftar(kon, T))
@@ -305,7 +330,9 @@ def test_aksi_tersedia_daftar_sama_dengan_vonis_rencana_dan_gabung_belum_ada():
         non = jalan(SR.rencana_status(kon, T, u))
         assert b["aksi_tersedia"]["ubah_nama"]["tersedia"] == (not ubah["blocks"]), b["id"]
         assert b["aksi_tersedia"]["nonaktifkan"]["tersedia"] == (not non["blocks"]), b["id"]
-        assert b["aksi_tersedia"]["gabung"]["tersedia"] is False and b["aksi_tersedia"]["gabung"]["alasan"]
+        bawaan = b["id"].startswith(SM.ID_BAWAAN) or b.get("bawaan") or b.get("is_system")
+        assert b["aksi_tersedia"]["gabung"]["tersedia"] == (not bawaan), b["id"]                       # G3-b: gabung tersedia untuk kustom/terpakai-teks, mati untuk bawaan
+        assert bool(b["aksi_tersedia"]["gabung"]["alasan"]) == bool(bawaan)
 
 
 def test_baris_tenant_bernama_bawaan_tetap_dianggap_bawaan_diblok_dan_aksi_sejalan():

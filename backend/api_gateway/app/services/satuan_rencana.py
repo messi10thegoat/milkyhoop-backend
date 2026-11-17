@@ -3,12 +3,15 @@ Blok memblok; peringatan (bentuk BUG-207: code, butuh_konfirmasi, pesan, message
 
 Aturan (putusan pemilik): satuan BAWAAN tak bisa diubah/dinonaktifkan (SATUAN_BAWAAN_TAK_DAPAT_DIUBAH, blok berkalimat). Satuan yang SUDAH DIPAKAI (barang/konversi, penentu
 services/satuan_pakai) tak bisa diganti nama/singkatan di fase G3-a (SATUAN_TERPAKAI_UBAH): teks satuan tersimpan di barang/konversi/harga/BOM, mengubah master saja membuat
-barang yatim (BUG-A); ganti nama-menyebar + gabung = fase G3-b (tabel alias). Nonaktif satuan terpakai = blok (SATUAN_TERPAKAI). Dokumen historis TIDAK pernah diubah."""
+barang yatim (BUG-A); G3-b (V504): GANTI NAMA satuan terpakai kini MENYEBAR ke teks master (barang/konversi/harga/BOM; services/satuan_sebar) + nama lama jadi ALIAS, dan GABUNG
+(rencana_gabung). Nonaktif satuan terpakai tetap blok (SATUAN_TERPAKAI). Dokumen historis TIDAK pernah diubah (terbaca lewat alias)."""
 from typing import Optional
 
 from ..schemas.items import DEFAULT_UNITS
 from . import satuan_master as SM
 from . import satuan_pakai as SP
+from . import satuan_sebar as SS
+from .satuan_dasar import normal
 from .galat_berkode import GalatBerkode
 
 LABEL = {"name": "Nama", "abbreviation": "Singkatan", "is_active": "Status"}
@@ -71,7 +74,9 @@ async def _bentrok(conn, tid: str, singkatan: str, kecuali=None) -> bool:
     if SM.kunci(singkatan) in {SM.kunci(x) for x in DEFAULT_UNITS}:
         return True
     return bool(await conn.fetchval("SELECT id FROM product_units WHERE tenant_id = $1 AND lower(abbreviation) = lower($2) AND ($3::text IS NULL OR id::text <> $3) "
-                                    "AND COALESCE(is_active, true)", tid, singkatan, kecuali))
+                                    "AND COALESCE(is_active, true) "
+                                    "UNION ALL SELECT unit_id FROM product_unit_aliases WHERE tenant_id = $1 AND lower(btrim(alias)) = lower($2) AND ($3::text IS NULL OR unit_id::text <> $3) LIMIT 1",
+                                    tid, singkatan, kecuali))                    # singkatan baru tak boleh = nama LAMA satuan lain (alias)
 
 
 async def rencana_buat(conn, tid: str, b: dict) -> dict:
@@ -136,12 +141,42 @@ async def rencana_ubah(conn, tid: str, u: dict, b: dict) -> dict:
                 blocks.append(blok("SATUAN_SUDAH_ADA", f"Satuan '{v}' sudah ada.", "abbreviation"))
             else:
                 nilai["abbreviation"] = v
-    p = u["pemakai"]
-    if nilai and _bagian(p):
-        blocks.append(blok("SATUAN_TERPAKAI_UBAH", f"Satuan masih dipakai {_bagian(p)}; nama/singkatannya belum bisa diganti agar barang tidak kehilangan satuan. "
-                                                  "Buat satuan baru lalu pindahkan barangnya, atau tunggu fitur gabung.", "name" if "name" in nilai else "abbreviation"))
+    extra = {}
+    if nilai and not blocks:
+        extra = await _sebar_ubah(conn, tid, u, nilai, perin, blocks)
     perubahan = [{"field": k, "label": LABEL[k], "before": u[k], "after": nilai[k]} for k in URUT if k in nilai]
-    return _susun(blocks, perin, "ubah", u, perubahan, f"Ubah satuan {nilai.get('name', u['name'])}", b, nilai)
+    r = _susun(blocks, perin, "ubah", u, perubahan, f"Ubah satuan {nilai.get('name', u['name'])}", b, nilai)
+    r.update(extra)
+    if "penyebaran" in extra:
+        r["rencana"]["penyebaran"] = extra["penyebaran"]
+    return r
+
+
+def _teks_dampak(j: dict) -> str:
+    b = []
+    for k, label in (("barang", "barang"), ("konversi", "konversi"), ("harga", "baris harga"), ("bom", "BOM/resep")):
+        if j[k]:
+            b.append(f"{j[k]} {label}")
+    return ", ".join(b)
+
+
+async def _sebar_ubah(conn, tid: str, u: dict, nilai: dict, perin: list, blocks: list) -> dict:
+    """Ganti nama/singkatan: teks master ikut berganti (satuan_sebar), nama lama -> alias. Konflik data = blok bernama; dampak > 0 = peringatan butuh konfirmasi."""
+    n1, a1 = nilai.get("name", u["name"]), nilai.get("abbreviation", u["abbreviation"])
+    alias = await SS.alias_unit(conn, tid, u["id"])
+    singk = {normal(u["abbreviation"])} | {normal(x) for x in alias}
+    h = await SS.siapkan(conn, tid, singk, {normal(u["name"])}, a1, n1)
+    for kode, pesan in h["blocks"]:
+        blocks.append(blok(kode, pesan, "name" if "name" in nilai else "abbreviation"))
+    lama = [x for x in (u["name"], u["abbreviation"]) if normal(x) not in (normal(n1), normal(a1))]
+    j = h["jumlah"]
+    teks = _teks_dampak(j)
+    if teks and not h["blocks"]:
+        perin.append(peringatan("SATUAN_NAMA_MENYEBAR", f"{teks} ikut memakai '{a1 if 'abbreviation' in nilai else n1}'. Dokumen lama tidak diubah; nama lama tetap terbaca.",
+                                "abbreviation" if "abbreviation" in nilai else "name"))
+    if h["hapus_konversi"] or h["hapus_harga"]:
+        perin.append(peringatan("SATUAN_DUPLIKAT_DIBUANG", f"{len(h['hapus_konversi'])} konversi dan {len(h['hapus_harga'])} baris harga yang kembar akan digabung (dibuang satu).", None))
+    return {"sebar": h, "alias_baru": lama, "penyebaran": {**j, "teks": teks or "Tidak ada barang/konversi/harga/BOM yang memakai nama ini."}}
 
 
 async def rencana_status(conn, tid: str, u: dict) -> dict:
@@ -158,6 +193,46 @@ async def rencana_status(conn, tid: str, u: dict) -> dict:
         blocks.append(blok("SATUAN_TERPAKAI", f"Satuan masih dipakai {_bagian(p)}.", "is_active"))
     perubahan = [{"field": "is_active", "label": LABEL["is_active"], "before": u.get("is_active", True), "after": False, "before_text": "Aktif", "after_text": "Nonaktif"}]
     return _susun(blocks, perin, "nonaktifkan", u, perubahan, f"Nonaktifkan satuan {u['name']}", {"aktif": False}, {"is_active": False})
+
+
+async def rencana_gabung(conn, tid: str, s: dict, t: dict, ke_id: str) -> dict:
+    """Gabung satuan SUMBER s ke TUJUAN t: teks master sumber -> teks tujuan (satuan_sebar), nama lama sumber -> alias tujuan, sumber dinonaktifkan.
+    Sumber = satuan master kustom ATAU nama yang hanya tertulis di barang ('terpakai:'); tujuan = satuan master atau bawaan (baris master dibuat otomatis saat tulis)."""
+    blocks, perin = [], []
+    payload = {"ke_unit_id": ke_id}
+    if _bawaan(s):
+        blocks.append(_blok_bawaan())
+    elif s["jenis"] == "master" and not s.get("is_active", True):
+        blocks.append(blok("SATUAN_SUDAH_NONAKTIF", "Satuan sumber sudah nonaktif.", None))
+    if t["jenis"] == "terpakai":
+        blocks.append(blok("SATUAN_TUJUAN_BELUM_TERDAFTAR", "Satuan tujuan belum terdaftar di master (hanya tertulis di barang). Daftarkan dulu lewat Buat satuan.", "ke_unit_id", 409))
+    elif t["jenis"] == "master" and not t.get("is_active", True):
+        blocks.append(blok("SATUAN_TUJUAN_NONAKTIF", "Satuan tujuan nonaktif.", "ke_unit_id"))
+    if s["id"] == t["id"]:                       # kunci_mirip sama (mis. "Pcs." dan "Pcs") justru kasus gabung yang dimaksud: hanya satuan yang SAMA diblok
+        blocks.append(blok("SATUAN_GABUNG_SAMA", "Pilih satuan tujuan yang berbeda dari satuan yang digabung.", "ke_unit_id"))
+    extra = {}
+    if not blocks:
+        alias = await SS.alias_unit(conn, tid, s["id"]) if s["jenis"] == "master" else []
+        singk = {normal(s["abbreviation"])} | {normal(x) for x in alias}
+        h = await SS.siapkan(conn, tid, singk, {normal(s["name"])}, t["abbreviation"], t["name"])
+        for kode, pesan in h["blocks"]:
+            blocks.append(blok(kode, pesan, "ke_unit_id"))
+        j = h["jumlah"]
+        teks = _teks_dampak(j)
+        if not h["blocks"]:
+            perin.append(peringatan("SATUAN_GABUNG_DAMPAK", f"{teks + ' ikut ' if teks else 'Tidak ada barang/konversi/harga/BOM yang ikut '}memakai '{t['abbreviation']}'. "
+                                                          f"Satuan '{s['name']}' tak dipakai lagi; dokumen lama tidak diubah dan nama lamanya tetap terbaca.", "ke_unit_id"))
+            if h["hapus_konversi"] or h["hapus_harga"]:
+                perin.append(peringatan("SATUAN_DUPLIKAT_DIBUANG", f"{len(h['hapus_konversi'])} konversi dan {len(h['hapus_harga'])} baris harga yang kembar akan digabung (dibuang satu).", None))
+        extra = {"sebar": h, "penyebaran": {**j, "teks": teks or "Tidak ada barang/konversi/harga/BOM yang memakai nama ini."}}
+    r = _susun(blocks, perin, "gabung", s, [{"field": "gabung", "label": "Gabung", "before": s["name"], "after": t["name"]}],
+               f"Gabung satuan {s['name']} ke {t['name']}", payload, {"is_active": False})
+    r["rencana"]["tujuan"] = {"id": t["id"], "nama": t["name"], "singkatan": t["abbreviation"], "dibuat_otomatis": t["jenis"] == "bawaan"}
+    r["tujuan"] = t
+    r.update(extra)
+    if "penyebaran" in extra:
+        r["rencana"]["penyebaran"] = extra["penyebaran"]
+    return r
 
 
 def pratinjau(r: dict, payload=None) -> dict:

@@ -32,7 +32,11 @@ def normal(u: Optional[str]) -> str:
 async def _alias(conn, tid: str) -> dict:
     """{bentuk ternormalisasi: kanon} dari kamus satuan tenant: nama dan singkatan menunjuk satu kanon (nama)."""
     peta = {}
-    for r in await conn.fetch("SELECT name, abbreviation FROM product_units WHERE tenant_id = $1 AND COALESCE(is_active, true)", tid):
+    # G3-b (V504): nama LAMA satuan (ganti nama/gabung) = baris alias -> (name satuan, alias) lewat SATU kueri yang sama; alias menunjuk kanon satuan HIDUP-nya.
+    for r in await conn.fetch("""SELECT name, abbreviation FROM product_units WHERE tenant_id = $1 AND COALESCE(is_active, true)
+                                 UNION ALL
+                                 SELECT u.name, a.alias FROM product_unit_aliases a JOIN product_units u ON u.id = a.unit_id AND u.tenant_id = a.tenant_id
+                                 WHERE a.tenant_id = $1 AND COALESCE(u.is_active, true)""", tid):
         kanon = normal(r["name"]) or normal(r["abbreviation"])
         for x in (r["name"], r["abbreviation"]):
             if normal(x):

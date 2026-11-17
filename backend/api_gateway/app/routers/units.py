@@ -14,8 +14,10 @@ from ..services import satuan_dasar as SD  # P1: konversi terpakai terkunci
 from ..services import satuan_master as SM
 from ..services import satuan_pakai as SP  # S-1: SATU penentu pemakai
 from ..services import satuan_rencana as SR  # G3: SATU penentu pratinjau + penulis
+from ..services import satuan_sebar as SS  # G3-b: penyebaran teks + alias (V504)
 from ..services import idem_buat
 from ..services.galat_berkode import GalatBerkode
+from ..services.satuan_dasar import normal
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -141,6 +143,27 @@ async def preview_nonaktif_satuan(request: Request, unit_id: str):
         return SR.pratinjau(await SR.rencana_status(conn, ctx["tenant_id"], u))
 
 
+@router.post("/{unit_id}/merge/preview")
+async def preview_gabung_satuan(request: Request, unit_id: str):
+    """G3-b: pratinjau GABUNG {ke_unit_id}: dampak (barang/konversi/harga/BOM), konflik bernama, tujuan (dibuat otomatis bila bawaan). Penentu SAMA dengan POST /{id}/merge."""
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        s, t = await _sumber_tujuan(conn, ctx["tenant_id"], unit_id, body)
+        return SR.pratinjau(await SR.rencana_gabung(conn, ctx["tenant_id"], s, t, body["ke_unit_id"]), body)
+
+
+async def _sumber_tujuan(conn, tid: str, unit_id: str, body: dict):
+    ke = body.get("ke_unit_id")
+    if not isinstance(ke, str) or not ke.strip():
+        raise GalatBerkode(400, "SATUAN_TUJUAN_KOSONG", "Pilih satuan tujuan gabung.", field="ke_unit_id")
+    s = await _satuan_atau_404(conn, tid, unit_id)
+    t = await SR.muat(conn, tid, ke.strip())
+    if t is None:
+        raise GalatBerkode(404, "SATUAN_TUJUAN_TIDAK_ADA", "Satuan tujuan tidak ditemukan.", field="ke_unit_id")
+    return s, t
+
+
 # =============================================================================
 # G3 TULIS (penentu = rencana yang sama; blok -> galat berkode; X-Idempotency-Key opsional = replay respons asli)
 # =============================================================================
@@ -176,6 +199,10 @@ async def update_unit(request: Request, unit_id: str, response: Response = None)
             SR.tolak(r["blocks"])
             if not r["nilai"]:
                 return {"success": True, "message": "Tidak ada perubahan", "data": {"id": unit_id}}
+            if r.get("sebar") is not None:                         # G3-b: teks master ikut berganti + nama lama -> alias (sebelum baris satuan diubah)
+                await SS.terapkan(conn, ctx["tenant_id"], r["sebar"])
+            if r.get("alias_baru"):
+                await SS.catat_alias(conn, ctx["tenant_id"], u["id"], r["alias_baru"])
             kolom = [k for k in SR.URUT if k in r["nilai"]]         # nama kolom dari daftar tetap, bukan masukan pengguna
             await conn.execute(f"UPDATE product_units SET {', '.join(f'{k} = ${i + 1}' for i, k in enumerate(kolom))}, updated_at = NOW() "
                                f"WHERE id::text = ${len(kolom) + 1} AND tenant_id = ${len(kolom) + 2}", *[r["nilai"][k] for k in kolom], unit_id, ctx["tenant_id"])
@@ -202,6 +229,35 @@ async def _nonaktifkan(request: Request, unit_id: str, response, pesan: str, pre
 async def nonaktifkan_satuan(request: Request, unit_id: str, response: Response = None):
     """G3: nonaktifkan satuan (hanya aktif=false; penentu SAMA dengan /status/preview)."""
     return await _nonaktifkan(request, unit_id, response, "Satuan berhasil dinonaktifkan", "UNIT_STATUS")
+
+
+@router.post("/{unit_id}/merge")
+async def gabung_satuan(request: Request, unit_id: str, response: Response = None):
+    """G3-b: gabung satuan {ke_unit_id} (penentu SAMA dengan /merge/preview): teks master -> tujuan, nama lama -> alias tujuan, sumber dinonaktifkan. X-Idempotency-Key opsional."""
+    ctx = get_user_context(request)
+    body = await _badan(request)
+    async with (await get_pool()).acquire() as conn:
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "UNIT_MERGE", unit_id, body, response)
+            if lama is not None:
+                return lama
+            s, t = await _sumber_tujuan(conn, ctx["tenant_id"], unit_id, body)
+            r = await SR.rencana_gabung(conn, ctx["tenant_id"], s, t, body["ke_unit_id"])
+            SR.tolak(r["blocks"])
+            tid = ctx["tenant_id"]
+            tujuan = t["id"]
+            if t["jenis"] == "bawaan":                              # tujuan bawaan belum punya baris master: buat (atau hidupkan lagi) satu baris bernama bawaan itu
+                tujuan = str(await conn.fetchval(
+                    """INSERT INTO product_units (tenant_id, name, abbreviation, is_system) VALUES ($1, $2, $2, false)
+                       ON CONFLICT (tenant_id, lower(abbreviation)) DO UPDATE SET is_active = true, updated_at = NOW() RETURNING id""", tid, t["name"]))
+            jumlah = await SS.terapkan(conn, tid, r["sebar"])
+            if s["jenis"] == "master":
+                await conn.execute("UPDATE product_unit_aliases SET unit_id = $2::uuid WHERE tenant_id = $1 AND unit_id::text = $3", tid, tujuan, s["id"])   # alias sumber ikut tujuan
+                await conn.execute("UPDATE product_units SET is_active = false, updated_at = NOW() WHERE id::text = $1 AND tenant_id = $2", s["id"], tid)
+            lama_teks = [x for x in (s["name"], s["abbreviation"]) if normal(x) not in (normal(t["name"]), normal(t["abbreviation"]))]
+            await SS.catat_alias(conn, tid, tujuan, lama_teks)
+            resp = {"success": True, "message": "Satuan berhasil digabung", "data": {"id": tujuan, "sumber_id": s["id"], "penyebaran": jumlah}}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "UNIT_MERGE", resp, tujuan) if kp else resp
 
 
 @router.delete("/{unit_id}")
