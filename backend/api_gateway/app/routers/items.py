@@ -35,6 +35,7 @@ from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil
 from ..services import teks_laporan_persediaan as TLP  # BUG-272 teks tampil server (kartu stok, penjualan per barang)
 from ..services.uang_presisi import presisi_tenant
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
+from ..services import kategori_akun as KAK  # BUG-282 akun bawaan per kategori
 from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
 from ..services import impor_kategori as IK  # K-5 impor/ekspor master Kategori
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
@@ -746,6 +747,9 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
     if body.purchase_tax_id is not None:
         body.purchase_tax = await nama_pajak_item(conn, tenant_id, body.purchase_tax_id, "purchase_tax_id", "input")
 
+    # BUG-282 (putusan pemilik 17 Nov): akun barang yang KOSONG disalin dari kategori (isian eksplisit menang); barang lama/jurnal lama tak tersentuh
+    await KAK.salin_ke_barang(conn, tenant_id, body)
+
     # Auto-default inventory/COGS accounts for stockable goods so the
     # COGS/restock path no longer relies on an implicit silent role fallback.
     (
@@ -805,7 +809,8 @@ async def preview_create_item(request: Request, body: dict):
         efek.append({"jenis": "saldo_awal_stok", "qty": str(b.opening_stock), "harga": str(rate),
                      "nilai": f"{Decimal(str(b.opening_stock)) * Decimal(str(rate)):.2f}"})
     rencana = {"name": b.name, "item_type": b.item_type, "track_inventory": b.track_inventory, "bisa_dikirim": b.bisa_dikirim,
-               "base_unit": b.base_unit, "sales_price": b.sales_price, "item_code": kode[0], "sku": kode[1], "efek": efek}
+               "base_unit": b.base_unit, "sales_price": b.sales_price, "item_code": kode[0], "sku": kode[1], "efek": efek,
+               "akun_dari_kategori": KAK.terakhir(), "akun_dari_kategori_text": (f"Akun {', '.join(KAK.LABEL[j].lower() for j in KAK.terakhir()['jenis'])} mengikuti kategori '{KAK.terakhir()['kategori']}'." if KAK.terakhir() else None)}
     return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
 
 
@@ -2445,6 +2450,49 @@ async def get_category_history(request: Request, category_id: UUID, limit: int =
     except Exception as e:
         logger.error(f"Error category history: {e}")
         raise HTTPException(status_code=500, detail="Gagal memuat riwayat kategori")
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.post("/items/categories/{category_id}/accounts/preview")
+async def preview_akun_kategori(request: Request, category_id: UUID, body: dict):
+    """BUG-282: pratinjau akun bawaan kategori (penjualan/persediaan/hpp/pembelian; id akun CoA, null/"" = kosongkan; yang tak disebut tak berubah). Penentu SAMA dgn penulis. Nol tulis."""
+    ctx = get_user_context(request)
+
+    async def f(conn):
+        k = await KA.ukur_kategori(conn, ctx["tenant_id"], category_id)
+        diminta = {j: v for j, v in (body or {}).items()}
+        return KAK.rencana_akun(k, diminta, await KAK.ukur_akun(conn, ctx["tenant_id"], [v for v in diminta.values() if v]))
+    return {"success": True, "data": await _baca_saja(f)}
+
+
+@router.post("/items/categories/{category_id}/accounts")
+async def set_akun_kategori(request: Request, category_id: UUID, body: dict):
+    """BUG-282: atur akun bawaan kategori. Hanya barang BARU yang mengikuti; barang/jurnal lama tak berubah. X-Idempotency-Key opsional. Blok pratinjau -> 404/409/422."""
+    ctx = get_user_context(request)
+    tenant_id = ctx["tenant_id"]
+    conn = None
+    try:
+        conn = await get_db_connection()
+        async with conn.transaction():
+            async def kerja():
+                await KA._kunci(conn, tenant_id)
+                k = await KA.ukur_kategori(conn, tenant_id, category_id)
+                diminta = {j: v for j, v in (body or {}).items()}
+                r = KAK.rencana_akun(k, diminta, await KAK.ukur_akun(conn, tenant_id, [v for v in diminta.values() if v]))
+                if not r["ok"]:
+                    b = r["blocks"][0]
+                    raise HTTPException(status_code=404 if b["code"] == "KATEGORI_TAK_ADA" else (422 if b["code"] in ("AKUN_JENIS_TAK_DIKENAL", "AKUN_TAK_DIISI") else 409), detail=b)
+                await KAK.tulis_akun(conn, tenant_id, k, r["rencana"])
+                await KA.catat_audit(conn, tenant_id, ctx["user_id"], "akun", k["id"], k["name"], {"perubahan": r["rencana"]["perubahan"]})
+                return {"success": True, "message": f"Akun kategori '{k['name']}' diubah", "perubahan": r["rencana"]["perubahan"], "peringatan": r["peringatan"]}
+            return await BA.idem_aksi(conn, ctx, request, "ITEM_KATEGORI_AKUN", str(category_id), {"akun": {j: (str(v) if v else None) for j, v in (body or {}).items()}}, kerja)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error set akun kategori: {e}")
+        raise HTTPException(status_code=500, detail="Gagal mengubah akun kategori")
     finally:
         if conn:
             await conn.close()

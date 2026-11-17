@@ -9,6 +9,7 @@ from typing import Optional
 
 from ..schemas.aksi_tersedia import aksi
 from . import barang_aksi as BA
+from . import kategori_akun as KAK
 
 AKSI = ("tanpa_barang", "nonaktif")
 BATAS_MAKS = 200
@@ -18,7 +19,7 @@ _HITUNG = ("LEFT JOIN products p ON p.tenant_id = c.tenant_id AND lower(p.katego
            "AND ($4::text IS NULL OR ($4 = 'induk' AND c.parent_id IS NULL) OR ($4 = 'anak' AND c.parent_id IS NOT NULL)) AND ($5::uuid IS NULL OR c.parent_id = $5) GROUP BY c.id")
 _HAVING = " HAVING ($3::text IS DISTINCT FROM 'tanpa_barang' OR COUNT(p.id) = 0)"
 
-SQL_DAFTAR = ("SELECT c.id, c.name, c.created_at, c.is_active, c.is_default, c.parent_id, c.description, (SELECT pc.name FROM item_categories pc WHERE pc.id = c.parent_id) AS parent_name, (SELECT COUNT(*) FROM item_categories ch WHERE ch.parent_id = c.id) AS jumlah_anak, COUNT(p.id) AS jumlah_barang, COUNT(p.id) FILTER (WHERE p.status = 'active') AS jumlah_aktif "
+SQL_DAFTAR = ("SELECT c.id, c.name, " + KAK.SELECT_AKUN + ", c.created_at, c.is_active, c.is_default, c.parent_id, c.description, (SELECT pc.name FROM item_categories pc WHERE pc.id = c.parent_id) AS parent_name, (SELECT COUNT(*) FROM item_categories ch WHERE ch.parent_id = c.id) AS jumlah_anak, COUNT(p.id) AS jumlah_barang, COUNT(p.id) FILTER (WHERE p.status = 'active') AS jumlah_aktif "
               "FROM item_categories c " + _HITUNG + _HAVING + " ORDER BY lower(c.name), c.id LIMIT $6 OFFSET $7")
 SQL_TOTAL = "SELECT COUNT(*) AS n FROM (SELECT c.id FROM item_categories c " + _HITUNG + _HAVING + ") x"
 SQL_RINGKASAN = ("SELECT (SELECT COUNT(*) FROM item_categories WHERE tenant_id = $1) AS total, "
@@ -44,6 +45,23 @@ def alasan_bawaan(nama: str, is_active: bool, is_default: bool) -> Optional[str]
     return None
 
 
+def alasan_gabung(nama: str, is_default: bool, jumlah_anak: int) -> Optional[str]:
+    """SATU sumber kalimat blok SISI ASAL 'gabung' (rencana_gabung + aksi_tersedia.gabung); None = boleh."""
+    if is_default:
+        return f"Kategori '{nama}' adalah kategori bawaan; jadikan kategori lain bawaan dulu."
+    if jumlah_anak:
+        return f"Kategori '{nama}' punya {int(jumlah_anak)} sub kategori; pindahkan atau hapus sub kategorinya dulu."
+    return None
+
+
+ALASAN_TAK_ADA_BARANG = "Tidak ada barang yang cocok untuk dipindahkan."
+
+
+def alasan_pindah(jumlah_barang: int) -> Optional[str]:
+    """SATU sumber kalimat blok SISI ASAL 'pindahkan barang' (rencana_pindah TIDAK_ADA_BARANG + aksi_tersedia.pindahkan_barang); None = boleh."""
+    return None if jumlah_barang else ALASAN_TAK_ADA_BARANG
+
+
 def aksi_tersedia(n: int, a: int, nama: str, is_active: bool, is_default: bool, jumlah_anak: int = 0, parent_id=None) -> dict:
     """SATU bentuk (schemas.aksi_tersedia). Dipakai daftar (K-1) dan detail (K-2)."""
     alasan_hapus = BA.rencana_kategori_hapus(nama, a, True)["blocks"][0]["message"] if a else None
@@ -51,6 +69,9 @@ def aksi_tersedia(n: int, a: int, nama: str, is_active: bool, is_default: bool, 
             "nonaktifkan": aksi(is_active and not is_default, "Kategori sudah nonaktif." if not is_active else "Kategori bawaan tak bisa dinonaktifkan; jadikan kategori lain bawaan dulu."),
             "aktifkan": aksi(not is_active, "Kategori sudah aktif."),
             "jadikan_bawaan": aksi(alasan_bawaan(nama, is_active, is_default) is None, alasan_bawaan(nama, is_active, is_default)),
+            "pindahkan_barang": aksi(alasan_pindah(n) is None, alasan_pindah(n)),
+            "gabung": aksi(alasan_gabung(nama, is_default, jumlah_anak) is None, alasan_gabung(nama, is_default, jumlah_anak)),
+            "atur_akun": aksi(True, None),
             "atur_induk": aksi(jumlah_anak == 0, f"Kategori '{nama}' punya {jumlah_anak} sub kategori; sub kategori hanya satu tingkat."),
             "hapus": aksi(a == 0 and jumlah_anak == 0, alasan_hapus or f"Kategori '{nama}' punya {jumlah_anak} sub kategori; hapus atau pindahkan sub kategorinya dulu.")}
 
@@ -61,11 +82,13 @@ def baris(r) -> dict:
     aktif, bawaan = bool(r["is_active"]), bool(r["is_default"])
     semua = [k for k, ya in (("tanpa_barang", n == 0), ("nonaktif", not aktif)) if ya]
     anak = int(r["jumlah_anak"])
+    akun = KAK.bentuk(r)
     return {"id": str(r["id"]), "name": r["name"], "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             "is_active": aktif, "is_default": bawaan, "parent_id": str(r["parent_id"]) if r["parent_id"] else None, "parent_name": r["parent_name"], "tingkat": "anak" if r["parent_id"] else "induk",
             "jumlah_anak": anak, "description": r["description"],
             "jumlah_barang": n, "jumlah_aktif": a, "keadaan": "nonaktif" if not aktif else ("kosong" if n == 0 else "terpakai"),
             "position_text": position_text(n, a, aktif, bawaan, r["parent_name"], anak), "aksi": (semua or [None])[0], "aksi_semua": semua,
+            "akun": akun, "akun_text": KAK.akun_text(akun),
             "aksi_tersedia": aksi_tersedia(n, a, r["name"], aktif, bawaan, anak, r["parent_id"])}
 
 

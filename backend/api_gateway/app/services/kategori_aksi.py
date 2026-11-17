@@ -7,6 +7,7 @@ kategori BAWAAN tak boleh dinonaktifkan (dijaga DB: bawaan harus aktif). product
 import json
 from typing import Optional
 
+from . import kategori_akun as KAK
 from . import kategori_daftar as KD
 from . import nama_pengguna as NP
 from . import teks_galat as tg
@@ -15,12 +16,12 @@ from .barang_aksi import _blok, _hasil
 NAMA_MAKS = 100
 EVENT = {"buat": "ITEM_CATEGORY_CREATED", "ubah_nama": "ITEM_CATEGORY_RENAMED", "nonaktif": "ITEM_CATEGORY_DEACTIVATED", "aktif": "ITEM_CATEGORY_ACTIVATED",
          "hapus": "ITEM_CATEGORY_DELETED", "bawaan": "ITEM_CATEGORY_DEFAULT_SET", "pindah": "ITEM_CATEGORY_ITEMS_MOVED", "gabung": "ITEM_CATEGORY_MERGED",
-         "induk": "ITEM_CATEGORY_PARENT_SET"}
+         "induk": "ITEM_CATEGORY_PARENT_SET", "akun": "ITEM_CATEGORY_ACCOUNTS_SET"}
 BATAS_ID = 500          # item_ids sebagian pada pindah massal
 CONTOH_MAKS = 20        # contoh barang di pratinjau pindah/gabung
 SUMBER_AUDIT = "api:item-kategori"
 
-SQL_UKUR = ("SELECT c.id, c.name, c.is_active, c.is_default, c.parent_id, c.description, c.created_at, c.updated_at, "
+SQL_UKUR = ("SELECT " + KAK.SELECT_AKUN + ", c.id, c.name, c.is_active, c.is_default, c.parent_id, c.description, c.created_at, c.updated_at, "
             "(SELECT pc.name FROM item_categories pc WHERE pc.id = c.parent_id) AS parent_name, (SELECT COUNT(*) FROM item_categories ch WHERE ch.parent_id = c.id) AS jumlah_anak, "
             "(SELECT COUNT(*) FROM products p WHERE p.tenant_id = c.tenant_id AND lower(p.kategori) = lower(c.name) AND p.deleted_at IS NULL) AS jumlah_barang, "
             "(SELECT COUNT(*) FROM products p WHERE p.tenant_id = c.tenant_id AND lower(p.kategori) = lower(c.name) AND p.deleted_at IS NULL AND p.status = 'active') AS jumlah_aktif "
@@ -172,7 +173,7 @@ async def riwayat(conn, tid: str, kategori_id, batas: int = 50) -> list:
              "oleh": r["userId"], "oleh_nama": nama.get(str(r["userId"])) if r["userId"] else None} for r in rows]
 
 
-TEKS_EVENT = {"ITEM_CATEGORY_DEFAULT_SET": "Dijadikan kategori bawaan", "ITEM_CATEGORY_ITEMS_MOVED": "Barang dipindahkan ke kategori ini", "ITEM_CATEGORY_MERGED": "Kategori digabung ke kategori ini", "ITEM_CATEGORY_PARENT_SET": "Induk kategori diubah",
+TEKS_EVENT = {"ITEM_CATEGORY_DEFAULT_SET": "Dijadikan kategori bawaan", "ITEM_CATEGORY_ITEMS_MOVED": "Barang dipindahkan ke kategori ini", "ITEM_CATEGORY_MERGED": "Kategori digabung ke kategori ini", "ITEM_CATEGORY_PARENT_SET": "Induk kategori diubah", "ITEM_CATEGORY_ACCOUNTS_SET": "Akun bawaan kategori diubah",
               "ITEM_CATEGORY_CREATED": "Kategori dibuat", "ITEM_CATEGORY_RENAMED": "Nama kategori diubah", "ITEM_CATEGORY_DEACTIVATED": "Kategori dinonaktifkan",
               "ITEM_CATEGORY_ACTIVATED": "Kategori diaktifkan", "ITEM_CATEGORY_DELETED": "Kategori dihapus"}
 
@@ -209,8 +210,8 @@ def rencana_pindah(sumber_nama: Optional[str], target: Optional[dict], n: int, a
         return _hasil([_blok("KATEGORI_TUJUAN_NONAKTIF", f"Kategori tujuan '{target['name']}' nonaktif; aktifkan dulu.")], None)
     if sumber_kategori and sumber_nama and sumber_nama.lower() == target["name"].lower():
         return _hasil([_blok("KATEGORI_SAMA", "Kategori asal dan tujuan sama.")], None)
-    if n == 0:
-        return _hasil([_blok("TIDAK_ADA_BARANG", "Tidak ada barang yang cocok untuk dipindahkan.")], None)
+    if KD.alasan_pindah(n):
+        return _hasil([_blok("TIDAK_ADA_BARANG", KD.alasan_pindah(n))], None)
     dari = f"kategori '{sumber_nama}'" if sumber_kategori else "tanpa kategori"
     return _hasil([], {"dari": sumber_nama if sumber_kategori else None, "ke": target["name"], "ke_id": str(target["id"]), "jumlah_barang": n, "jumlah_aktif": a, "contoh": contoh},
                   [f"{n} barang ({a} aktif) dari {dari} berpindah ke kategori '{target['name']}'."])
@@ -222,9 +223,9 @@ def rencana_gabung(sumber: Optional[dict], target: Optional[dict]) -> dict:
     if str(sumber["id"]) == str(target["id"]):
         return _hasil([_blok("KATEGORI_SAMA", "Kategori asal dan tujuan sama.")], None)
     if sumber["is_default"]:
-        return _hasil([_blok("KATEGORI_BAWAAN", f"Kategori '{sumber['name']}' adalah kategori bawaan; jadikan kategori lain bawaan dulu.")], None)
+        return _hasil([_blok("KATEGORI_BAWAAN", KD.alasan_gabung(sumber["name"], True, 0))], None)
     if int(sumber.get("jumlah_anak") or 0):
-        return _hasil([_blok("KATEGORI_PUNYA_ANAK", f"Kategori '{sumber['name']}' punya {int(sumber['jumlah_anak'])} sub kategori; pindahkan atau hapus sub kategorinya dulu.")], None)
+        return _hasil([_blok("KATEGORI_PUNYA_ANAK", KD.alasan_gabung(sumber["name"], False, int(sumber["jumlah_anak"])))], None)
     if not target["is_active"]:
         return _hasil([_blok("KATEGORI_TUJUAN_NONAKTIF", f"Kategori tujuan '{target['name']}' nonaktif; aktifkan dulu.")], None)
     jb = int(sumber["jumlah_barang"])
