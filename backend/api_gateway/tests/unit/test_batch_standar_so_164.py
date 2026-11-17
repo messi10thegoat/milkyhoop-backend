@@ -13,7 +13,7 @@ from starlette.requests import Request
 
 from app.routers import item_batches as IB
 from app.routers import stock_adjustments as SAR
-from app.schemas.item_batches import AdjustBatchQuantityRequest
+from app.schemas.item_batches import AdjustBatchQuantityRequest, SetBatchStatusRequest
 from app.services import batch_aksi as BA
 from app.services import idem_buat
 from app.services import stok_sesuai as SS
@@ -238,7 +238,9 @@ def test_pratinjau_tak_menulis(monkeypatch):
     k = Kon(stok_batch=D("3"))
     pasang(monkeypatch, k)
     hasil = run(IB.preview_adjust_batch(req({}), B_ID, isi(-5)))
-    assert hasil["can_proceed"] is False and hasil["blocks"][0]["code"] == "BATCH_STOK_TIDAK_CUKUP"
+    d = hasil["data"]
+    assert d["ok"] is False and d["blocks"][0]["code"] == "BATCH_STOK_TIDAK_CUKUP" and d["blocks"][0]["field"] == "quantity_change"   # bentuk G3
+    assert d["rencana"]["batch_after_text"] and d["peringatan"] == [] and d["payload"]["quantity_change"] == "-5"
     assert not any(("INSERT" in s or "UPDATE" in s) for s, _ in k.exe)
 
 
@@ -254,3 +256,134 @@ def test_void_sa_tak_menggeser_batch_dua_kali():
     assert inspect.signature(IH.record_inventory_reversal).parameters["pindah_batch"].default is True      # perilaku lama bagi pemanggil lain tak berubah
     assert "pindah_batch=False" in inspect.getsource(SAR.void_stock_adjustment)
     assert "if batch_id and pindah_batch" in inspect.getsource(IH.record_inventory_reversal)
+
+
+# ================= tambahan BE-A (permintaan MASTER 17 Nov): ringkasan/saringan keadaan, teks gudang, pratinjau status =================
+def test_syarat_keadaan_satu_penentu():
+    assert BA.syarat("semua", "$3") is None
+    assert "expiry_date >= $3::date" in BA.syarat("aktif", "$3") and "expiry_date < $3::date" in BA.syarat("kedaluwarsa", "$3")
+    assert "<= $3::date + 30" in BA.syarat("segera_kedaluwarsa", "$3")
+    assert BA.syarat("karantina", "$3") == "ib.status = 'quarantine'" and BA.syarat("habis", "$3") == "ib.status = 'depleted'"
+    assert set(BA.KUNCI) == {"semua", "aktif", "kedaluwarsa", "segera_kedaluwarsa", "karantina", "habis"}
+
+
+def test_kunci_dari_baris_cermin_python():
+    h = HARI
+    assert BA.kunci_dari_baris("active", None, h) == "aktif"
+    assert BA.kunci_dari_baris("active", h + dt.timedelta(days=31), h) == "aktif"
+    assert BA.kunci_dari_baris("active", h + dt.timedelta(days=30), h) == "segera_kedaluwarsa"
+    assert BA.kunci_dari_baris("active", h, h) == "segera_kedaluwarsa"
+    assert BA.kunci_dari_baris("active", h - dt.timedelta(days=1), h) == "kedaluwarsa"      # kolom basi: lewat tanggal = kedaluwarsa
+    assert BA.kunci_dari_baris("expired", None, h) == "kedaluwarsa"
+    assert BA.kunci_dari_baris("quarantine", h - dt.timedelta(days=9), h) == "karantina"
+    assert BA.kunci_dari_baris("depleted", None, h) == "habis"
+
+
+class KonDaftar(Kon):
+    def __init__(self):
+        super().__init__()
+        self.sql = []
+
+    async def fetchval(self, sql, *a):
+        self.sql.append((sql, a))
+        return 0
+
+    async def fetch(self, sql, *a):
+        self.sql.append((sql, a))
+        return []
+
+    async def fetchrow(self, sql, *a):
+        self.sql.append((sql, a))
+        return {"semua": 9, "aktif": 3, "kedaluwarsa": 2, "segera_kedaluwarsa": 1, "karantina": 1, "habis": 2}
+
+
+def daftar(monkeypatch, **q):
+    k = KonDaftar()
+    pasang(monkeypatch, k)
+    kw = dict(skip=0, limit=50, item_id=None, status=None, search=None, aksi=None)
+    kw.update(q)
+    run(IB.list_item_batches(req({}), **kw))
+    return k
+
+
+def test_daftar_status_expired_dan_aksi_memakai_penentu_yang_sama(monkeypatch):
+    k = daftar(monkeypatch, status="expired")
+    sql, a = k.sql[0]
+    assert "ib.status = 'active' AND ib.expiry_date < $2::date" in sql and a[1] == HARI      # melewatkan 'active' yang lewat tanggal sebelumnya
+    k = daftar(monkeypatch, aksi="segera_kedaluwarsa")
+    assert "<= $2::date + 30" in k.sql[0][0]
+    k = daftar(monkeypatch, aksi="semua")
+    assert len(k.sql[0][1]) == 1 and "$2" not in k.sql[0][0]                                 # tanpa parameter menggantung
+    k = daftar(monkeypatch, status="quarantine", aksi="karantina")
+    assert k.sql[0][0].count("ib.status = 'quarantine'") == 2
+
+
+def test_daftar_aksi_tak_sah_422(monkeypatch):
+    with pytest.raises(GalatBerkode) as e:
+        daftar(monkeypatch, aksi="sembarang")
+    assert e.value.code == "AKSI_TAK_SAH" and e.value.status_code == 422
+
+
+def test_ringkasan_endpoint_membaca_penentu_bersama(monkeypatch):
+    k = KonDaftar()
+    pasang(monkeypatch, k)
+    hasil = run(IB.get_batches_summary(req({}), None))["data"]
+    assert [hasil[x] for x in BA.KUNCI] == [9, 3, 2, 1, 1, 2] and hasil["teks"]["aktif"] == "3 batch"
+    sql = k.sql[0][0]
+    for kunci in BA.KUNCI:
+        if kunci != "semua":
+            assert BA.syarat(kunci, "$2") in sql
+
+
+def test_teks_stok_per_gudang():
+    t = BA.gudang_text({"quantity": D("12.5"), "available_quantity": D("10"), "reserved_quantity": D("2.5")}, "Pcs")
+    assert t == {"stock_text": "12,5 Pcs", "available_text": "10 Pcs", "reserved_text": "2,5 Pcs"}
+    assert BA.gudang_text({"quantity": D("1"), "available_quantity": D("1"), "reserved_quantity": D("0")}, None)["reserved_text"] is None
+
+
+def rs(status, batch, kon=None):
+    bl = Blok(True)
+    k = kon or Kon()
+    kb = baris_batch(batch.get("status", "active"), batch.get("expiry"), batch.get("qty", D("10")))
+
+    async def muat(conn, tid, bid, kunci=False):
+        return kb if batch.get("ada", True) else None
+    return k, bl, muat
+
+
+def test_rencana_status_karantina_peringatan_dan_blok(monkeypatch):
+    for status, batch, kode in (("quarantine", {"status": "quarantine"}, "BATCH_AKSI_TIDAK_TERSEDIA"), ("active", {"status": "active"}, "BATCH_AKSI_TIDAK_TERSEDIA"),
+                                ("quarantine", {"status": "depleted"}, "BATCH_AKSI_TIDAK_TERSEDIA"), ("expired", {}, "STATUS_TAK_SAH"),
+                                ("quarantine", {"ada": False}, "BATCH_TIDAK_DITEMUKAN")):
+        k, bl, muat = rs(status, batch)
+        monkeypatch.setattr(BA, "muat_batch", muat)
+        r = run(BA.rencana_status(k, T, B_ID, status, bl, HARI))
+        assert [b["code"] for b in bl.daftar] == [kode], (status, batch, bl.daftar)
+        with pytest.raises(GalatBerkode):
+            monkeypatch.setattr(BA, "muat_batch", muat)
+            run(BA.rencana_status(k, T, B_ID, status, Blok(False), HARI))
+    k, bl, muat = rs("quarantine", {"qty": D("7")})
+    monkeypatch.setattr(BA, "muat_batch", muat)
+    r = run(BA.rencana_status(k, T, B_ID, "quarantine", bl, HARI))
+    assert not bl.daftar and r["peringatan"] and "tidak bisa dijual selama karantina" in r["peringatan"][0]
+    assert r["rencana"]["status_sesudah_text"] == "Karantina" and r["rencana"]["ringkas"] == "Batch LOT-A: Aktif \u2192 Karantina"
+    k, bl, muat = rs("active", {"status": "quarantine", "expiry": HARI - dt.timedelta(days=2)})
+    monkeypatch.setattr(BA, "muat_batch", muat)
+    r = run(BA.rencana_status(k, T, B_ID, "active", bl, HARI))
+    assert not bl.daftar and "tetap tampil Kedaluwarsa" in r["peringatan"][0] and r["rencana"]["status_sesudah_text"] == "Kedaluwarsa"
+
+
+def test_pratinjau_status_bentuk_g3_dan_penulis_memakai_rencana_sama(monkeypatch):
+    k = Kon()
+    pasang(monkeypatch, k)
+    kb = baris_batch("quarantine")
+
+    async def muat(conn, tid, bid, kunci=False):
+        return kb
+    monkeypatch.setattr(BA, "muat_batch", muat)
+    d = run(IB.preview_status_batch(req({}), B_ID, SetBatchStatusRequest(status="quarantine")))["data"]
+    assert d["ok"] is False and d["blocks"] == [{"code": "BATCH_AKSI_TIDAK_TERSEDIA", "message": "Batch sudah dikarantina.", "field": "status"}]
+    assert set(d) == {"ok", "blocks", "peringatan", "rencana", "payload"} and d["payload"] == {"status": "quarantine"}
+    src_patch, src_post = inspect.getsource(IB.update_item_batch), inspect.getsource(IB.set_batch_status)
+    assert "BA.rencana_status(" in src_patch and "Blok(False)" in src_patch               # penulis PATCH: rencana yang SAMA
+    assert "update_item_batch(" in src_post                                                # POST /status = PATCH status (satu penulis)

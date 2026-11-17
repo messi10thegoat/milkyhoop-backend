@@ -61,6 +61,11 @@ class AdjustBatchQuantityRequest(BaseModel):
     notes: Optional[str] = Field(None, max_length=500)
 
 
+class SetBatchStatusRequest(BaseModel):
+    """Karantina / aktifkan batch (pratinjau + penulis memakai penentu yang sama)."""
+    status: Literal["quarantine", "active"]
+
+
 class GetAvailableBatchesRequest(BaseModel):
     """Request available batches for selection"""
     item_id: UUID
@@ -80,6 +85,9 @@ class BatchWarehouseStock(BaseModel):
     quantity: Decimal
     reserved_quantity: Decimal
     available_quantity: Decimal
+    stock_text: Optional[str] = None       # BE-A: teks tampil dari server (services/batch_aksi.gudang_text)
+    available_text: Optional[str] = None
+    reserved_text: Optional[str] = None
 
 
 class ItemBatchData(BaseModel):
