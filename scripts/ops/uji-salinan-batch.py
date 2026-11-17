@@ -84,7 +84,7 @@ async def satu(conn, tid):
     # pratinjau nol tulis
     sd = await sidik(conn, tid)
     pv = await coba(IB.preview_adjust_batch(req(tid, "POST"), bid, AdjustBatchQuantityRequest(warehouse_id=wid, quantity_change=D("-3"), reason="UJI")))
-    cek(f"{tid} pratinjau -3: bisa lanjut, nol tulis", pv["ok"] and pv["hasil"]["can_proceed"] and D(pv["hasil"]["batch_after"]) == 2 and sd == await sidik(conn, tid), pv)
+    cek(f"{tid} pratinjau -3: bisa lanjut, nol tulis", pv["ok"] and pv["hasil"]["data"]["ok"] and D(pv["hasil"]["data"]["rencana"]["batch_after"]) == 2 and sd == await sidik(conn, tid), pv)
 
     # tulis -3 + idempotensi
     hdr = [(b"x-idempotency-key", f"uji-batch-{bid}".encode())]
