@@ -8,7 +8,8 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from ..services import gudang_jenis as _GJ
 
 from .aksi_tersedia import AksiTersediaPeta
 
@@ -19,8 +20,8 @@ from .aksi_tersedia import AksiTersediaPeta
 
 class CreateWarehouseRequest(BaseModel):
     """Create a new warehouse/location"""
-    code: str = Field(..., min_length=1, max_length=50, description="Unique warehouse code")
-    name: str = Field(..., min_length=1, max_length=100, description="Warehouse name")
+    code: Optional[str] = Field(None, max_length=50, description="Kode gudang; kosong = otomatis GDG-NNN (G3)")
+    name: str = Field(..., max_length=100, description="Warehouse name (kosong/spasi = blok GUDANG_NAMA_KOSONG)")
 
     # Address
     address: Optional[str] = None
@@ -43,8 +44,8 @@ class CreateWarehouseRequest(BaseModel):
 
 class UpdateWarehouseRequest(BaseModel):
     """Update warehouse details"""
-    code: Optional[str] = Field(None, min_length=1, max_length=50)
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    code: Optional[str] = Field(None, max_length=50)
+    name: Optional[str] = Field(None, max_length=100)
     address: Optional[str] = None
     city: Optional[str] = None
     province: Optional[str] = None
@@ -57,6 +58,11 @@ class UpdateWarehouseRequest(BaseModel):
     is_active: Optional[bool] = None
     is_branch: Optional[bool] = None
     branch_code: Optional[str] = None
+
+
+class SetWarehouseStatusRequest(BaseModel):
+    """G3: badan POST /{id}/status dan /{id}/status/preview"""
+    aktif: bool
 
 
 class UpdateWarehouseStockRequest(BaseModel):
@@ -98,6 +104,14 @@ class WarehouseData(BaseModel):
     ada_stok_minus: Optional[bool] = None  # K7: ada barang saldo ledger < 0 di gudang ini (== pill stok_minus)
     barang_minus: Optional[List[Dict[str, Any]]] = None  # K7: hanya di DETAIL, [{item_id, nama, satuan, saldo}] maks 100
     aksi_tersedia: Optional[AksiTersediaPeta] = None
+    jenis_text: Optional[str] = None       # G3: "Cabang" / "Gudang biasa" dari server
+    jenis_catatan: Optional[str] = None    # G3: satu kalimat akibat jenis (None untuk gudang biasa)
+
+    @model_validator(mode="after")
+    def _jenis(self):
+        if self.jenis_text is None:
+            self.jenis_text, self.jenis_catatan = _GJ.jenis_text(self.is_branch), _GJ.jenis_catatan(self.is_branch)
+        return self
 
 
 class WarehouseStockItem(BaseModel):
