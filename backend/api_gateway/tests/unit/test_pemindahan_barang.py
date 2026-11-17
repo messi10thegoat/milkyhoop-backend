@@ -953,7 +953,8 @@ def test_k8_pemilih_gudang_awal_menyaring_is_system(berkas):
 
 def test_k8_mutasi_gudang_sistem_ditolak_dan_pb_tak_boleh_pakai_transit():
     src = (APP / "routers" / "warehouses.py").read_text()
-    assert src.count('if existing["is_system"]:') == 3                                            # ubah, hapus, jadikan utama
+    rc = (APP / "services" / "gudang_rencana.py").read_text()
+    assert rc.count('blok("GUDANG_SISTEM"') >= 4 and src.count("GR.rencana_") >= 5                 # G3: ubah, status (+hapus), jadikan utama, buat lewat penentu bersama
     assert "SELECT id, name, is_active FROM warehouses WHERE id = $1 AND tenant_id = $2 AND NOT is_system" in (APP / "services" / "pemindahan_barang.py").read_text()
 
 

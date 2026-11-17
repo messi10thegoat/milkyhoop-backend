@@ -671,6 +671,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/stock-adjustments", ["POST"], "stock_adjust", "C"),
     (r"^/api/stock-adjustments/[^/]+", ["GET"], "stock_adjust", "R"),
     # Warehouses
+    (r"^/api/warehouses/preview$", ["POST"], "warehouse", "C"),  # G3: pratinjau BUAT
+    (r"^/api/warehouses/[^/]+/(edit|status|set-default)/preview$", ["POST"], "warehouse", "U"),  # G3: pratinjau ubah/status/utama
+    (r"^/api/warehouses/[^/]+/status$", ["POST"], "warehouse", "U"),  # G3: penulis aktif/nonaktif
     (r"^/api/warehouses", ["GET"], "warehouse", "R"),
     (r"^/api/warehouses", ["POST"], "warehouse", "C"),
     (r"^/api/warehouses/[^/]+", ["PATCH", "PUT"], "warehouse", "U"),
