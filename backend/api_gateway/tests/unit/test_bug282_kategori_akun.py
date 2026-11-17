@@ -115,9 +115,12 @@ KAT = {"sales_account_id": A_JUAL["id"], "inventory_account_id": A_PERS["id"], "
 
 def test_salin_mengisi_yang_kosong_dan_eksplisit_menang():
     b = body(sales_account_id="eksplisit")
-    r = asyncio.run(KAK.salin_ke_barang(Konn(KAT), "t", b))
+    async def jalan():
+        r_ = await KAK.salin_ke_barang(Konn(KAT), "t", b)
+        return r_, KAK.terakhir()   # ContextVar: dibaca di TASK yang sama seperti pratinjau Buat Barang
+    r, ter = asyncio.run(jalan())
     assert b.sales_account_id == "eksplisit" and b.inventory_account_id == A_PERS["id"] and b.cogs_account_id == A_HPP["id"] and b.purchase_account_id == A_BELI["id"]
-    assert r == ["persediaan", "hpp", "pembelian"] and KAK.terakhir() == {"kategori": "Minuman", "jenis": r}
+    assert r == ["persediaan", "hpp", "pembelian"] and ter == {"kategori": "Minuman", "jenis": r}
 
 
 def test_salin_jasa_atau_tanpa_stok_tak_menyalin_persediaan_dan_hpp():
@@ -129,9 +132,11 @@ def test_salin_jasa_atau_tanpa_stok_tak_menyalin_persediaan_dan_hpp():
 def test_salin_kategori_tanpa_akun_atau_tak_ada_atau_barang_tanpa_kategori_tak_mengubah_apa_pun():
     for kat_, bd in ((dict.fromkeys(KAT), body()), (None, body()), (KAT, body(kategori=None)), (KAT, body(kategori="  "))):
         b = bd
-        asyncio.run(KAK.salin_ke_barang(Konn(kat_), "t", b))
+        async def jalan():
+            await KAK.salin_ke_barang(Konn(kat_), "t", b)
+            return KAK.terakhir()
+        assert asyncio.run(jalan()) is None
         assert (b.sales_account_id, b.purchase_account_id, b.inventory_account_id, b.cogs_account_id) == (None,) * 4
-        assert KAK.terakhir() is None
 
 
 def test_salin_mengabaikan_akun_kategori_yang_kini_nonaktif_header_atau_tipe_salah():

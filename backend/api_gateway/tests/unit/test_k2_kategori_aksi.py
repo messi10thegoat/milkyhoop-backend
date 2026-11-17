@@ -115,5 +115,5 @@ def test_rute_dan_izin():
     assert 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "buat"' in src and 'KA.catat_audit(conn, tenant_id, ctx["user_id"], "hapus"' in src
     assert "WHERE tenant_id = $1 AND is_active\n            ORDER BY name ASC" in src   # bentuk lama = pilihan: nonaktif tak ikut
     izin = (APP / "middleware" / "permission_middleware.py").read_text()
-    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
+    assert '(r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent|accounts)(/preview)?$", ["POST"], "item", "U")' in izin and '(r"^/api/items/categories/preview$", ["POST"], "item", "C")' in izin
     assert '(r"^/api/items/categories/[^/]+$", ["GET"], "item", "R")' in izin and '(r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R")' in izin

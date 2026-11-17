@@ -45,7 +45,7 @@ def test_baris_jumlah_keadaan_teks_dan_aksi_tersedia_hapus():
     a, b, c, e = d["items"]
     assert (a["jumlah_barang"], a["jumlah_aktif"], a["keadaan"], a["position_text"], a["aksi_semua"]) == (12, 10, "terpakai", "12 barang · 10 aktif", [])
     assert a["aksi_tersedia"]["hapus"] == {"tersedia": False, "alasan": "Kategori 'Minuman' dipakai 10 barang aktif; pindahkan barangnya dulu."}   # kalimat = pratinjau hapus
-    assert list(a["aksi_tersedia"]) == ["ubah", "nonaktifkan", "aktifkan", "jadikan_bawaan", "atur_induk", "hapus"] and a["aksi_tersedia"]["ubah"]["tersedia"] and a["aksi_tersedia"]["nonaktifkan"]["tersedia"]
+    assert list(a["aksi_tersedia"]) == ["ubah", "nonaktifkan", "aktifkan", "jadikan_bawaan", "pindahkan_barang", "gabung", "atur_akun", "atur_induk", "hapus"] and a["aksi_tersedia"]["ubah"]["tersedia"] and a["aksi_tersedia"]["nonaktifkan"]["tersedia"]
     assert a["aksi_tersedia"]["aktifkan"] == {"tersedia": False, "alasan": "Kategori sudah aktif."}
     assert (b["keadaan"], b["position_text"], b["aksi"], b["aksi_semua"], b["aksi_tersedia"]["hapus"]) == ("kosong", "Belum ada barang", "tanpa_barang", ["tanpa_barang"], {"tersedia": True, "alasan": None})
     assert (c["position_text"], c["aksi_tersedia"]["hapus"]["tersedia"]) == ("4 barang", False)
