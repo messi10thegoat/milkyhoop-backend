@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="id">
+<head><meta charset="UTF-8"><title>Lembar Penghitungan Stok {{ lembar.gudang.nama }}</title>
+<style>
+  /* Lembar Penghitungan Stok (BUG-259): dibangkitkan, tak disimpan. Kolom "Fisik" kosong untuk tulis tangan. Gaya bersama invoice.css. */
+  .lh-tabel { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .lh-tabel th { font-size: 8.5pt; font-weight: 400; text-align: left; border-bottom: 1px solid #1a1a1a; padding: 4px 6px 4px 0; }
+  .lh-tabel td { font-size: 9.5pt; border-bottom: 1px solid #E6E3DC; padding: 6px 6px 6px 0; vertical-align: middle; }
+  .lh-tabel .lh-kanan { text-align: right; white-space: nowrap; }
+  .lh-tabel .lh-fisik { width: 24%; border-left: 1px solid #1a1a1a; border-right: 1px solid #1a1a1a; }
+  .lh-tabel .lh-ket { width: 18%; }
+  .lh-tabel thead { display: table-header-group; }
+  .lh-tabel tr { page-break-inside: avoid; }
+  .lh-minus { font-size: 8pt; }
+  .lh-kosong { font-size: 9.5pt; padding: 8px 0; }
+  .lh-ttd { display: flex; gap: 24px; margin-top: 28px; page-break-inside: avoid; }
+  .lh-ttd div { flex: 1; font-size: 9pt; border-top: 1px solid #1a1a1a; padding-top: 4px; margin-top: 44px; }
+</style>
+</head>
+<body>
+<div class="invoice">
+
+    {% from "_partials/kepala_si.html" import kepala %}
+    {{ kepala("Lembar Penghitungan Stok", company.logo_base64 if company else none) }}
+
+    <div class="meta-block">
+        <table class="meta-table">
+            <tr><td class="meta-label">Gudang</td><td class="meta-value">{{ lembar.gudang.nama }}</td></tr>
+            <tr><td class="meta-label">Per tanggal</td><td class="meta-value">{{ lembar.per_tanggal | date_id }}</td></tr>
+            {% if lembar.saringan.kategori %}<tr><td class="meta-label">Kategori</td><td class="meta-value">{{ lembar.saringan.kategori }}</td></tr>{% endif %}
+            {% if lembar.saringan.merek %}<tr><td class="meta-label">Merek</td><td class="meta-value">{{ lembar.saringan.merek }}</td></tr>{% endif %}
+            <tr><td class="meta-label">Jumlah barang</td><td class="meta-value">{{ lembar.total_baris }}</td></tr>
+        </table>
+    </div>
+
+    {% if company %}
+    <div class="parties"><div class="party">
+        <div class="party-label">Usaha</div>
+        {% from "_partials/identitas_usaha.html" import identitas %}{{ identitas(company, "party-name", "party-detail") }}
+    </div></div>
+    {% endif %}
+
+    {% if lembar.baris %}
+    <table class="lh-tabel">
+        <thead><tr><th>No.</th><th>Kode</th><th>Nama barang</th><th class="lh-kanan">Stok buku</th><th class="lh-fisik">Fisik</th><th class="lh-ket">Keterangan</th></tr></thead>
+        <tbody>
+        {% for b in lembar.baris %}
+        <tr><td>{{ b.no }}</td><td>{{ b.kode or '-' }}</td>
+            <td>{{ b.nama }}{% if b.minus %} <span class="lh-minus">(stok minus: hitung ulang)</span>{% endif %}</td>
+            <td class="lh-kanan">{{ b.stok_buku_text }}</td><td class="lh-fisik">&nbsp;</td><td class="lh-ket">&nbsp;</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<div class="lh-kosong">Tidak ada barang untuk dihitung di gudang ini{% if lembar.saringan.kategori or lembar.saringan.merek %} dengan saringan tersebut{% endif %}.</div>{% endif %}
+
+    <div class="lh-ttd"><div>Dihitung oleh</div><div>Diperiksa oleh</div></div>
+
+    <div class="footer-line">Dicetak {{ generated_at | date_id }}</div>
+</div>
+</body>
+</html>

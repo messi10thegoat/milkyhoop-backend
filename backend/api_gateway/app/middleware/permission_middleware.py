@@ -232,7 +232,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customers/[^/]+/status(/preview)?$", ["PATCH", "POST"], "customer", "P"),
     (r"^/api/customers$", ["POST"], "customer", "C"),
     # V428 alamat per baris: ubah alamat = ubah master pelanggan (U), termasuk hapus alamat (bukan hapus pelanggan)
+    (r"^/api/customers/bulk/price-list(/preview)?$", ["POST"], "customer", "U"),   # BUG-255 pasang daftar harga massal (pratinjau = huruf SAMA dgn tulis)
     (r"^/api/customers/[^/]+/addresses$", ["GET"], "customer", "R"),
+    (r"^/api/customers/[^/]+/price-history$", ["GET"], "sales_invoice", "R"),  # BUG-257: riwayat harga jual = baca faktur penjualan
     (r"^/api/customers/[^/]+/addresses$", ["POST"], "customer", "U"),
     (r"^/api/customers/[^/]+/addresses/[^/]+$", ["PATCH", "DELETE"], "customer", "U"),
     (r"^/api/customers/[^/]+/addresses/[^/]+/default$", ["POST"], "customer", "U"),
@@ -825,6 +827,14 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/[^/]+/stock-adjustment$", ["POST"], "item", "P"),
     (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
     (r"^/api/items/bulk-import$", ["POST"], "item", "C"),
+    (r"^/api/items/categories/summary$", ["GET"], "item", "R"),  # K-1 ringkasan master Kategori (baca)
+    (r"^/api/items/categories/impor/templat$", ["GET"], "item", "R"),   # K-5 templat impor kategori
+    (r"^/api/items/categories/impor(/baca|/pratinjau)?$", ["POST"], "item", "C"),   # K-5 impor kategori (baca/pratinjau = huruf SAMA dgn tulis)
+    (r"^/api/items/categories/[^/]+$", ["GET"], "item", "R"),   # K-2 detail kategori
+    (r"^/api/items/categories/[^/]+/history$", ["GET"], "item", "R"),   # K-2 riwayat kategori
+    (r"^/api/items/categories/preview$", ["POST"], "item", "C"),   # K-2 pratinjau buat (huruf SAMA dgn buat)
+    (r"^/api/items/categories/[^/]+/(rename|status|default|merge|parent)(/preview)?$", ["POST"], "item", "U"),   # K-2/K-3 ubah nama / aktif-nonaktif / bawaan / gabung (pratinjau = huruf SAMA dgn tulis)
+    (r"^/api/items/categories/move(/preview)?$", ["POST"], "item", "U"),   # K-3 pindah barang massal (mengubah kategori barang = ubah barang)
     (r"^/api/items/categories$", ["POST"], "item", "C"),
     (r"^/api/items/categories$", ["DELETE"], "item", "D"),
     # -- Sapu baseline (rute master-data/settings harian Admin; modul resolve utk ADMIN) --

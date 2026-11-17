@@ -8,6 +8,8 @@ from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.db_pool import get_db_pool
 from ..services.profitability_query import get_item_profitability, get_service_revenue
 from ..services.profitability_reconciliation import check_reconciliation
+from ..services import teks_laporan_persediaan as TLP  # BUG-272: teks tampil server aditif
+from ..services.uang_presisi import presisi_tenant
 import logging
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,7 @@ async def profitability_items(
             offset,
         )
         recon = await check_reconciliation(conn, tenant_id, sd, ed)
+        presisi = await presisi_tenant(conn, tenant_id)
 
     if recon["should_block"]:
         raise HTTPException(
@@ -89,7 +92,7 @@ async def profitability_items(
 
     return {
         "success": True,
-        "data": {
+        "data": TLP.tambah_teks_penjualan_barang({   # BUG-272: teks tampil server aditif (medan lama utuh)
             "period": {
                 "start_date": sd.isoformat(),
                 "end_date": ed.isoformat(),
@@ -110,7 +113,7 @@ async def profitability_items(
                 "cogs_drift": recon["cogs_drift"],
                 "pnl_cogs_non_jual": recon["pnl_cogs_non_jual"],
             },
-        },
+        }, presisi),
     }
 
 

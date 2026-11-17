@@ -922,6 +922,13 @@ class PDFService:
             rekap=rekap, company=company, generated_at=datetime.now())
         return Render(html_content, CSS_DOKUMEN, font=True)
 
+    def render_lembar_hitung_stok(self, lembar: dict, tenant_info: dict) -> Render:
+        """Lembar Penghitungan Stok (BUG-259) -- konteks dari services/lembar_hitung_stok.muat_lembar."""
+        company = self._usaha(tenant_info)
+        html_content = self.jinja_env.get_template("lembar_hitung_stok.html").render(
+            lembar=lembar, company=company, generated_at=datetime.now())
+        return Render(html_content, CSS_DOKUMEN, font=True)
+
     def generate_rekap_pesanan_pdf(self, rekap: dict, tenant_info: dict) -> bytes:
         return self.tulis_pdf(self.render_rekap_pesanan(rekap, tenant_info))
 

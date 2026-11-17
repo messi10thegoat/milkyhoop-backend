@@ -30,7 +30,7 @@ class Conn:
 
     async def fetchrow(self, sql, *a):
         self.sql.append(sql)
-        return {"id": a[0], "item_code": "K-1", "nama_produk": "Kaos"}
+        return {"id": a[0], "item_code": "K-1", "nama_produk": "Kaos", "satuan": "Pcs"}
 
     async def fetchval(self, sql, *a):
         self.sql.append(sql)

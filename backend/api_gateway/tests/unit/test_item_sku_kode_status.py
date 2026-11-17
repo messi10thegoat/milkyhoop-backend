@@ -23,6 +23,9 @@ class Conn:
     def __init__(self, pemegang=None):
         self.pemegang, self.q = pemegang, []
 
+    async def fetchval(self, sql, *a):      # K-1: pengisi kategori bawaan (KA.kategori_bawaan) membaca satu nilai; fake = tak ada kategori bawaan
+        return None
+
     async def fetchrow(self, sql, *a):
         self.q.append(" ".join(sql.split()))
         if "sku = $2" in sql:

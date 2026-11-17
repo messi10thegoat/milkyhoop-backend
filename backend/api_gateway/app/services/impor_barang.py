@@ -24,7 +24,7 @@ KOLOM = [
     ("satuan_dasar", "Satuan dasar", True), ("harga_jual", "Harga jual / satuan dasar", False),
     ("harga_beli", "Harga beli / satuan dasar", False), ("satuan_besar", "Satuan besar", False),
     ("isi", "Isi satuan besar (dalam satuan dasar)", False), ("harga_jual_besar", "Harga jual / satuan besar", False),
-    ("harga_beli_besar", "Harga beli / satuan besar", False), ("kategori", "Kategori", False), ("barcode", "Barcode", False),
+    ("harga_beli_besar", "Harga beli / satuan besar", False), ("kategori", "Kategori", False), ("merek", "Merek", False), ("barcode", "Barcode", False),
     ("stok_awal", "Stok awal (satuan dasar)", False), ("harga_pokok_awal", "Harga pokok awal / satuan dasar", False),
 ]
 # BUG-101 (K-10, MASTER 7 Nov; pola Accurate "Excel apa pun"): judul kolom berkas BEBAS. Judul dinormalisasi (_norm_judul) lalu dicocokkan
@@ -42,6 +42,7 @@ SINONIM = {
     "harga_jual_besar": ["harga jual satuan besar"],
     "harga_beli_besar": ["harga beli satuan besar"],
     "kategori": ["kategori", "category", "kelompok"],
+    "merek": ["merek", "merk", "brand"],
     "barcode": ["barcode", "ean"],
     "stok_awal": ["stok awal satuan dasar", "stok awal", "stok", "qty awal"],
     "harga_pokok_awal": ["harga pokok awal satuan dasar", "harga pokok awal", "hpp awal"],
@@ -125,7 +126,10 @@ def _satuan_ke(b: dict, unit: str) -> Optional[str]:
 _KATA_MEDAN = re.compile(r"\b(?:jual|beli|stok|kode|kategori|satuan|tipe)\b.*$", re.I | re.S)
 
 
-def _nama_tanpa_sisa(depan: str, galat: list) -> str:
+_KATA_MEDAN_SET = {"jual", "beli", "stok", "kode", "kategori", "satuan", "tipe", "isi", "per"}
+
+
+def _nama_tanpa_sisa(depan: str, galat: list, satuan: Optional[list] = None) -> str:
     """Bagian sebelum medan pertama = NAMA + satu pemisah. Sisanya tak pernah ditelan ke nama diam-diam (temuan FRONTEND 6 Nov:
     "rusak ,,, jual abc" -> nama itu, nol galat): bagian lain sesudah koma/titik koma, kata medan yang nilainya tak terbaca
     ("jual abc", "beli"), dan tanda baca beruntun -> galat per baris (blok TAK_TERBACA di ke_badan)."""
@@ -139,6 +143,12 @@ def _nama_tanpa_sisa(depan: str, galat: list) -> str:
         ekor.insert(0, m.group(0).strip())
         nama = nama[:m.start()].strip()
     sisa = [x for x in ekor if x]
+    # BUG-276 (17 Nov 2026): SATU kata sisa di antara nama dan medan pertama ("UJI Teh Celup, pcs, beli 3rb, jual 4rb" / "Teh Celup, pcs") = SATUAN DASAR
+    # (kasus paling umum toko grosir: satuan tunggal tanpa 'isi'). Hanya satu kata huruf yang bukan kata medan (tanda baca berlebih tetap galat sendiri);
+    # selain itu tetap TAK_TERBACA (tak pernah ditelan diam-diam). Satuan tak dikenal tampil sebagai "satuan baru" di pratinjau (bukan tersembunyi).
+    if satuan is not None and len(sisa) == 1 and re.fullmatch(_KATA, sisa[0]) and sisa[0].lower() not in _KATA_MEDAN_SET:
+        satuan.append(sisa[0])
+        sisa = []
     if sisa:
         galat.append(f"tak terbaca: \"{', '.join(sisa)}\" — tulis mis. jual 35rb, beli 31rb, stok 10")
     return nama
@@ -158,10 +168,12 @@ def tafsir_baris(teks: str) -> dict:
         temuan.append((j, m))
         pos = m.end()
     awal = temuan[0][1].start() if temuan else len(s)
-    galat_nama = []
-    b = {"nama": _nama_tanpa_sisa(s[:awal], galat_nama), "teks": s}
+    galat_nama, satuan_tunggal = [], []
+    b = {"nama": _nama_tanpa_sisa(s[:awal], galat_nama, satuan_tunggal), "teks": s}
     if galat_nama:
         b["_galat"] = galat_nama
+    if satuan_tunggal:   # BUG-276: satuan dasar disebut sebelum medan pertama; "satuan X"/"X isi N Y" sesudahnya tetap menang (menimpa)
+        b["satuan_dasar"] = satuan_tunggal[0]
     sisa = [s[(temuan[i - 1][1].end() if i else awal):m.start()] for i, (_, m) in enumerate(temuan)]
     sisa.append(s[temuan[-1][1].end():] if temuan else "")
     terakhir = None  # satuan yang disebut terakhir: "besar" | "dasar"
@@ -292,7 +304,7 @@ def ke_badan(b: dict, no: Optional[int] = None) -> tuple:
         tipe = "goods"
     p = {"name": str(b.get("nama") or "").strip(), "item_type": tipe, "base_unit": str(b.get("satuan_dasar") or "").strip(),
          "track_inventory": tipe == "goods"}
-    for k, kunci_p in (("kode", "item_code"), ("kategori", "kategori"), ("barcode", "barcode")):
+    for k, kunci_p in (("kode", "item_code"), ("kategori", "kategori"), ("merek", "merek"), ("barcode", "barcode")):
         if b.get(k) not in (None, ""):
             p[kunci_p] = str(b[k]).strip()
     for k, kunci_p, arah in (("harga_jual", "sales_price", "jual"), ("harga_beli", "purchase_price", "beli")):
