@@ -57,6 +57,8 @@ class AdjustBatchQuantityRequest(BaseModel):
     warehouse_id: UUID
     quantity_change: Decimal  # Positive to add, negative to subtract
     reason: str = Field(..., min_length=1, max_length=500)
+    counter_account_id: Optional[str] = None  # akun lawan jurnal (kosong = bawaan penyesuaian stok)
+    notes: Optional[str] = Field(None, max_length=500)
 
 
 class GetAvailableBatchesRequest(BaseModel):
@@ -103,6 +105,13 @@ class ItemBatchData(BaseModel):
     quality_notes: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # BE-A (17 Nov): teks tampil + aksi dari server (services/batch_aksi.hiasi) -- FE tak merakit kalimat
+    status_text: Optional[str] = None
+    expiry_text: Optional[str] = None
+    stock_text: Optional[str] = None
+    position_text: Optional[str] = None
+    aksi_tersedia: Optional[dict] = None
+    aksi_semua: Optional[List[str]] = None
 
 
 class ItemBatchDetailData(ItemBatchData):
@@ -144,6 +153,11 @@ class AdjustBatchResponse(BaseModel):
     data: ItemBatchData
     warehouse_stock: BatchWarehouseStock
     message: str = "Batch quantity adjusted"
+    # BE-A / BUG-164: penyesuaian batch = dokumen Penyesuaian Stok bernomor
+    adjustment_id: Optional[UUID] = None
+    adjustment_number: Optional[str] = None
+    journal_id: Optional[UUID] = None
+    journal_number: Optional[str] = None
 
 
 # ============================================================================

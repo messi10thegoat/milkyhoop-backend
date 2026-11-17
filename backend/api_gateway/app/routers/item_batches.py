@@ -9,8 +9,12 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
+from ..services import batch_aksi as BA
+from ..services import stok_sesuai as SS
+from ..services.bayar_keluar_rencana import Blok
+from ..services.galat_berkode import GalatBerkode
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..schemas.item_batches import (
     AdjustBatchQuantityRequest,
@@ -111,7 +115,8 @@ async def list_item_batches(
             skip,
         )
 
-        data = [ItemBatchData(**dict(row)) for row in rows]
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+        data = [ItemBatchData(**dict(row), **BA.hiasi(dict(row), hari_ini)) for row in rows]
         return ItemBatchListResponse(
             data=data, total=total, has_more=(skip + limit) < total
         )
@@ -214,8 +219,9 @@ async def get_item_batch(request: Request, batch_id: UUID):
             batch_id,
         )
 
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
         data = ItemBatchDetailData(
-            **dict(row),
+            **dict(row), **BA.hiasi(dict(row), hari_ini),
             warehouse_stock=[BatchWarehouseStock(**dict(ws)) for ws in warehouse_stock],
         )
 
@@ -351,6 +357,11 @@ async def update_item_batch(
                 params.append(value)
                 param_idx += 1
 
+        if body.status == "quarantine":
+            ket = BA.aksi_tersedia(dict(existing), await tanggal_dokumen(conn, ctx["tenant_id"]))["karantina"]
+            if not ket["tersedia"]:
+                raise GalatBerkode(409, "BATCH_AKSI_TIDAK_TERSEDIA", ket["alasan"], field="status")
+
         if not updates:
             return UpdateItemBatchResponse(data=ItemBatchData(**dict(existing)))
 
@@ -366,62 +377,107 @@ async def update_item_batch(
         )
 
         item = await conn.fetchrow(
-            "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
+            "SELECT sku as code, nama_produk as name, base_unit FROM products WHERE id = $1 AND tenant_id = $2",
             row["item_id"],
+            ctx["tenant_id"],
         )
+        ekstra = dict(row) | {"base_unit": item["base_unit"] if item else None}
 
         return UpdateItemBatchResponse(
             data=ItemBatchData(
                 **dict(row),
                 item_code=item["code"] if item else None,
                 item_name=item["name"] if item else None,
+                base_unit=item["base_unit"] if item else None,
+                **BA.hiasi(ekstra, await tanggal_dokumen(conn, ctx["tenant_id"])),
             )
         )
 
 
-@router.post("/{batch_id}/adjust", response_model=AdjustBatchResponse)
-async def adjust_batch_quantity(
-    request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest
-):
-    """Adjust batch quantity in a warehouse"""
+@router.post("/{batch_id}/adjust/preview")
+async def preview_adjust_batch(request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest):
+    """Pratinjau penyesuaian batch (BACA SAJA, nol tulis; penentu BA.rencana_sesuaikan == penulis): saldo batch + stok barang sebelum/sesudah, blok, isyarat."""
     ctx = get_user_context(request)
     pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            bl = Blok(True)
+            r = await BA.rencana_sesuaikan(conn, ctx["tenant_id"], batch_id, body, bl)
+            b, g = r["batch"], r["gudang"]
+            return {
+                "success": True, "can_proceed": not bl.daftar, "blocks": bl.untuk_respons(),
+                "batch_number": b["batch_number"] if b else None, "item_name": b["item_name"] if b else None,
+                "warehouse_name": g["name"] if g else None, "quantity_change": str(r["ubah"]),
+                "batch_before": str(r["batch_sebelum"]) if r["batch_sebelum"] is not None else None,
+                "batch_after": str(r["batch_sesudah"]) if r["batch_sesudah"] is not None else None,
+                "stock_before": str(r["stok_sebelum"]) if r["stok_sebelum"] is not None else None,
+                "stock_after": str(r["stok_sesudah"]) if r["stok_sesudah"] is not None else None,
+                "summary_text": (f"Batch {b['batch_number']} di {g['name']}: {BA.angka(r['batch_sebelum'])} \u2192 {BA.angka(r['batch_sesudah'])} "
+                                 f"{b['base_unit'] or ''}".strip()) if b and g else None,
+                "document_text": "Dibuat dokumen Penyesuaian Stok bernomor + jurnal persediaan + kartu stok." if not bl.daftar else None,
+            }
+
+
+@router.post("/{batch_id}/adjust", response_model=AdjustBatchResponse)
+async def adjust_batch_quantity(
+    request: Request, batch_id: UUID, body: AdjustBatchQuantityRequest, response: Response = None
+):
+    """BUG-164 (putusan pemilik 17 Nov): penyesuaian batch = dokumen Penyesuaian Stok bernomor + jurnal persediaan + kartu stok (penulis SAR yang SAMA
+    dgn penyesuaian cepat /items/{id}/stock-adjustment). Satu transaksi: kunci (barang, gudang) -> rencana -> draf + posting -> ledger ditandai batch_id
+    -> saldo batch di gudang itu bergerak. Pembatalan dokumen SA membalik batch lewat record_inventory_reversal. Respons lama tetap + nomor dokumen."""
+    from . import stock_adjustments as SAR
+    from ..schemas.stock_adjustments import CreateStockAdjustmentRequest
+    from ..services import idem_buat
+
+    ctx = get_user_context(request)
+    tid = ctx["tenant_id"]
+    pool = await get_pool()
+    await SAR._ensure_stock_adj_role_preconditions(pool, tid)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tid)
+            _kp, _sd, _lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "ITEM_BATCH_ADJ", str(batch_id), body.model_dump(mode="json"), response)
+            if _lama is not None:
+                return _lama
+            pra = await BA.muat_batch(conn, tid, batch_id)
+            if not pra:
+                raise GalatBerkode(404, "BATCH_TIDAK_DITEMUKAN", "Batch tidak ditemukan.")
+            g0 = await SS.gudang(conn, tid, body.warehouse_id, Blok(False))
+            # Law 13: kunci per (barang, gudang) SEBELUM membaca stok -- SAMA dgn penyesuaian cepat -- lalu kunci buat per barang
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK:{pra['item_id']}:{g0['id']}")
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"STOCK_ADJ_CREATE:{pra['item_id']}")
+            r = await BA.rencana_sesuaikan(conn, tid, batch_id, body, Blok(False), kunci=True)
+            b, g, ubah = r["batch"], r["gudang"], r["ubah"]
+            tgl = await tanggal_dokumen(conn, tid)  # t10-tanggal-bisnis
+            catatan = " - ".join(x for x in (f"Batch {b['batch_number']}", body.reason, body.notes) if x)
+            req = CreateStockAdjustmentRequest(
+                adjustment_date=tgl, adjustment_type="increase" if ubah > 0 else "decrease", warehouse_id=str(g["id"]), notes=catatan,
+                items=[{"product_id": str(b["item_id"]), "quantity_adjustment": ubah, "reason_detail": body.reason}])
+            r_buat = await SS.rencana_buat(conn, tid, req, Blok(False))
+            sa_id, sa_number, _total = await SAR._buat_draf(conn, ctx, req, r_buat)
+            r_post = await SS.rencana_posting(conn, tid, sa_id, Blok(False), kunci=True, counter_account_id=body.counter_account_id or None)
+            journal_id, journal_number = await SAR._tulis_posting(conn, ctx, sa_id, r_post)
+
+            # tandai gerak kartu stok dokumen ini dgn batch -> pembatalan SA membalik saldo batch (record_inventory_reversal membaca ledger.batch_id)
             await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-
-            batch = await conn.fetchrow(
-                "SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2",
-                batch_id,
-                ctx["tenant_id"],
-            )
-
-            if not batch:
-                raise HTTPException(status_code=404, detail="Batch not found")
-
-            # Update warehouse stock
+                "UPDATE inventory_ledger SET batch_id = $3 WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 AND product_id = $4",
+                tid, sa_id, batch_id, b["item_id"])
             await conn.execute(
                 """
                 INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (batch_id, warehouse_id)
                 DO UPDATE SET quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
-                              updated_at = NOW()
+                              last_movement_date = NOW(), updated_at = NOW()
                 """,
-                ctx["tenant_id"],
-                batch_id,
-                body.warehouse_id,
-                body.quantity_change,
-            )
+                tid, batch_id, g["id"], ubah)
+            await conn.execute(
+                "UPDATE item_batches SET status = 'depleted' WHERE id = $1 AND tenant_id = $2 AND current_quantity <= 0 AND status = 'active'",
+                batch_id, tid)
 
-            # Get updated batch
-            row = await conn.fetchrow(
-                "SELECT * FROM item_batches WHERE id = $1", batch_id
-            )
-
+            row = await conn.fetchrow("SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
             ws = await conn.fetchrow(
                 """
                 SELECT bws.*, w.name as warehouse_name
@@ -429,23 +485,14 @@ async def adjust_batch_quantity(
                 JOIN warehouses w ON bws.warehouse_id = w.id
                 WHERE bws.batch_id = $1 AND bws.warehouse_id = $2
                 """,
-                batch_id,
-                body.warehouse_id,
-            )
-
-            item = await conn.fetchrow(
-                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
-                row["item_id"],
-            )
-
-            return AdjustBatchResponse(
+                batch_id, g["id"])
+            hasil = AdjustBatchResponse(
                 data=ItemBatchData(
-                    **dict(row),
-                    item_code=item["code"] if item else None,
-                    item_name=item["name"] if item else None,
-                ),
+                    **dict(row), item_code=b["item_code"], item_name=b["item_name"], base_unit=b["base_unit"],
+                    **BA.hiasi(dict(row) | {"base_unit": b["base_unit"]}, tgl)),
                 warehouse_stock=BatchWarehouseStock(**dict(ws)),
-            )
+                adjustment_id=sa_id, adjustment_number=sa_number, journal_id=journal_id, journal_number=journal_number)
+            return await idem_buat.simpan(conn, ctx, _kp, _sd, "ITEM_BATCH_ADJ", hasil.model_dump(mode="json"), sa_id)
 
 
 @router.get(
