@@ -42,6 +42,8 @@ class ConnH:
 
     async def fetch(self, sql, *a):
         self._c(sql, a)
+        if "FROM unit_conversions" in sql:   # BE-B (BUG-108): konversi satuan barang -- tak ada konversi di fake ini
+            return []
         return [ROW]
 
     async def close(self):

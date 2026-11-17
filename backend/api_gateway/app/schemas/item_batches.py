@@ -11,6 +11,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from .aksi_tersedia import AksiTersediaPeta
+
 
 # ============================================================================
 # TYPES
@@ -118,7 +120,7 @@ class ItemBatchData(BaseModel):
     expiry_text: Optional[str] = None
     stock_text: Optional[str] = None
     position_text: Optional[str] = None
-    aksi_tersedia: Optional[dict] = None
+    aksi_tersedia: Optional[AksiTersediaPeta] = None
     aksi_semua: Optional[List[str]] = None
 
 

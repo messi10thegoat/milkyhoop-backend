@@ -22,6 +22,8 @@ class _Conn:
 
     async def fetch(self, sql, *a):
         self.sql.append(sql)
+        if "FROM unit_conversions" in sql:   # BE-B (BUG-108)
+            return []
         baris = lambda i, qin, qout, snap, saldo: {  # noqa: E731
             "id": f"r{i}", "movement_type": "SALE", "movement_date": None, "source_type": "INVOICE_FULFILLMENT", "source_id": None,
             "source_number": f"INV-{i}", "quantity_in": qin, "quantity_out": qout, "quantity_balance": snap, "saldo_berjalan": saldo,

@@ -38,6 +38,8 @@ class Conn:
 
     async def fetch(self, sql, *a):
         self.sql.append(sql)
+        if "FROM unit_conversions" in sql:   # BE-B (BUG-108)
+            return []
         return [{"id": uuid.uuid4(), "movement_type": "OUT", "movement_date": datetime(2026, 9, 26),
                  "source_type": "INVOICE_FULFILLMENT", "source_id": uuid.uuid4(), "source_number": "SJ-1",
                  "quantity_in": 0, "quantity_out": 2, "quantity_balance": 8, "saldo_berjalan": 8, "unit_cost": 1, "total_cost": 2,

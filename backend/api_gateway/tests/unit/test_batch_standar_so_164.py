@@ -400,3 +400,22 @@ def test_daftar_parameter_cocok_dengan_placeholder_untuk_semua_kunci(monkeypatch
             assert tertinggi == len(args), (kunci, status, sql, args)
     for kunci in BA.KUNCI:
         assert (kunci in BA.KUNCI_BERTANGGAL) == ("{h}" in (BA.syarat(kunci, "{h}") or "")), kunci   # daftar kunci bertanggal == syarat yang memakai placeholder
+
+
+def test_patch_status_karantina_ditolak_409_lewat_rencana_bukan_sekadar_teks_sumber(monkeypatch):
+    """Perilaku, bukan teks sumber (sabotase 'if False:' lolos tes sumber): PATCH status=quarantine pada batch yang SUDAH karantina -> 409 sebelum UPDATE apa pun."""
+    k = Kon()
+    pasang(monkeypatch, k)
+    kb = baris_batch("quarantine")
+
+    async def muat(conn, tid, bid, kunci=False):
+        return kb
+    monkeypatch.setattr(BA, "muat_batch", muat)
+    from app.schemas.item_batches import UpdateItemBatchRequest
+    with pytest.raises(GalatBerkode) as e:
+        run(IB.update_item_batch(req({}), B_ID, UpdateItemBatchRequest(status="quarantine")))
+    assert e.value.status_code == 409 and e.value.code == "BATCH_AKSI_TIDAK_TERSEDIA"
+    assert not any("UPDATE item_batches" in s for s, _ in k.exe)
+    with pytest.raises(GalatBerkode) as e2:                                         # jalur POST /status = penulis yang sama
+        run(IB.set_batch_status(req({}), B_ID, SetBatchStatusRequest(status="quarantine")))
+    assert e2.value.code == "BATCH_AKSI_TIDAK_TERSEDIA"
