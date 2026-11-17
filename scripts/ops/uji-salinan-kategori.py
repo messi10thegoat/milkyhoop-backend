@@ -28,6 +28,11 @@ def req(tid):
     return r
 
 
+def iid(x):
+    d = x.data if hasattr(x, "data") else x["data"]
+    return uuid.UUID(str(d["id"]))
+
+
 async def akun_tenant(conn, tid, tipe, kata=None):
     sql = "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND account_type = ANY($2::text[]) AND is_active AND NOT is_header"
     if kata:
@@ -51,7 +56,7 @@ async def satu(conn, tid):
     r = req(tid)
     nama = f"UJI-Kat-{uuid.uuid4().hex[:6]}"
     c = await IT.create_category(r, CreateCategoryRequest(name=nama))
-    kid = c["id"]
+    kid = str(c.id)
     d0 = (await IT.get_category_detail(r, uuid.UUID(kid)))["data"]
     cek(f"{tid} detail kategori baru: akun kosong + teks + aksi gabung/pindahkan_barang", d0["akun_text"] == "Tanpa akun bawaan" and all(v is None for v in d0["akun"].values())
         and {"gabung", "pindahkan_barang", "atur_akun"} <= set(d0["aksi_tersedia"]) and d0["aksi_tersedia"]["pindahkan_barang"]["tersedia"] is False, d0)
@@ -73,7 +78,7 @@ async def satu(conn, tid):
 
     # barang SEBELUM akun kategori diisi
     b_lama = await IT.create_item(r, CreateItemRequest(name=f"{nama} lama", base_unit="Pcs", item_type="goods", track_inventory=True, kategori=nama))
-    lama_id = uuid.UUID(str(b_lama.data.id if hasattr(b_lama, "data") else b_lama["data"]["id"]))
+    lama_id = iid(b_lama)
     ref = await barang(conn, tid, lama_id)
 
     w = await IT.set_akun_kategori(r, uuid.UUID(kid), semua)
@@ -91,16 +96,16 @@ async def satu(conn, tid):
     pv = (await IT.preview_create_item(r, {"name": f"{nama} baru", "base_unit": "Pcs", "item_type": "goods", "track_inventory": True, "kategori": nama}))["data"]
     cek(f"{tid} pratinjau Buat Barang: akun_dari_kategori + teks", pv["ok"] and pv["rencana"]["akun_dari_kategori"] and "mengikuti kategori" in pv["rencana"]["akun_dari_kategori_text"], pv)
     n1 = await IT.create_item(r, CreateItemRequest(name=f"{nama} baru", base_unit="Pcs", item_type="goods", track_inventory=True, kategori=nama))
-    id1 = uuid.UUID(str(n1.data.id if hasattr(n1, "data") else n1["data"]["id"]))
+    id1 = iid(n1)
     row = await barang(conn, tid, id1)
     cek(f"{tid} barang BARU menyalin 4 akun kategori", [str(row[k]) for k in ("sales_account_id", "inventory_account_id", "cogs_account_id", "purchase_account_id")] == [jual, pers, hpp, beli], dict(row))
     # eksplisit menang
     n2 = await IT.create_item(r, CreateItemRequest(name=f"{nama} eksplisit", base_unit="Pcs", item_type="goods", track_inventory=True, kategori=nama, sales_account_id=beli))
-    row2 = await barang(conn, tid, uuid.UUID(str((n2.data.id if hasattr(n2, "data") else n2["data"]["id"]))))
+    row2 = await barang(conn, tid, iid(n2))
     cek(f"{tid} isian eksplisit menang atas kategori (penjualan), sisanya disalin", str(row2["sales_account_id"]) == beli and str(row2["cogs_account_id"]) == hpp, dict(row2))
     # jasa: tanpa persediaan/HPP dari kategori
     n3 = await IT.create_item(r, CreateItemRequest(name=f"{nama} jasa", base_unit="Jam", item_type="service", track_inventory=False, kategori=nama))
-    row3 = await barang(conn, tid, uuid.UUID(str((n3.data.id if hasattr(n3, "data") else n3["data"]["id"]))))
+    row3 = await barang(conn, tid, iid(n3))
     cek(f"{tid} jasa: persediaan/HPP tidak disalin, penjualan disalin", row3["inventory_account_id"] is None and row3["cogs_account_id"] is None and str(row3["sales_account_id"]) == jual, dict(row3))
 
     # ubah akun kategori: barang lama + baru TAK berubah
@@ -109,8 +114,8 @@ async def satu(conn, tid):
     # kategori tanpa akun = perilaku lama (sama dgn barang tanpa kategori)
     n4 = await IT.create_item(r, CreateItemRequest(name=f"{nama} polos", base_unit="Pcs", item_type="goods", track_inventory=True))
     n5 = await IT.create_item(r, CreateItemRequest(name=f"{nama} polos2", base_unit="Pcs", item_type="goods", track_inventory=True, kategori=nama))
-    r4 = await barang(conn, tid, uuid.UUID(str((n4.data.id if hasattr(n4, "data") else n4["data"]["id"]))))
-    r5 = await barang(conn, tid, uuid.UUID(str((n5.data.id if hasattr(n5, "data") else n5["data"]["id"]))))
+    r4 = await barang(conn, tid, iid(n4))
+    r5 = await barang(conn, tid, iid(n5))
     cek(f"{tid} penjualan/HPP dikosongkan di kategori: barang baru memakai bawaan peran seperti tanpa kategori (HPP)", r5["cogs_account_id"] == r4["cogs_account_id"] and r5["sales_account_id"] is None, (dict(r4), dict(r5)))
 
     # daftar objek: kategori + akun + aksi gabung/pindahkan_barang
