@@ -1,5 +1,5 @@
 # Konfig gerbang unit G3 Gudang (pratinjau + penulis satu penentu, kode otomatis, utama nonaktif = blok, ber-stok = peringatan, jenis_text). Tiap sabotase WAJIB membuat tes merah.
-W=/root/mh-g3; CABANG=feat/gudang-g3; NAMA_JENDELA=g3
+W=/root/mh-g3r2; CABANG=feat/gudang-g3-r2; NAMA_JENDELA=g3
 POLA_UNIT='gudang|warehouse|g3|izin_rute|sql_placeholder|permission|persediaan_standar|pemindahan|idem|aksi_tersedia'
 HARNESS=scripts/ops/uji-salinan-g3.sh
 PENANDA_BERKAS=services/gudang_rencana.py; PENANDA='async def rencana_status'
