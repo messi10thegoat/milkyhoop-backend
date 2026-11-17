@@ -78,7 +78,7 @@ async def satu(conn, tid):
     d = await coba(IB.get_item_batch(req(tid), bid))
     dd = d["hasil"]["data"] if d["ok"] else {}
     cek(f"{tid} detail: aksi_tersedia + position_text", d["ok"] and set(dd.get("aksi_tersedia", {})) == {"sesuaikan", "ubah", "karantina", "aktifkan"} and dd.get("position_text"), d)
-    ls = await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None))
+    ls = await coba(IB.list_item_batches(req(tid), skip=0, limit=100, item_id=pid, status=None, search=None, aksi=None))
     cek(f"{tid} daftar: baris batch uji punya status_text", ls["ok"] and any(x["id"] == str(bid) and x["status_text"] == "Aktif" for x in ls["hasil"]["data"]), ls)
 
     # pratinjau nol tulis

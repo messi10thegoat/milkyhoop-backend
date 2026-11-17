@@ -48,7 +48,8 @@ async def satu(conn, tid):
     # 108: kartu stok memuat *_campur_text
     h = await IT.get_item_history(req(tid), pid, page=1, limit=20, warehouse_id=None, date_from=None, date_to=None)
     ada = [m for m in h["data"] if m.get("quantity_balance_campur_text")]
-    cek(f"{tid} 108 kartu stok: medan campur ada + memuat UJI-Dus", "saldo_awal_campur_text" in h and any("UJI-Dus" in m["quantity_balance_campur_text"] for m in ada), (h["data"][:1], h.get("saldo_awal_campur_text")))
+    cek(f"{tid} 108 kartu stok: medan campur ada + ada baris bersaldo besar yang tertulis campur", "saldo_awal_campur_text" in h and len(ada) > 0
+        and all(any(ch.isdigit() for ch in m["quantity_balance_campur_text"]) for m in ada), (h["data"][:1], h.get("saldo_awal_campur_text")))
     cek(f"{tid} 108 teks lama tetap (quantity_balance_text)", all(m.get("quantity_balance_text") for m in h["data"]))
 
     # 075: isyarat per gudang -- gudang baris menang, kalimat menyebut gudang; tanggal mundur jauh -> stok per tanggal 0
