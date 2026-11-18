@@ -12,7 +12,9 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
+from . import satuan_dasar as SD   # BUG-123: satuan baris -> satuan dasar (penentu SATU jalur stok, seperti Pemindahan K1)
 from . import teks_galat as tg
+from . import teks_laporan_persediaan as TLP   # BUG-108/123: teks campur satuan besar
 from .bayar_keluar_rencana import Blok
 from .role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
 
@@ -207,6 +209,8 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
     BUG-204: + aturan jenis/tanda/non-stok/selisih 0/ganda/fisik (blok berkode) dan isyarat harga pokok 0 (ke `isyarat` bila diberikan)."""
     from ..routers.stock_adjustments import get_product_info
     hasil, terlihat, cache = [], set(), {}
+    ktx = await SD.muat(conn, tid, SD.ids_bersatuan([{"product_id": getattr(i, "product_id", None), "unit": getattr(i, "unit", None)} for i in (items or [])]))
+    konv_semua = await _konversi(conn, tid, [getattr(i, "product_id", None) for i in (items or [])])
     for idx, item in enumerate(items or [], 1):
         try:
             pid = UUID(str(item.product_id))
@@ -230,7 +234,14 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
             continue
         terlihat.add((pid, gid))
         sebelum = await stok_gudang(conn, tid, pid, gid) if gid else NOL
-        ubah = _d(item.quantity_adjustment)
+        # BUG-123: jumlah bersatuan (14 Karton) -> SATUAN DASAR oleh server; satuan tanpa konversi = blok berkalimat (+field). Baris draf SELALU dalam satuan dasar.
+        unit_masuk = (getattr(item, "unit", None) or "").strip() or None
+        hq = SD.hitung(ktx, pid, unit_masuk, item.quantity_adjustment, "konversi", "Penyesuaian")
+        hf = SD.hitung(ktx, pid, unit_masuk, item.physical_quantity, "konversi", "Penyesuaian") if item.physical_quantity is not None else None
+        if hq["blok"]:
+            bl.galat(hq["blok"]["code"], hq["blok"]["status"], hq["blok"]["message"], field=f"items[{idx - 1}].unit")
+            continue
+        ubah = hq["qty_dasar"]
         sistem = fisik = None
         if tipe == "recount":
             if item.physical_quantity is None:
@@ -239,7 +250,7 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
             if _d(item.physical_quantity) < 0:
                 bl.galat("PENYESUAIAN_FISIK_NEGATIF", 422, f"Stok fisik {nama} tidak boleh negatif.")
                 continue
-            fisik, sistem = _d(item.physical_quantity), sebelum
+            fisik, sistem = hf["qty_dasar"], sebelum
             ubah = fisik - sistem
         elif ARAH_JENIS.get(tipe) and ubah != 0 and (ubah > 0) != (ARAH_JENIS[tipe] > 0):
             bl.galat("PENYESUAIAN_TANDA_TIDAK_COCOK", 422,
@@ -270,7 +281,21 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
                       "reason_detail": alasan, "system_quantity": sistem, "physical_quantity": fisik, "line_number": idx,
                       "warehouse_id": wid_simpan, "source_transfer_id": transfer["id"] if transfer is not None else None,
-                      "source_transfer_number": transfer["transfer_number"] if transfer is not None else None})
+                      "source_transfer_number": transfer["transfer_number"] if transfer is not None else None,
+                      "unit_masuk": unit_masuk if unit_masuk and hq["faktor"] != 1 else None, "jumlah_masuk": _d(item.physical_quantity if tipe == "recount" else item.quantity_adjustment) if unit_masuk and hq["faktor"] != 1 else None,
+                      "konversi": konv_semua.get(str(pid), [])})
+    return hasil
+
+
+async def _konversi(conn, tid: str, product_ids) -> dict:
+    """BUG-123: {str(product_id): [(satuan besar, faktor>1) urut faktor menurun]} -- bahan teks campur ("14 Karton 4 Pcs"); satu query per dokumen."""
+    ids = list({str(p) for p in product_ids if p})
+    if not ids:
+        return {}
+    hasil: dict = {}
+    for r in await conn.fetch("SELECT product_id, conversion_unit, conversion_factor FROM unit_conversions WHERE tenant_id = $1 AND product_id = ANY($2::uuid[]) "
+                              "AND COALESCE(is_active, true) AND conversion_factor > 1 ORDER BY conversion_factor DESC", tid, ids):
+        hasil.setdefault(str(r["product_id"]), []).append((r["conversion_unit"], r["conversion_factor"]))
     return hasil
 
 
@@ -565,7 +590,12 @@ def _draf_json(b: dict) -> dict:
             "quantity_after": str(b["quantity_after"]), "unit_cost": rp(b["unit_cost"]), "total_value": rp(b["total_value"]),
             "warehouse_id": str(b["warehouse_id"]) if b.get("warehouse_id") else None, "gudang_terkunci": bool(b.get("source_transfer_id")),
             "source_transfer_id": str(b["source_transfer_id"]) if b.get("source_transfer_id") else None, "source_transfer_number": b.get("source_transfer_number"),
-            "reason_detail": b.get("reason_detail")}
+            "reason_detail": b.get("reason_detail"),
+            # BUG-123: jumlah yang diketik (satuan besar) + teks campur dari server; baris selalu dalam satuan dasar
+            "unit_input": b.get("unit_masuk"), "quantity_input": str(b["jumlah_masuk"]) if b.get("jumlah_masuk") is not None else None,
+            "quantity_before_campur_text": TLP.campur(b["quantity_before"], b["unit"], b.get("konversi")),
+            "quantity_adjustment_campur_text": TLP.campur(b["quantity_adjustment"], b["unit"], b.get("konversi")),
+            "quantity_after_campur_text": TLP.campur(b["quantity_after"], b["unit"], b.get("konversi"))}
 
 
 async def pratinjau(pool, tid: str, rencana, payload) -> dict:

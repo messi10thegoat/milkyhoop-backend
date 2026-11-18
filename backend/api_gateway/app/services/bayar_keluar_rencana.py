@@ -35,10 +35,10 @@ class Blok:
         self.pratinjau = pratinjau
         self.daftar: list = []
 
-    def galat(self, code: str, status: int, detail) -> None:
-        if not self.pratinjau:  # T-G: kalimat -> galat BERKODE (detail tetap kalimat; kode = kode blok pratinjau)
-            raise GalatBerkode(status, code, detail) if isinstance(detail, str) else HTTPException(status_code=status, detail=detail)
-        self.daftar.append({"code": code, "message": detail if isinstance(detail, str) else str(detail), "status": status})
+    def galat(self, code: str, status: int, detail, field: Optional[str] = None) -> None:
+        if not self.pratinjau:  # T-G: kalimat -> galat BERKODE (detail tetap kalimat; kode = kode blok pratinjau); BUG-123: field opsional
+            raise GalatBerkode(status, code, detail, field) if isinstance(detail, str) else HTTPException(status_code=status, detail=detail)
+        self.daftar.append({"code": code, "message": detail if isinstance(detail, str) else str(detail), "status": status, **({"field": field} if field else {})})
 
     async def coba(self, code: str, aw):
         """Jalankan pemeriksaan lama yang MELEMPAR HTTPException; pratinjau -> blok, tulis -> lempar ulang apa adanya."""
