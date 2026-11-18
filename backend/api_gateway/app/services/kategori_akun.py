@@ -3,7 +3,7 @@
 SATU penentu: rencana_akun (murni; pratinjau == penulis) dan salin_ke_barang (dipakai _siapkan_buat_barang = pratinjau Buat Barang == POST /items == impor).
 Aturan pemilik: akun kategori DISALIN ke barang BARU saat dibuat; isian eksplisit di barang menang; mengubah akun kategori / kategori barang TAK menyentuh barang dan jurnal lama.
 Tipe akun (diukur di CoA nyata 18 Nov: ASSET, COGS, EXPENSE, REVENUE, OTHER_INCOME ...): penjualan = REVENUE/OTHER_INCOME; persediaan = ASSET bernama persediaan/inventory
-(sama dgn GET /items/accounts/inventory); HPP = COGS/EXPENSE; pembelian = EXPENSE/COGS atau persediaan (ASSET persediaan). Akun harus milik tenant, aktif, bukan header."""
+(sama dgn GET /items/accounts/inventory); HPP = COGS saja; pembelian = EXPENSE/COGS atau persediaan (ASSET persediaan). Akun harus milik tenant, aktif, bukan header."""
 import contextvars
 import json
 import uuid
@@ -14,7 +14,7 @@ from .barang_aksi import _blok, _hasil
 JENIS = ("penjualan", "persediaan", "hpp", "pembelian")
 KOLOM = {"penjualan": "sales_account_id", "persediaan": "inventory_account_id", "hpp": "cogs_account_id", "pembelian": "purchase_account_id"}
 LABEL = {"penjualan": "Penjualan", "persediaan": "Persediaan", "hpp": "HPP", "pembelian": "Pembelian"}
-TIPE = {"penjualan": ("REVENUE", "OTHER_INCOME"), "hpp": ("COGS", "EXPENSE"), "pembelian": ("EXPENSE", "COGS")}
+TIPE = {"penjualan": ("REVENUE", "OTHER_INCOME"), "hpp": ("COGS",), "pembelian": ("EXPENSE", "COGS")}   # hpp = HANYA COGS (ikut Accurate; diukur prod 18 Nov: semua akun HPP aktif bertipe COGS)
 SELECT_AKUN = ", ".join(
     f"(SELECT jsonb_build_object('id', a.id, 'kode', a.account_code, 'nama', a.name, 'aktif', a.is_active)::text FROM chart_of_accounts a WHERE a.id = c.{KOLOM[j]}) AS akun_{j}"
     for j in JENIS)
@@ -33,6 +33,19 @@ def tipe_sah(jenis: str, a: dict) -> bool:
     if jenis == "pembelian" and _persediaan(a):
         return True
     return a.get("account_type") in TIPE[jenis]
+
+
+def akun_sah(jenis: str, a: dict) -> bool:
+    """SATU penentu akun yang boleh dipilih untuk <jenis>: aktif + BUKAN header + tipe sah. Dipakai penulis kategori, salin ke barang, dan SEMUA daftar pilihan
+    (GET /items/accounts/<jenis> + GET /items/categories/akun-pilihan)."""
+    return bool(a.get("is_active", True)) and not a.get("is_header") and tipe_sah(jenis, a)
+
+
+async def daftar_akun(conn, tid: str, jenis: str) -> list:
+    """Daftar pilihan akun <jenis> milik tenant (urut kode), disaring oleh akun_sah -> [{id, code, name, account_type, text}]. Hanya DAFTAR; akun yang sudah tersimpan tak disentuh."""
+    rows = await conn.fetch("SELECT id, account_code, name, account_type, is_active, is_header FROM chart_of_accounts WHERE tenant_id = $1 AND is_active = true AND NOT COALESCE(is_header, false) ORDER BY account_code ASC", tid)
+    return [{"id": str(r["id"]), "code": r["account_code"], "name": r["name"], "account_type": r["account_type"], "text": f"{r['account_code']} {r['name']}"}
+            for r in map(dict, rows) if akun_sah(jenis, r)]
 
 
 def _teks_akun(a: Optional[dict]) -> Optional[str]:
@@ -135,7 +148,7 @@ async def salin_ke_barang(conn, tid: str, body) -> list:
     disalin = []
     for j, aid in kandidat.items():
         a = sah.get(str(aid))
-        if a and a["is_active"] and not a.get("is_header") and tipe_sah(j, a):
+        if a and akun_sah(j, a):
             setattr(body, KOLOM[j], str(aid))
             disalin.append(j)
     if disalin:

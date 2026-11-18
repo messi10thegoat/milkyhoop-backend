@@ -2017,141 +2017,53 @@ async def list_accounts(request: Request):
 # =============================================================================
 
 
-@router.get("/items/accounts/sales", response_model=CoaAccountsResponse)
-async def list_sales_accounts(request: Request):
-    """
-    Get list of INCOME accounts from Chart of Accounts for sales.
-
-    Returns actual CoA accounts instead of hardcoded list.
-    Use these for item sales_account_id selection.
-    """
+async def _daftar_akun_sah(request: Request, jenis: str):
+    """Isi GET /items/accounts/<jenis>: SATU penentu KAK.daftar_akun (sama dengan penulis kategori dan /items/categories/akun-pilihan)."""
     tenant_id = get_tenant_id(request)
     conn = None
-
     try:
         conn = await get_db_connection()
-
-        query = f"""
-            SELECT id, account_code, name, account_type
-            FROM chart_of_accounts
-            WHERE tenant_id = $1
-              AND account_type IN ('REVENUE', 'OTHER_INCOME')
-              AND is_active = true
-            ORDER BY account_code ASC
-        """
-        rows = await conn.fetch(query, tenant_id)
-
-        accounts = [
-            CoaAccountOption(
-                id=str(row["id"]),
-                code=row["account_code"],
-                name=row["name"],
-                account_type=row["account_type"],
-            )
-            for row in rows
-        ]
-
-        return CoaAccountsResponse(success=True, accounts=accounts)
-
+        akun = await KAK.daftar_akun(conn, tenant_id, jenis)
+        return CoaAccountsResponse(success=True, accounts=[CoaAccountOption(id=a["id"], code=a["code"], name=a["name"], account_type=a["account_type"]) for a in akun])
     except Exception as e:
-        logger.error(f"Error listing sales accounts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list sales accounts")
+        logger.error(f"Error listing {jenis} accounts: {e}")
+        raise HTTPException(status_code=500, detail="Gagal memuat daftar akun")
     finally:
         if conn:
             await conn.close()
+
+
+@router.get("/items/categories/akun-pilihan")
+async def akun_pilihan_kategori(request: Request, jenis: str = Query(...)):
+    """Pilihan akun untuk kategori barang (penjualan|persediaan|hpp|pembelian) -> {accounts:[{id,code,name,account_type,text}]}; SATU penentu dengan form Barang dan penulis kategori."""
+    if jenis not in KAK.JENIS:
+        raise HTTPException(status_code=422, detail={"detail": f"Jenis akun tak dikenal: {jenis}. Pilihan: {', '.join(KAK.JENIS)}.", "code": "AKUN_JENIS_TAK_DIKENAL", "message": f"Jenis akun tak dikenal: {jenis}.", "field": "jenis"})
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        return {"accounts": await KAK.daftar_akun(conn, tenant_id, jenis)}
+    finally:
+        if conn:
+            await conn.close()
+
+
+@router.get("/items/accounts/sales", response_model=CoaAccountsResponse)
+async def list_sales_accounts(request: Request):
+    """Daftar pilihan akun penjualan (SATU penentu KAK.akun_sah: aktif, bukan header, tipe sah; sama dengan penulis kategori)."""
+    return await _daftar_akun_sah(request, "penjualan")
 
 
 @router.get("/items/accounts/purchase", response_model=CoaAccountsResponse)
 async def list_purchase_accounts(request: Request):
-    """
-    Get list of EXPENSE accounts from Chart of Accounts for purchases.
-
-    Returns actual CoA accounts instead of hardcoded list.
-    Use these for item purchase_account_id selection.
-    """
-    tenant_id = get_tenant_id(request)
-    conn = None
-
-    try:
-        conn = await get_db_connection()
-
-        query = """
-            SELECT id, account_code, name, account_type
-            FROM chart_of_accounts
-            WHERE tenant_id = $1
-              AND account_type = 'EXPENSE'
-              AND is_active = true
-            ORDER BY account_code ASC
-        """
-        rows = await conn.fetch(query, tenant_id)
-
-        accounts = [
-            CoaAccountOption(
-                id=str(row["id"]),
-                code=row["account_code"],
-                name=row["name"],
-                account_type=row["account_type"],
-            )
-            for row in rows
-        ]
-
-        return CoaAccountsResponse(success=True, accounts=accounts)
-
-    except Exception as e:
-        logger.error(f"Error listing purchase accounts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list purchase accounts")
-    finally:
-        if conn:
-            await conn.close()
+    """Daftar pilihan akun pembelian (SATU penentu KAK.akun_sah: aktif, bukan header, tipe sah; sama dengan penulis kategori)."""
+    return await _daftar_akun_sah(request, "pembelian")
 
 
 @router.get("/items/accounts/inventory", response_model=CoaAccountsResponse)
 async def list_inventory_accounts(request: Request):
-    """
-    Get list of ASSET accounts suitable for inventory from Chart of Accounts.
-
-    Filters for accounts with 'persediaan' or 'inventory' in name,
-    or accounts starting with code '1-104' (inventory assets).
-    """
-    tenant_id = get_tenant_id(request)
-    conn = None
-
-    try:
-        conn = await get_db_connection()
-
-        query = """
-            SELECT id, account_code, name, account_type
-            FROM chart_of_accounts
-            WHERE tenant_id = $1
-              AND account_type = 'ASSET'
-              AND is_active = true
-              AND (
-                  name ILIKE '%persediaan%'
-                  OR name ILIKE '%inventory%'
-
-              )
-            ORDER BY account_code ASC
-        """
-        rows = await conn.fetch(query, tenant_id)
-
-        accounts = [
-            CoaAccountOption(
-                id=str(row["id"]),
-                code=row["account_code"],
-                name=row["name"],
-                account_type=row["account_type"],
-            )
-            for row in rows
-        ]
-
-        return CoaAccountsResponse(success=True, accounts=accounts)
-
-    except Exception as e:
-        logger.error(f"Error listing inventory accounts: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list inventory accounts")
-    finally:
-        if conn:
-            await conn.close()
+    """Daftar pilihan akun persediaan (SATU penentu KAK.akun_sah: aktif, bukan header, tipe sah; sama dengan penulis kategori)."""
+    return await _daftar_akun_sah(request, "persediaan")
 
 
 @router.get("/items/taxes", response_model=TaxOptionsResponse)
@@ -4250,51 +4162,8 @@ async def list_inventory_asset_accounts(request: Request):
 
 @router.get("/items/accounts/cogs", response_model=CoaAccountsResponse)
 async def list_cogs_accounts(request: Request):
-    """
-    Get list of COGS (Cost of Goods Sold) accounts from Chart of Accounts.
-
-    Filters for expense accounts related to cost of goods sold.
-    """
-    tenant_id = get_tenant_id(request)
-    conn = None
-
-    try:
-        conn = await get_db_connection()
-
-        query = """
-            SELECT id, account_code, name, account_type
-            FROM chart_of_accounts
-            WHERE tenant_id = $1
-              AND account_type IN ('EXPENSE', 'COGS')
-              AND is_active = true
-              AND (
-                  name ILIKE '%%hpp%%'
-                  OR name ILIKE '%%harga pokok%%'
-                  OR name ILIKE '%%cost of goods%%'
-                  OR name ILIKE '%%cogs%%'
-                  OR account_code LIKE '5-1%%'  -- Law 27: read filter
-              )
-            ORDER BY account_code ASC
-        """
-        rows = await conn.fetch(query, tenant_id)
-
-        accounts = [
-            CoaAccountOption(
-                id=str(row["id"]),
-                code=row["account_code"],
-                name=row["name"],
-                account_type=row["account_type"],
-            )
-            for row in rows
-        ]
-
-        return CoaAccountsResponse(success=True, accounts=accounts)
-    except Exception as e:
-        logger.error(f"Error fetching COGS accounts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            await conn.close()
+    """Daftar pilihan akun hpp (SATU penentu KAK.akun_sah: aktif, bukan header, tipe sah; sama dengan penulis kategori)."""
+    return await _daftar_akun_sah(request, "hpp")
 
 
 @router.post("/items/{item_id}/stock-adjustment")
