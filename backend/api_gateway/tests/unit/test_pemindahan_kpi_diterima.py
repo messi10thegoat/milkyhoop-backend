@@ -15,15 +15,15 @@ AWAL, AKHIR = date(2026, 11, 1), date(2026, 12, 1)
 
 def _baris():  # (status, received_date, total_value)
     return [("completed", date(2026, 11, 3), Decimal("100")), ("received", date(2026, 11, 9), Decimal("11.10")),
-            ("in_transit", None, Decimal("500")), ("draft", None, Decimal("700")), ("voided", date(2026, 11, 5), Decimal("900")),
+            ("in_transit", date(2026, 11, 7), Decimal("500")), ("draft", None, Decimal("700")), ("voided", date(2026, 11, 5), Decimal("900")),
             ("received", date(2026, 10, 31), Decimal("1000")), ("completed", date(2026, 12, 1), Decimal("2000"))]
 
 
 def _statuses(sql, alias):
-    m = re.search(r"FILTER \(WHERE (status[^)]*\)?)\s+AND received_date[^)]*\)\s*AS " + alias, sql, re.S) or \
-        re.search(r"FILTER \(WHERE (status[^)]*\)?)\s+AND received_date.*?\)\s*,\s*0\)\s*AS " + alias, sql, re.S)
-    assert m, alias
-    return set(re.findall(r"'(\w+)'", m.group(1)))
+    kepala = sql[:sql.index("AS " + alias)]
+    klausa = kepala[kepala.rindex("FILTER (WHERE"):]
+    assert "received_date" in klausa
+    return set(re.findall(r"'(\w+)'", klausa.split("received_date")[0]))
 
 
 def _ringkasan(baris):
