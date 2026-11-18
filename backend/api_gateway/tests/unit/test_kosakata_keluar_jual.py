@@ -59,7 +59,7 @@ def test_penulis_lewat_helper_terklasifikasi():
 # Fungsi yang MENULIS inventory_ledger lewat SQL mentah (terukur 26 Sep). Fungsi BARU -> merah sampai ditinjau
 # & source_type-nya diklasifikasi di services/kosakata_ledger.
 PENULIS_SQL = {
-    ("services/saldo_awal_stok.py", "catat_saldo_awal_stok"),  # 10 Okt: saldo awal barang = jurnal + kartu (items/inventory memakai ini)
+    ("services/saldo_awal_stok.py", "catat_saldo_awal_per_gudang"),  # 10 Okt: saldo awal barang = jurnal + kartu; 18 Nov: inti per gudang (catat_saldo_awal_stok = pembungkus)
     # penyesuaian-3: quick adjust items.py bukan penulis lagi (memakai _tulis_posting)
     ("services/pemindahan_barang.py", "_tulis_ledger"), ("services/sj_so.py", "tulis"),
     ("routers/production.py", "_reverse_inventory_ledger"), ("routers/production.py", "issue_materials"),

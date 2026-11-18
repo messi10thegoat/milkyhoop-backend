@@ -169,7 +169,7 @@ async def catat_saldo_awal_per_gudang(
                    id, tenant_id, product_id, product_code, product_name, movement_type, movement_date,
                    source_type, source_id, journal_id, source_number, quantity_in, quantity_out, quantity_balance,
                    unit_cost, total_cost, average_cost, warehouse_id, notes, created_at
-               ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $15, $11, $12, $13, $14, $16, NOW())""",
+               ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $16, $11, $12, $15, $13, $14, NOW())""",
             tenant_id, product_id, product_code, product_name, movement_type, tanggal, SUMBER, jurnal_id,
-            f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai_b, wac, wid, kum_qty, catatan)
+            f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai_b, wid, catatan, wac, kum_qty)
     return {"journal_id": jurnal_id, "journal_number": nomor, "nilai": nilai}

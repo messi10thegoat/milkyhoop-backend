@@ -167,9 +167,9 @@ def test_penulis_satu_jurnal_dua_baris_kartu_wac_berjalan(monkeypatch):
     assert len(jurnal) == 1 and jurnal[0][6] == D("33000.00")
     kartu = [a for s, a in k.exe if "INSERT INTO inventory_ledger" in s]
     assert len(kartu) == 2
-    # args: tenant, product, code, name, movement, tanggal, SUMBER, jurnal, source_no, qty, rate, nilai, wac, wid, saldo, catatan
-    assert kartu[0][9] == D("24") and kartu[0][12] == D("1000") and kartu[0][14] == D("24")
-    assert kartu[1][9] == D("6") and kartu[1][12] == D("1100.0000") and kartu[1][14] == D("30")     # (24000+9000)/30
+    # args: tenant, product, code, name, movement, tanggal, SUMBER, jurnal, source_no, qty, rate, nilai, wid, catatan, wac, saldo
+    assert kartu[0][9] == D("24") and kartu[0][14] == D("1000") and kartu[0][15] == D("24")
+    assert kartu[1][9] == D("6") and kartu[1][14] == D("1100.0000") and kartu[1][15] == D("30")     # (24000+9000)/30
     assert kartu[0][4] == "OPENING_BALANCE" and kartu[1][4] == "OPENING_BALANCE"
     assert sum(1 for s, _ in k.exe if "INSERT INTO journal_lines" in s) == 2
 
@@ -177,7 +177,7 @@ def test_penulis_satu_jurnal_dua_baris_kartu_wac_berjalan(monkeypatch):
 def test_penulis_satu_gudang_persis_perilaku_lama(monkeypatch):
     k, r = tulis([{"warehouse_id": W1, "qty": D("5"), "rate": D("1000")}], monkeypatch)
     kartu = [a for s, a in k.exe if "INSERT INTO inventory_ledger" in s]
-    assert len(kartu) == 1 and kartu[0][12] == D("1000") and kartu[0][14] == D("5") and r["nilai"] == D("5000.00")
+    assert len(kartu) == 1 and kartu[0][14] == D("1000") and kartu[0][15] == D("5") and r["nilai"] == D("5000.00")
 
 
 def test_wrapper_lama_masih_ada_dan_memanggil_inti():

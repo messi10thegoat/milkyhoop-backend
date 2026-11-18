@@ -69,7 +69,7 @@ async def bersih(conn, tid):
     per = {str(x["warehouse_id"]): x for x in led}
     cek(f"{tid} tulis: 2 baris kartu OPENING_BALANCE per gudang (24 & 5 satuan dasar)", len(led) == 2 and all(x["movement_type"] == "OPENING_BALANCE" for x in led)
         and D(per[str(g1["id"])]["quantity_in"]) == 24 and D(per[str(g2["id"])]["quantity_in"]) == 5, [dict(x) for x in led])
-    cek(f"{tid} tulis: harga per satuan dasar (12000/12=1000) & WAC berjalan", D(per[str(g1["id"])]["unit_cost"]) == 1000 and D(per[str(g2["id"])]["average_cost"]) == 1000 and D(led[-1]["quantity_balance"]) == 29, [dict(x) for x in led])
+    cek(f"{tid} tulis: harga per satuan dasar (12000/12=1000) & WAC berjalan", D(per[str(g1["id"])]["unit_cost"]) == 1000 and D(per[str(g2["id"])]["average_cost"]) == 1000 and max(D(x["quantity_balance"]) for x in led) == 29, [dict(x) for x in led])
     jid = {x["journal_id"] for x in led}
     jl = await conn.fetch("SELECT l.debit, l.credit, c.account_code FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_id AND e.tenant_id = $1 JOIN chart_of_accounts c ON c.id = l.account_id AND c.tenant_id = $1 WHERE e.id = ANY($2::uuid[])", tid, list(jid))
     cek(f"{tid} tulis: SATU jurnal, Dr = Cr = 29000 (24000+5000)", len(jid) == 1 and sum(D(x["debit"]) for x in jl) == 29000 == sum(D(x["credit"]) for x in jl) and len(jl) == 2, [dict(x) for x in jl])
