@@ -12,7 +12,7 @@ docker exec $P sh -c "pg_dump -U postgres -d milkydb --no-owner --no-acl -Fc -f 
 docker exec $P psql -U postgres -At -c "CREATE DATABASE $S" >/dev/null || exit 2
 docker exec $P pg_restore -U postgres -d $S --no-owner --no-acl /tmp/b286_$TS.dump >/tmp/b286_restore.log 2>&1
 echo "restore galat: $(grep -c ERROR /tmp/b286_restore.log)"; docker exec $P rm -f /tmp/b286_$TS.dump
-timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S -e KELUAR=/o/b286.json -e TEGAS=${TEGAS:-0} \
+timeout 900 docker run --rm --network milkyhoop_dev_network --env-file /root/milkyhoop-dev/.env -e DB_NAME=$S -e KELUAR=/o/b286.json -e TEGAS=${TEGAS:-1} \
   -e TENANT=${TENANT:-kaos-biru-konveksi,pt-kita-nyawit-bersama} -v "$POHON/backend:/app/backend:ro" -v "$D/uji-ukur-bug286.py:/uji.py:ro" -v "$O:/o" \
   -w /app/backend/api_gateway --entrypoint python milkyhoop-dev-api_gateway:latest /uji.py 2>&1 | grep -E "^\[|Traceback|File |Error|BUKAN"
 rc=${PIPESTATUS[0]}; echo "($POHON @ $(git -C "$POHON" rev-parse --short HEAD))"; echo "rc=$rc"
