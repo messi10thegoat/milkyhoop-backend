@@ -7,6 +7,8 @@ peran COGS_SERVICE; barang non-stok = COGS_SALES (SATU aturan dengan tagihan_aks
 server (tak membuat akun, tak menebak). pajak_beli/pajak_jual bawaan kosong = "Tanpa pajak" (fokus non-PKP)."""
 from typing import Optional
 
+from . import label_rencana as LR
+
 # butir -> (kolom barang, jenis) ; jenis "akun" dicari di peta akun, "pajak" di peta pajak
 BUTIR = {
     "akun_penjualan": ("sales_account_id", "akun"),
@@ -83,18 +85,22 @@ async def untuk_barang(conn, tenant_id: str, barang: dict) -> dict:
     return berlaku(barang, usaha, akun, pajak)
 
 
+LABEL_BUTIR = {"akun_penjualan": LR.LABEL_AKUN["penjualan"], "akun_pembelian": LR.LABEL_AKUN["pembelian"], "akun_persediaan": LR.LABEL_AKUN["persediaan"],
+               "akun_hpp": LR.LABEL_AKUN["hpp"], "pajak_jual": LR.LABEL_PAJAK["jual"], "pajak_beli": LR.LABEL_PAJAK["beli"]}
 SUMBER_TEKS = {"barang": "Diisi di barang", "bawaan_usaha": "Bawaan usaha", "kategori": "Dari kategori"}
 JENIS_KE_BUTIR = {"penjualan": "akun_penjualan", "persediaan": "akun_persediaan", "hpp": "akun_hpp", "pembelian": "akun_pembelian"}
 
 
 def beri_teks(hasil: dict, dari_kategori: Optional[dict] = None) -> dict:
-    """FORM BARANG CW: tiap butir terisi + `text` ("4-10100 Penjualan") + `sumber_text`; butir akun yang disalin dari kategori (KAK.terakhir) bersumber 'kategori'. Mengubah di tempat."""
+    """FORM BARANG CW: tiap butir terisi + `label` ("Akun penjualan") + `text` ("4-10100 Penjualan") + `sumber_text`; butir akun yang disalin dari kategori (KAK.terakhir) bersumber 'kategori'. Mengubah di tempat."""
     kat = (dari_kategori or {}).get("kategori")
     butir_kat = {JENIS_KE_BUTIR[j] for j in (dari_kategori or {}).get("jenis", []) if j in JENIS_KE_BUTIR}
+    hasil["label"] = dict(LABEL_BUTIR)          # label SEMUA butir (termasuk yang null) -> FE tak punya cadangan LABEL_BERLAKU
     for b in BUTIR:
         r = hasil.get(b)
         if not r:
             continue
+        r["label"] = LABEL_BUTIR[b]
         if b in butir_kat:
             r["sumber"] = "kategori"
         r["text"] = f"{r['kode']} {r['nama']}" if r.get("kode") else (r.get("nama") or None)
