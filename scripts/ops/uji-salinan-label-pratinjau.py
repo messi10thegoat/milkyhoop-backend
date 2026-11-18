@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, "/app/backend/api_gateway")
 from app.routers import items as IT  # noqa: E402
+from app.services import bawaan_berlaku as BB  # noqa: E402
 from app.services import gudang_rencana as GR  # noqa: E402
 from app.services import kategori_aksi as KA  # noqa: E402
 from app.services import kategori_akun as KAK  # noqa: E402
@@ -29,6 +30,10 @@ def baik(rencana):
 async def main():
     conn = await IT.get_db_connection()
     for tid in TENANT:
+        for jenis in ({"item_type": "goods", "track_inventory": True}, {"item_type": "service", "track_inventory": False}):
+            h = BB.beri_teks(await BB.untuk_barang(conn, tid, dict(jenis)))
+            ok = set(h["label"]) == set(BB.BUTIR) and all(h[b]["label"] == h["label"][b] for b in BB.BUTIR if h[b])
+            cek(f"{tid} berlaku {jenis['item_type']}: label tiap butir + peta", ok, f"{[b for b in BB.BUTIR if h[b]]}")
         semua = await SM.daftar(conn, tid)
         kustom = [u for u in semua if SR.jenis_id(u["id"]) == "master" and not u.get("bawaan") and not u.get("is_system")]
         n = 0
