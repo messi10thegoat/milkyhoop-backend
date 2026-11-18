@@ -89,17 +89,29 @@ async def satu(conn, tid, pool):
             sid = uuid.UUID(str(d["id"] if isinstance(d, dict) else d.id))
             sebelum = await keadaan(conn, tid, batch_id)
             try:
-                p = await SI.post_invoice(req(tid, uid), sid, Response())
+                p = await SI.post_invoice(req(tid, uid), sid, IS.PostInvoiceRequest(), Response())
                 lapor(f"{tid} JUAL-{tag} post_invoice OK", sukses=getattr(p, "success", p if isinstance(p, dict) else "?"))
             except Exception as e:  # noqa: BLE001
                 lapor(f"{tid} JUAL-{tag} post_invoice GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
             sesudah = await keadaan(conn, tid, batch_id)
             lapor(f"{tid} JUAL-{tag} qty={qty_jual}: diharapkan bws=[{qty_beli - qty_jual}] (sekali)", sebelum=sebelum["bws"], sesudah=sesudah["bws"], ledger=sesudah["ledger"],
                   **{"item_batches.current": sesudah["item_batches.current"]})
-            if sesudah["ledger"] == sebelum["ledger"]:   # posting tak mengirim barang -> jalankan /fulfill (pengiriman) lewat handler asli
+            if sesudah["ledger"] == sebelum["ledger"]:   # posting tak mengirim barang -> /fulfill (pengiriman) lewat handler asli
+                wid = await conn.fetchval("SELECT warehouse_id FROM batch_warehouse_stock WHERE tenant_id = $1 AND batch_id = $2 LIMIT 1", tid, batch_id)
+                iid = await conn.fetchval("SELECT i.id FROM sales_invoice_items i JOIN sales_invoices s ON s.id = i.invoice_id AND s.tenant_id = $2 WHERE i.invoice_id = $1 LIMIT 1", sid, tid)
+                isi = {"warehouse_id": str(wid), "items": [{"invoice_item_id": str(iid), "quantity": str(qty_jual)}]}
+
                 class Req(Request):
-                    async def json(s): return {"warehouse_id": None, "items": []}
-                lapor(f"{tid} JUAL-{tag} posting tidak membuat gerak batch -> perlu fulfill (diukur terpisah)")
+                    async def json(s): return isi
+                rq = Req({"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""})
+                rq.state.user = {"tenant_id": tid, "user_id": str(uid), "username": "uji-ukur-286", "role": "OWNER"}
+                try:
+                    await SI.fulfill_invoice(rq, sid)
+                except Exception as e:  # noqa: BLE001
+                    lapor(f"{tid} JUAL-{tag} fulfill GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
+                akhir = await keadaan(conn, tid, batch_id)
+                lapor(f"{tid} JUAL-{tag} FULFILL qty={qty_jual}: diharapkan bws=[{qty_beli - qty_jual}] (sekali; beli juga sekali)", sebelum=sebelum["bws"], sesudah=akhir["bws"], ledger=akhir["ledger"],
+                      **{"item_batches.current": akhir["item_batches.current"], "item_batches.status": akhir["item_batches.status"]})
         except Exception as e:  # noqa: BLE001
             lapor(f"{tid} JUAL-{tag} GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
 
