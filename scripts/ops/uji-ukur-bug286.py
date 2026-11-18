@@ -20,6 +20,12 @@ from app.services.bills_service import BillsService  # noqa: E402
 
 TENANT = tuple(os.environ.get("TENANT", "kaos-biru-konveksi,pt-kita-nyawit-bersama").split(","))
 UKUR = []
+HASIL = []
+
+
+def cek(nama, ok, **kv):
+    HASIL.append(bool(ok))
+    print(("[ok] " if ok else "[GAGAL] ") + nama + " :: " + " ".join(f"{k}={v}" for k, v in kv.items()), flush=True)
 
 
 def lapor(nama, **kv):
@@ -44,12 +50,25 @@ def pool_dari(conn):
     return Pool()
 
 
+import hashlib
+
+
 async def keadaan(conn, tid, batch_id):
-    bws = await conn.fetch("SELECT warehouse_id, quantity FROM batch_warehouse_stock WHERE tenant_id = $2 AND batch_id = $1", batch_id, tid)
-    ib = await conn.fetchrow("SELECT current_quantity, initial_quantity, status FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
-    lg = await conn.fetch("SELECT movement_type, quantity_in, quantity_out FROM inventory_ledger WHERE tenant_id = $1 AND batch_id = $2 ORDER BY created_at", tid, batch_id)
-    return {"bws": [str(r["quantity"]) for r in bws], "item_batches.current": str(ib["current_quantity"]) if ib else None, "item_batches.status": ib["status"] if ib else None,
-            "ledger": [f"{r['movement_type']}+{r['quantity_in']}-{r['quantity_out']}" for r in lg]}
+    bws = await conn.fetch("SELECT quantity FROM batch_warehouse_stock WHERE tenant_id = $2 AND batch_id = $1", batch_id, tid)
+    ib = await conn.fetchrow("SELECT current_quantity, status FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
+    return {"bws": [D(str(r["quantity"])) for r in bws], "current": D(str(ib["current_quantity"])) if ib else None, "status": ib["status"] if ib else None}
+
+
+async def stempel(conn, tid, pid, doc_ids):
+    """Sidik ledger barang + jurnal dokumen (tanpa id/waktu/nomor): HARUS sama sebelum/sesudah perbaikan (hanya saldo batch yang berubah)."""
+    lg = [f"{r['movement_type']}|{r['quantity_in']}|{r['quantity_out']}|{r['unit_cost']}|{r['total_cost']}|{r['average_cost']}" for r in await conn.fetch(
+        "SELECT movement_type, quantity_in, quantity_out, unit_cost, total_cost, average_cost FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2 ORDER BY created_at, id", tid, pid)]
+    jl = []
+    for d in doc_ids:
+        jl += sorted(f"{r['account_code']}|{r['debit']}|{r['credit']}" for r in await conn.fetch(
+            """SELECT c.account_code, l.debit, l.credit FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_id AND e.tenant_id = $1
+               JOIN chart_of_accounts c ON c.id = l.account_id AND c.tenant_id = $1 WHERE e.source_id = $2""", tid, d))
+    return hashlib.sha1(json.dumps([lg, jl]).encode()).hexdigest()[:12], len(lg), len(jl)
 
 
 async def satu(conn, tid, pool):
@@ -57,63 +76,86 @@ async def satu(conn, tid, pool):
     vendor = await conn.fetchval("SELECT id FROM vendors WHERE tenant_id = $1 AND COALESCE(is_active, true) LIMIT 1", tid)
     cust = await conn.fetchval("SELECT nama FROM customers WHERE tenant_id = $1 AND deleted_at IS NULL AND btrim(COALESCE(nama, '')) <> '' ORDER BY created_at LIMIT 1", tid)
     if not (uid and vendor and cust):
-        print(f"[info] {tid}: tanpa user/vendor -> dilewati", flush=True)
+        print(f"[info] {tid}: tanpa user/vendor/pelanggan -> dilewati", flush=True)
         return
     r = req(tid, uid)
     hari = date.today()
     BR.get_pool = lambda: asyncio.sleep(0, result=pool)
-    # barang ber-batch UJI
-    kode = uuid.uuid4().hex[:6]
-    it = await IT.create_item(r, CreateItemRequest(name=f"UJI286 {kode}", base_unit="Pcs", item_type="goods", track_inventory=True, track_batches=True, purchase_price=1000, sales_price=2000))
-    pid = uuid.UUID(str(it.data["id"]))
-    for tag, qty_beli, qty_jual in (("A", 10, 3), ("B", 10, 6)):
-        batch_no = f"UJI286-{kode}-{tag}"
-        bn = f"UJI286-{kode}-{tag}"
-        # --- Faktur PEMBELIAN ber-batch
-        try:
-            await BR.create_bill_v2(r, CR(vendor_id=vendor, invoice_number=bn, due_date=hari + timedelta(days=30), notes="UJI 286",
-                                           items=[{"product_id": pid, "product_name": f"UJI286 {kode}", "qty": qty_beli, "price": 1000, "batch_no": batch_no, "exp_date": "2030-12"}]))
-            bid = await conn.fetchval("SELECT id FROM bills WHERE tenant_id = $1 AND invoice_number = $2", tid, bn)
-            await BillsService(pool).post_bill(tid, bid, uid)
-            batch_id = await conn.fetchval("SELECT id FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3", tid, pid, batch_no)
-            k = await keadaan(conn, tid, batch_id) if batch_id else {"batch": "TIDAK TERBENTUK"}
-            lapor(f"{tid} BELI-{tag} qty={qty_beli}: diharapkan bws=[{qty_beli}] (sekali)", **k)
-        except Exception as e:  # noqa: BLE001
-            lapor(f"{tid} BELI-{tag} GALAT", galat=f"{type(e).__name__}: {str(e)[:300]}")
-            continue
-        # --- Faktur PENJUALAN: kirim sebagian dari batch itu
-        try:
-            si = await SI.create_invoice(req(tid, uid), IS.CreateInvoiceRequest(customer_name=cust, invoice_date=hari, items=[
-                IS.InvoiceItemCreate(description="uji286", item_id=str(pid), quantity=D(qty_jual), unit="Pcs", unit_price=D("2000"))]), Response())
-            d = si["data"] if isinstance(si, dict) else si.data
-            sid = uuid.UUID(str(d["id"] if isinstance(d, dict) else d.id))
-            sebelum = await keadaan(conn, tid, batch_id)
-            try:
-                p = await SI.post_invoice(req(tid, uid), sid, IS.PostInvoiceRequest(), Response())
-                lapor(f"{tid} JUAL-{tag} post_invoice OK", sukses=getattr(p, "success", p if isinstance(p, dict) else "?"))
-            except Exception as e:  # noqa: BLE001
-                lapor(f"{tid} JUAL-{tag} post_invoice GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
-            sesudah = await keadaan(conn, tid, batch_id)
-            lapor(f"{tid} JUAL-{tag} qty={qty_jual}: diharapkan bws=[{qty_beli - qty_jual}] (sekali)", sebelum=sebelum["bws"], sesudah=sesudah["bws"], ledger=sesudah["ledger"],
-                  **{"item_batches.current": sesudah["item_batches.current"]})
-            if sesudah["ledger"] == sebelum["ledger"]:   # posting tak mengirim barang -> /fulfill (pengiriman) lewat handler asli
-                wid = await conn.fetchval("SELECT warehouse_id FROM batch_warehouse_stock WHERE tenant_id = $1 AND batch_id = $2 LIMIT 1", tid, batch_id)
-                iid = await conn.fetchval("SELECT i.id FROM sales_invoice_items i JOIN sales_invoices s ON s.id = i.invoice_id AND s.tenant_id = $2 WHERE i.invoice_id = $1 LIMIT 1", sid, tid)
-                isi = {"warehouse_id": str(wid), "items": [{"invoice_item_id": str(iid), "quantity": str(qty_jual)}]}
 
-                class Req(Request):
-                    async def json(s): return isi
-                rq = Req({"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""})
-                rq.state.user = {"tenant_id": tid, "user_id": str(uid), "username": "uji-ukur-286", "role": "OWNER"}
-                try:
-                    await SI.fulfill_invoice(rq, sid)
-                except Exception as e:  # noqa: BLE001
-                    lapor(f"{tid} JUAL-{tag} fulfill GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
-                akhir = await keadaan(conn, tid, batch_id)
-                lapor(f"{tid} JUAL-{tag} FULFILL qty={qty_jual}: diharapkan bws=[{qty_beli - qty_jual}] (sekali; beli juga sekali)", sebelum=sebelum["bws"], sesudah=akhir["bws"], ledger=akhir["ledger"],
-                      **{"item_batches.current": akhir["item_batches.current"], "item_batches.status": akhir["item_batches.status"]})
+    async def barang(tag):
+        kode = uuid.uuid4().hex[:6]
+        it = await IT.create_item(r, CreateItemRequest(name=f"UJI286 {tag} {kode}", base_unit="Pcs", item_type="goods", track_inventory=True, track_batches=True, purchase_price=1000, sales_price=2000))
+        return uuid.UUID(str(it.data["id"])), kode
+
+    async def beli(pid, kode, tag, qty):
+        no = f"UJI286-{kode}-{tag}"
+        await BR.create_bill_v2(r, CR(vendor_id=vendor, invoice_number=no, due_date=hari + timedelta(days=30), notes="UJI 286",
+                                       items=[{"product_id": pid, "product_name": f"UJI286 {tag}", "qty": qty, "price": 1000, "batch_no": no, "exp_date": "2030-12"}]))
+        bid = await conn.fetchval("SELECT id FROM bills WHERE tenant_id = $1 AND invoice_number = $2", tid, no)
+        await BillsService(pool).post_bill(tid, bid, uid)
+        return bid, await conn.fetchval("SELECT id FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3", tid, pid, no)
+
+    async def jual(pid, batch_id, qty):
+        si = await SI.create_invoice(req(tid, uid), IS.CreateInvoiceRequest(customer_name=cust, invoice_date=hari, items=[
+            IS.InvoiceItemCreate(description="uji286", item_id=str(pid), quantity=D(qty), unit="Pcs", unit_price=D("2000"))]), Response())
+        d = si["data"] if isinstance(si, dict) else si.data
+        sid = uuid.UUID(str(d["id"] if isinstance(d, dict) else d.id))
+        p = await SI.post_invoice(req(tid, uid), sid, IS.PostInvoiceRequest(), Response())
+        if (p["data"] if isinstance(p, dict) else p.data)["fulfillment_status"] != "fulfilled":
+            wid = await conn.fetchval("SELECT warehouse_id FROM batch_warehouse_stock WHERE tenant_id = $1 AND batch_id = $2 LIMIT 1", tid, batch_id)
+            iid = await conn.fetchval("SELECT i.id FROM sales_invoice_items i JOIN sales_invoices s ON s.id = i.invoice_id AND s.tenant_id = $2 WHERE i.invoice_id = $1 LIMIT 1", sid, tid)
+            isi = {"warehouse_id": str(wid), "items": [{"invoice_item_id": str(iid), "quantity": str(qty)}]}
+
+            class Req(Request):
+                async def json(s): return isi
+            rq = Req({"type": "http", "method": "POST", "path": "/", "headers": [], "query_string": b""})
+            rq.state.user = {"tenant_id": tid, "user_id": str(uid), "username": "uji-ukur-286", "role": "OWNER"}
+            await SI.fulfill_invoice(rq, sid)
+        return sid
+
+    # S1: beli 10 -> BWS 10; void bill -> 0
+    try:
+        pid, kode = await barang("S1")
+        bid, bat = await beli(pid, kode, "S1", 10)
+        k = await keadaan(conn, tid, bat)
+        cek(f"{tid} S1 beli 10 -> bws 10 (sekali) & current 10", k["bws"] == [D(10)] and k["current"] == D(10), nyata=k)
+        s_beli = await stempel(conn, tid, pid, [bid])
+        print(f"[stempel] {tid} S1-beli {s_beli}", flush=True)
+        await BR.void_bill(r, bid, __import__("app.schemas.bills", fromlist=["x"]).VoidBillRequest(reason="UJI 286"), Response())
+        k2 = await keadaan(conn, tid, bat)
+        cek(f"{tid} S1 void bill -> bws 0 (satu penggerak)", k2["bws"] == [D(0)], nyata=k2)
+        print(f"[stempel] {tid} S1-void {await stempel(conn, tid, pid, [bid])}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        cek(f"{tid} S1 GALAT", False, galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
+    # S2: beli 10, jual 3 -> 7; void faktur jual -> 10
+    try:
+        pid, kode = await barang("S2")
+        bid, bat = await beli(pid, kode, "S2", 10)
+        sid = await jual(pid, bat, 3)
+        k = await keadaan(conn, tid, bat)
+        cek(f"{tid} S2 beli 10 jual 3 -> bws 7", k["bws"] == [D(7)] and k["current"] == D(7), nyata=k)
+        print(f"[stempel] {tid} S2-jual {await stempel(conn, tid, pid, [bid, sid])}", flush=True)
+        await SI.void_invoice(req(tid, uid), sid, IS.VoidInvoiceRequest(reason="UJI 286"), Response())
+        k2 = await keadaan(conn, tid, bat)
+        cek(f"{tid} S2 void faktur jual -> bws kembali 10", k2["bws"] == [D(10)], nyata=k2)
+        print(f"[stempel] {tid} S2-void {await stempel(conn, tid, pid, [bid, sid])}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        cek(f"{tid} S2 GALAT", False, galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
+    # S3: beli 10, jual 6 -> 4 (tak boleh terblok palsu); jual 5 lagi -> ditolak (tersedia 4)
+    try:
+        pid, kode = await barang("S3")
+        bid, bat = await beli(pid, kode, "S3", 10)
+        sid = await jual(pid, bat, 6)
+        k = await keadaan(conn, tid, bat)
+        cek(f"{tid} S3 beli 10 jual 6 -> bws 4 (tanpa blok palsu)", k["bws"] == [D(4)], nyata=k)
+        print(f"[stempel] {tid} S3-jual {await stempel(conn, tid, pid, [bid, sid])}", flush=True)
+        try:
+            await jual(pid, bat, 5)
+            cek(f"{tid} S3 jual 5 dari sisa 4 ditolak", False, nyata="lolos")
         except Exception as e:  # noqa: BLE001
-            lapor(f"{tid} JUAL-{tag} GALAT", galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
+            cek(f"{tid} S3 jual 5 dari sisa 4 ditolak (stok batch tidak cukup)", "tidak cukup" in str(getattr(e, "detail", e)).lower(), galat=str(getattr(e, "detail", e))[:200])
+    except Exception as e:  # noqa: BLE001
+        cek(f"{tid} S3 GALAT", False, galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
 
 
 async def utama():
@@ -124,6 +166,7 @@ async def utama():
             sys.exit(f"BUKAN salinan: {db}")
         for tid in TENANT:
             await satu(conn, tid, pool_dari(conn))
-    json.dump({"UKUR": UKUR}, open(os.environ["KELUAR"], "w"), indent=1)
+    print(f"[info] {len(HASIL)} cek, {HASIL.count(False)} gagal", flush=True)
+    sys.exit(1 if (HASIL.count(False) and os.environ.get("TEGAS") == "1") or not HASIL else 0)
 
 asyncio.run(utama())
