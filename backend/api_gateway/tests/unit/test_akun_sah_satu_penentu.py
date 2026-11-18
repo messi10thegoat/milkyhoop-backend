@@ -133,3 +133,9 @@ def test_akun_pilihan_bentuk_respons(monkeypatch):
 def test_izin_akun_pilihan_baca_item():
     from app.middleware.permission_middleware import izin_untuk_jalur
     assert izin_untuk_jalur("/api/items/categories/akun-pilihan", "GET") == ("item", "R")
+
+
+def test_daftar_akun_menyaring_tenant_dan_header_di_sql():
+    c = Conn(COA)
+    asyncio.run(KAK.daftar_akun(c, "t", "hpp"))
+    assert "tenant_id = $1" in c.sql[0] and "is_active = true" in c.sql[0] and "is_header" in c.sql[0]
