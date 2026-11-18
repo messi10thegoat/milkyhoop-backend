@@ -35,6 +35,7 @@ from ..services import barang_teks as BT  # BUG-235/236: jenis_text, nama tampil
 from ..services import teks_laporan_persediaan as TLP  # BUG-272 teks tampil server (kartu stok, penjualan per barang)
 from ..services.uang_presisi import presisi_tenant
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
+from ..services import stok_awal_barang as SAB  # FORM BARANG CW: stok awal per gudang
 from ..services import kategori_akun as KAK  # BUG-282 akun bawaan per kategori
 from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
 from ..services import impor_kategori as IK  # K-5 impor/ekspor master Kategori
@@ -45,7 +46,7 @@ from ..services.bayar_keluar_rencana import Blok as BlokPen
 from ..services.satuan_dasar import faktor_json as SD_faktor_json
 from ..services.kosakata_ledger import BATAL_JUAL, KELUAR_JUAL, KELUAR_JUAL_FAKTUR, sql_daftar
 from ..utils.tanggal_tenant import tanggal_dokumen
-from ..services.saldo_awal_stok import catat_saldo_awal_stok, periksa_saldo_awal
+from ..services.saldo_awal_stok import catat_saldo_awal_per_gudang, catat_saldo_awal_stok, periksa_saldo_awal
 from ..schemas.items import (
     CreateItemRequest,
     UpdateItemRequest,
@@ -764,6 +765,12 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
         body.cogs_account_id,
     )
 
+    # FORM BARANG CW (putusan pemilik 14 Nov): stok_awal PER GUDANG = SATU penentu (services/stok_awal_barang.rencana); mengalahkan opening_stock tunggal.
+    _sa = await SAB.rencana(conn, tenant_id, body, body.inventory_account_id)
+    if _sa is not None:
+        if _sa["blocks"]:
+            raise SAB.galat_pertama(_sa)
+        return item_code_to_use, sku_to_use
     # Saldo awal stok: harga pokok diperiksa SEBELUM produk berdiri (audit F1 10 Okt 2026; services/saldo_awal_stok.py).
     if body.track_inventory and body.item_type == "goods":
         await periksa_saldo_awal(
@@ -773,6 +780,32 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
             body.opening_stock_rate if body.opening_stock_rate else (body.purchase_price or 0),
         )
     return item_code_to_use, sku_to_use
+
+
+@router.get("/items/form-bawaan")
+async def form_bawaan_barang(request: Request):
+    """FORM BARANG CW (18 Nov 2026): SEMUA bawaan form Tambah Barang dalam satu panggilan (FE tak merakit): kategori bawaan, akun+pajak yang berlaku untuk barang BARU
+    (barang ber-stok dan jasa; penentu SAMA dgn GET /items/{id}.bawaan_berlaku), gudang aktif + bawaan, tanggal stok awal bawaan, dan apakah stok awal bisa diisi saat
+    membuat barang (usaha yang sudah punya transaksi: lewat Penyesuaian setelah barang dibuat). Hanya membaca."""
+    from ..services import bawaan_berlaku as _BB
+    from ..services import saldo_awal_stok as _SAS
+    tenant_id = get_tenant_id(request)
+
+    async def f(conn):
+        barang = await _BB.untuk_barang(conn, tenant_id, {"item_type": "goods", "track_inventory": True})
+        jasa = await _BB.untuk_barang(conn, tenant_id, {"item_type": "service", "track_inventory": False})
+        gudang = [{"id": str(r["id"]), "name": r["name"], "is_default": bool(r["is_default"])} for r in await conn.fetch(
+            "SELECT id, name, is_default FROM warehouses WHERE tenant_id = $1 AND is_active AND NOT is_system ORDER BY is_default DESC, created_at, id", tenant_id)]
+        berjalan = bool(await conn.fetchval(_SAS.SQL_SUDAH_BERJALAN, tenant_id))
+        tgl = await SAB.tanggal_mulai_data(conn, tenant_id)
+        return {
+            "kategori_bawaan": await KA.kategori_bawaan(conn, tenant_id),
+            "berlaku_barang": _BB.beri_teks(barang), "berlaku_jasa": _BB.beri_teks(jasa),
+            "gudang": gudang, "gudang_bawaan_id": gudang[0]["id"] if gudang else None,
+            "stok_awal": {"tersedia": not berjalan and bool(gudang), "tanggal_bawaan": tgl.isoformat(),
+                          "alasan": ("Usaha ini sudah punya transaksi, jadi stok awal tidak bisa diisi saat membuat barang. Simpan barang dulu, lalu tambahkan stoknya lewat Penyesuaian stok." if berjalan
+                                     else ("Belum ada gudang aktif; buat gudang dulu untuk mengisi stok awal." if not gudang else None))}}
+    return {"success": True, "data": await _baca_saja(f)}
 
 
 @router.post("/items/preview")
@@ -789,6 +822,7 @@ async def preview_create_item(request: Request, body: dict):
     except ValidationError as e:
         return {"success": True, "data": {"ok": False, "blocks": blok_validasi(e), "rencana": None, "payload": payload}}
     bloks, kode = [], (None, None)
+    sa, berlaku, kat_awal, peringatan = None, None, (b.kategori or "").strip(), []
     conn = await get_db_connection()
     try:
         tr = conn.transaction(readonly=True)
@@ -796,7 +830,19 @@ async def preview_create_item(request: Request, body: dict):
         try:
             tanpa_stok_bila_bukan_barang(b)
             periksa_badan_item(b, "POST /items/preview")
-            kode = await _siapkan_buat_barang(conn, ctx["tenant_id"], ctx, b)
+            try:
+                kode = await _siapkan_buat_barang(conn, ctx["tenant_id"], ctx, b)
+            except HTTPException as e:
+                bloks.append(blok_dari_galat(e))
+            if b.stok_awal:   # FORM BARANG CW: SEMUA blok stok awal sekaligus (penentu SAMA dgn penulis), bukan hanya yang pertama
+                sa = await SAB.rencana(conn, ctx["tenant_id"], b, b.inventory_account_id)
+                sudah = {x["code"] for x in bloks}
+                bloks.extend(x for x in sa["blocks"] if x["code"] not in sudah)
+            from ..services import bawaan_berlaku as _BB
+            berlaku = _BB.beri_teks(await _BB.untuk_barang(conn, ctx["tenant_id"], {
+                "item_type": b.item_type, "track_inventory": b.track_inventory, "sales_account_id": b.sales_account_id, "purchase_account_id": b.purchase_account_id,
+                "inventory_account_id": b.inventory_account_id, "cogs_account_id": b.cogs_account_id, "sales_tax_id": b.sales_tax_id, "purchase_tax_id": b.purchase_tax_id}),
+                KAK.terakhir())
         except HTTPException as e:
             bloks.append(blok_dari_galat(e))
         finally:
@@ -804,13 +850,24 @@ async def preview_create_item(request: Request, body: dict):
     finally:
         await conn.close()
     efek = []
-    if b.track_inventory and b.item_type == "goods" and (b.opening_stock or 0) > 0:
+    if sa is not None:
+        efek = sa["efek"]
+        if sa["efek"] and not sa["blocks"]:
+            peringatan.append(f"Stok awal {len(sa['efek'])} gudang dijurnal tanggal {sa['tanggal'].isoformat()}: Dr Persediaan / Cr Ekuitas Saldo Awal, nilai {TLP.uang(sa['total_nilai'], 2)}.")
+    elif b.track_inventory and b.item_type == "goods" and (b.opening_stock or 0) > 0:
         rate = b.opening_stock_rate if b.opening_stock_rate else (b.purchase_price or 0)
         efek.append({"jenis": "saldo_awal_stok", "qty": str(b.opening_stock), "harga": str(rate),
                      "nilai": f"{Decimal(str(b.opening_stock)) * Decimal(str(rate)):.2f}"})
+    if b.item_type != "goods":
+        peringatan.append("Jasa dan barang non-stok tidak melacak stok; tidak ada stok awal, kartu stok, atau HPP.")
+    kat_terakhir = KAK.terakhir()
     rencana = {"name": b.name, "item_type": b.item_type, "track_inventory": b.track_inventory, "bisa_dikirim": b.bisa_dikirim,
                "base_unit": b.base_unit, "sales_price": b.sales_price, "item_code": kode[0], "sku": kode[1], "efek": efek,
-               "akun_dari_kategori": KAK.terakhir(), "akun_dari_kategori_text": (f"Akun {', '.join(KAK.LABEL[j].lower() for j in KAK.terakhir()['jenis'])} mengikuti kategori '{KAK.terakhir()['kategori']}'." if KAK.terakhir() else None)}
+               "kategori": b.kategori, "kategori_diisi_bawaan": bool(b.kategori) and not kat_awal,
+               "kategori_text": (f"Kategori '{b.kategori}' diisi otomatis (kategori bawaan usaha)." if (b.kategori and not kat_awal) else None),
+               "berlaku": berlaku, "peringatan": peringatan, "stok_awal_tanggal": sa["tanggal"].isoformat() if sa and sa["tanggal"] else None,
+               "stok_awal_total_text": TLP.uang(sa["total_nilai"], 2) if sa and not sa["blocks"] else None,
+               "akun_dari_kategori": kat_terakhir, "akun_dari_kategori_text": (f"Akun {', '.join(KAK.LABEL[j].lower() for j in kat_terakhir['jenis'])} mengikuti kategori '{kat_terakhir['kategori']}'." if kat_terakhir else None)}
     return {"success": True, "data": {"ok": not bloks, "blocks": bloks, "rencana": rencana, "payload": payload}}
 
 
@@ -1053,8 +1110,18 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
                     conv.sales_price,
                 )
 
+        # FORM BARANG CW: stok awal PER GUDANG (satu jurnal + satu baris kartu 'Saldo awal' per gudang; penentu SAMA dgn pratinjau)
+        _sa = await SAB.rencana(conn, tenant_id, body, body.inventory_account_id)
+        if _sa is not None:
+            if _sa["blocks"]:
+                raise SAB.galat_pertama(_sa)
+            await catat_saldo_awal_per_gudang(
+                conn, tenant_id=ctx["tenant_id"], user_id=ctx.get("user_id"), product_id=item_id, product_code=item_code_to_use, product_name=body.name,
+                tanggal=_sa["tanggal"], baris=[{"warehouse_id": b["warehouse_id"], "qty": b["qty_dasar"], "rate": b["rate_dasar"]} for b in _sa["baris"]],
+                inventory_account_id=body.inventory_account_id)
+
         # Create initial stock entry (if track_inventory)
-        if body.track_inventory and body.item_type == "goods":
+        elif body.track_inventory and body.item_type == "goods":
             # Determine opening stock values
             initial_qty = (
                 Decimal(str(body.opening_stock))
@@ -1331,7 +1398,8 @@ async def _periksa_ubah(conn, ctx: dict, item_id, body):
                   base_unit, satuan, reorder_level, item_type, track_inventory, bisa_dikirim,
                   kategori, merek, deskripsi, barcode, is_returnable,
                   sales_tax, purchase_tax, image_url,
-                  inventory_account_id, cogs_account_id
+                  inventory_account_id, cogs_account_id,
+                  sales_account_id, purchase_account_id, sales_tax_id, purchase_tax_id
            FROM products WHERE id = $1 AND tenant_id = $2""",
         str(item_id),
         tenant_id,
@@ -1724,7 +1792,14 @@ async def preview_ubah_barang(request: Request, item_id: UUID, body: dict):
             if e.status_code == 404:
                 return BA.rencana_ubah(None, {})
             return {"ok": False, "blocks": [blok_dari_galat(e)], "peringatan": [], "rencana": None}
-        return BA.rencana_ubah(dict(lama), b.model_dump(exclude_unset=True))
+        r = BA.rencana_ubah(dict(lama), b.model_dump(exclude_unset=True))
+        ids = BA.ids_perubahan(r)
+        nama = {}
+        if ids:   # FORM BARANG CW: id akun/pajak -> nama (satu kueri tiap jenis, disaring tenant)
+            for q in ("SELECT id::text AS id, account_code || ' ' || name AS t FROM chart_of_accounts WHERE tenant_id = $1 AND id::text = ANY($2::text[])",
+                      "SELECT id::text AS id, code || ' ' || name AS t FROM tax_codes WHERE tenant_id = $1 AND id::text = ANY($2::text[])"):
+                nama.update({x["id"]: x["t"] for x in await conn.fetch(q, ctx["tenant_id"], [str(i) for i in ids])})
+        return BA.beri_teks_ubah(r, nama)
     r = await _baca_saja(f)
     return {"success": True, "data": {**r, "payload": payload}}
 

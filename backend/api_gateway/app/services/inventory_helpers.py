@@ -735,6 +735,13 @@ async def record_inventory_reversal(
             """,
                 batch_id,
             )
+            await conn.execute(   # BUG-290: void yang mengembalikan stok ke batch 'depleted' mengaktifkannya lagi
+                """
+                UPDATE item_batches SET status = 'active'
+                WHERE id = $1 AND current_quantity > 0 AND status = 'depleted'
+            """,
+                batch_id,
+            )
 
         results.append(
             {

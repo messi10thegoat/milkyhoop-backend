@@ -95,14 +95,31 @@ async def catat_saldo_awal_stok(
     qty, rate, warehouse_id, inventory_account_id=None, movement_type: str = SUMBER,
     catatan: str = "Saldo awal inventaris",
 ) -> dict:
-    """Jurnal saldo awal + baris kartu stok, di transaksi PEMANGGIL. -> {journal_id, journal_number, nilai}."""
+    """Jurnal saldo awal + baris kartu stok SATU gudang, di transaksi PEMANGGIL. -> {journal_id, journal_number, nilai}. = catat_saldo_awal_per_gudang dgn satu baris."""
+    return await catat_saldo_awal_per_gudang(
+        conn, tenant_id=tenant_id, user_id=user_id, product_id=product_id, product_code=product_code, product_name=product_name, tanggal=tanggal,
+        baris=[{"warehouse_id": warehouse_id, "qty": qty, "rate": rate}], inventory_account_id=inventory_account_id, movement_type=movement_type, catatan=catatan)
+
+
+async def catat_saldo_awal_per_gudang(
+    conn, *, tenant_id: str, user_id, product_id, product_code, product_name: str, tanggal: date, baris: list,
+    inventory_account_id=None, movement_type: str = SUMBER, catatan: str = "Saldo awal inventaris",
+) -> dict:
+    """FORM BARANG CW (18 Nov 2026): saldo awal PER GUDANG di transaksi PEMANGGIL = SATU jurnal per barang (Dr Persediaan / Cr Ekuitas Saldo Awal = Σ nilai gudang)
+    + SATU baris kartu stok per gudang. baris = [{warehouse_id, qty, rate}] (qty/rate sudah SATUAN DASAR). WAC kartu = rata-rata berjalan antar-gudang.
+    -> {journal_id, journal_number, nilai}."""
     if not conn.is_in_transaction():
         raise RuntimeError("catat_saldo_awal_stok wajib di dalam transaksi pemanggil (Law 23)")
-    nilai = periksa_nilai(qty, rate)
-    if nilai <= 0:
-        raise ValueError("qty saldo awal harus > 0")
+    if not baris:
+        raise ValueError("saldo awal butuh minimal satu gudang")
+    rows = []
+    for b in baris:
+        nilai_b = periksa_nilai(b["qty"], b["rate"])
+        if nilai_b <= 0:
+            raise ValueError("qty saldo awal harus > 0")
+        rows.append((b["warehouse_id"], Decimal(str(b["qty"])), Decimal(str(b["rate"])), nilai_b))
+    nilai = sum((r[3] for r in rows), Decimal("0"))
     await tolak_bila_usaha_sudah_berjalan(conn, tenant_id)
-    qty_d, rate_d = Decimal(str(qty)), Decimal(str(rate))
     product_id = UUID(str(product_id))
 
     periode = await conn.fetchrow(
@@ -142,12 +159,17 @@ async def catat_saldo_awal_stok(
         jurnal_id, akun_ekuitas, nilai, f"Modal saldo awal - {product_name}")
     await conn.execute("UPDATE journal_entries SET status = 'POSTED' WHERE id = $1 AND tenant_id = $2", jurnal_id, tenant_id)
 
-    await conn.execute(
-        """INSERT INTO inventory_ledger (
-               id, tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-               source_type, source_id, journal_id, source_number, quantity_in, quantity_out, quantity_balance,
-               unit_cost, total_cost, average_cost, warehouse_id, notes, created_at
-           ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $10, $11, $12, $11, $13, $14, NOW())""",
-        tenant_id, product_id, product_code, product_name, movement_type, tanggal, SUMBER, jurnal_id,
-        f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai, warehouse_id, catatan)
+    kum_qty = kum_nilai = Decimal("0")
+    for wid, qty_d, rate_d, nilai_b in rows:
+        kum_qty += qty_d
+        kum_nilai += nilai_b
+        wac = rate_d if len(rows) == 1 else (kum_nilai / kum_qty).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)   # satu gudang = persis harga yang diketik
+        await conn.execute(
+            """INSERT INTO inventory_ledger (
+                   id, tenant_id, product_id, product_code, product_name, movement_type, movement_date,
+                   source_type, source_id, journal_id, source_number, quantity_in, quantity_out, quantity_balance,
+                   unit_cost, total_cost, average_cost, warehouse_id, notes, created_at
+               ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $15, $11, $12, $13, $14, $16, NOW())""",
+            tenant_id, product_id, product_code, product_name, movement_type, tanggal, SUMBER, jurnal_id,
+            f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai_b, wac, wid, kum_qty, catatan)
     return {"journal_id": jurnal_id, "journal_number": nomor, "nilai": nilai}

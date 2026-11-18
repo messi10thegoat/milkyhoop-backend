@@ -81,3 +81,22 @@ async def untuk_barang(conn, tenant_id: str, barang: dict) -> dict:
         "SELECT id::text AS id, code AS kode, name AS nama FROM tax_codes WHERE tenant_id = $1 AND id::text = ANY($2::text[])",
         tenant_id, ids_pajak)} if ids_pajak else {}
     return berlaku(barang, usaha, akun, pajak)
+
+
+SUMBER_TEKS = {"barang": "Diisi di barang", "bawaan_usaha": "Bawaan usaha", "kategori": "Dari kategori"}
+JENIS_KE_BUTIR = {"penjualan": "akun_penjualan", "persediaan": "akun_persediaan", "hpp": "akun_hpp", "pembelian": "akun_pembelian"}
+
+
+def beri_teks(hasil: dict, dari_kategori: Optional[dict] = None) -> dict:
+    """FORM BARANG CW: tiap butir terisi + `text` ("4-10100 Penjualan") + `sumber_text`; butir akun yang disalin dari kategori (KAK.terakhir) bersumber 'kategori'. Mengubah di tempat."""
+    kat = (dari_kategori or {}).get("kategori")
+    butir_kat = {JENIS_KE_BUTIR[j] for j in (dari_kategori or {}).get("jenis", []) if j in JENIS_KE_BUTIR}
+    for b in BUTIR:
+        r = hasil.get(b)
+        if not r:
+            continue
+        if b in butir_kat:
+            r["sumber"] = "kategori"
+        r["text"] = f"{r['kode']} {r['nama']}" if r.get("kode") else (r.get("nama") or None)
+        r["sumber_text"] = f"{SUMBER_TEKS[r['sumber']]} '{kat}'" if r["sumber"] == "kategori" and kat else SUMBER_TEKS[r["sumber"]]
+    return hasil

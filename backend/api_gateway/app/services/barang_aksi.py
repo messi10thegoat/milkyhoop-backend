@@ -168,7 +168,18 @@ async def terapkan_status(conn, tenant_id: str, product_id: str, ke_aktif: bool,
 _PETA_UBAH = {"name": "nama_produk", "sales_price": "sales_price", "purchase_price": "purchase_price", "base_unit": "base_unit",
               "reorder_level": "reorder_level", "item_type": "item_type", "track_inventory": "track_inventory", "bisa_dikirim": "bisa_dikirim",
               "kategori": "kategori", "deskripsi": "deskripsi", "barcode": "barcode", "is_returnable": "is_returnable",
-              "sales_tax": "sales_tax", "purchase_tax": "purchase_tax"}
+              "sales_tax": "sales_tax", "purchase_tax": "purchase_tax",
+              # FORM BARANG CW (Lanjutan): akun/pajak/merek ikut pratinjau
+              "sales_account_id": "sales_account_id", "purchase_account_id": "purchase_account_id", "inventory_account_id": "inventory_account_id",
+              "cogs_account_id": "cogs_account_id", "sales_tax_id": "sales_tax_id", "purchase_tax_id": "purchase_tax_id", "merek": "merek"}
+LABEL_MEDAN = {"name": "Nama", "sales_price": "Harga jual", "purchase_price": "Harga beli", "base_unit": "Satuan dasar", "reorder_level": "Titik pesan ulang",
+               "item_type": "Jenis", "track_inventory": "Lacak stok", "bisa_dikirim": "Bisa dikirim", "kategori": "Kategori", "deskripsi": "Deskripsi", "barcode": "Barcode",
+               "is_returnable": "Bisa diretur", "sales_tax": "Pajak jual", "purchase_tax": "Pajak beli", "sales_account_id": "Akun penjualan",
+               "purchase_account_id": "Akun pembelian", "inventory_account_id": "Akun persediaan", "cogs_account_id": "Akun HPP", "sales_tax_id": "Pajak jual",
+               "purchase_tax_id": "Pajak beli", "merek": "Merek"}
+MEDAN_AKUN = ("sales_account_id", "purchase_account_id", "inventory_account_id", "cogs_account_id")
+MEDAN_PAJAK = ("sales_tax_id", "purchase_tax_id")
+TEKS_KEDEPAN = "Akun dan pajak yang diubah hanya berlaku untuk transaksi berikutnya; jurnal dan dokumen yang sudah ada tidak berubah."
 
 
 def _s(v) -> str:
@@ -178,6 +189,36 @@ def _s(v) -> str:
         t = f"{v:f}"
         return t.rstrip("0").rstrip(".") if "." in t else t
     return str(int(v)) if isinstance(v, float) and v == int(v) else str(v)
+
+
+def ids_perubahan(r: dict) -> list:
+    """id akun/pajak (dari + ke) pada rencana ubah -- bahan pencarian nama oleh router."""
+    if not r.get("rencana"):
+        return []
+    return [v for p in r["rencana"]["perubahan"] if p["medan"] in MEDAN_AKUN + MEDAN_PAJAK for v in (p["dari"], p["ke"]) if v]
+
+
+def beri_teks_ubah(r: dict, nama: dict) -> dict:
+    """FORM BARANG CW: tiap perubahan + medan_text / dari_text / ke_text (id akun/pajak -> 'kode nama'; boolean -> Ya/Tidak; kosong -> '-'), + peringatan bila akun/pajak berubah.
+    nama = {id: teks}. Mengubah di tempat; hanya penyajian (angka & aturan tetap dari rencana_ubah)."""
+    if not r.get("rencana"):
+        return r
+    ada_akun_pajak = False
+    for p in r["rencana"]["perubahan"]:
+        m = p["medan"]
+        p["medan_text"] = LABEL_MEDAN.get(m, m)
+        for k in ("dari", "ke"):
+            v = p[k]
+            if m in MEDAN_AKUN + MEDAN_PAJAK:
+                p[f"{k}_text"] = nama.get(v) or v or "-"
+                ada_akun_pajak = True
+            elif v in ("True", "False"):
+                p[f"{k}_text"] = "Ya" if v == "True" else "Tidak"
+            else:
+                p[f"{k}_text"] = v or "-"
+    if ada_akun_pajak:
+        r["peringatan"].append(_blok("AKUN_PAJAK_BERLAKU_KEDEPAN", TEKS_KEDEPAN))
+    return r
 
 
 def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:

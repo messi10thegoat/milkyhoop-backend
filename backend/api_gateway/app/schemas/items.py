@@ -53,6 +53,15 @@ class UnitConversionInput(BaseModel):
     sales_price: Optional[float] = Field(None, ge=0, description="Sales price for this unit")
 
 
+class StokAwalBaris(BaseModel):
+    """FORM BARANG CW (putusan pemilik 14 Nov; ikut Accurate 'Saldo Awal' per gudang): satu baris stok awal = gudang + jumlah + satuan + harga per satuan itu.
+    Dikonversi ke satuan dasar oleh server (konversi yang dikirim bersama barang); tanggal = opening_stock_date (bawaan: tanggal mulai data)."""
+    warehouse_id: str = Field(..., min_length=1, description="Gudang stok awal")
+    quantity: Decimal = Field(..., gt=0, description="Jumlah dalam satuan `unit`")
+    unit: Optional[str] = Field(None, max_length=50, description="Satuan jumlah (kosong = satuan dasar)")
+    unit_cost: Optional[Decimal] = Field(None, ge=0, description="Harga pokok per satuan `unit` (kosong = opening_stock_rate / harga beli)")
+
+
 class UnitConversionUpdate(BaseModel):
     """Input for updating a unit conversion entry."""
     id: Optional[UUID] = None  # If provided, update existing; otherwise create new
@@ -172,6 +181,7 @@ class CreateItemRequest(_BadanItem):
     opening_stock: Optional[float] = Field(None, ge=0, description="Initial stock quantity")
     opening_stock_rate: Optional[float] = Field(None, ge=0, description="Cost per unit for opening stock")
     opening_stock_date: Optional[str] = Field(None, description="Date for opening stock (YYYY-MM-DD)")
+    stok_awal: Optional[List[StokAwalBaris]] = Field(None, description="Form Barang CW: stok awal PER GUDANG (menggantikan opening_stock tunggal bila diisi)")
 
     # Usage flags
     for_sales: bool = Field(True, description="Whether item is available for sales")
