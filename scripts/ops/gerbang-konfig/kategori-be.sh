@@ -1,6 +1,6 @@
 # Konfig gerbang KATEGORI-BE (18 Nov 2026): BUG-282 akun bawaan per kategori (V505, disalin ke barang BARU) + aksi_tersedia kategori gabung/pindahkan_barang/atur_akun.
 # Migrasi V505 aditif: MASTER menerapkan (apply_mig) SEBELUM kode hidup. Pemisah sabotase = "|", sed memakai "@".
-W=/root/mh-kat; CABANG=feat/kategori-be; NAMA_JENDELA=kategori
+W=/root/mh-kat; CABANG=feat/kategori-be-r2; NAMA_JENDELA=kategori
 POLA_UNIT='kategori|bug282|izin_rute|impor_barang|aksi_tersedia|k1_|k2_|k3_|k4_|k5_|item_field|cari_varian|saldo_awal|item_nama'
 HARNESS=scripts/ops/uji-salinan-kategori.sh
 PENANDA_BERKAS=services/kategori_akun.py; PENANDA='def rencana_akun'
