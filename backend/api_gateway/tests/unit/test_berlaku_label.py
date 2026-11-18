@@ -35,3 +35,10 @@ def test_kunci_lama_tetap_dan_butir_null_tanpa_label_objek():
     h = hasil({"kategori": "Minuman", "jenis": ["persediaan"]})
     assert h["akun_persediaan"]["sumber"] == "kategori" and h["akun_persediaan"]["text"] == "1-1 Persediaan" and h["akun_persediaan"]["sumber_text"] == "Dari kategori 'Minuman'"
     assert h["pajak_jual"] is None and "teks" in h
+
+
+def test_detail_barang_bawaan_berlaku_lewat_beri_teks():
+    import inspect
+    from app.routers import items as IT
+    src = inspect.getsource(IT.get_item)
+    assert "_BB.beri_teks(await _BB.untuk_barang(conn, tenant_id, dict(row)))" in src and '"bawaan_berlaku": bawaan_berlaku,' in src

@@ -3730,7 +3730,7 @@ async def get_item(request: Request, item_id: UUID):
             if BD.dilacak(row) else {}
 
         from ..services import bawaan_berlaku as _BB  # akun/pajak yang berlaku + sumbernya (barang|bawaan_usaha)
-        bawaan_berlaku = await _BB.untuk_barang(conn, tenant_id, dict(row))
+        bawaan_berlaku = _BB.beri_teks(await _BB.untuk_barang(conn, tenant_id, dict(row)))   # label/text/sumber_text dari server (satu sumber dgn pratinjau Buat Barang)
 
         conversions = [
             {

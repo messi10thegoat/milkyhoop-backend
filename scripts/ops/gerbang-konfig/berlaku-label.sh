@@ -11,5 +11,6 @@ SAB=(
  "v2 peta label semua butir kosong|$A/services/bawaan_berlaku.py|s@hasil\[\"label\"\] = dict(LABEL_BUTIR)@hasil[\"label\"] = {}@|$T"
  "v3 label HPP huruf kecil|$A/services/label_rencana.py|s@\"hpp\": \"Akun HPP\"@\"hpp\": \"Akun hpp\"@|$T"
  "v4 label pajak beli salah|$A/services/label_rencana.py|s@\"beli\": \"Pajak pembelian\"@\"beli\": \"Pajak beli\"@|$T"
- "v5 kategori tak memakai label satu sumber|$A/services/kategori_akun.py|s@LR.baris(f\"akun_{j}\", LR.LABEL_AKUN\[j\], sekarang\[j\]\[\"text\"\] if@LR.baris(f\"akun_{j}\", \"Akun\", sekarang[j][\"text\"] if@|$T"
+ "v5 kategori tak memakai label satu sumber|$A/services/kategori_akun.py|s@LR.baris(f\"akun_{j}\", LR.LABEL_AKUN\[j\], sekarang\[j\]\[\"text\"\] if@LR.baris(f\"akun_{j}\", \"Akun\", sekarang[j][\"text\"] if@|$T" 
+ "v6 detail barang tak berlabel|$A/routers/items.py|s@bawaan_berlaku = _BB.beri_teks(await _BB.untuk_barang(conn, tenant_id, dict(row)))@bawaan_berlaku = await _BB.untuk_barang(conn, tenant_id, dict(row))@|$T"
 )
