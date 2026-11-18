@@ -341,10 +341,10 @@ async def summary_stock_transfers(request: Request):
         akhir = date(awal.year + (awal.month == 12), awal.month % 12 + 1, 1)
         r = await conn.fetchrow(
             """SELECT count(*) FILTER (WHERE status = 'draft') AS draft,
-                      count(*) FILTER (WHERE status = 'completed' AND received_date >= $2 AND received_date < $3) AS selesai_bulan_ini,
+                      count(*) FILTER (WHERE status IN ('completed','received') AND received_date >= $2 AND received_date < $3) AS selesai_bulan_ini,
                       count(*) FILTER (WHERE status = 'voided' AND COALESCE(received_date, transfer_date) >= $2
                                          AND COALESCE(received_date, transfer_date) < $3) AS void_bulan_ini,
-                      COALESCE(SUM(total_value) FILTER (WHERE status = 'completed' AND received_date >= $2
+                      COALESCE(SUM(total_value) FILTER (WHERE status IN ('completed','received') AND received_date >= $2
                                          AND received_date < $3), 0) AS nilai_selesai_bulan_ini
                FROM stock_transfers WHERE tenant_id = $1""", ctx["tenant_id"], awal, akhir)
         return {"success": True, "data": {"bulan": awal.strftime("%Y-%m"), "draft": r["draft"],
