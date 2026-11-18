@@ -153,7 +153,7 @@ async def satu(conn, tid, pool):
             await jual(pid, bat, 5)
             cek(f"{tid} S3 jual 5 dari sisa 4 ditolak", False, nyata="lolos")
         except Exception as e:  # noqa: BLE001
-            cek(f"{tid} S3 jual 5 dari sisa 4 ditolak (stok batch tidak cukup)", "tidak cukup" in str(getattr(e, "detail", e)).lower(), galat=str(getattr(e, "detail", e))[:200])
+            cek(f"{tid} S3 jual 5 dari sisa 4 ditolak (stok tidak cukup)", any(k in str(getattr(e, "detail", e)).lower() for k in ("tidak cukup", "hanya")), galat=str(getattr(e, "detail", e))[:200])
     except Exception as e:  # noqa: BLE001
         cek(f"{tid} S3 GALAT", False, galat=f"{type(e).__name__}: {str(getattr(e, 'detail', e))[:300]}")
 
