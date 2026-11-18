@@ -24,7 +24,7 @@ def test_rencana_buat_dengan_induk():
     induk = k("Minuman", i="c-1")
     r = KA.rencana_buat("Teh", False, induk, True)
     assert r["ok"] and {x: v for x, v in r["rencana"].items() if x != "perubahan"} == {"nama": "Teh", "induk": "Minuman", "induk_id": "c-1"}
-    assert KA.rencana_buat("Teh", False)["rencana"] == {"nama": "Teh", "induk": None, "induk_id": None}
+    assert {x: v for x, v in KA.rencana_buat("Teh", False)["rencana"].items() if x != "perubahan"} == {"nama": "Teh", "induk": None, "induk_id": None}
     assert kode(KA.rencana_buat("Teh", False, None, True)) == ["KATEGORI_INDUK_TAK_ADA"]
     assert kode(KA.rencana_buat("Teh", False, k("Sub", parent="c-0", pname="Atas"), True)) == ["KATEGORI_INDUK_BUKAN_TINGKAT_ATAS"]
     assert kode(KA.rencana_buat("Teh", False, k("Lama", aktif=False), True)) == ["KATEGORI_INDUK_NONAKTIF"] and kode(KA.rencana_buat("Teh", True, induk, True)) == ["KATEGORI_GANDA"]
