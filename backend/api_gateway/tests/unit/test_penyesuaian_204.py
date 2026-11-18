@@ -32,6 +32,9 @@ class Kon:
             return {"item_type": "service" if a[0] == C else "goods", "track_inventory": a[0] != C}
         return None
 
+    async def fetch(self, sql, *a):    # BUG-123: konversi satuan campur dibaca per dokumen (barang tanpa konversi = kosong)
+        return []
+
     async def fetchval(self, sql, *a):
         if "SELECT average_cost FROM inventory_ledger" in sql:
             return self.BRG[a[1]][1]
