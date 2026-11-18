@@ -2231,6 +2231,24 @@ async def _execute_fulfillment(
             else:
                 raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
 
+        if batch_id:   # BUG-286: cek kecukupan batch SEBELUM kartu stok ditulis (trigger lalu menggeser saldo); baris batch dikunci
+            bws_row = await conn.fetchrow(
+                """
+                SELECT available_quantity FROM batch_warehouse_stock
+                WHERE tenant_id = $3 AND batch_id = $1 AND warehouse_id = $2
+                FOR UPDATE
+            """,
+                batch_id,
+                warehouse_id,
+                tenant_id,
+            )
+            if bws_row is None or Decimal(str(bws_row["available_quantity"])) < qd:
+                available = Decimal(str(bws_row["available_quantity"])) if bws_row else 0
+                raise HTTPException(
+                    400,
+                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(qd)}.",
+                )
+
         # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE).
         # DUA pernyataan STATIS utuh (penjaga kolom-hantu membaca teks SQL); baris dasar = pernyataan lama persis.
         _arg_sd = (inv_item.get("unit"), str(req_qty), str(_f)) if _f != _SD.SATU else ()
@@ -2286,39 +2304,9 @@ async def _execute_fulfillment(
             *_arg_sd,
         )
 
-        # Batch deduction (if batch tracking)
+        # Batch: saldo digeser HANYA oleh trigger trg_update_batch_stock saat INSERT inventory_ledger di atas (BUG-286: UPDATE manual dulu
+        # menggandakan pengurangan); kecukupan batch diperiksa SEBELUM INSERT ledger (blok di atas).
         if batch_id:
-            bws_row = await conn.fetchrow(
-                """
-                SELECT available_quantity FROM batch_warehouse_stock
-                WHERE batch_id = $1 AND warehouse_id = $2
-                FOR UPDATE
-            """,
-                batch_id,
-                warehouse_id,
-            )
-
-            if bws_row is None or Decimal(str(bws_row["available_quantity"])) < qd:
-                available = (
-                    Decimal(str(bws_row["available_quantity"])) if bws_row else 0
-                )
-                raise HTTPException(
-                    400,
-                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(qd)}.",
-                )
-
-            await conn.execute(
-                """
-                UPDATE batch_warehouse_stock
-                SET quantity = quantity - $3,
-                    last_movement_date = NOW(), updated_at = NOW()
-                WHERE batch_id = $1 AND warehouse_id = $2
-            """,
-                batch_id,
-                warehouse_id,
-                qd,
-            )
-
             await conn.execute(
                 """
                 UPDATE item_batches SET status = 'depleted'

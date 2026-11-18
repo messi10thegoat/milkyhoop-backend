@@ -3106,21 +3106,8 @@ class BillsService:
 
                                 batch_id = batch_row["id"]
 
-                                if warehouse_id:
-                                    await conn.execute(
-                                        """
-                                        INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
-                                        VALUES ($1, $2, $3, $4)
-                                        ON CONFLICT (batch_id, warehouse_id)
-                                        DO UPDATE SET
-                                            quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
-                                            last_movement_date = NOW(), updated_at = NOW()
-                                    """,
-                                        tenant_id,
-                                        batch_id,
-                                        warehouse_id,
-                                        quantity,
-                                    )
+                                # BUG-286: saldo batch_warehouse_stock digeser HANYA oleh trigger trg_update_batch_stock (INSERT inventory_ledger ber-batch_id +
+                                # warehouse_id); UPSERT manual di sini dulu membuat saldo ganda (beli 10 -> 20).
 
                                 await conn.execute(
                                     """
@@ -3603,22 +3590,8 @@ class BillsService:
 
                         batch_id = batch_row["id"]
 
-                        # UPSERT batch_warehouse_stock
-                        if warehouse_id:
-                            await conn.execute(
-                                """
-                                INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
-                                VALUES ($1, $2, $3, $4)
-                                ON CONFLICT (batch_id, warehouse_id)
-                                DO UPDATE SET
-                                    quantity = batch_warehouse_stock.quantity + EXCLUDED.quantity,
-                                    last_movement_date = NOW(), updated_at = NOW()
-                            """,
-                                tenant_id,
-                                batch_id,
-                                warehouse_id,
-                                quantity,
-                            )
+                        # BUG-286: saldo batch_warehouse_stock digeser HANYA oleh trigger trg_update_batch_stock (INSERT inventory_ledger ber-batch_id +
+                        # warehouse_id); UPSERT manual dulu membuat saldo ganda.
 
                         # Link bill_items.batch_id
                         await conn.execute(
