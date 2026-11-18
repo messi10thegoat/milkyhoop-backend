@@ -55,7 +55,7 @@ async def keadaan(conn, tid, batch_id):
 async def satu(conn, tid, pool):
     uid = await conn.fetchval('SELECT id FROM "User" WHERE "tenantId" = $1 ORDER BY "createdAt" LIMIT 1', tid)
     vendor = await conn.fetchval("SELECT id FROM vendors WHERE tenant_id = $1 AND COALESCE(is_active, true) LIMIT 1", tid)
-    cust = await conn.fetchval("SELECT name FROM customers WHERE tenant_id = $1 AND COALESCE(is_active, true) ORDER BY created_at LIMIT 1", tid)
+    cust = await conn.fetchval("SELECT name FROM customers WHERE tenant_id = $1 AND COALESCE(is_active, true) AND deleted_at IS NULL AND btrim(COALESCE(name, '')) <> '' ORDER BY created_at LIMIT 1", tid)
     if not (uid and vendor and cust):
         print(f"[info] {tid}: tanpa user/vendor -> dilewati", flush=True)
         return
