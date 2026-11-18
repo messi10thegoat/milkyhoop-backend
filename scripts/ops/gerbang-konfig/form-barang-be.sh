@@ -1,6 +1,6 @@
 # Konfig gerbang FORM BARANG CW BE (18 Nov 2026): stok awal PER GUDANG (satu jurnal + kartu "Saldo awal" per gudang), GET /items/form-bawaan, pratinjau Buat (akun/pajak berlaku, peringatan,
 # kategori bawaan) + pratinjau Ubah ber-teks, BUG-290 (batch aktif lagi saat void). TANPA migrasi. Pemisah sabotase "|", sed "@".
-W=/root/mh-fb; CABANG=feat/form-barang-be; NAMA_JENDELA=formbrg
+W=/root/mh-fb; CABANG=feat/form-barang-be-r2; NAMA_JENDELA=formbrg
 POLA_UNIT='saldo_awal|barang_aksi|bawaan_berlaku|form_barang|stok_awal|izin_rute|impor_barang|barang_p3|bug282|kosakata|item_|inventory_helpers|bug286|batch'
 HARNESS=scripts/ops/uji-salinan-form-barang.sh
 PENANDA_BERKAS=services/stok_awal_barang.py; PENANDA='async def rencana'
