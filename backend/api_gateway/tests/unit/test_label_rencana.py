@@ -34,7 +34,7 @@ def test_kategori_semua_rencana_berlabel():
     r = KA.rencana_status(k(), False)["rencana"]; p = lengkap(r["perubahan"][0]); assert (p["label"], p["before_text"], p["after_text"]) == ("Status", "Aktif", "Nonaktif")
     r = KA.rencana_status(k(aktif=False), True)["rencana"]; p = r["perubahan"][0]; assert (p["before_text"], p["after_text"]) == ("Nonaktif", "Aktif")
     r = KA.rencana_bawaan(k())["rencana"]; assert lengkap(r["perubahan"][0])["after_text"] == "Kategori bawaan"
-    r = KA.rencana_induk(k(), {"id": "p1", "name": "Makanan", "parent_id": None}, True)["rencana"]; p = lengkap(r["perubahan"][0]); assert (p["label"], p["before_text"], p["after_text"]) == ("Induk", "Tingkat atas", "Makanan")
+    r = KA.rencana_induk(k(), {"id": "p1", "name": "Makanan", "parent_id": None, "is_active": True, "jumlah_barang": 0, "jumlah_anak": 0}, True)["rencana"]; p = lengkap(r["perubahan"][0]); assert (p["label"], p["before_text"], p["after_text"]) == ("Induk", "Tingkat atas", "Makanan")
     r = KA.rencana_induk(k(parent="Makanan"), None, False)["rencana"]; p = lengkap(r["perubahan"][0]); assert (p["before_text"], p["after_text"]) == ("Makanan", "Tingkat atas")
     r = KA.rencana_pindah("Lama", {"id": "t", "name": "Baru", "is_active": True}, 3, 3, [], True)["rencana"]; p = lengkap(r["perubahan"][0]); assert (p["before_text"], p["after_text"]) == ("Lama", "Baru")
     r = KA.rencana_pindah(None, {"id": "t", "name": "Baru", "is_active": True}, 3, 3, [], False)["rencana"]; assert r["perubahan"][0]["before_text"] == "Tanpa kategori"

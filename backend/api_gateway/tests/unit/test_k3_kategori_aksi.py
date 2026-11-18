@@ -22,7 +22,7 @@ def kode(r):
 
 def test_rencana_bawaan():
     r = KA.rencana_bawaan(k("Umum"))
-    assert r["ok"] and r["rencana"] == {"id": "c-1", "nama": "Umum"} and "Barang baru tanpa kategori akan otomatis masuk 'Umum'" in r["peringatan"][0]
+    assert r["ok"] and {x: v for x, v in r["rencana"].items() if x != "perubahan"} == {"id": "c-1", "nama": "Umum"} and "Barang baru tanpa kategori akan otomatis masuk 'Umum'" in r["peringatan"][0]
     assert kode(KA.rencana_bawaan(k(aktif=False))) == ["KATEGORI_NONAKTIF"] and kode(KA.rencana_bawaan(k(bawaan=True))) == ["KATEGORI_SUDAH_BAWAAN"] and kode(KA.rencana_bawaan(None)) == ["KATEGORI_TAK_ADA"]
 
 
@@ -40,7 +40,7 @@ def test_rencana_pindah():
 def test_rencana_gabung():
     s, t = k("Lama", jb=4, i="c-1"), k("Baru", i="c-2")
     r = KA.rencana_gabung(s, t)
-    assert r["ok"] and r["rencana"] == {"dari": "Lama", "dari_id": "c-1", "ke": "Baru", "ke_id": "c-2", "jumlah_barang": 4}
+    assert r["ok"] and {x: v for x, v in r["rencana"].items() if x != "perubahan"} == {"dari": "Lama", "dari_id": "c-1", "ke": "Baru", "ke_id": "c-2", "jumlah_barang": 4}
     assert r["peringatan"] == ["4 barang berpindah dari 'Lama' ke 'Baru', lalu kategori 'Lama' dihapus."]
     assert KA.rencana_gabung(k("Kosong", jb=0, ja=0, i="c-1"), t)["peringatan"] == ["Kategori 'Kosong' tidak punya barang; hanya dihapus."]
     assert kode(KA.rencana_gabung(k(bawaan=True), t)) == ["KATEGORI_BAWAAN"] and kode(KA.rencana_gabung(s, k(aktif=False, i="c-2"))) == ["KATEGORI_TUJUAN_NONAKTIF"]

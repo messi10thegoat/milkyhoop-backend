@@ -104,7 +104,7 @@ def test_ubah_null_diabaikan_kosong_menghapus_dan_perubahan_berlabel():
     r = ubah(gud(), name=None, address="", city="Jakarta", phone=None)
     assert r["blocks"] == [] and r["nilai"] == {"address": None, "city": "Jakarta"}               # null = tak diubah; "" = kosongkan (NULL)
     pf = {p["field"]: p for p in r["rencana"]["perubahan"]}
-    assert pf["address"] == {"field": "address", "label": "Alamat", "before": "Jl. A", "after": None} and pf["city"]["label"] == "Kota"
+    assert pf["address"] == {"field": "address", "label": "Alamat", "before": "Jl. A", "after": None, "before_text": "Jl. A", "after_text": "—"} and pf["city"]["label"] == "Kota"
     assert ubah(gud(), name="Toko")["rencana"]["perubahan"] == [] and ubah(gud(), name="Toko")["nilai"] == {}   # nilai sama = bukan perubahan
     b = ubah(gud(), is_branch=True)["rencana"]["perubahan"][0]
     assert (b["label"], b["before_text"], b["after_text"]) == ("Jenis", "Gudang biasa", "Cabang")
