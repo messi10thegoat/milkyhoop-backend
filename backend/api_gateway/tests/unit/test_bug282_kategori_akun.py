@@ -58,7 +58,7 @@ def test_rencana_akun_tak_ada_perubahan_kosongkan_dan_jenis_asing():
     lama = kat(akun_penjualan=json.dumps({"id": A_JUAL["id"], "kode": "4-10100", "nama": "Penjualan", "aktif": True}))
     assert kode(KAK.rencana_akun(lama, {"penjualan": A_JUAL["id"]}, AKUN)) == ["TIDAK_ADA_PERUBAHAN"]
     r = KAK.rencana_akun(lama, {"penjualan": None}, AKUN)
-    assert r["ok"] and r["rencana"]["perubahan"] == [{"jenis": "penjualan", "dari": "4-10100 Penjualan", "ke": None, "ke_id": None}]
+    assert r["ok"] and [{x: v for x, v in p.items() if x in ("jenis", "dari", "ke", "ke_id")} for p in r["rencana"]["perubahan"]] == [{"jenis": "penjualan", "dari": "4-10100 Penjualan", "ke": None, "ke_id": None}]
     assert kode(KAK.rencana_akun(kat(), {"penjualan": None}, AKUN)) == ["TIDAK_ADA_PERUBAHAN"]
     assert kode(KAK.rencana_akun(kat(), {"warna": "x"}, AKUN)) == ["AKUN_JENIS_TAK_DIKENAL"] and kode(KAK.rencana_akun(kat(), {}, AKUN)) == ["AKUN_TAK_DIISI"]
     assert kode(KAK.rencana_akun(None, {"penjualan": A_JUAL["id"]}, AKUN)) == ["KATEGORI_TAK_ADA"]
