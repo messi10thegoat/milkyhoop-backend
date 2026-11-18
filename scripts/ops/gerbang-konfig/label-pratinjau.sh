@@ -2,7 +2,7 @@
 # Pemisah sabotase = "|", sed memakai "@".
 W=/root/mh-label; CABANG=feat/label-pratinjau; NAMA_JENDELA=label-pratinjau
 POLA_UNIT='label_rencana|satuan_g3|gudang_g3|k2_kategori|k3_kategori|k3b|k4_kategori|bug282|akun_sah|izin_rute'
-HARNESS=scripts/ops/uji-salinan-akun-sah.sh
+HARNESS=scripts/ops/uji-salinan-label-pratinjau.sh
 PENANDA_BERKAS=services/label_rencana.py; PENANDA='def baris('
 A=backend/api_gateway/app
 T=tests/unit/test_label_rencana.py
