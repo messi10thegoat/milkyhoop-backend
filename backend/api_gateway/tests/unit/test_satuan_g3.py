@@ -127,7 +127,7 @@ def test_ubah_satuan_terdaftar_belum_dipakai_boleh_dan_diff_before_after():
     kon = Kon([sat(U1, "Karung", "krg")])
     r = jalan(SR.rencana_ubah(kon, T, muat(kon, U1), {"name": "Karung Besar", "abbreviation": "krg"}))
     assert r["blocks"] == [] and r["nilai"] == {"name": "Karung Besar"}
-    assert r["rencana"]["perubahan"] == [{"field": "name", "label": "Nama", "before": "Karung", "after": "Karung Besar"}]
+    assert r["rencana"]["perubahan"] == [{"field": "name", "label": "Nama", "before": "Karung", "after": "Karung Besar", "before_text": "Karung", "after_text": "Karung Besar"}]
     assert r["rencana"]["pemakai"]["teks"] == "Belum dipakai" and r["rencana"]["teks"] == "Ubah satuan Karung Besar"
 
 

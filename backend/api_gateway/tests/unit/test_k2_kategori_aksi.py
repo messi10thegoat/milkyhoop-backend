@@ -22,7 +22,8 @@ def kode(r):
 
 
 def test_rencana_buat():
-    assert KA.rencana_buat("  Minuman  ", False) == {"ok": True, "blocks": [], "peringatan": [], "rencana": {"nama": "Minuman", "induk": None, "induk_id": None}}
+    assert KA.rencana_buat("  Minuman  ", False) == {"ok": True, "blocks": [], "peringatan": [], "rencana": {"nama": "Minuman", "induk": None, "induk_id": None,
+                                                                                                                  "perubahan": [{"field": "name", "label": "Nama", "before": None, "after": "Minuman", "before_text": "—", "after_text": "Minuman"}]}}
     assert kode(KA.rencana_buat("minuman", True)) == ["KATEGORI_GANDA"] and kode(KA.rencana_buat("   ", False)) == ["NAMA_KOSONG"]
     assert kode(KA.rencana_buat("x" * 101, False)) == ["NAMA_TERLALU_PANJANG"] and KA.rencana_buat("x" * 100, False)["ok"]
     assert KA.rencana_buat("Aqua   Gelas", False)["rencana"]["nama"] == "Aqua Gelas"   # spasi ganda dirapikan
@@ -30,7 +31,7 @@ def test_rencana_buat():
 
 def test_rencana_ubah_nama_peringatan_blok_dan_ganti_huruf():
     r = KA.rencana_ubah_nama(k(), "Minuman Ringan", False)
-    assert r["ok"] and r["rencana"] == {"id": "c-1", "dari": "Minuman", "ke": "Minuman Ringan", "jumlah_barang": 12}
+    assert r["ok"] and {x: v for x, v in r["rencana"].items() if x != "perubahan"} == {"id": "c-1", "dari": "Minuman", "ke": "Minuman Ringan", "jumlah_barang": 12}
     assert r["peringatan"] == ["12 barang ikut berganti kategori dari 'Minuman' ke 'Minuman Ringan'."]
     assert KA.rencana_ubah_nama(k(jb=0, ja=0), "Baru", False)["peringatan"] == []
     assert kode(KA.rencana_ubah_nama(k(), "Minuman", False)) == ["NAMA_TIDAK_BERUBAH"]
