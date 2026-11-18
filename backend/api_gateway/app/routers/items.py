@@ -37,6 +37,7 @@ from ..services.uang_presisi import presisi_tenant
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
 from ..services import stok_awal_barang as SAB  # FORM BARANG CW: stok awal per gudang
 from ..services import kategori_akun as KAK  # BUG-282 akun bawaan per kategori
+from ..services import pajak_sah as PS  # pajak sah barang: SATU penentu (penulis + daftar pilihan)
 from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
 from ..services import impor_kategori as IK  # K-5 impor/ekspor master Kategori
 from ..services import barang_daftar as BD  # standar SO: satu penentu kunci aksi/teks posisi (7 Nov)
@@ -279,13 +280,8 @@ async def nama_pajak_item(conn, tenant_id: str, tax_id, field: str, arah: str) -
         return None
     tc = await conn.fetchrow(
         "SELECT name, direction, is_active FROM tax_codes WHERE id = $1 AND tenant_id = $2", tax_id, tenant_id)
-    if not tc:
-        salah = "tidak ditemukan"
-    elif not tc["is_active"]:
-        salah = "tidak aktif"
-    elif tc["direction"] and tc["direction"] != arah:
-        salah = "bukan pajak penjualan" if arah == "output" else "bukan pajak pembelian"
-    else:
+    salah = PS.alasan_tolak(arah, dict(tc) if tc else None)      # SATU penentu dgn GET /items/pajak-pilihan
+    if salah is None:
         return tc["name"]
     raise HTTPException(status_code=422, detail={"code": KODE_PAJAK_ITEM, "field": field, "message": f"Pajak item {salah}."})
 
@@ -2090,6 +2086,21 @@ async def list_accounts(request: Request):
 # =============================================================================
 # COA-BASED ACCOUNTS (New endpoints querying Chart of Accounts)
 # =============================================================================
+
+
+@router.get("/items/pajak-pilihan")
+async def pajak_pilihan(request: Request, jenis: str = Query(...)):
+    """Pajak pilihan per barang (penjualan|pembelian) -> {pajak:[{id,kode,nama,tarif,text}]} dari tax_codes aktif tenant; SATU penentu (PS.pajak_sah) dgn penulis barang."""
+    if jenis not in PS.JENIS:
+        raise HTTPException(status_code=422, detail={"detail": f"Jenis pajak tak dikenal: {jenis}. Pilihan: {', '.join(PS.JENIS)}.", "code": "PAJAK_JENIS_TAK_DIKENAL", "message": f"Jenis pajak tak dikenal: {jenis}.", "field": "jenis"})
+    tenant_id = get_tenant_id(request)
+    conn = None
+    try:
+        conn = await get_db_connection()
+        return {"pajak": await PS.daftar_pajak(conn, tenant_id, jenis)}
+    finally:
+        if conn:
+            await conn.close()
 
 
 async def _daftar_akun_sah(request: Request, jenis: str):
