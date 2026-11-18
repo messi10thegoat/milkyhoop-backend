@@ -29,6 +29,7 @@ class StockAdjustmentItemCreate(BaseModel):
     physical_quantity: Optional[Decimal] = Field(None, description="Actual counted quantity for recount")
     warehouse_id: Optional[str] = Field(None, description="BUG-261: gudang baris; kosong = gudang dokumen")
     source_transfer_id: Optional[str] = Field(None, description="BUG-261: baris penyelesaian selisih terima Pemindahan (gudang = Transit, terkunci)")
+    unit: Optional[str] = Field(None, max_length=50, description="BUG-123: satuan jumlah baris (mis. Karton); kosong = satuan dasar. Server mengonversi (satuan_dasar), FE tak menghitung")
 
     @field_validator('product_id')
     @classmethod
@@ -46,6 +47,7 @@ class StockAdjustmentItemUpdate(BaseModel):
     physical_quantity: Optional[Decimal] = None
     warehouse_id: Optional[str] = None            # BUG-261
     source_transfer_id: Optional[str] = None      # BUG-261
+    unit: Optional[str] = Field(None, max_length=50)   # BUG-123: satuan jumlah baris; kosong = satuan dasar
 
 
 # =============================================================================
