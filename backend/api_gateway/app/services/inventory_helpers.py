@@ -558,14 +558,14 @@ async def record_inventory_reversal(
     reversal_date=None,
     notes_prefix: str = "VOID",
     journal_id: Optional[UUID] = None,
-    pindah_batch: bool = True,
+    pindah_batch: bool = False,
 ) -> list:
     """
     Reverse all inventory_ledger entries for a given source.
 
-    pindah_batch (BE-A, 17 Nov 2026): True (bawaan, perilaku lama) = helper ikut menggeser batch_warehouse_stock. Trigger DB trg_update_batch_stock
-    (V047/V204) SUDAH menggeser batch pada INSERT ledger ber-batch_id -> pembalik ber-batch_id tergeser DUA kali (temuan harness salinan 17 Nov).
-    Penyesuaian stok (SA) memakai False: cukup trigger. Faktur/lainnya TIDAK diubah di sini (keputusan MASTER; lihat laporan BE-A).
+    pindah_batch (BE-A 17 Nov; BUG-286 18 Nov): bawaan FALSE = SATU penggerak saldo batch: trigger DB trg_update_batch_stock (V047/V204) menggeser
+    batch_warehouse_stock pada INSERT ledger ber-batch_id (baris pembalik di bawah ikut). True (hanya bila sengaja) = helper ikut menggeser manual -> GANDA
+    (terukur 18 Nov: void bill 20 -> 0, void faktur jual +6 untuk 3). Penandaan 'depleted' tetap dilakukan helper bagaimanapun.
 
     journal_id (VOID-SJ-FAKTUR 15 Okt 2026): bila diisi, HANYA baris sumber itu dengan journal_id tsb. Satu faktur bisa punya
     beberapa Surat Jalan yang semuanya ber-source_id = id faktur; pembalik per SJ dibedakan oleh jurnal HPP-nya. None = perilaku lama.
@@ -722,18 +722,18 @@ async def record_inventory_reversal(
 
             # item_batches.current_quantity synced by trg_sync_batch_quantity trigger
 
-            # Mark depleted if needed
+            logger.info(
+                f"Batch reversal: batch_id={batch_id} delta={batch_delta} "
+                f"warehouse={wh_id}"
+            )
+
+        if batch_id:   # BUG-286: penandaan habis tetap berjalan walau pergeseran saldo diserahkan ke trigger
             await conn.execute(
                 """
                 UPDATE item_batches SET status = 'depleted'
                 WHERE id = $1 AND current_quantity <= 0 AND status = 'active'
             """,
                 batch_id,
-            )
-
-            logger.info(
-                f"Batch reversal: batch_id={batch_id} delta={batch_delta} "
-                f"warehouse={wh_id}"
             )
 
         results.append(
