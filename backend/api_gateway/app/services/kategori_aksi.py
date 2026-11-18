@@ -9,6 +9,7 @@ from typing import Optional
 
 from . import kategori_akun as KAK
 from . import kategori_daftar as KD
+from . import label_rencana as LR
 from . import nama_pengguna as NP
 from . import teks_galat as tg
 from .barang_aksi import _blok, _hasil
@@ -62,7 +63,8 @@ def rencana_buat(nama, ada: bool, induk: Optional[dict] = None, induk_diminta: b
     bi = _blok_induk(induk, induk_diminta)
     if bi:
         return _hasil([bi], None)
-    return _hasil([], {"nama": n, "induk": induk["name"] if induk else None, "induk_id": str(induk["id"]) if induk else None})
+    return _hasil([], {"nama": n, "induk": induk["name"] if induk else None, "induk_id": str(induk["id"]) if induk else None,
+                       "perubahan": [LR.baris("name", "Nama", None, n)] + ([LR.baris("parent", "Induk", None, induk["name"])] if induk else [])})
 
 
 def rencana_induk(k: Optional[dict], induk: Optional[dict], induk_diminta: bool) -> dict:
@@ -78,11 +80,13 @@ def rencana_induk(k: Optional[dict], induk: Optional[dict], induk_diminta: bool)
             return _hasil([_blok("KATEGORI_PUNYA_ANAK", f"Kategori '{k['name']}' punya {anak} sub kategori; sub kategori hanya satu tingkat.")], None)
         if k.get("parent_id") and str(k["parent_id"]) == str(induk["id"]):
             return _hasil([_blok("INDUK_TIDAK_BERUBAH", f"Kategori '{k['name']}' sudah menjadi sub dari '{induk['name']}'.")], None)
-        return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": induk["name"], "induk_id": str(induk["id"]), "jumlah_barang": int(k["jumlah_barang"])},
+        return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": induk["name"], "induk_id": str(induk["id"]), "jumlah_barang": int(k["jumlah_barang"]),
+                       "perubahan": [LR.baris("parent", "Induk", k.get("parent_name"), induk["name"], before_text=k.get("parent_name") or "Tingkat atas")]},
                       [f"'{k['name']}' menjadi sub kategori dari '{induk['name']}'. Barangnya tetap berkategori '{k['name']}'."])
     if not k.get("parent_id"):
         return _hasil([_blok("INDUK_TIDAK_BERUBAH", f"Kategori '{k['name']}' sudah di tingkat atas.")], None)
-    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": None, "induk_id": None, "jumlah_barang": int(k["jumlah_barang"])}, [f"'{k['name']}' menjadi kategori tingkat atas."])
+    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "induk": None, "induk_id": None, "jumlah_barang": int(k["jumlah_barang"]),
+                      "perubahan": [LR.baris("parent", "Induk", k.get("parent_name"), None, before_text=k.get("parent_name") or "Tingkat atas", after_text="Tingkat atas")]}, [f"'{k['name']}' menjadi kategori tingkat atas."])
 
 
 def rencana_ubah_nama(k: Optional[dict], nama_baru, bentrok: bool) -> dict:
@@ -98,7 +102,7 @@ def rencana_ubah_nama(k: Optional[dict], nama_baru, bentrok: bool) -> dict:
         return _hasil([_blok("KATEGORI_GANDA", f"Kategori '{n}' sudah ada (huruf besar/kecil tidak dibedakan).")], None)
     jb = int(k["jumlah_barang"])
     per = [f"{jb} barang ikut berganti kategori dari '{k['name']}' ke '{n}'."] if jb else []
-    return _hasil([], {"id": str(k["id"]), "dari": k["name"], "ke": n, "jumlah_barang": jb}, per)
+    return _hasil([], {"id": str(k["id"]), "dari": k["name"], "ke": n, "jumlah_barang": jb, "perubahan": [LR.baris("name", "Nama", k["name"], n)]}, per)
 
 
 def rencana_status(k: Optional[dict], ke_aktif: bool) -> dict:
@@ -113,7 +117,8 @@ def rencana_status(k: Optional[dict], ke_aktif: bool) -> dict:
     anak = int(k.get("jumlah_anak") or 0)
     if not ke_aktif and anak:
         per.append(f"'{k['name']}' punya {anak} sub kategori; sub kategorinya tetap aktif dan tetap bisa dipilih.")
-    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "ke": "aktif" if ke_aktif else "nonaktif", "jumlah_aktif": a}, per)
+    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "ke": "aktif" if ke_aktif else "nonaktif", "jumlah_aktif": a,
+                       "perubahan": [LR.baris("is_active", "Status", not ke_aktif, ke_aktif, "Nonaktif" if ke_aktif else "Aktif", "Aktif" if ke_aktif else "Nonaktif")]}, per)
 
 
 async def ukur_kategori(conn, tid: str, kategori_id) -> Optional[dict]:
@@ -198,7 +203,7 @@ def rencana_bawaan(k: Optional[dict]) -> dict:
     alasan = KD.alasan_bawaan(k["name"], bool(k["is_active"]), bool(k["is_default"]))     # satu sumber kalimat dgn aksi_tersedia.jadikan_bawaan
     if alasan:
         return _hasil([_blok("KATEGORI_NONAKTIF" if not k["is_active"] else "KATEGORI_SUDAH_BAWAAN", alasan)], None)
-    return _hasil([], {"id": str(k["id"]), "nama": k["name"]},
+    return _hasil([], {"id": str(k["id"]), "nama": k["name"], "perubahan": [LR.baris("is_default", "Bawaan", False, True, "Bukan bawaan", "Kategori bawaan")]},
                   [f"Barang baru tanpa kategori akan otomatis masuk '{k['name']}'. Barang lama tanpa kategori tidak berubah; pindahkan lewat Pindahkan barang."])
 
 
@@ -213,7 +218,8 @@ def rencana_pindah(sumber_nama: Optional[str], target: Optional[dict], n: int, a
     if KD.alasan_pindah(n):
         return _hasil([_blok("TIDAK_ADA_BARANG", KD.alasan_pindah(n))], None)
     dari = f"kategori '{sumber_nama}'" if sumber_kategori else "tanpa kategori"
-    return _hasil([], {"dari": sumber_nama if sumber_kategori else None, "ke": target["name"], "ke_id": str(target["id"]), "jumlah_barang": n, "jumlah_aktif": a, "contoh": contoh},
+    return _hasil([], {"dari": sumber_nama if sumber_kategori else None, "ke": target["name"], "ke_id": str(target["id"]), "jumlah_barang": n, "jumlah_aktif": a, "contoh": contoh,
+                   "perubahan": [LR.baris("kategori", "Kategori barang", sumber_nama if sumber_kategori else None, target["name"], sumber_nama if sumber_kategori else "Tanpa kategori", target["name"])]},
                   [f"{n} barang ({a} aktif) dari {dari} berpindah ke kategori '{target['name']}'."])
 
 
@@ -229,7 +235,8 @@ def rencana_gabung(sumber: Optional[dict], target: Optional[dict]) -> dict:
     if not target["is_active"]:
         return _hasil([_blok("KATEGORI_TUJUAN_NONAKTIF", f"Kategori tujuan '{target['name']}' nonaktif; aktifkan dulu.")], None)
     jb = int(sumber["jumlah_barang"])
-    return _hasil([], {"dari": sumber["name"], "dari_id": str(sumber["id"]), "ke": target["name"], "ke_id": str(target["id"]), "jumlah_barang": jb},
+    return _hasil([], {"dari": sumber["name"], "dari_id": str(sumber["id"]), "ke": target["name"], "ke_id": str(target["id"]), "jumlah_barang": jb,
+                   "perubahan": [LR.baris("gabung", "Gabung", sumber["name"], target["name"])]},
                   [f"{jb} barang berpindah dari '{sumber['name']}' ke '{target['name']}', lalu kategori '{sumber['name']}' dihapus."] if jb else
                   [f"Kategori '{sumber['name']}' tidak punya barang; hanya dihapus."])
 

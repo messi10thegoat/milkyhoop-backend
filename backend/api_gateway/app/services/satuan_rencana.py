@@ -12,6 +12,7 @@ from . import satuan_master as SM
 from . import satuan_pakai as SP
 from . import satuan_sebar as SS
 from .satuan_dasar import normal
+from . import label_rencana as LR
 from .galat_berkode import GalatBerkode
 
 LABEL = {"name": "Nama", "abbreviation": "Singkatan", "is_active": "Status"}
@@ -101,7 +102,7 @@ async def rencana_buat(conn, tid: str, b: dict) -> dict:
             p = (await SP.muat_pemakai(conn, tid, semua)).get(ada["id"], dict(SP.NOL))
             perin.append(peringatan("SATUAN_TERPAKAI_DIDAFTARKAN", f"'{singkatan}' sudah tertulis di barang/konversi ({pemakai_text(p).lower()}); satuan ini akan didaftarkan ke master.", "abbreviation"))
     nilai = {"name": nama, "abbreviation": singkatan}
-    perubahan = [{"field": k, "label": LABEL[k], "before": None, "after": nilai[k]} for k in URUT if nilai[k]]
+    perubahan = [LR.baris(k, LABEL[k], None, nilai[k]) for k in URUT if nilai[k]]
     return _susun(blocks, perin, "buat", None, perubahan, f"Buat satuan {nama} ({singkatan})" if nama else "Buat satuan", b, nilai)
 
 
@@ -147,7 +148,7 @@ async def rencana_ubah(conn, tid: str, u: dict, b: dict) -> dict:
     extra = {}
     if nilai and not blocks:
         extra = await _sebar_ubah(conn, tid, u, nilai, perin, blocks)
-    perubahan = [{"field": k, "label": LABEL[k], "before": u[k], "after": nilai[k]} for k in URUT if k in nilai]
+    perubahan = [LR.baris(k, LABEL[k], u[k], nilai[k]) for k in URUT if k in nilai]
     r = _susun(blocks, perin, "ubah", u, perubahan, f"Ubah satuan {nilai.get('name', u['name'])}", b, nilai)
     r.update(extra)
     if "penyebaran" in extra:
@@ -228,7 +229,7 @@ async def rencana_gabung(conn, tid: str, s: dict, t: dict, ke_id: str) -> dict:
             if h["hapus_konversi"] or h["hapus_harga"]:
                 perin.append(peringatan("SATUAN_DUPLIKAT_DIBUANG", f"{len(h['hapus_konversi'])} konversi dan {len(h['hapus_harga'])} baris harga yang kembar akan digabung (dibuang satu).", None))
         extra = {"sebar": h, "penyebaran": {**j, "teks": teks or "Tidak ada barang/konversi/harga/BOM yang memakai nama ini."}}
-    r = _susun(blocks, perin, "gabung", s, [{"field": "gabung", "label": "Gabung", "before": s["name"], "after": t["name"]}],
+    r = _susun(blocks, perin, "gabung", s, [LR.baris("gabung", "Gabung", s["name"], t["name"], f"{s['name']} ({s['abbreviation']})", f"{t['name']} ({t['abbreviation']})")],
                f"Gabung satuan {s['name']} ke {t['name']}", payload, {"is_active": False})
     r["rencana"]["tujuan"] = {"id": t["id"], "nama": t["name"], "singkatan": t["abbreviation"], "dibuat_otomatis": t["jenis"] == "bawaan"}
     r["tujuan"] = t

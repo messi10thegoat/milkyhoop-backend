@@ -5,6 +5,7 @@ from typing import Optional
 
 from . import gudang_daftar as GD
 from . import gudang_jenis as GJ
+from . import label_rencana as LR
 from .galat_berkode import GalatBerkode
 
 TEKS_UTAMA_TAK_NONAKTIF = "Jadikan gudang lain sebagai Utama dulu."
@@ -52,15 +53,21 @@ def _utama_diganti(nama: str) -> dict:
     return peringatan("GUDANG_UTAMA_DIGANTI", f"Gudang utama saat ini ({nama}) akan digantikan.")
 
 
+def _baris(k: str, sebelum, sesudah) -> dict:
+    """Satu baris perubahan berlabel (LR.baris): boolean -> teks TEKS_BOOL; negara -> nama negara (GD.negara_text); lain -> teks apa adanya."""
+    if k in TEKS_BOOL:
+        ya, tidak = TEKS_BOOL[k]
+        return LR.baris(k, LABEL[k], sebelum, sesudah, ya if sebelum else tidak, ya if sesudah else tidak)
+    if k == "country":
+        return LR.baris(k, LABEL[k], sebelum, sesudah, LR.teks(GD.negara_text(sebelum)), LR.teks(GD.negara_text(sesudah)))
+    return LR.baris(k, LABEL[k], sebelum, sesudah)
+
+
 def _perubahan(w: dict, nilai: dict) -> list:
     out = []
     for k in URUT:
         if k in nilai and nilai[k] != w.get(k):
-            p = {"field": k, "label": LABEL[k], "before": w.get(k), "after": nilai[k]}
-            if k in TEKS_BOOL:
-                ya, tidak = TEKS_BOOL[k]
-                p["before_text"], p["after_text"] = (ya if w.get(k) else tidak), (ya if nilai[k] else tidak)
-            out.append(p)
+            out.append(_baris(k, w.get(k), nilai[k]))
     return out
 
 
@@ -93,8 +100,7 @@ async def rencana_buat(conn, tid: str, b: dict) -> dict:
     for k in TEKS_OPSIONAL:
         nilai[k] = _bersih(b.get(k))
     isi = {k: v for k, v in nilai.items() if v is not None and v is not False and k != "country"} | {"name": nama}
-    perubahan = [{"field": k, "label": LABEL[k], "before": None, "after": nilai[k], **({"before_text": TEKS_BOOL[k][1], "after_text": TEKS_BOOL[k][0] if nilai[k] else TEKS_BOOL[k][1]} if k in TEKS_BOOL else {})}
-                 for k in URUT if k in isi and k not in ("country",)]
+    perubahan = [_baris(k, None, nilai[k]) for k in URUT if k in isi and k not in ("country",)]
     return _susun(blocks, perin, "buat", None, perubahan, f"Buat gudang {nama} ({kode})", b, nilai,
                   jenis_text=GJ.jenis_text(cabang), jenis_catatan=GJ.jenis_catatan(cabang))
 

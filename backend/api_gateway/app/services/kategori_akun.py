@@ -9,6 +9,7 @@ import json
 import uuid
 from typing import Optional
 
+from . import label_rencana as LR
 from .barang_aksi import _blok, _hasil
 
 JENIS = ("penjualan", "persediaan", "hpp", "pembelian")
@@ -87,7 +88,7 @@ def rencana_akun(k: Optional[dict], diminta: Optional[dict], akun: dict) -> dict
         lama_id = sekarang[j]["id"] if sekarang[j] else None
         if baru in (None, ""):
             if lama_id:
-                ubah.append({"jenis": j, "dari": sekarang[j]["text"], "ke": None, "ke_id": None})
+                ubah.append({"jenis": j, "dari": sekarang[j]["text"], "ke": None, "ke_id": None, **LR.baris(f"akun_{j}", f"Akun {LABEL[j].lower()}", sekarang[j]["text"], None)})
             continue
         a = akun.get(str(baru))
         if not a:
@@ -99,7 +100,8 @@ def rencana_akun(k: Optional[dict], diminta: Optional[dict], akun: dict) -> dict
         elif not tipe_sah(j, a):
             blok.append(_blok("AKUN_TIPE_SALAH", f"Akun '{a['account_code']} {a['name']}' bukan akun {LABEL[j].lower()} yang sah.", field=j))
         elif str(a["id"]) != lama_id:
-            ubah.append({"jenis": j, "dari": sekarang[j]["text"] if sekarang[j] else None, "ke": f"{a['account_code']} {a['name']}", "ke_id": str(a["id"])})
+            ubah.append({"jenis": j, "dari": sekarang[j]["text"] if sekarang[j] else None, "ke": f"{a['account_code']} {a['name']}", "ke_id": str(a["id"]),
+                          **LR.baris(f"akun_{j}", f"Akun {LABEL[j].lower()}", sekarang[j]["text"] if sekarang[j] else None, f"{a['account_code']} {a['name']}")})
     if blok:
         return _hasil(blok, None)
     if not ubah:

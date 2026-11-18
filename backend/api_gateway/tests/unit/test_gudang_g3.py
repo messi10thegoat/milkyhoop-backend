@@ -219,3 +219,14 @@ def test_jalur_lama_patch_dan_delete_tetap_menolak_gudang_berstok_hanya_status_p
     assert ubah(gud(), Kon(berstok=3), is_active=True)["blocks"] == [] and ubah(gud(), Kon(berstok=0), is_active=False)["blocks"] == []
     src = inspect.getsource(WH.delete_warehouse)
     assert "blok_berstok=True" in src and "blok_berstok" not in inspect.getsource(WH.set_warehouse_status) and "blok_berstok" not in inspect.getsource(WH.preview_status_warehouse)
+
+
+def test_perubahan_membawa_before_text_after_text_dan_negara_jadi_nama():
+    r = buat(country="ID", is_branch=True)
+    for p in r["rencana"]["perubahan"]:
+        assert {"before_text", "after_text", "label"} <= set(p), p
+    p = {x["field"]: x for x in r["rencana"]["perubahan"]}
+    assert p["is_branch"]["after_text"] == GJ.TEKS_CABANG and p["name"]["before_text"] == "—" and p["name"]["after_text"] == "Gudang Baru"
+    u = ubah(gud(country="ID"), country="MY")
+    c = [x for x in u["rencana"]["perubahan"] if x["field"] == "country"][0]
+    assert (c["before_text"], c["after_text"]) == ("Indonesia", "Malaysia")
