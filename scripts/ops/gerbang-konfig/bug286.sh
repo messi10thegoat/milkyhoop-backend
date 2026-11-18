@@ -1,6 +1,6 @@
 # Konfig gerbang BUG-286 (18 Nov 2026): saldo batch_warehouse_stock digeser SATU kali (trigger = satu-satunya penggerak) pada faktur beli, faktur jual, void. TANPA migrasi.
 # HARNESS = uji-ukur-bug286.sh (TEGAS=1 bawaan: cek gagal -> rc=1) + sidik kartu stok/jurnal dibandingkan manual dgn baseline pra-perbaikan. Pemisah sabotase "|", sed "@".
-W=/root/mh-286; CABANG=feat/bug286-ukur; NAMA_JENDELA=b286
+W=/root/mh-286; CABANG=feat/bug286-ukur-r2; NAMA_JENDELA=b286
 POLA_UNIT='bug286|batch_standar|inventory_helpers|sales_invoice|bills|void|fulfil|item_batch|stok_baris'
 HARNESS=scripts/ops/uji-ukur-bug286.sh
 PENANDA_BERKAS=services/inventory_helpers.py; PENANDA='BUG-286: penandaan habis'
