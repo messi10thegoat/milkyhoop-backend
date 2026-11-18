@@ -45,6 +45,7 @@ class Kon:
     async def fetchrow(self, sql, *a):
         self.sql.append(sql)
         if "FROM warehouses" in sql:
+            assert "tenant_id = $1" in sql     # gudang disaring tenant
             g = self.gudang.get(a[1])
             return {"id": a[1], "name": g[0], "is_active": g[1], "is_system": g[2]} if g else None
         if "FROM fiscal_periods" in sql:
