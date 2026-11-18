@@ -56,7 +56,8 @@ async def satu(conn, tid):
     pv = (await SA.preview_create_stock_adjustment(rq, badan([{"product_id": str(pid), "quantity_adjustment": 2, "unit": "UJI-Dus"}])))["data"]
     b0 = (pv.get("baris_draf") or [{}])[0]
     cek(f"{tid} pratinjau: ok + 2 UJI-Dus = 24 {dasar}", pv["ok"] and D(b0.get("quantity_adjustment", "0")) == 24 and b0.get("unit") == dasar and b0.get("unit_input") == "UJI-Dus" and b0.get("quantity_input") in ("2", "2.0"), pv)
-    cek(f"{tid} pratinjau: teks campur sesudah memuat UJI-Dus", "UJI-Dus" in (b0.get("quantity_after_campur_text") or ""), b0)
+    cek(f"{tid} pratinjau: teks campur jumlah + sesudah terisi (satuan besar boleh lebih besar dari UJI-Dus, mis. nyawit)", bool(b0.get("quantity_adjustment_campur_text")) and bool(b0.get("quantity_after_campur_text"))
+        and any(ch.isdigit() for ch in b0["quantity_adjustment_campur_text"]), b0)
 
     # satuan tanpa konversi -> blok berkalimat + field (pratinjau) dan 400 berkode (tulis)
     pv2 = (await SA.preview_create_stock_adjustment(rq, badan([{"product_id": str(pid), "quantity_adjustment": 1, "unit": "UJI-Tak-Ada"}])))["data"]
