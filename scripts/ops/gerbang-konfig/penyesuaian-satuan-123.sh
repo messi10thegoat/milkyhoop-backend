@@ -1,6 +1,6 @@
 # Konfig gerbang BUG-123 (18 Nov 2026): Penyesuaian Stok bersatuan besar (unit per baris, konversi server lewat satuan_dasar, blok SATUAN_TAK_TERKONVERSI + field, teks campur). TANPA migrasi.
 # Pemisah sabotase = "|", sed memakai "@".
-W=/root/mh-sat; CABANG=feat/penyesuaian-satuan-123; NAMA_JENDELA=s123
+W=/root/mh-sat; CABANG=feat/penyesuaian-satuan-123-r2; NAMA_JENDELA=s123
 POLA_UNIT='stok_sesuai|stock_adjust|penyesuaian|bug123|bug261|bayar_keluar|satuan_dasar|izin_rute|kasbank'
 HARNESS=scripts/ops/uji-salinan-satuan-123.sh
 PENANDA_BERKAS=services/stok_sesuai.py; PENANDA='async def _konversi'
