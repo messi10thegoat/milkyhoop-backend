@@ -56,12 +56,14 @@ async def main():
         cek(f"A {tid}: ada baris", n > 0, str(n))
     # B kontrol merah: semai di salinan
     tid = TENANT[0]
-    row = await conn.fetchrow(
-        f"""SELECT pli.id, pli.price_list_id FROM price_list_items pli JOIN products p ON p.id = pli.item_id AND p.tenant_id = $1
-            JOIN price_lists pl ON pl.id = pli.price_list_id AND pl.tenant_id = $1
-            WHERE pli.unit = {DASAR} AND pli.min_quantity > 1
-              AND EXISTS (SELECT 1 FROM price_list_items o WHERE o.price_list_id = pli.price_list_id AND o.item_id = pli.item_id AND o.id <> pli.id AND o.unit = pli.unit AND o.min_quantity < pli.min_quantity)
-            LIMIT 1""", tid)
+    grup = await conn.fetchrow(
+        f"""SELECT pli.price_list_id, pli.item_id FROM price_list_items pli JOIN products p ON p.id = pli.item_id AND p.tenant_id = $1
+            JOIN price_lists pl ON pl.id = pli.price_list_id AND pl.tenant_id = $1 WHERE {DASAR} IS NOT NULL
+            GROUP BY pli.price_list_id, pli.item_id HAVING count(*) >= 2 AND count(DISTINCT pli.min_quantity) = count(*) LIMIT 1""", tid)
+    row = None
+    if grup:  # normalkan semua baris kelompok ke satuan dasar eksplisit, lalu baris min_qty tertinggi -> NULL (pola impor)
+        await conn.execute(f"UPDATE price_list_items pli SET unit = {DASAR} FROM products p WHERE p.id = pli.item_id AND p.tenant_id = $3 AND pli.price_list_id = $1 AND pli.item_id = $2", grup["price_list_id"], grup["item_id"], tid)
+        row = await conn.fetchrow("SELECT pli.id, pli.price_list_id FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id AND pl.tenant_id = $3 WHERE pli.price_list_id = $1 AND pli.item_id = $2 ORDER BY pli.min_quantity DESC LIMIT 1", grup["price_list_id"], grup["item_id"], tid)
     cek("B ada baris untuk disemai", row is not None)
     if row:
         await conn.execute("UPDATE price_list_items SET unit = NULL WHERE id = $1", row["id"])
