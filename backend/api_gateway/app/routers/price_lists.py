@@ -362,6 +362,8 @@ async def get_price_list(request: Request, price_list_id: UUID):
                             "is_active": i["is_active"],
                             "unit_text": HD.unit_text(i["unit"], i["dasar"]),
                             "berlaku_text": HD.berlaku_text(i["start_date"], i["end_date"]),
+                            "min_price_text": HD.min_price_text(i["min_price"]),
+                            "diskon_text": HD.diskon_text(i["discount_percent"]),
                         }
                         for i in items
                     ],

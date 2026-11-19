@@ -11,6 +11,7 @@ from datetime import date
 from typing import Optional
 
 from ..schemas.aksi_tersedia import aksi
+from .teks_galat import rp as rp_text  # SATU pemformat Rupiah ("Rp 60.000", sen hanya bila != 0)
 
 AKSI = ("kedaluwarsa", "belum_berlaku")
 SARING = ("nonaktif", "bawaan")
@@ -73,13 +74,24 @@ def aksi_tersedia(r, pelanggan_count: int) -> dict:
     }
 
 
+def min_price_text(v) -> Optional[str]:
+    """Teks harga minimum baris; None (tak diatur) -> None."""
+    return None if v is None else rp_text(v)
+
+
+def diskon_text(v) -> Optional[str]:
+    """Teks diskon baris: 5 -> '5%', 12.5 -> '12.5%'; None (tak diatur) -> None; 0 eksplisit -> '0%' (BUG-253)."""
+    return None if v is None else f"{float(v):g}%"
+
+
 async def teks_baris(conn, tid: str, line_id) -> dict:
-    """{unit_text, berlaku_text} untuk SATU baris harga (respons tambah/ubah baris); bersaring tenant lewat price_lists."""
+    """{unit_text, berlaku_text, min_price_text, diskon_text} untuk SATU baris harga (respons tambah/ubah baris); bersaring tenant lewat price_lists."""
     r = await conn.fetchrow(
-        """SELECT pli.unit, pli.start_date, pli.end_date, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar
+        """SELECT pli.unit, pli.start_date, pli.end_date, pli.min_price, pli.discount_percent, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS dasar
            FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id
            LEFT JOIN products p ON p.id = pli.item_id AND p.tenant_id = pl.tenant_id
            WHERE pli.id = $1 AND pl.tenant_id = $2""", line_id, tid)
     if not r:
-        return {"unit_text": None, "berlaku_text": None}
-    return {"unit_text": unit_text(r["unit"], r["dasar"]), "berlaku_text": berlaku_text(r["start_date"], r["end_date"])}
+        return {"unit_text": None, "berlaku_text": None, "min_price_text": None, "diskon_text": None}
+    return {"unit_text": unit_text(r["unit"], r["dasar"]), "berlaku_text": berlaku_text(r["start_date"], r["end_date"]),
+            "min_price_text": min_price_text(r["min_price"]), "diskon_text": diskon_text(r["discount_percent"])}

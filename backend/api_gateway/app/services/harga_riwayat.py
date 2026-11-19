@@ -36,11 +36,6 @@ def jsonable(v):
     return str(v)
 
 
-def _rp(v) -> str:
-    d = Decimal(str(v))
-    return "Rp " + (f"{d:,.0f}" if d == d.to_integral_value() else f"{d:,.2f}").replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 async def snapshot(conn, tid: str, line_id) -> Optional[dict]:
     """Keadaan SATU baris daftar (bersaring tenant) untuk dari/ke; None bila tak ada."""
     r = await conn.fetchrow(
@@ -84,12 +79,12 @@ def ringkas_baris(dari: Optional[dict], ke: Optional[dict]) -> str:
         for k, label in (("harga", "harga"), ("min_price", "minimum"), ("diskon_persen", "diskon")):
             if dari.get(k) != ke.get(k):
                 a, c = dari.get(k), ke.get(k)
-                f = (lambda v: "-" if v is None else (f"{v:g}%" if k == "diskon_persen" else _rp(v)))
+                f = (lambda v: "-" if v is None else (f"{v:g}%" if k == "diskon_persen" else HD.rp_text(v)))
                 bagian.append(f"{label} {f(a)} → {f(c)}")
         if dari.get("berakhir") != ke.get("berakhir"):
             bagian.append(f"berakhir {dari.get('berakhir') or '-'} → {ke.get('berakhir') or '-'}")
         return f"{ket}: " + ("; ".join(bagian) or "tanpa perubahan nilai")
-    return f"{ket}: {_rp(b['harga'])}"
+    return f"{ket}: {HD.rp_text(b['harga'])}"
 
 
 async def catat(conn, ctx: dict, pl_id, kode_daftar: Optional[str], aksi: str, ringkas: str, baris: Optional[List[dict]] = None,

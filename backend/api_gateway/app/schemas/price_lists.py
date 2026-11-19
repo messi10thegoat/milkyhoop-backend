@@ -53,6 +53,8 @@ class PriceListItemResponse(BaseModel):
     is_active: bool = True
     unit_text: Optional[str] = None  # services/harga_daftar.unit_text ("<satuan dasar>" bila unit kosong)
     berlaku_text: Optional[str] = None  # services/harga_daftar.berlaku_text ("Ikut daftar" bila kosong)
+    min_price_text: Optional[str] = None  # "Rp 60.000"; min_price None -> None
+    diskon_text: Optional[str] = None  # "5%"; None -> None; 0 eksplisit -> "0%" (BUG-253)
 
 
 class CreatePriceListRequest(BaseModel):
