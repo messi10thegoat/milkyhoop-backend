@@ -22,7 +22,7 @@ def cek(nama, ok, info=""):
 
 def req(tid):
     r = Request({"type": "http", "method": "GET", "path": "/x", "headers": []})
-    r.state.user = {"tenant_id": tid, "user_id": "uji-salinan", "username": "uji-salinan", "role": "OWNER"}
+    r.state.user = {"tenant_id": tid, "user_id": "00000000-0000-0000-0000-000000000001", "username": "uji-salinan", "role": "OWNER"}
     return r
 
 
