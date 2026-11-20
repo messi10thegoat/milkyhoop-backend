@@ -174,7 +174,7 @@ async def test_daftar_di_luar_masa_berlaku_tak_dipakai():
 async def test_banyak_baris_satu_panggilan_dan_kunci_dikembalikan():
     r = await HJ.harga_saran(Kon(), T, C_WARUNG, HARI, [{"key": "a", "item_id": P, "unit": "Dus", "quantity": 10},
                                                         {"key": "b", "item_id": P, "unit": "Karton", "quantity": 1}])
-    assert [(x["key"], x["harga"], x["sumber"]) for x in r["lines"]] == [("a", 95000.0, "daftar"), ("b", 1260000.0, "harga_dasar")]
+    assert [(x["key"], x["harga"], x["sumber"]) for x in r["lines"]] == [("a", 95000.0, "daftar"), ("b", 1140000.0, "daftar_konversi")]  # BUG-320: 1 Karton = 12 Dus -> tingkat 10 (95.000) x 12
 
 
 def _fungsi(rel, nama):
