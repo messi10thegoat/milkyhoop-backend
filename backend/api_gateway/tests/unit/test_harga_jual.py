@@ -108,11 +108,45 @@ async def test_baris_daftar_tanpa_satuan_berarti_satuan_dasar_dan_alias_kamus():
 
 
 @pytest.mark.asyncio
-async def test_satuan_lain_jatuh_ke_harga_satuan_lalu_harga_dasar_kali_faktor():
-    _, b = await _satu(Kon(), C_WARUNG, P, "Pak", 1)  # daftar hanya Dus -> konversi Pak punya harga sendiri
-    assert (b["harga"], b["sumber"], b["faktor"]) == (600000.0, "harga_satuan", 6.0)
-    _, b2 = await _satu(Kon(), C_WARUNG, P, "Karton", 1)  # Karton tanpa harga konversi -> 105.000 x 12
-    assert (b2["harga"], b2["sumber"], b2["faktor"]) == (1260000.0, "harga_dasar", 12.0)
+async def test_satuan_lain_tanpa_baris_dh_pakai_dh_dasar_kali_faktor_dh_menang():
+    # BUG-320 (pola SAP): daftar WARUNG hanya punya baris Dus (dasar) -> Pak/Karton = DH dasar x faktor, tingkat qty di satuan dasar
+    _, b = await _satu(Kon(), C_WARUNG, P, "Pak", 1)  # 1 Pak = 6 Dus -> tingkat 1 (100.000) x 6; DH menang atas sales_price konversi 600.000
+    assert (b["harga"], b["sumber"], b["faktor"], b["tingkat_min_qty"], b["sumber_text"]) == (600000.0, "daftar_konversi", 6.0, 1.0, "Daftar harga (dari satuan dasar)")
+    _, b2 = await _satu(Kon(), C_WARUNG, P, "Karton", 1)  # 1 Karton = 12 Dus -> tingkat 10 (95.000) x 12
+    assert (b2["harga"], b2["sumber"], b2["tingkat_min_qty"], b2["daftar"]) == (1140000.0, "daftar_konversi", 10.0, {"id": str(WARUNG), "code": "WARUNG"})
+
+
+@pytest.mark.asyncio
+async def test_satuan_lain_tanpa_dh_sama_sekali_tetap_harga_satuan_lalu_harga_dasar():
+    kon = Kon(daftar=[], baris=[])
+    _, b = await _satu(kon, C_POLOS, P, "Pak", 1)
+    assert (b["harga"], b["sumber"], b["sumber_text"]) == (600000.0, "harga_satuan", "Harga satuan")
+    _, b2 = await _satu(kon, C_POLOS, P, "Karton", 1)
+    assert (b2["harga"], b2["sumber"], b2["sumber_text"]) == (1260000.0, "harga_dasar", "Harga dasar")
+
+
+@pytest.mark.asyncio
+async def test_dh_punya_baris_satuan_sendiri_tetap_menang_dan_dasar_tak_berubah():
+    baris = [{"pl": WARUNG, "item_id": P, "unit": "Dus", "price": Decimal("100000"), "min_quantity": Decimal("1")},
+             {"pl": WARUNG, "item_id": P, "unit": "Karton", "price": Decimal("1100000"), "min_quantity": Decimal("1")}]
+    _, b = await _satu(Kon(baris=baris), C_WARUNG, P, "Karton", 2)
+    assert (b["harga"], b["sumber"], b["sumber_text"]) == (1100000.0, "daftar", "Daftar harga")
+    _, b2 = await _satu(Kon(baris=baris), C_WARUNG, P, "Dus", 2)
+    assert (b2["harga"], b2["sumber"]) == (100000.0, "daftar")
+
+
+@pytest.mark.asyncio
+async def test_uji_d2_dh_pcs_dus_12_pcs_dasar_15000():
+    # UJI-D2: DH Pcs>=1 14.000, Dus = 12 Pcs, harga dasar 15.000 -> 2 Dus = 336.000 (kontrol merah: 15.000x12 = 180.000/Dus)
+    kon = Kon(baris=[{"pl": WARUNG, "item_id": P2, "unit": "kg", "price": Decimal("14000"), "min_quantity": Decimal("1")},
+                     {"pl": WARUNG, "item_id": P2, "unit": "kg", "price": Decimal("13000"), "min_quantity": Decimal("60")}],
+              harga_dasar={P: Decimal("105000"), P2: Decimal("15000")},
+              konversi=[{"product_id": P2, "base_unit": "Kilogram", "conversion_unit": "Dus", "conversion_factor": Decimal("12"), "sales_price": None}])
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 2)
+    assert (b["harga"], b["sumber"]) == (168000.0, "daftar_konversi")  # harga per Dus 14.000 x 12; 2 Dus = 336.000
+    assert b["harga"] * 2 == 336000.0 and b["harga"] != 180000.0
+    _, b5 = await _satu(kon, C_WARUNG, P2, "Dus", 5)  # 5 Dus = 60 dasar -> tingkat >=60 (13.000 x 12)
+    assert (b5["harga"], b5["tingkat_min_qty"]) == (156000.0, 60.0)
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,21 @@ async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[d
     return None
 
 
+def _dari_daftar_dasar(baris: list, alias, dasar, kanon_baris, q: Decimal, h: dict, tanggal: date):
+    """BUG-320 (putusan pemilik 20 Nov, pola SAP B1: harga DH satuan dasar x faktor): satuan baris bukan dasar dan DH TAK punya baris satuan itu -> pakai baris DH SATUAN DASAR
+    (tingkat qty = q x faktor); harga per satuan baris = harga dasar-DH x faktor. None bila satuan = dasar, tanpa faktor/blok, atau tak ada baris dasar cocok."""
+    if h["blok"] or not dasar or kanon_baris == SD.kanon(dasar, alias):
+        return None
+    q_dasar = q * h["faktor"]
+    cocok = [r for r in baris if SD.kanon(r["unit"] or dasar, alias) == SD.kanon(dasar, alias)
+             and _berlaku(r, tanggal) and Decimal(str(r["min_quantity"])) <= q_dasar]
+    if not cocok:
+        return None
+    r = pilih_baris(cocok)
+    return {"price": _r2(r["price"]), "min_quantity": r["min_quantity"]}
+
+
+SUMBER_TEKS = {"daftar": "Daftar harga", "daftar_konversi": "Daftar harga (dari satuan dasar)", "harga_satuan": "Harga satuan", "harga_dasar": "Harga dasar"}  # kosong -> None
 KOLOM_HARGA = {"jual": "sales_price", "beli": "purchase_price"}
 
 
@@ -108,10 +123,14 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
                          tingkat_min_qty=float(r["min_quantity"]),
                          harga_minimum=float(_r2(r["min_price"])) if r["min_price"] is not None else None,
                          diskon_persen=float(r["discount_percent"]) if r["discount_percent"] is not None else None)  # BUG-253 diskon % baris yang menang (null = tak diatur, BUKAN 0)  # BUG-040 lantai baris yang menang (null = tak ada)
+        elif (konv := _dari_daftar_dasar(baris_daftar.get(pid, []), alias, dasar, kanon_baris, q, h, tanggal)) is not None:
+            hasil.update(harga=float(_r2(konv["price"] * h["faktor"])), sumber="daftar_konversi", daftar={"id": str(daftar["id"]), "code": daftar["code"]},
+                         tingkat_min_qty=float(konv["min_quantity"]))  # BUG-320: DH dasar x faktor (tingkat qty di satuan dasar)
         elif SD.normal(b.get("unit")) and kanon_baris != SD.kanon(dasar, alias) and kanon_baris in harga_konv.get(pid, {}):
             hasil.update(harga=float(_r2(harga_konv[pid][kanon_baris])), sumber="harga_satuan")
         elif not h["blok"] and dasar_harga.get(pid) is not None:
             hasil.update(harga=float(_r2(Decimal(str(dasar_harga[pid])) * h["faktor"])), sumber="harga_dasar")
+        hasil["sumber_text"] = SUMBER_TEKS.get(hasil["sumber"])
         out.append(hasil)
     return {"price_list": ({"id": str(daftar["id"]), "code": daftar["code"], "name": daftar["name"], "asal": daftar["asal"]}
                            if daftar else None), "lines": out}
