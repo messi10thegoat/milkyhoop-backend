@@ -176,3 +176,16 @@ def test_penjaga_dipanggil_di_buat_ubah_posting_dan_pratinjau():
     from app.services import nota_kredit_rencana as NKR
     assert "R.periksa_bisa_dinotakan(" in inspect.getsource(NKR.rencana_posting_nk)
     assert "NKR.rencana_posting_nk(conn, ctx, credit_note_id)" in inspect.getsource(CN.posting_nota_kredit)
+
+
+@pytest.mark.asyncio
+async def test_bug328_lines_membawa_harga_satuan_dan_nomor_baris_untuk_baris_kembar():
+    # dua baris barang+satuan SAMA, harga beda (INV-2611-0034 nyawit: 13 liter @95.000 dan 200 liter @55.000) -> picker butuh pembeda
+    rows = [{**_baris(L1, "13", "95000"), "description": "Minyak Goreng Curah", "unit": "liter"},
+            {**_baris(L2, "200", "55000"), "description": "Minyak Goreng Curah", "unit": "liter"}]
+    r = await CN.rakit_dari_faktur(_C(rows=rows), T, _b())
+    assert [(x["original_invoice_item_id"], x["unit_price"], x["line_number"]) for x in r["lines"]] == [(str(L1), 95000.0, 1), (str(L2), 55000.0, 2)]
+    # kontrol merah: tanpa field ini dua baris tak terbedakan selain jumlah -> harga kedua baris TIDAK boleh sama
+    assert r["lines"][0]["unit_price"] != r["lines"][1]["unit_price"]
+    # tak mengubah angka: items/qty tetap persis
+    assert [(i["quantity"], i["unit_price"]) for i in r["create"]["items"]] == [(Decimal("13"), Decimal("95000")), (Decimal("200"), Decimal("55000"))]

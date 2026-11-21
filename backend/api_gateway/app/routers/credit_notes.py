@@ -1445,13 +1445,15 @@ async def rakit_dari_faktur(conn, tid: str, body: CreditNotePreviewRequest) -> d
             pilih[k] = pilih.get(k, Decimal("0")) + h["qty"]
     lines, items, lebih = [], [], []
     net_semua, net_pilih = Decimal("0"), Decimal("0")
-    for r in rows:
+    for no, r in enumerate(rows, 1):
         qty = Decimal(str(r["quantity"]))
         sd = sudah.get(r["id"], Decimal("0"))
         bisa = max(qty - sd, Decimal("0"))
         q = pilih.get(str(r["id"]), Decimal("0")) if pilih is not None else bisa
+        # BUG-328: unit_price (harga satuan baris sebelum diskon baris) + line_number (urut tampil) = penanda baris kembar di picker; HANYA informasi
         lines.append({"original_invoice_item_id": str(r["id"]), "description": r["description"], "unit": r["unit"],
-                      "invoiced": float(qty), "already_credited": float(sd), "creditable": float(bisa), "quantity": float(q)})
+                      "invoiced": float(qty), "already_credited": float(sd), "creditable": float(bisa), "quantity": float(q),
+                      "unit_price": float(r["unit_price"]), "line_number": no})
         net_semua += line_net(dict(r), presisi)["net"]
         if q <= 0:
             continue
