@@ -52,7 +52,7 @@ def _pelanggan(cid, nama):
             "tipe": None, "telepon": None, "email": None, "alamat": "Manado", "points": 0,
             "total_transaksi": 0, "total_nilai": 0, "is_active": True,
             "created_at": datetime(2026, 9, 1, tzinfo=timezone.utc), "phone2": None, "community": None,
-            "nitku": None, "jenis_id": None, "negara": None, "nomor_dokumen": None}
+            "nitku": None, "jenis_id": None, "negara": None, "nomor_dokumen": None, "price_list_id": None, "price_list_name": None}
 
 
 def sql_so(conn):
