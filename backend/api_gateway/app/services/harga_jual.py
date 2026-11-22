@@ -78,6 +78,12 @@ def _dari_daftar_dasar(baris: list, alias, dasar, kanon_baris, q: Decimal, h: di
 
 
 PENANDA_BUG339 = "BUG-339 daftar_konversi: diskon% + minimum (dasar x faktor)"  # penanda verifikasi pasca-rilis (grep di kode berjalan); tak dipakai logika
+def minimum_turunan(konv, h) -> Optional[Decimal]:
+    """BUG-339 (putusan pemilik 22 Nov): minimum satuan turunan = minimum baris dasar x faktor (_r2); None bila baris dasar tak punya minimum. SATU penentu
+    untuk resolver (harga_saran) DAN penjaga harga_minimum.hitung -- jangan menduplikasi aturan."""
+    return _r2(Decimal(str(konv["min_price"])) * h["faktor"]) if konv and konv["min_price"] is not None else None
+
+
 SUMBER_TEKS = {"daftar": "Daftar harga", "daftar_konversi": "Daftar harga (dari satuan dasar)", "harga_satuan": "Harga satuan", "harga_dasar": "Harga dasar"}  # kosong -> None
 KOLOM_HARGA = {"jual": "sales_price", "beli": "purchase_price"}
 
@@ -128,7 +134,7 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
             hasil.update(harga=float(_r2(konv["price"] * h["faktor"])), sumber="daftar_konversi", daftar={"id": str(daftar["id"]), "code": daftar["code"]},
                          tingkat_min_qty=float(konv["min_quantity"]),  # BUG-320: DH dasar x faktor (tingkat qty di satuan dasar)
                          # BUG-339 (putusan pemilik LANGSUNG 22 Nov): diskon % baris dasar ikut (null = tak diatur, 0 eksplisit tetap 0); minimum satuan turunan = minimum dasar x faktor
-                         harga_minimum=float(_r2(Decimal(str(konv["min_price"])) * h["faktor"])) if konv["min_price"] is not None else None,
+                         harga_minimum=float(minimum_turunan(konv, h)) if konv["min_price"] is not None else None,
                          diskon_persen=float(konv["discount_percent"]) if konv["discount_percent"] is not None else None)
         elif SD.normal(b.get("unit")) and kanon_baris != SD.kanon(dasar, alias) and kanon_baris in harga_konv.get(pid, {}):
             hasil.update(harga=float(_r2(harga_konv[pid][kanon_baris])), sumber="harga_satuan")

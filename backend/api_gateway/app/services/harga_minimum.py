@@ -73,7 +73,7 @@ async def hitung(conn, tid: str, customer_id, tanggal, lines: Iterable[dict], ha
     ids = sorted({str(x["item_id"]) for x in lines})
     ada = {}
     for r in await conn.fetch(
-            """SELECT pli.item_id, pli.unit, pli.price, pli.min_price, pli.min_quantity, pli.start_date, pli.end_date FROM price_list_items pli
+            """SELECT pli.item_id, pli.unit, pli.price, pli.min_price, pli.discount_percent, pli.min_quantity, pli.start_date, pli.end_date FROM price_list_items pli
                JOIN price_lists pl ON pl.id = pli.price_list_id WHERE pl.tenant_id = $1 AND pli.price_list_id = $2
                AND pli.item_id = ANY($3::uuid[]) AND COALESCE(pli.is_active, true)""", tid, daftar["id"], ids):
         ada.setdefault(str(r["item_id"]), []).append(r)
@@ -83,6 +83,7 @@ async def hitung(conn, tid: str, customer_id, tanggal, lines: Iterable[dict], ha
     info = {str(r["id"]): r for r in await conn.fetch(
         "SELECT id, nama_produk, COALESCE(NULLIF(base_unit, ''), satuan) AS dasar FROM products WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids)}
     out = []
+    ktx = None
     for x in lines:
         i = str(x["item_id"])
         brg = info.get(i)
@@ -94,15 +95,25 @@ async def hitung(conn, tid: str, customer_id, tanggal, lines: Iterable[dict], ha
         kanon = SD.kanon(x.get("unit") or brg["dasar"], alias)
         cocok = [r for r in ada.get(i, []) if SD.kanon(r["unit"] or brg["dasar"], alias) == kanon and Decimal(str(r["min_quantity"])) <= q
                  and (r["start_date"] is None or r["start_date"] <= tanggal) and (r["end_date"] is None or r["end_date"] >= tanggal)]
-        if not cocok:
-            continue
-        menang = max(cocok, key=lambda r: (Decimal(str(r["min_quantity"])), r["start_date"] or __import__("datetime").date.min))
-        if menang["min_price"] is None:
+        if cocok:
+            menang = max(cocok, key=lambda r: (Decimal(str(r["min_quantity"])), r["start_date"] or __import__("datetime").date.min))
+            lantai = menang["min_price"]                                   # baris satuan eksplisit MENANG (tanpa minimum sendiri = tanpa lantai)
+        else:
+            # BUG-339 (penjaga): satuan turunan tanpa baris DH sendiri -> lantai = minimum DH satuan dasar x faktor, SATU penentu dgn resolver
+            # (harga_jual._dari_daftar_dasar + minimum_turunan; tingkat qty dievaluasi pada qty dasar). SD.muat SEKALI per hitung (batch, bukan per baris).
+            lantai = None
+            if brg["dasar"] and kanon != SD.kanon(brg["dasar"], alias):    # hanya satuan TURUNAN (satuan dasar tanpa baris cocok = tetap dilewati)
+                if ktx is None:
+                    ktx = await SD.muat(conn, tid, ids)
+                h = SD.hitung(ktx, i, x.get("unit"), q, "konversi")
+                konv = HJ._dari_daftar_dasar(ada.get(i, []), alias, brg["dasar"], kanon, q, h, tanggal)
+                lantai = HJ.minimum_turunan(konv, h) if konv else None
+        if lantai is None:
             continue
         harga = Decimal(str(x["nilai"])) / q
-        r = periksa(harga, menang["min_price"], brg["nama_produk"], mode)
+        r = periksa(harga, lantai, brg["nama_produk"], mode)
         if r:
-            m = Decimal(str(menang["min_price"]))
+            m = Decimal(str(lantai))
             out.append({**r, "baris": x.get("baris"), "product_id": i, "nama": brg["nama_produk"], "satuan": x.get("unit") or brg["dasar"],
                         "harga": float(harga.quantize(Decimal("0.01"))), "selisih": float((m - harga).quantize(Decimal("0.01")))})
     return out
