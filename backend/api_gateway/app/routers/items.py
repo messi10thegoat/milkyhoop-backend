@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
+from ..services import harga_daftar as HDF  # BUG-337 harga_daftar[] di detail barang
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
 from ..services import idem_buat
 from ..services import barang_aksi as BA  # P3 (13 Nov): keadaan, pratinjau status/hapus/duplikat/kategori, daftar jejak
@@ -3854,6 +3855,7 @@ async def get_item(request: Request, item_id: UUID):
                 "keadaan": BA.keadaan(row), "keadaan_text": BA.keadaan_text(row),
                 "aksi_tersedia": BA.aksi_tersedia_detail(row),
                 "conversions": conversions,
+                "harga_daftar": await HDF.harga_daftar_barang(conn, tenant_id, item_id, row.get("base_unit") or row.get("satuan"), await tanggal_dokumen(conn, tenant_id)),  # BUG-337
                 "created_at": row["created_at"].isoformat()
                 if row["created_at"]
                 else None,
