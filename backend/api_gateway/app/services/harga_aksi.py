@@ -47,6 +47,19 @@ async def ukur_nama_pelanggan(conn, tid: str, pl_id) -> list:
         + str(MAKS_NAMA), tid, pl_id)]
 
 
+MAKS_DAFTAR_PELANGGAN = 50
+
+
+async def daftar_pelanggan(conn, tid: str, pl_id, n_total: int) -> dict:
+    """BUG-336: pelanggan pemakai untuk detail daftar (id, nama, kode, terhapus), urut lower(nama), id, maks 50. Predikat SAMA dgn ukur_pelanggan/pelanggan_count
+    (tenant + price_list_id; TIDAK menyaring deleted_at -- aturan hitung/blok hapus menunggu putusan pemilik), jadi daftar == hitung. n_total = pelanggan_count penuh."""
+    rows = await conn.fetch(
+        "SELECT id, nama, nomor_member, (deleted_at IS NOT NULL) AS terhapus FROM customers WHERE tenant_id = $1 AND price_list_id = $2 "
+        "ORDER BY lower(nama), id LIMIT " + str(MAKS_DAFTAR_PELANGGAN), tid, pl_id)
+    return {"pelanggan": [{"id": str(r["id"]), "nama": r["nama"], "kode": r["nomor_member"], "terhapus": bool(r["terhapus"])} for r in rows],
+            "pelanggan_terpotong": int(n_total or 0) > MAKS_DAFTAR_PELANGGAN}
+
+
 async def ukur_baris(conn, tid: str, pl_id) -> int:
     return int(await conn.fetchval(
         """SELECT COUNT(*) FROM price_list_items pli JOIN price_lists pl ON pl.id = pli.price_list_id

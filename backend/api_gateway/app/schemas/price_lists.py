@@ -128,6 +128,8 @@ class PriceListDetail(BaseModel):
     is_expired: bool = False
     position_text: str = "Aktif"
     pelanggan_count: int = 0
+    pelanggan: List[Dict[str, Any]] = []  # BUG-336: [{id,nama,kode,terhapus}] maks 50, urut nama; pelanggan_count = jumlah penuh
+    pelanggan_terpotong: bool = False
     aksi_tersedia: AksiTersediaPeta = {}
     items: List[PriceListItemResponse] = []
     created_at: str

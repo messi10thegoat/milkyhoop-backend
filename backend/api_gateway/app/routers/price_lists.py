@@ -338,6 +338,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                     **st,
                     "position_text": HD.position_text(row["is_active"], row["is_default"], st["status"]),
                     "pelanggan_count": n_pel,
+                    **await HA.daftar_pelanggan(conn, ctx["tenant_id"], price_list_id, n_pel),  # BUG-336: pelanggan[] + pelanggan_terpotong (predikat = hitung)
                     "aksi_tersedia": HD.aksi_tersedia(row, n_pel),
                     "items": [
                         {
