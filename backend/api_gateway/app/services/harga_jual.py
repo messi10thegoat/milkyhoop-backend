@@ -77,6 +77,7 @@ def _dari_daftar_dasar(baris: list, alias, dasar, kanon_baris, q: Decimal, h: di
     return {"price": _r2(r["price"]), "min_quantity": r["min_quantity"], "min_price": r["min_price"], "discount_percent": r["discount_percent"]}  # BUG-339: ikut ke satuan turunan
 
 
+PENANDA_BUG339 = "BUG-339 daftar_konversi: diskon% + minimum (dasar x faktor)"  # penanda verifikasi pasca-rilis (grep di kode berjalan); tak dipakai logika
 SUMBER_TEKS = {"daftar": "Daftar harga", "daftar_konversi": "Daftar harga (dari satuan dasar)", "harga_satuan": "Harga satuan", "harga_dasar": "Harga dasar"}  # kosong -> None
 KOLOM_HARGA = {"jual": "sales_price", "beli": "purchase_price"}
 
