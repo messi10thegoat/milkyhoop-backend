@@ -198,6 +198,16 @@ async def autocomplete_customers(
 # =============================================================================
 # LIST CUSTOMERS
 # =============================================================================
+KOLOM_DH_PELANGGAN = ("price_list_id, (SELECT pl.name FROM price_lists pl WHERE pl.id = customers.price_list_id "
+                      "AND pl.tenant_id = customers.tenant_id) AS price_list_name")  # BUG-341: SATU sumber untuk daftar + detail (tanpa N+1)
+
+
+def medan_dh_pelanggan(row) -> dict:
+    """BUG-341 (aditif): daftar harga pelanggan (kolom customers.price_list_id; NULL = daftar bawaan tenant) -- bentuk SAMA di daftar dan detail.
+    Nama = nama daftar apa adanya (nonaktif tetap bernama; DH terhapus -> FK SET NULL -> keduanya null)."""
+    return {"price_list_id": str(row["price_list_id"]) if row["price_list_id"] else None, "price_list_name": row["price_list_name"]}
+
+
 def _syarat_pelanggan(tid: str, search: Optional[str], tipe: Optional[str], is_active: Optional[bool]) -> tuple:
     """Syarat daftar pelanggan -- SATU pembangun untuk GET /customers dan /customers/summary (predikat sama). -> (where, params, idx)."""
     # Exclude soft-deleted customers by default (Iron Law 12)
@@ -289,7 +299,7 @@ async def list_customers(
 
             kolom = """id, nomor_member, nama, company_name, display_name, tipe, telepon, email, alamat, city,
                        points, total_transaksi, total_nilai, is_active, created_at,
-                       phone2, community, nitku, jenis_id, negara, nomor_dokumen"""
+                       phone2, community, nitku, jenis_id, negara, nomor_dokumen, """ + KOLOM_DH_PELANGGAN
             sum_sisa = None
             if with_totals or aksi:  # B1: filter aksi + urut nama, id + total/sum_sisa dari penentu bersama
                 h = await KD.halaman(conn, ctx["tenant_id"], "customer", "customers", where_clause, params, param_idx, hari_ini,
@@ -343,6 +353,7 @@ async def list_customers(
                     "jenis_id": row["jenis_id"],
                     "negara": row["negara"],
                     "nomor_dokumen": row["nomor_dokumen"],
+                    **medan_dh_pelanggan(row),  # BUG-341
                     "points": row["points"],
                     "total_transactions": None,  # cache mati (26 Sep 2026) -> pakai jumlah_faktur
                     "total_value": None,  # cache mati (26 Sep 2026) -> pakai total_penjualan
@@ -588,8 +599,7 @@ async def get_customer(request: Request, customer_id: str):
                     "payment_terms_days": row["payment_terms_days"] or 0,
                     "payment_terms_source": _termin_sumber,
                     "credit_limit": row["credit_limit"],
-                    "price_list_id": str(row["price_list_id"]) if row["price_list_id"] else None,  # NULL = daftar bawaan
-                    "price_list_name": row["price_list_name"],
+                    **medan_dh_pelanggan(row),  # NULL = daftar bawaan (BUG-341: satu bentuk dgn daftar)
                     # Opening balance
                     "ar_opening_balance": row["ar_opening_balance"] or 0,
                     "opening_balance_date": row["opening_balance_date"].isoformat()

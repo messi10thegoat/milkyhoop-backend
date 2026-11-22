@@ -201,6 +201,8 @@ class CustomerListItem(PosisiDariStatus):
     jenis_id: Optional[str] = None
     negara: Optional[str] = None
     nomor_dokumen: Optional[str] = None
+    price_list_id: Optional[str] = None  # BUG-341: daftar harga pelanggan (null = bawaan tenant), sama dgn detail
+    price_list_name: Optional[str] = None
     payment_terms_days: int = 0
     credit_limit: Optional[int] = None
     points: Optional[int] = 0
