@@ -869,3 +869,4 @@ POST /api/warehouses/{warehouse_id}/status/preview
 POST /api/customer-categories
 PATCH /api/customer-categories/{kategori_id}
 DELETE /api/customer-categories/{kategori_id}
+POST /api/customer-categories/{kategori_id}/delete/preview

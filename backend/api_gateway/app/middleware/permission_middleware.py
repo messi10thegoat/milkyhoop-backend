@@ -226,6 +226,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/customer-categories$", ["POST"], "customer", "C"),
     (r"^/api/customer-categories/[^/]+$", ["PATCH"], "customer", "U"),
     (r"^/api/customer-categories/[^/]+$", ["DELETE"], "customer", "D"),
+    (r"^/api/customer-categories/[^/]+/delete/preview$", ["POST"], "customer", "D"),  # pratinjau hapus = huruf SAMA dgn DELETE
     (r"^/api/customers/summary$", ["GET"], "customer", "R"),
     (r"^/api/customers$", ["GET"], "customer", "R"),
     (r"^/api/customers/preview$", ["POST"], "customer", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)

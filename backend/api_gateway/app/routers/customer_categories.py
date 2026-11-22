@@ -95,3 +95,25 @@ async def hapus_kategori(request: Request, kategori_id: UUID):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=GAGAL)
+
+
+@router.post("/{kategori_id}/delete/preview")
+async def pratinjau_hapus_kategori(request: Request, kategori_id: UUID, body: Optional[dict] = None):
+    """Pratinjau hapus (read-only, nol tulis): penentu SAMA dengan DELETE (KP.rencana_hapus). Pola POST /price-lists/{id}/delete/preview."""
+    tid = _tid(request)
+    try:
+        async with (await get_pool()).acquire() as conn:
+            tr = conn.transaction(readonly=True)
+            await tr.start()
+            try:
+                h = await KP.rencana_hapus(conn, tid, kategori_id)
+            finally:
+                await tr.rollback()
+        if h is None:
+            raise HTTPException(status_code=404, detail="Kategori pelanggan tidak ditemukan.")
+        return {"success": True, "data": {**h, "payload": body or {}}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=GAGAL)

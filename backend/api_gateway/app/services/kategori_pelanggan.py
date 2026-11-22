@@ -89,16 +89,32 @@ async def nama_pelanggan(conn, tid: str, kid) -> tuple:
     return n, nama
 
 
-async def hapus(conn, tid: str, kid) -> None:
-    """Hapus permanen: 409 bila masih dipakai pelanggan (termasuk yang terhapus-lunak: FK komposit menolaknya) -- jumlah + nama di galat."""
-    r = await conn.fetchrow("SELECT name FROM customer_categories WHERE id = $1 AND tenant_id = $2 FOR UPDATE", kid, tid)
+def _hasil(blocks: list, rencana) -> dict:
+    return {"ok": not blocks, "blocks": blocks, "peringatan": [], "rencana": rencana}
+
+
+async def rencana_hapus(conn, tid: str, kid, kunci: bool = False) -> dict:
+    """PENENTU SATU hapus kategori (DELETE dan POST /{id}/delete/preview memakai ini; kalimat + jumlah tak bisa berbeda).
+    Bentuk == pratinjau hapus DH: {ok, blocks[], peringatan[], rencana}. None = kategori tak ada (404 oleh pemanggil)."""
+    r = await conn.fetchrow("SELECT name FROM customer_categories WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""), kid, tid)
     if not r:
-        raise GalatBerkode(404, "KATEGORI_TAK_ADA", "Kategori pelanggan tidak ditemukan.")
+        return None
     n, nama = await nama_pelanggan(conn, tid, kid)
     n_semua = int(await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND category_id = $2", tid, kid) or 0)
     if n_semua:
         sebut = (": " + ", ".join(nama) + (f" dan {n - len(nama)} lainnya" if n > len(nama) else "")) if nama else ""
-        raise GalatBerkode(409, "KATEGORI_DIPAKAI_PELANGGAN",
-                           f"{r['name']} dipakai {n_semua} pelanggan{sebut}; pindahkan pelanggannya dulu atau pilih Nonaktifkan.",
-                           extra={"jumlah_pelanggan": n_semua, "nama_pelanggan": nama, "sisa_pelanggan": max(0, n - len(nama))})
+        return _hasil([{"code": "KATEGORI_DIPAKAI_PELANGGAN",
+                        "message": f"{r['name']} dipakai {n_semua} pelanggan{sebut}; pindahkan pelanggannya dulu atau pilih Nonaktifkan.",
+                        "jumlah_pelanggan": n_semua, "nama_pelanggan": nama, "sisa_pelanggan": max(0, n - len(nama))}], None)
+    return _hasil([], {"jenis": "hapus_permanen"})
+
+
+async def hapus(conn, tid: str, kid) -> None:
+    """Hapus permanen: 409 bila masih dipakai pelanggan (termasuk yang terhapus-lunak: FK komposit menolaknya) -- jumlah + nama di galat."""
+    h = await rencana_hapus(conn, tid, kid, kunci=True)
+    if h is None:
+        raise GalatBerkode(404, "KATEGORI_TAK_ADA", "Kategori pelanggan tidak ditemukan.")
+    if h["blocks"]:
+        b = dict(h["blocks"][0])
+        raise GalatBerkode(409, b.pop("code"), b.pop("message"), extra=b)
     await conn.execute("DELETE FROM customer_categories WHERE id = $1 AND tenant_id = $2", kid, tid)
