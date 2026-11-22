@@ -37,27 +37,29 @@ async def ukur_daftar(conn, tid: str, pl_id):
 
 
 async def ukur_pelanggan(conn, tid: str, pl_id) -> int:
-    return int(await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2", tid, pl_id) or 0)
+    return int(await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2 AND deleted_at IS NULL", tid, pl_id) or 0)  # BUG-340: terhapus tak dihitung
 
 
 async def ukur_nama_pelanggan(conn, tid: str, pl_id) -> list:
     """Nama pelanggan pemakai daftar (urut nama, maks MAKS_NAMA) -- bersaring tenant; jumlah penuh tetap dari ukur_pelanggan."""
     return [r["nama"] for r in await conn.fetch(  # kolom nama (customers.name kosong di semua baris terukur 15 Nov)
-        "SELECT nama FROM customers WHERE tenant_id = $1 AND price_list_id = $2 AND NULLIF(btrim(nama), '') IS NOT NULL ORDER BY lower(nama), id LIMIT "
+        "SELECT nama FROM customers WHERE tenant_id = $1 AND price_list_id = $2 AND deleted_at IS NULL AND NULLIF(btrim(nama), '') IS NOT NULL ORDER BY lower(nama), id LIMIT "
         + str(MAKS_NAMA), tid, pl_id)]
 
 
 MAKS_DAFTAR_PELANGGAN = 50
 
 
-async def daftar_pelanggan(conn, tid: str, pl_id, n_total: int) -> dict:
-    """BUG-336: pelanggan pemakai untuk detail daftar (id, nama, kode, terhapus), urut lower(nama), id, maks 50. Predikat SAMA dgn ukur_pelanggan/pelanggan_count
-    (tenant + price_list_id; TIDAK menyaring deleted_at -- aturan hitung/blok hapus menunggu putusan pemilik), jadi daftar == hitung. n_total = pelanggan_count penuh."""
+async def daftar_pelanggan(conn, tid: str, pl_id) -> dict:
+    """BUG-336/340: pelanggan pemakai untuk detail daftar (id, nama, kode, terhapus), urut lower(nama), id, maks 50. Daftar TETAP memuat pelanggan terhapus
+    (terhapus=true, label FE) -- beda dgn pelanggan_count (ukur_pelanggan: tanpa terhapus, putusan pemilik 22 Nov). pelanggan_total_termasuk_terhapus = jumlah baris
+    penuh (satu kueri, COUNT(*) OVER ()); pelanggan_terpotong = total itu > 50."""
     rows = await conn.fetch(
-        "SELECT id, nama, nomor_member, (deleted_at IS NOT NULL) AS terhapus FROM customers WHERE tenant_id = $1 AND price_list_id = $2 "
+        "SELECT id, nama, nomor_member, (deleted_at IS NOT NULL) AS terhapus, COUNT(*) OVER () AS total_semua FROM customers WHERE tenant_id = $1 AND price_list_id = $2 "
         "ORDER BY lower(nama), id LIMIT " + str(MAKS_DAFTAR_PELANGGAN), tid, pl_id)
+    total = int(rows[0]["total_semua"]) if rows else 0
     return {"pelanggan": [{"id": str(r["id"]), "nama": r["nama"], "kode": r["nomor_member"], "terhapus": bool(r["terhapus"])} for r in rows],
-            "pelanggan_terpotong": int(n_total or 0) > MAKS_DAFTAR_PELANGGAN}
+            "pelanggan_terpotong": total > MAKS_DAFTAR_PELANGGAN, "pelanggan_total_termasuk_terhapus": total}
 
 
 async def ukur_baris(conn, tid: str, pl_id) -> int:

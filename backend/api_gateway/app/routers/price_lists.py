@@ -237,7 +237,7 @@ async def list_price_lists(
                 SELECT p.id, p.code, p.name, p.price_type, p.start_date, p.end_date,
                        p.is_active, p.is_default,
                        (SELECT COUNT(*) FROM price_list_items WHERE price_list_id = p.id) as item_count,
-                       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = p.tenant_id AND c.price_list_id = p.id) AS pelanggan_count
+                       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = p.tenant_id AND c.price_list_id = p.id AND c.deleted_at IS NULL) AS pelanggan_count  -- BUG-340: terhapus tak dihitung
                 FROM price_lists p WHERE {where} ORDER BY p.priority, p.name, p.id LIMIT ${idx} OFFSET ${idx+1}
             """,
                 *params,
@@ -315,7 +315,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
             )
             hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
             st = HJ.status_daftar(row, hari_ini)
-            n_pel = await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2", ctx["tenant_id"], price_list_id)
+            n_pel = await conn.fetchval("SELECT COUNT(*) FROM customers WHERE tenant_id = $1 AND price_list_id = $2 AND deleted_at IS NULL", ctx["tenant_id"], price_list_id)  # BUG-340
             return {
                 "success": True,
                 "data": {
@@ -338,7 +338,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                     **st,
                     "position_text": HD.position_text(row["is_active"], row["is_default"], st["status"]),
                     "pelanggan_count": n_pel,
-                    **await HA.daftar_pelanggan(conn, ctx["tenant_id"], price_list_id, n_pel),  # BUG-336: pelanggan[] + pelanggan_terpotong (predikat = hitung)
+                    **await HA.daftar_pelanggan(conn, ctx["tenant_id"], price_list_id),  # BUG-336: pelanggan[] + pelanggan_terpotong (predikat = hitung)
                     "aksi_tersedia": HD.aksi_tersedia(row, n_pel),
                     "items": [
                         {
