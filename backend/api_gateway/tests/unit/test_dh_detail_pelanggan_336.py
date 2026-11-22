@@ -15,25 +15,28 @@ class Konek:
         return self.rows
 
 
-def r(i, nama, kode=None, hapus=False):
-    return {"id": f"00000000-0000-0000-0000-{i:012d}", "nama": nama, "nomor_member": kode, "terhapus": hapus}
+def r(i, nama, kode=None, hapus=False, total=1):
+    return {"id": f"00000000-0000-0000-0000-{i:012d}", "nama": nama, "nomor_member": kode, "terhapus": hapus, "total_semua": total}
 
 
-def jalan(rows, n):
+def jalan(rows, n=None):
+    """BUG-340: total penuh (termasuk terhapus) kini datang dari COUNT(*) OVER () di kueri yang sama; n = total_semua baris."""
+    if n is not None:
+        rows = [{**x, "total_semua": n} for x in rows]
     k = Konek(rows)
-    return k, asyncio.run(HA.daftar_pelanggan(k, "t-1", "pl-1", n))
+    return k, asyncio.run(HA.daftar_pelanggan(k, "t-1", "pl-1"))
 
 
 def test_bentuk_dan_terhapus_true_false():
     k, h = jalan([r(1, "Andi", "C-1"), r(2, "Budi", None, True)], 2)
     assert h["pelanggan"] == [{"id": "00000000-0000-0000-0000-000000000001", "nama": "Andi", "kode": "C-1", "terhapus": False},
                               {"id": "00000000-0000-0000-0000-000000000002", "nama": "Budi", "kode": None, "terhapus": True}]
-    assert h["pelanggan_terpotong"] is False
+    assert h["pelanggan_terpotong"] is False and h["pelanggan_total_termasuk_terhapus"] == 2
 
 
 def test_daftar_kosong():
     _, h = jalan([], 0)
-    assert h == {"pelanggan": [], "pelanggan_terpotong": False}
+    assert h == {"pelanggan": [], "pelanggan_terpotong": False, "pelanggan_total_termasuk_terhapus": 0}
 
 
 def test_terpotong_hanya_bila_total_lebih_dari_50():
@@ -41,7 +44,7 @@ def test_terpotong_hanya_bila_total_lebih_dari_50():
     assert jalan([r(i, f"P{i}") for i in range(50)], 51)[1]["pelanggan_terpotong"] is True
 
 
-def test_sql_urut_stabil_limit_50_predikat_sama_hitung_tanpa_saring_terhapus():
+def test_sql_urut_stabil_limit_50_daftar_memuat_terhapus_tanpa_saring():
     k, _ = jalan([], 0)
     s = " ".join(k.sql.split())
     assert "ORDER BY lower(nama), id LIMIT 50" in s

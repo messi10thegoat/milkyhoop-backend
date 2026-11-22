@@ -130,6 +130,7 @@ class PriceListDetail(BaseModel):
     pelanggan_count: int = 0
     pelanggan: List[Dict[str, Any]] = []  # BUG-336: [{id,nama,kode,terhapus}] maks 50, urut nama; pelanggan_count = jumlah penuh
     pelanggan_terpotong: bool = False
+    pelanggan_total_termasuk_terhapus: int = 0  # BUG-340: jumlah baris penuh termasuk terhapus; pelanggan_count = tanpa terhapus
     aksi_tersedia: AksiTersediaPeta = {}
     items: List[PriceListItemResponse] = []
     created_at: str
