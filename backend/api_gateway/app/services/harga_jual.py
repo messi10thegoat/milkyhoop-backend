@@ -49,7 +49,8 @@ def status_daftar(r, tanggal) -> dict:
 
 
 async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[dict]:
-    """Daftar yang berlaku: milik pelanggan (aktif + berlaku) -> asal 'pelanggan'; selain itu daftar bawaan tenant -> 'bawaan'; None."""
+    """Daftar yang berlaku (BUG-338A, putusan pemilik 22 Nov): DH pelanggan (aktif + berlaku) -> asal 'pelanggan'; jatuh ke DH KATEGORI pelanggan
+    (kategori aktif; DH aktif + berlaku) -> asal 'kategori'; jatuh ke daftar bawaan tenant -> 'bawaan'; None. SATU penentu (harga_saran + guard minimum)."""
     q = "SELECT id, code, name, is_active, start_date, end_date FROM price_lists WHERE tenant_id = $1 AND "
     if customer_id:
         pl = await conn.fetchval("SELECT price_list_id FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, tid)
@@ -57,6 +58,13 @@ async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[d
             r = await conn.fetchrow(q + "id = $2", tid, pl)
             if r and r["is_active"] and _berlaku(r, tanggal):
                 return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "pelanggan"}
+        kpl = await conn.fetchval(
+            """SELECT k.price_list_id FROM customers c JOIN customer_categories k ON k.id = c.category_id AND k.tenant_id = c.tenant_id AND k.is_active
+               WHERE c.id = $1 AND c.tenant_id = $2""", customer_id, tid)
+        if kpl:
+            r = await conn.fetchrow(q + "id = $2", tid, kpl)
+            if r and r["is_active"] and _berlaku(r, tanggal):
+                return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "kategori"}
     r = await conn.fetchrow(q + "is_default AND is_active", tid)
     if r and _berlaku(r, tanggal):
         return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "bawaan"}

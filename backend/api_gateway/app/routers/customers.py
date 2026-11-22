@@ -16,6 +16,7 @@ import asyncpg
 from ..services.termin_bayar import termin_hari
 from ..services.pelanggan_unik import tolak_nama_dipakai, tolak_nomor_dipakai
 from ..services.galat_berkode import GalatBerkode
+from ..services import kategori_pelanggan as KP
 from ..schemas.identitas_pajak import tolak_identitas_pajak_tak_lengkap
 from ..services.pelanggan_penjualan import KOSONG as KOSONG_PENJUALAN, penjualan_pelanggan
 from ..services.pelanggan_ringkas_so import KOSONG as KOSONG_RINGKAS_SO, ringkas_so_pelanggan
@@ -199,13 +200,16 @@ async def autocomplete_customers(
 # LIST CUSTOMERS
 # =============================================================================
 KOLOM_DH_PELANGGAN = ("price_list_id, (SELECT pl.name FROM price_lists pl WHERE pl.id = customers.price_list_id "
-                      "AND pl.tenant_id = customers.tenant_id) AS price_list_name")  # BUG-341: SATU sumber untuk daftar + detail (tanpa N+1)
+                      "AND pl.tenant_id = customers.tenant_id) AS price_list_name, "
+                      "category_id, (SELECT k.name FROM customer_categories k WHERE k.id = customers.category_id "
+                      "AND k.tenant_id = customers.tenant_id) AS category_name")  # BUG-341: SATU sumber untuk daftar + detail (tanpa N+1); BUG-338A kategori
 
 
 def medan_dh_pelanggan(row) -> dict:
     """BUG-341 (aditif): daftar harga pelanggan (kolom customers.price_list_id; NULL = daftar bawaan tenant) -- bentuk SAMA di daftar dan detail.
     Nama = nama daftar apa adanya (nonaktif tetap bernama; DH terhapus -> FK SET NULL -> keduanya null)."""
-    return {"price_list_id": str(row["price_list_id"]) if row["price_list_id"] else None, "price_list_name": row["price_list_name"]}
+    return {"price_list_id": str(row["price_list_id"]) if row["price_list_id"] else None, "price_list_name": row["price_list_name"],
+            "category_id": str(row["category_id"]) if row["category_id"] else None, "category_name": row["category_name"]}  # BUG-338A (aditif)
 
 
 def _syarat_pelanggan(tid: str, search: Optional[str], tipe: Optional[str], is_active: Optional[bool]) -> tuple:
@@ -519,7 +523,8 @@ async def get_customer(request: Request, customer_id: str):
                        customer_type, is_pkp, nik, currency,
                        ar_opening_balance, opening_balance_date, opening_balance_notes,
                        phone2, community, nitku, jenis_id, negara, nomor_dokumen, price_list_id,
-                       (SELECT pl.name FROM price_lists pl WHERE pl.id = customers.price_list_id) AS price_list_name
+                       (SELECT pl.name FROM price_lists pl WHERE pl.id = customers.price_list_id) AS price_list_name,
+                       category_id, (SELECT k.name FROM customer_categories k WHERE k.id = customers.category_id AND k.tenant_id = customers.tenant_id) AS category_name
                 FROM customers
                 WHERE id = $1 AND tenant_id = $2
             """
@@ -986,6 +991,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
     _siapkan_buat_pelanggan + INSERT + aktivitas + alamat V428. -> id baru (str)."""
     opening_date = await _siapkan_buat_pelanggan(conn, ctx["tenant_id"], body)
     await pastikan_daftar_harga(conn, ctx["tenant_id"], body.price_list_id)
+    await KP.pastikan_kategori(conn, ctx["tenant_id"], body.category_id)  # BUG-338A
 
     # Generate UUID for customer ID
     import uuid as uuid_mod
@@ -1004,7 +1010,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             customer_type, is_pkp, nik, currency,
             ar_opening_balance, opening_balance_date, opening_balance_notes,
             created_by, phone2, community,
-            nitku, jenis_id, negara, nomor_dokumen, price_list_id
+            nitku, jenis_id, negara, nomor_dokumen, price_list_id, category_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11,
@@ -1013,7 +1019,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             $20, $21, $22, $23,
             $24, $25, $26,
             $27, $28, $29,
-            $30, $31, $32, $33, $34
+            $30, $31, $32, $33, $34, $35
         )
     """,
             new_id,  # $1  id
@@ -1051,6 +1057,7 @@ async def tulis_pelanggan_baru(conn, ctx: dict, body: CreateCustomerRequest, use
             body.negara,  # $32 negara
             body.nomor_dokumen,  # $33 nomor_dokumen
             body.price_list_id,  # $34 price_list_id (null = daftar bawaan)
+            body.category_id,  # $35 category_id (BUG-338A; null = tanpa kategori)
         )
 
         # Log activity
@@ -1084,7 +1091,7 @@ UBAH_LABEL = {
     "province": "Provinsi", "postal_code": "Kode pos", "tax_id": "NPWP", "notes": "Catatan", "mobile_phone": "HP", "website": "Website",
     "display_name": "Nama tampilan", "customer_type": "Tipe pelanggan", "is_pkp": "PKP", "nik": "NIK", "nitku": "NITKU",
     "jenis_id": "Jenis ID", "negara": "Negara", "nomor_dokumen": "No. dokumen", "currency": "Mata uang", "address": "Alamat",
-    "price_list_id": "Kategori harga",  # BUG-341b (MASTER 22 Nov): label Tinjau/riwayat; kunci medan tetap price_list_id; galat 400 "Daftar harga tidak ditemukan..." TIDAK berubah
+    "category_id": "Kategori pelanggan", "price_list_id": "Kategori harga",  # BUG-341b (MASTER 22 Nov): label Tinjau/riwayat; kunci medan tetap price_list_id; galat 400 "Daftar harga tidak ditemukan..." TIDAK berubah
 }
 
 
@@ -1097,7 +1104,7 @@ async def _siapkan_ubah_pelanggan(conn, tid: str, customer_id, body: UpdateCusto
                 tax_id, notes, mobile_phone, website, display_name,
                 customer_type, is_pkp, nik, currency, alamat,
                 phone2, community, nitku, jenis_id, negara, nomor_dokumen,
-                nomor_member, price_list_id, ar_opening_balance, opening_balance_date, opening_balance_notes
+                nomor_member, price_list_id, category_id, ar_opening_balance, opening_balance_date, opening_balance_notes
            FROM customers WHERE id = $1 AND tenant_id = $2""",  # SEMUA kolom yang bisa di-PATCH (perubahan[].lama terisi; tes)
         customer_id,
         tid,
@@ -1119,6 +1126,7 @@ async def _siapkan_ubah_pelanggan(conn, tid: str, customer_id, body: UpdateCusto
         return current, update_data
     # DAFTAR-HARGA: daftar harga wajib milik usaha ini dan aktif (null = kembali ke daftar bawaan tenant)
     await pastikan_daftar_harga(conn, tid, update_data.get("price_list_id"))
+    await KP.pastikan_kategori(conn, tid, update_data.get("category_id"))  # BUG-338A (null = lepas kategori)
     if update_data.get("opening_balance_date"):
         try:
             from datetime import datetime

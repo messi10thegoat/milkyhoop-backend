@@ -222,6 +222,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bill-payments/[^/]+/delete/preview$", ["POST"], "send_payment", "D"),
     (r"^/api/bill-payments/[^/]+/(documents|history)$", ["GET"], "send_payment", "R"),  # kontrak seragam 22 Okt 2026 (bundel + riwayat)
     # Customers
+    (r"^/api/customer-categories$", ["GET"], "customer", "R"),  # BUG-338A kategori pelanggan: huruf ikut modul pelanggan
+    (r"^/api/customer-categories$", ["POST"], "customer", "C"),
+    (r"^/api/customer-categories/[^/]+$", ["PATCH"], "customer", "U"),
+    (r"^/api/customer-categories/[^/]+$", ["DELETE"], "customer", "D"),
     (r"^/api/customers/summary$", ["GET"], "customer", "R"),
     (r"^/api/customers$", ["GET"], "customer", "R"),
     (r"^/api/customers/preview$", ["POST"], "customer", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
