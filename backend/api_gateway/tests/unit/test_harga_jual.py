@@ -348,5 +348,5 @@ async def test_bug339_baris_dus_eksplisit_menang_dengan_diskon_dan_minimum_milik
 @pytest.mark.asyncio
 async def test_bug339_minimum_faktor_pecahan_dibulatkan_2dp():
     kon = Kon(baris=_dasar_kg(min_price=Decimal("1000.01")), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg("0.5"))
-    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 1)
-    assert b["harga_minimum"] == 500.01  # 1000.01 x 0.5 = 500.005 -> _r2 HALF_UP
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 2)  # 2 Dus x 0.5 = 1 kg dasar -> tingkat 1 terpenuhi (qty dasar < 1 tak memenuhi tingkat)
+    assert b["sumber"] == "daftar_konversi" and b["harga_minimum"] == 500.01  # 1000.01 x 0.5 = 500.005 -> _r2 HALF_UP
