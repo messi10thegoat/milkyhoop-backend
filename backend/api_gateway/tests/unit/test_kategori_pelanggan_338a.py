@@ -90,7 +90,8 @@ def test_migrasi_v508_fk_komposit_tenant_rls_unik_nama_dan_rollback_menutup():
     assert "UNIQUE (tenant_id, id)" in s and "FOREIGN KEY (tenant_id, price_list_id) REFERENCES price_lists (tenant_id, id)" in s
     assert "FOREIGN KEY (tenant_id, category_id) REFERENCES customer_categories (tenant_id, id)" in s
     assert "ENABLE ROW LEVEL SECURITY" in s and "current_setting('app.tenant_id', true)" in s and "lower(btrim(name))" in s
-    assert not re.search(r"ON DELETE SET NULL", s.split("-- Pembalik")[0].split("ALTER TABLE price_lists", 1)[1])
+    kode = " ".join(l for l in (MIG / "V508__kategori_pelanggan.sql").read_text().splitlines() if not l.lstrip().startswith("--"))
+    assert not re.search(r"ON DELETE SET NULL", kode)  # SET NULL pada FK komposit akan meng-NULL tenant_id (NOT NULL)
     rb = (MIG / "V508__kategori_pelanggan_ROLLBACK.sql").read_text()
     for kata in ("DROP COLUMN IF EXISTS category_id", "DROP TABLE IF EXISTS customer_categories", "DROP CONSTRAINT IF EXISTS uq_price_lists_tenant_id"):
         assert kata in rb
