@@ -108,7 +108,7 @@ async def harga_daftar_barang(conn, tid: str, item_id, dasar: Optional[str], tan
     from .harga_jual import _berlaku, status_daftar
     rows = await conn.fetch(
         """SELECT p.id AS pl_id, p.name AS pl_name, p.code AS pl_code, p.is_default, p.is_active, p.start_date AS pl_start, p.end_date AS pl_end,
-                  pli.unit, pli.price, pli.min_quantity, pli.start_date, pli.end_date
+                  pli.unit, pli.price, pli.min_quantity, pli.start_date, pli.end_date, pli.min_price, pli.discount_percent
            FROM price_list_items pli JOIN price_lists p ON p.id = pli.price_list_id AND p.tenant_id = $1
            WHERE pli.item_id = $2 AND p.is_active AND COALESCE(pli.is_active, true)
            ORDER BY p.is_default DESC, p.priority, p.name, p.id, pli.unit NULLS FIRST, pli.min_quantity, pli.start_date NULLS FIRST, pli.id""",
@@ -122,6 +122,8 @@ async def harga_daftar_barang(conn, tid: str, item_id, dasar: Optional[str], tan
                       "status": st["status"], "status_text": st["status_text"], "baris": []}
             out.append(idx[k])
         idx[k]["baris"].append({"unit": r["unit"], "unit_text": unit_text(r["unit"], dasar), "min_quantity": float(r["min_quantity"]), "harga": r["price"],
+                                "min_price": r["min_price"], "min_price_text": min_price_text(r["min_price"]),  # BUG-343 (aditif; None = tak diatur)
+                                "diskon_persen": None if r["discount_percent"] is None else float(r["discount_percent"]), "diskon_text": diskon_text(r["discount_percent"]),
                                 "berlaku_mulai": _tgl(r["start_date"]), "berlaku_sampai": _tgl(r["end_date"]),
                                 "berlaku_hari_ini": _berlaku(r, tanggal)})
     return out

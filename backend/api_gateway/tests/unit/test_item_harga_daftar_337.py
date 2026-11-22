@@ -16,9 +16,9 @@ class Konek:
         return self.rows
 
 
-def b(pl, nama, kode, bawaan, unit, q, harga, mulai=None, sampai=None, pl_start=None, pl_end=None, aktif=True):
+def b(pl, nama, kode, bawaan, unit, q, harga, mulai=None, sampai=None, pl_start=None, pl_end=None, aktif=True, minimum=None, diskon=None):
     return {"pl_id": pl, "pl_name": nama, "pl_code": kode, "is_default": bawaan, "is_active": aktif, "pl_start": pl_start, "pl_end": pl_end,
-            "unit": unit, "price": harga, "min_quantity": q, "start_date": mulai, "end_date": sampai}
+            "unit": unit, "price": harga, "min_quantity": q, "start_date": mulai, "end_date": sampai, "min_price": minimum, "discount_percent": diskon}
 
 
 def jalan(rows):
@@ -57,3 +57,22 @@ def test_sql_satu_kueri_tenant_item_aktif_urut_stabil():
     s = " ".join(k.sql.split())
     assert k.args == ("t-1", "it-1") and "p.tenant_id = $1" in s and "pli.item_id = $2" in s and "p.is_active" in s and "COALESCE(pli.is_active, true)" in s
     assert "ORDER BY p.is_default DESC, p.priority, p.name, p.id, pli.unit NULLS FIRST, pli.min_quantity, pli.start_date NULLS FIRST, pli.id" in s
+
+
+def test_bug343_minimum_dan_diskon_per_baris_angka_dan_teks_none_tak_diatur():
+    from decimal import Decimal
+    _, h = jalan([
+        b("a", "Bawaan", "DH0", True, None, 1, 10000, minimum=Decimal("8000.00"), diskon=Decimal("12.5")),
+        b("a", "Bawaan", "DH0", True, None, 10, 9000),
+        b("a", "Bawaan", "DH0", True, "Dus", 1, 100000, minimum=Decimal("0"), diskon=Decimal("0")),
+    ])
+    r = h[0]["baris"]
+    assert (r[0]["min_price"], r[0]["min_price_text"], r[0]["diskon_persen"], r[0]["diskon_text"]) == (Decimal("8000.00"), "Rp 8.000", 12.5, "12.5%")
+    assert (r[1]["min_price"], r[1]["min_price_text"], r[1]["diskon_persen"], r[1]["diskon_text"]) == (None, None, None, None)
+    assert (r[2]["min_price"], r[2]["diskon_persen"], r[2]["diskon_text"]) == (Decimal("0"), 0.0, "0%")
+
+
+def test_bug343_sql_membaca_min_price_dan_discount_percent():
+    k, _ = jalan([])
+    s = " ".join(k.sql.split())
+    assert "pli.min_price" in s and "pli.discount_percent" in s
