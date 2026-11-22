@@ -33,6 +33,31 @@ def rp(x) -> str:
     return str(_d(x).quantize(Decimal("0.01")))
 
 
+# ---------------------------------------------------------------- nilai bertanda (BUG-228 butir 3, putusan pemilik 22 Nov)
+# total_value baris/header selalu MAGNITUDO (|selisih| x harga pokok). Arah = tanda quantity_adjustment baris (jenis menentukan tanda; hitung ulang = turunan fisik - sistem).
+# Nilai bertanda = nilai baris dgn tanda qty; header = Σ baris (naik - turun) dari SUMBER YANG SAMA dgn total_value (stock_adjustment_items.total_value), bukan angka baru.
+def nilai_bertanda(qty, total) -> Decimal:
+    return -abs(_d(total)) if _d(qty) < 0 else abs(_d(total))
+
+
+def teks_bertanda(v) -> str:
+    """'+Rp 144.000' / '\u2212Rp 36.000' / 'Rp 0' (nol tanpa tanda)."""
+    from .teks_galat import rp as _rp_teks
+    d = _d(v)
+    return f"+{_rp_teks(abs(d))}" if d > 0 else (f"\u2212{_rp_teks(abs(d))}" if d < 0 else _rp_teks(0))
+
+
+def arah_nilai(naik, turun) -> str:
+    """'tambah' (hanya naik) | 'kurang' (hanya turun) | 'campur' (keduanya, mis. hitung ulang) | 'nol'."""
+    n, t = _d(naik), _d(turun)
+    return "campur" if n > 0 and t > 0 else ("tambah" if n > 0 else ("kurang" if t > 0 else "nol"))
+
+
+def medan_bertanda(naik, turun) -> dict:
+    net = _d(naik) - _d(turun)
+    return {"arah": arah_nilai(naik, turun), "total_value_signed": int(net), "nilai_bertanda_text": teks_bertanda(net)}
+
+
 # ---------------------------------------------------------------- daftar
 def sql_aksi(kunci: str, p_hari: str, a: str = "stock_adjustments") -> str:
     return {
@@ -588,6 +613,7 @@ def _draf_json(b: dict) -> dict:
     return {"product_id": str(b["product_id"]), "product_name": b["product_name"], "unit": b["unit"],
             "quantity_before": str(b["quantity_before"]), "quantity_adjustment": str(b["quantity_adjustment"]),
             "quantity_after": str(b["quantity_after"]), "unit_cost": rp(b["unit_cost"]), "total_value": rp(b["total_value"]),
+            "total_value_signed": int(nilai_bertanda(b["quantity_adjustment"], b["total_value"])), "nilai_bertanda_text": teks_bertanda(nilai_bertanda(b["quantity_adjustment"], b["total_value"])),
             "warehouse_id": str(b["warehouse_id"]) if b.get("warehouse_id") else None, "gudang_terkunci": bool(b.get("source_transfer_id")),
             "source_transfer_id": str(b["source_transfer_id"]) if b.get("source_transfer_id") else None, "source_transfer_number": b.get("source_transfer_number"),
             "reason_detail": b.get("reason_detail"),
