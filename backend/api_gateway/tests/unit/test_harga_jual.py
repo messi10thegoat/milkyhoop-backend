@@ -298,3 +298,55 @@ def test_rute_resolve_modul_beli_dan_izin():
     mid = (APP / "middleware" / "permission_middleware.py").read_text()
     assert '(r"^/api/price-lists/resolve/purchase_order$", ["POST"], "purchase_order", "R")' in mid
     assert '(r"^/api/price-lists/resolve/bill$", ["POST"], "purchase_invoice", "R")' in mid
+
+
+# ---- BUG-339 (putusan pemilik LANGSUNG 22 Nov): diskon % baris dasar ikut ke satuan turunan; minimum turunan = minimum dasar x faktor; Dus eksplisit menang; tingkat di qty dasar ----
+def _konv_kg(faktor="24"):
+    return [{"product_id": P2, "base_unit": "Kilogram", "conversion_unit": "Dus", "conversion_factor": Decimal(faktor), "sales_price": None}]
+
+
+def _dasar_kg(**ekstra):
+    return [{"pl": WARUNG, "item_id": P2, "unit": "kg", "price": Decimal("14000"), "min_quantity": Decimal("1"), **ekstra},
+            {"pl": WARUNG, "item_id": P2, "unit": "kg", "price": Decimal("13000"), "min_quantity": Decimal("120"), **ekstra}]
+
+
+@pytest.mark.asyncio
+async def test_bug339_diskon_dan_minimum_dasar_ikut_ke_dus_turunan():
+    kon = Kon(baris=_dasar_kg(discount_percent=Decimal("5"), min_price=Decimal("12000")), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg())
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 1)
+    assert (b["sumber"], b["harga"], b["diskon_persen"], b["harga_minimum"]) == ("daftar_konversi", 336000.0, 5.0, 288000.0)  # 14.000x24; min 12.000x24
+
+
+@pytest.mark.asyncio
+async def test_bug339_diskon_nol_eksplisit_tetap_nol_dan_null_tetap_null():
+    kon = Kon(baris=_dasar_kg(discount_percent=Decimal("0")), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg())
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 1)
+    assert (b["diskon_persen"], b["harga_minimum"]) == (0.0, None)
+    kon2 = Kon(baris=_dasar_kg(), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg())
+    _, b2 = await _satu(kon2, C_WARUNG, P2, "Dus", 1)
+    assert (b2["diskon_persen"], b2["harga_minimum"]) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_bug339_tingkat_dievaluasi_pada_qty_dasar_5_dus_kali_24_sama_120():
+    kon = Kon(baris=_dasar_kg(), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg())
+    _, b4 = await _satu(kon, C_WARUNG, P2, "Dus", 4)   # 96 dasar < 120 -> tingkat 1 (14.000)
+    assert (b4["harga"], b4["tingkat_min_qty"]) == (336000.0, 1.0)
+    _, b5 = await _satu(kon, C_WARUNG, P2, "Dus", 5)   # 120 dasar -> tingkat 120 (13.000 x 24)
+    assert (b5["harga"], b5["tingkat_min_qty"]) == (312000.0, 120.0)
+
+
+@pytest.mark.asyncio
+async def test_bug339_baris_dus_eksplisit_menang_dengan_diskon_dan_minimum_miliknya():
+    baris = _dasar_kg(discount_percent=Decimal("5"), min_price=Decimal("12000")) + [
+        {"pl": WARUNG, "item_id": P2, "unit": "Dus", "price": Decimal("330000"), "min_quantity": Decimal("1"), "discount_percent": Decimal("2"), "min_price": Decimal("300000")}]
+    kon = Kon(baris=baris, harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg())
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 1)
+    assert (b["sumber"], b["harga"], b["diskon_persen"], b["harga_minimum"]) == ("daftar", 330000.0, 2.0, 300000.0)
+
+
+@pytest.mark.asyncio
+async def test_bug339_minimum_faktor_pecahan_dibulatkan_2dp():
+    kon = Kon(baris=_dasar_kg(min_price=Decimal("1000.01")), harga_dasar={P: Decimal("1"), P2: Decimal("15000")}, konversi=_konv_kg("0.5"))
+    _, b = await _satu(kon, C_WARUNG, P2, "Dus", 1)
+    assert b["harga_minimum"] == 500.01  # 1000.01 x 0.5 = 500.005 -> _r2 HALF_UP

@@ -74,7 +74,7 @@ def _dari_daftar_dasar(baris: list, alias, dasar, kanon_baris, q: Decimal, h: di
     if not cocok:
         return None
     r = pilih_baris(cocok)
-    return {"price": _r2(r["price"]), "min_quantity": r["min_quantity"]}
+    return {"price": _r2(r["price"]), "min_quantity": r["min_quantity"], "min_price": r["min_price"], "discount_percent": r["discount_percent"]}  # BUG-339: ikut ke satuan turunan
 
 
 SUMBER_TEKS = {"daftar": "Daftar harga", "daftar_konversi": "Daftar harga (dari satuan dasar)", "harga_satuan": "Harga satuan", "harga_dasar": "Harga dasar"}  # kosong -> None
@@ -125,7 +125,10 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
                          diskon_persen=float(r["discount_percent"]) if r["discount_percent"] is not None else None)  # BUG-253 diskon % baris yang menang (null = tak diatur, BUKAN 0)  # BUG-040 lantai baris yang menang (null = tak ada)
         elif (konv := _dari_daftar_dasar(baris_daftar.get(pid, []), alias, dasar, kanon_baris, q, h, tanggal)) is not None:
             hasil.update(harga=float(_r2(konv["price"] * h["faktor"])), sumber="daftar_konversi", daftar={"id": str(daftar["id"]), "code": daftar["code"]},
-                         tingkat_min_qty=float(konv["min_quantity"]))  # BUG-320: DH dasar x faktor (tingkat qty di satuan dasar)
+                         tingkat_min_qty=float(konv["min_quantity"]),  # BUG-320: DH dasar x faktor (tingkat qty di satuan dasar)
+                         # BUG-339 (putusan pemilik LANGSUNG 22 Nov): diskon % baris dasar ikut (null = tak diatur, 0 eksplisit tetap 0); minimum satuan turunan = minimum dasar x faktor
+                         harga_minimum=float(_r2(Decimal(str(konv["min_price"])) * h["faktor"])) if konv["min_price"] is not None else None,
+                         diskon_persen=float(konv["discount_percent"]) if konv["discount_percent"] is not None else None)
         elif SD.normal(b.get("unit")) and kanon_baris != SD.kanon(dasar, alias) and kanon_baris in harga_konv.get(pid, {}):
             hasil.update(harga=float(_r2(harga_konv[pid][kanon_baris])), sumber="harga_satuan")
         elif not h["blok"] and dasar_harga.get(pid) is not None:
