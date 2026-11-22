@@ -38,3 +38,12 @@ def test_daftar_dan_detail_memakai_helper_dan_kolom_yang_sama():
 def test_skema_daftar_memuat_medan_opsional():
     f = CustomerListItem.model_fields
     assert f["price_list_id"].default is None and f["price_list_name"].default is None
+
+
+def test_341b_label_tinjau_ubah_price_list_id_kategori_harga_kunci_tetap():
+    h = C.perubahan_pelanggan({"price_list_id": None}, {"price_list_id": UID})
+    assert h == [{"field": "price_list_id", "label": "Kategori harga", "lama": None, "baru": UID}]
+
+
+def test_341b_galat_daftar_tak_ditemukan_tetap_teks_lama():
+    assert 'detail="Daftar harga tidak ditemukan di usaha ini."' in inspect.getsource(C.pastikan_daftar_harga)

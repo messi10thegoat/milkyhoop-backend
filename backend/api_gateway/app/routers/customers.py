@@ -1084,7 +1084,7 @@ UBAH_LABEL = {
     "province": "Provinsi", "postal_code": "Kode pos", "tax_id": "NPWP", "notes": "Catatan", "mobile_phone": "HP", "website": "Website",
     "display_name": "Nama tampilan", "customer_type": "Tipe pelanggan", "is_pkp": "PKP", "nik": "NIK", "nitku": "NITKU",
     "jenis_id": "Jenis ID", "negara": "Negara", "nomor_dokumen": "No. dokumen", "currency": "Mata uang", "address": "Alamat",
-    "price_list_id": "Daftar harga",
+    "price_list_id": "Kategori harga",  # BUG-341b (MASTER 22 Nov): label Tinjau/riwayat; kunci medan tetap price_list_id; galat 400 "Daftar harga tidak ditemukan..." TIDAK berubah
 }
 
 
