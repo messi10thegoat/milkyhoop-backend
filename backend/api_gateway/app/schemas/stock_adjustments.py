@@ -108,6 +108,8 @@ class StockAdjustmentItemResponse(BaseModel):
     unit: Optional[str] = None
     unit_cost: int
     total_value: int
+    total_value_signed: int = 0               # BUG-228-3: nilai dgn tanda arah (kurang = negatif); total_value tetap magnitudo
+    nilai_bertanda_text: Optional[str] = None
     reason_detail: Optional[str] = None
     system_quantity: Optional[float] = None
     physical_quantity: Optional[float] = None
@@ -131,6 +133,9 @@ class StockAdjustmentListItem(BaseModel):
     adjustment_type: str
     storage_location_name: Optional[str] = None
     total_value: int
+    arah: str = "nol"                         # BUG-228-3: tambah | kurang | campur | nol
+    total_value_signed: int = 0
+    nilai_bertanda_text: Optional[str] = None
     item_count: int
     status: str
     reference_no: Optional[str] = None
@@ -155,6 +160,9 @@ class StockAdjustmentDetail(BaseModel):
     reference_no: Optional[str] = None
     notes: Optional[str] = None
     total_value: int
+    arah: str = "nol"                         # BUG-228-3
+    total_value_signed: int = 0
+    nilai_bertanda_text: Optional[str] = None
     item_count: int
     status: str
     journal_id: Optional[str] = None
@@ -198,6 +206,8 @@ class StockAdjustmentListResponse(BaseModel):
     total: int
     has_more: bool
     sum_total: Optional[str] = None  # with_totals: Σ total_value tanpa void
+    sum_total_signed: Optional[int] = None  # BUG-228-3: Σ BERTANDA (net, tanpa void; filter sama dgn sum_total); sum_total lama = mutlak
+    sum_total_signed_text: Optional[str] = None
 
 
 class StockAdjustmentSummaryResponse(BaseModel):

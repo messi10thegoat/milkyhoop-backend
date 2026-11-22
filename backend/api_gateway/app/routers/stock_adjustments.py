@@ -257,6 +257,11 @@ async def list_stock_adjustments(
             if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
                 jumlah = {"sum_total": SS.rp(await conn.fetchval(
                     f"SELECT COALESCE(SUM(total_value), 0) FROM stock_adjustments WHERE {where_clause} AND status <> 'void'", *params))}
+                _net = SS._d(await conn.fetchval(  # BUG-228-3: Σ bertanda = Σ baris (naik - turun), cakupan/filter SAMA dgn sum_total (void dikecualikan)
+                    f"""SELECT COALESCE(SUM((SELECT COALESCE(SUM(CASE WHEN i.quantity_adjustment < 0 THEN -i.total_value ELSE i.total_value END), 0)
+                                           FROM stock_adjustment_items i WHERE i.stock_adjustment_id = stock_adjustments.id)), 0)
+                        FROM stock_adjustments WHERE {where_clause} AND status <> 'void'""", *params))
+                jumlah.update(sum_total_signed=int(_net), sum_total_signed_text=SS.teks_bertanda(_net))
 
             query = f"""
                 SELECT id, adjustment_number, adjustment_date, adjustment_type,
@@ -270,6 +275,12 @@ async def list_stock_adjustments(
             params.extend([limit, skip])
 
             rows = await conn.fetch(query, *params)
+            # BUG-228-3: nilai bertanda per dokumen = SATU agregat per halaman dari baris (sumber sama dgn total_value header: Σ baris), tanpa N+1
+            bertanda = {str(r["stock_adjustment_id"]): r for r in await conn.fetch(
+                """SELECT stock_adjustment_id, COALESCE(SUM(total_value) FILTER (WHERE quantity_adjustment > 0), 0) AS naik,
+                          COALESCE(SUM(total_value) FILTER (WHERE quantity_adjustment <= 0), 0) AS turun
+                   FROM stock_adjustment_items WHERE stock_adjustment_id = ANY($1::uuid[]) GROUP BY stock_adjustment_id""",
+                [r["id"] for r in rows])} if rows else {}
 
             items = [
                 {
@@ -283,6 +294,7 @@ async def list_stock_adjustments(
                     "status": row["status"],
                     "reference_no": row["reference_no"],
                     "created_at": row["created_at"].isoformat(),
+                    **SS.medan_bertanda((bertanda.get(str(row["id"])) or {}).get("naik", 0), (bertanda.get(str(row["id"])) or {}).get("turun", 0)),
                     "jenis_text": SS.jenis_text(row["adjustment_type"]),
                     "position_text": SS.position_text(row["status"], row["adjustment_type"]),
                     "aksi": (SS.aksi_semua(row["status"]) or [None])[0],
@@ -454,6 +466,8 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                     "reference_no": sa["reference_no"],
                     "notes": sa["notes"],
                     "total_value": sa["total_value"] or 0,
+                    **SS.medan_bertanda(sum((SS.nilai_bertanda(i["quantity_adjustment"], i["total_value"]) for i in items if SS._d(i["quantity_adjustment"]) > 0), SS.NOL),
+                                        sum((-SS.nilai_bertanda(i["quantity_adjustment"], i["total_value"]) for i in items if SS._d(i["quantity_adjustment"]) <= 0), SS.NOL)),  # BUG-228-3
                     "item_count": sa["item_count"] or 0,
                     "status": sa["status"],
                     "journal_id": str(sa["journal_id"]) if sa["journal_id"] else None,
@@ -470,6 +484,8 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             "unit": item["unit"],
                             "unit_cost": item["unit_cost"],
                             "total_value": item["total_value"],
+                            "total_value_signed": int(SS.nilai_bertanda(item["quantity_adjustment"], item["total_value"])),  # BUG-228-3
+                            "nilai_bertanda_text": SS.teks_bertanda(SS.nilai_bertanda(item["quantity_adjustment"], item["total_value"])),
                             "reason_detail": item["reason_detail"],
                             "system_quantity": float(item["system_quantity"])
                             if item["system_quantity"]
