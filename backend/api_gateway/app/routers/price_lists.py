@@ -338,6 +338,7 @@ async def get_price_list(request: Request, price_list_id: UUID):
                     **st,
                     "position_text": HD.position_text(row["is_active"], row["is_default"], st["status"]),
                     "pelanggan_count": n_pel,
+                    "kategori_pemakai": await HA.ukur_kategori(conn, ctx["tenant_id"], price_list_id),  # BUG-338A: [{id, name, is_active}]
                     **await HA.daftar_pelanggan(conn, ctx["tenant_id"], price_list_id),  # BUG-336: pelanggan[] + pelanggan_terpotong (predikat = hitung)
                     "aksi_tersedia": HD.aksi_tersedia(row, n_pel),
                     "items": [
@@ -499,7 +500,8 @@ async def delete_price_list(request: Request, price_list_id: UUID):
                 tid = ctx["tenant_id"]
                 r = await HA.ukur_daftar(conn, tid, price_list_id)
                 HA.tolak_bila_blok(HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id),
-                                                      await HA.ukur_nama_pelanggan(conn, tid, price_list_id)))
+                                                      await HA.ukur_nama_pelanggan(conn, tid, price_list_id),
+                                                      await HA.ukur_kategori(conn, tid, price_list_id)))
                 n_baris = int(await HA.ukur_baris(conn, tid, price_list_id) or 0)
                 await HA.terapkan_hapus(conn, tid, price_list_id)
                 await HR.catat(conn, ctx, price_list_id, r["code"], "HAPUS", f"Daftar {r['code']} — {r['name']} dihapus ({n_baris} harga ikut terhapus)", jumlah=n_baris)
@@ -843,7 +845,7 @@ async def preview_hapus_daftar(request: Request, price_list_id: UUID, body: Opti
         tid = ctx["tenant_id"]
         r = await HA.ukur_daftar(conn, tid, price_list_id)
         return HA.rencana_hapus(r, await HA.ukur_pelanggan(conn, tid, price_list_id), await HA.ukur_baris(conn, tid, price_list_id),
-                                   await HA.ukur_nama_pelanggan(conn, tid, price_list_id))
+                                   await HA.ukur_nama_pelanggan(conn, tid, price_list_id), await HA.ukur_kategori(conn, tid, price_list_id))
     return {"success": True, "data": {**await _baca_saja(f), "payload": body or {}}}
 
 

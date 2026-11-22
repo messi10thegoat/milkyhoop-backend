@@ -106,7 +106,13 @@ def rencana_status(r, n_pelanggan: int, ke_aktif: bool) -> dict:
 MAKS_NAMA = 5
 
 
-def rencana_hapus(r, n_pelanggan: int, n_baris: int, nama=()) -> dict:
+async def ukur_kategori(conn, tid: str, pl_id) -> list:
+    """BUG-338A: kategori pelanggan (aktif DAN nonaktif -- FK komposit menolak hapus DH yang masih ditunjuk) yang memakai daftar; urut nama."""
+    return [{"id": str(r["id"]), "name": r["name"], "is_active": bool(r["is_active"])} for r in await conn.fetch(
+        "SELECT id, name, is_active FROM customer_categories WHERE tenant_id = $1 AND price_list_id = $2 ORDER BY lower(name), id", tid, pl_id)]
+
+
+def rencana_hapus(r, n_pelanggan: int, n_baris: int, nama=(), kategori=()) -> dict:
     """Hapus daftar: DITOLAK bila dipakai pelanggan -- pesan menyebut NAMA (maks 5 + "dan N lainnya"; putusan pemilik) dan blok membawa
     jumlah_pelanggan/nama_pelanggan/sisa_pelanggan + baris_terhapus (jumlah baris harga yang ikut terhapus bila lolos; FE tak menampilkan "—")."""
     if not r:
@@ -118,6 +124,13 @@ def rencana_hapus(r, n_pelanggan: int, n_baris: int, nama=()) -> dict:
         return _hasil([_blok("DH_DIPAKAI_PELANGGAN",
                              f"{r['name']} dipakai {n_pelanggan} pelanggan{sebut}; pindahkan pelanggannya dulu atau pilih Nonaktifkan.",
                              jumlah_pelanggan=n_pelanggan, nama_pelanggan=tampil, sisa_pelanggan=sisa, baris_terhapus=n_baris)], None)
+    if kategori:
+        tampil = [k["name"] for k in kategori][:MAKS_NAMA]
+        sisa = max(0, len(kategori) - len(tampil))
+        return _hasil([_blok("DH_DIPAKAI_KATEGORI",
+                             f"{r['name']} dipakai {len(kategori)} kategori pelanggan: {', '.join(tampil)}" + (f" dan {sisa} lainnya" if sisa else "")
+                             + "; ganti daftar kategorinya dulu atau pilih Nonaktifkan.",
+                             jumlah_kategori=len(kategori), nama_kategori=tampil, sisa_kategori=sisa, baris_terhapus=n_baris)], None)
     per = [_per("DH_BAWAAN_DIHAPUS", "Ini daftar bawaan; sesudah dihapus harga memakai harga barang.")] if r["is_default"] else []
     return _hasil([], {"jenis": "hapus_permanen", "baris_terhapus": n_baris}, per)
 

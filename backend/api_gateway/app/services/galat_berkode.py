@@ -13,14 +13,16 @@ from fastapi import HTTPException
 
 
 class GalatBerkode(HTTPException):
-    def __init__(self, status_code: int, code: str, message: str, field: Optional[str] = None, headers: Optional[dict] = None):
+    def __init__(self, status_code: int, code: str, message: str, field: Optional[str] = None, headers: Optional[dict] = None, extra: Optional[dict] = None):
         super().__init__(status_code=status_code, detail=message, headers=headers)
-        self.code, self.field = code, field
+        self.code, self.field, self.extra = code, field, extra  # extra = medan tambahan aditif di badan (BUG-338A: jumlah_pelanggan, nama_pelanggan)
 
     def badan(self) -> dict:
         b = {"detail": self.detail, "code": self.code, "message": self.detail}
         if self.field:
             b["field"] = self.field
+        if self.extra:
+            b.update(self.extra)
         return b
 
 

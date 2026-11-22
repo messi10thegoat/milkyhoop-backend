@@ -68,6 +68,7 @@ class CreateCustomerRequest(IdentitasPajakPembeli):
     community: Optional[str] = Field(None, max_length=255, description="Community/organization membership")
     # DAFTAR-HARGA (ANDROID U3, 4 Nov 2026): kelompok harga saat DIBUAT; null = daftar bawaan tenant (dulu dibuang diam-diam)
     price_list_id: Optional[UUID] = None
+    category_id: Optional[UUID] = None  # BUG-338A: kategori pelanggan; null = tanpa kategori
     
     # Address
     address: Optional[str] = None
@@ -151,6 +152,7 @@ class UpdateCustomerRequest(IdentitasPajakPembeli):
     customer_type: Optional[Literal["BADAN", "ORANG_PRIBADI"]] = None
     # DAFTAR-HARGA (4 Nov 2026): kelompok harga pelanggan; null = daftar bawaan tenant
     price_list_id: Optional[UUID] = None
+    category_id: Optional[UUID] = None  # BUG-338A (null = lepas kategori)
     
     # Financial
     currency: Optional[str] = None
@@ -203,6 +205,8 @@ class CustomerListItem(PosisiDariStatus):
     nomor_dokumen: Optional[str] = None
     price_list_id: Optional[str] = None  # BUG-341: daftar harga pelanggan (null = bawaan tenant), sama dgn detail
     price_list_name: Optional[str] = None
+    category_id: Optional[str] = None  # BUG-338A (aditif)
+    category_name: Optional[str] = None
     payment_terms_days: int = 0
     credit_limit: Optional[int] = None
     points: Optional[int] = 0
@@ -330,6 +334,8 @@ class CustomerDetail(PosisiDariStatus):
     default_shipping_address_id: Optional[str] = None
     price_list_id: Optional[str] = None
     price_list_name: Optional[str] = None
+    category_id: Optional[str] = None  # BUG-338A (aditif)
+    category_name: Optional[str] = None
 
 
 class CustomerDetailResponse(BaseModel):
