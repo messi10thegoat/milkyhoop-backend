@@ -8,20 +8,20 @@ UID = "11111111-1111-1111-1111-111111111111"
 
 
 def test_tanpa_daftar_bawaan_null_null():
-    assert C.medan_dh_pelanggan({"price_list_id": None, "price_list_name": None}) == {"price_list_id": None, "price_list_name": None}
+    assert C.medan_dh_pelanggan({"price_list_id": None, "price_list_name": None, "category_id": None, "category_name": None}) == {"price_list_id": None, "price_list_name": None, "category_id": None, "category_name": None}
 
 
 def test_daftar_aktif_id_str_dan_nama():
-    assert C.medan_dh_pelanggan({"price_list_id": UID, "price_list_name": "Grosir"}) == {"price_list_id": UID, "price_list_name": "Grosir"}
+    assert C.medan_dh_pelanggan({"price_list_id": UID, "price_list_name": "Grosir", "category_id": None, "category_name": None}) == {"price_list_id": UID, "price_list_name": "Grosir", "category_id": None, "category_name": None}
 
 
 def test_daftar_nonaktif_tetap_bernama_seperti_detail():
     # nama diambil apa adanya dari price_lists (tak menyaring is_active) = perilaku detail sebelumnya
-    assert C.medan_dh_pelanggan({"price_list_id": UID, "price_list_name": "Lama (nonaktif)"})["price_list_name"] == "Lama (nonaktif)"
+    assert C.medan_dh_pelanggan({"price_list_id": UID, "price_list_name": "Lama (nonaktif)", "category_id": None, "category_name": None})["price_list_name"] == "Lama (nonaktif)"
 
 
 def test_daftar_terhapus_fk_set_null_keduanya_null():
-    assert C.medan_dh_pelanggan({"price_list_id": None, "price_list_name": None}) == {"price_list_id": None, "price_list_name": None}
+    assert C.medan_dh_pelanggan({"price_list_id": None, "price_list_name": None, "category_id": None, "category_name": None}) == {"price_list_id": None, "price_list_name": None, "category_id": None, "category_name": None}
 
 
 def test_sql_satu_subselect_bertenant_tanpa_join_n1():
@@ -47,3 +47,10 @@ def test_341b_label_tinjau_ubah_price_list_id_kategori_harga_kunci_tetap():
 
 def test_341b_galat_daftar_tak_ditemukan_tetap_teks_lama():
     assert 'detail="Daftar harga tidak ditemukan di usaha ini."' in inspect.getsource(C.pastikan_daftar_harga)
+
+
+def test_338a_kategori_pelanggan_id_str_dan_nama_aditif():
+    r = C.medan_dh_pelanggan({"price_list_id": None, "price_list_name": None, "category_id": UID, "category_name": "Warung"})
+    assert r["category_id"] == UID and r["category_name"] == "Warung"
+    s = " ".join(C.KOLOM_DH_PELANGGAN.split())
+    assert "k.tenant_id = customers.tenant_id" in s and "AS category_name" in s

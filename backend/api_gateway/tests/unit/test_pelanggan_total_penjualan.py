@@ -66,7 +66,7 @@ class ConnDaftar:
         return [{"id": self.cid, "nomor_member": None, "nama": "Rahayu", "company_name": None, "display_name": None,
                  "tipe": None, "telepon": None, "email": None, "alamat": None, "points": 0, "total_transaksi": 0,
                  "total_nilai": 0, "is_active": True, "created_at": None, "phone2": None, "community": None,
-                 "nitku": None, "jenis_id": None, "negara": None, "nomor_dokumen": None, "price_list_id": None, "price_list_name": None}]
+                 "nitku": None, "jenis_id": None, "negara": None, "nomor_dokumen": None, "price_list_id": None, "price_list_name": None, "category_id": None, "category_name": None}]
 
 
 @pytest.mark.asyncio
