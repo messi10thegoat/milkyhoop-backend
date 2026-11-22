@@ -178,7 +178,8 @@ def tolak_bila_blok(x: dict) -> None:
     """Penulis: blok pertama rencana -> galat berkode (404 bila tak ada, selain itu 409) -- kalimat sama dengan pratinjau."""
     if x["blocks"]:
         b = x["blocks"][0]
-        raise GalatBerkode(404 if b["code"] == "DH_TAK_ADA" else 409, b["code"], b["message"], field=b.get("field"))
+        ekstra = {k: v for k, v in b.items() if k not in ("code", "message", "field")}  # BUG-338A susulan: jumlah_pelanggan/jumlah_kategori/nama_* ikut di badan 409 (sama dgn blok pratinjau)
+        raise GalatBerkode(404 if b["code"] == "DH_TAK_ADA" else 409, b["code"], b["message"], field=b.get("field"), extra=ekstra or None)
 
 
 async def periksa_barang_dijual(conn, tid: str, pid) -> None:
