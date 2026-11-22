@@ -23,6 +23,8 @@ INVENTARIS = DISINI / "inventaris_rute_tulis.txt"
 
 # pratinjau -> rute tulis yang benar-benar dijalankan, bila bukan "jalur tanpa /preview"
 KHUSUS = {
+    # BUG-338A pasca: pratinjau hapus kategori pelanggan -> DELETE /customer-categories/{id} (penentu SAMA: kategori_pelanggan.rencana_hapus; izin customer D)
+    "POST /api/customer-categories/{kategori_id}/delete/preview": "DELETE /api/customer-categories/{kategori_id}",
     # Biaya B7 (gelombang 1): pratinjau hapus draf -> DELETE /expenses/{id} (penentu SAMA: biaya_daftar.blok_hapus; izin expense D)
     "POST /api/expenses/{expense_id}/delete/preview": "DELETE /api/expenses/{expense_id}",
     # Biaya B2 (gelombang 2): pratinjau ubah draf -> PATCH /expenses/{id} (penentu SAMA: ubah_biaya_inti; izin expense U); pratinjau buat -> POST /api/expenses (default)
