@@ -131,6 +131,7 @@ class PriceListDetail(BaseModel):
     pelanggan: List[Dict[str, Any]] = []  # BUG-336: [{id,nama,kode,terhapus}] maks 50, urut nama; pelanggan_count = jumlah penuh
     pelanggan_terpotong: bool = False
     pelanggan_total_termasuk_terhapus: int = 0  # BUG-340: jumlah baris penuh termasuk terhapus; pelanggan_count = tanpa terhapus
+    kategori_pemakai: List[Dict[str, Any]] = []  # BUG-338A: [{id,name,is_active}] kategori pelanggan yang menunjuk daftar ini (response_model MEMANGKAS kunci tak dideklarasikan)
     aksi_tersedia: AksiTersediaPeta = {}
     items: List[PriceListItemResponse] = []
     created_at: str
