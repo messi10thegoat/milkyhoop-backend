@@ -866,3 +866,6 @@ POST /api/warehouses/{warehouse_id}/edit/preview
 POST /api/warehouses/{warehouse_id}/set-default/preview
 POST /api/warehouses/{warehouse_id}/status
 POST /api/warehouses/{warehouse_id}/status/preview
+POST /api/customer-categories
+PATCH /api/customer-categories/{kategori_id}
+DELETE /api/customer-categories/{kategori_id}
