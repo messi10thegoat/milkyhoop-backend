@@ -47,14 +47,14 @@ class Kon:
 
     async def fetchval(self, sql, *a):
         q = " ".join(sql.split())
-        if "customer_categories" in q:
-            return self.kategori.get(a[0])
         if "FROM customers" in q and "price_list_id" in q:
             return self.pelanggan.get(a[0])
         raise AssertionError(q[:90])
 
     async def fetchrow(self, sql, *a):
         q = " ".join(sql.split())
+        if "customer_categories" in q:
+            return {"price_list_id": self.kategori[a[0]], "kategori_name": "Warung Besar"} if a[0] in self.kategori else None
         if "FROM price_lists" in q:
             if "is_default" in q:
                 return next((d for d in self.daftar if d["is_default"] and d["is_active"]), None)
@@ -360,7 +360,8 @@ async def test_bug339_minimum_faktor_pecahan_dibulatkan_2dp():
 async def test_338a_pelanggan_tanpa_daftar_jatuh_ke_daftar_kategori_asal_kategori():
     k = Kon(); k.kategori = {C_POLOS: WARUNG}
     pl, b = await _satu(k, C_POLOS, P, "Dus", 10)
-    assert pl == {"id": str(WARUNG), "code": "WARUNG", "name": "Warung", "asal": "kategori"} and (b["harga"], b["sumber"]) == (95000.0, "daftar")
+    assert pl == {"id": str(WARUNG), "code": "WARUNG", "name": "Warung", "asal": "kategori", "kategori_name": "Warung Besar"}
+    assert (b["harga"], b["sumber"], b["sumber_text"]) == (95000.0, "daftar", "Kategori pelanggan Warung Besar")
 
 
 @pytest.mark.asyncio
@@ -399,10 +400,10 @@ async def test_338a_kueri_kategori_bersaring_tenant_dan_hanya_kategori_aktif():
     tanya = []
 
     class Spy(Kon):
-        async def fetchval(self, sql, *a):
+        async def fetchrow(self, sql, *a):
             if "customer_categories" in sql:
                 tanya.append((" ".join(sql.split()), a))
-            return await super().fetchval(sql, *a)
+            return await super().fetchrow(sql, *a)
     await _satu(Spy(), C_POLOS, P, None, 1)
     (q, a), = tanya
     assert a == (C_POLOS, T) and "k.tenant_id = c.tenant_id" in q and "c.tenant_id = $2" in q and "k.is_active" in q
@@ -411,3 +412,14 @@ async def test_338a_kueri_kategori_bersaring_tenant_dan_hanya_kategori_aktif():
 def test_338a_guard_minimum_memakai_penentu_daftar_yang_sama():
     src = (APP / "services" / "harga_minimum.py").read_text()
     assert "HJ.daftar_untuk(conn, tid, customer_id, tanggal)" in src
+
+
+@pytest.mark.asyncio
+async def test_338a_teks_server_kategori_hanya_untuk_sumber_daftar_pelanggan_dan_bawaan_tak_berubah():
+    k = Kon(); k.kategori = {C_POLOS: WARUNG}
+    pl, b = await _satu(k, C_POLOS, P, "Karton", 1)   # satuan turunan tanpa baris DH sendiri -> daftar_konversi
+    assert b["sumber"] == "daftar_konversi" and b["sumber_text"] == "Kategori pelanggan Warung Besar (dari satuan dasar)"
+    pl2, b2 = await _satu(k, C_WARUNG, P, "Dus", 1)   # DH pelanggan sendiri
+    assert pl2["asal"] == "pelanggan" and pl2["kategori_name"] is None and b2["sumber_text"] == "Daftar harga"
+    pl3, b3 = await _satu(Kon(), C_POLOS, P, None, 1)   # bawaan
+    assert pl3["asal"] == "bawaan" and pl3["kategori_name"] is None and b3["sumber_text"] == "Daftar harga"

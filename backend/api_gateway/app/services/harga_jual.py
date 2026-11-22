@@ -58,13 +58,13 @@ async def daftar_untuk(conn, tid: str, customer_id, tanggal: date) -> Optional[d
             r = await conn.fetchrow(q + "id = $2", tid, pl)
             if r and r["is_active"] and _berlaku(r, tanggal):
                 return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "pelanggan"}
-        kpl = await conn.fetchval(
-            """SELECT k.price_list_id FROM customers c JOIN customer_categories k ON k.id = c.category_id AND k.tenant_id = c.tenant_id AND k.is_active
+        kat = await conn.fetchrow(
+            """SELECT k.price_list_id, k.name AS kategori_name FROM customers c JOIN customer_categories k ON k.id = c.category_id AND k.tenant_id = c.tenant_id AND k.is_active
                WHERE c.id = $1 AND c.tenant_id = $2""", customer_id, tid)
-        if kpl:
-            r = await conn.fetchrow(q + "id = $2", tid, kpl)
+        if kat and kat["price_list_id"]:
+            r = await conn.fetchrow(q + "id = $2", tid, kat["price_list_id"])
             if r and r["is_active"] and _berlaku(r, tanggal):
-                return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "kategori"}
+                return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "kategori", "kategori_name": kat["kategori_name"]}
     r = await conn.fetchrow(q + "is_default AND is_active", tid)
     if r and _berlaku(r, tanggal):
         return {"id": r["id"], "code": r["code"], "name": r["name"], "asal": "bawaan"}
@@ -149,6 +149,9 @@ async def harga_saran(conn, tid: str, customer_id, tanggal: date, baris: list, a
         elif not h["blok"] and dasar_harga.get(pid) is not None:
             hasil.update(harga=float(_r2(Decimal(str(dasar_harga[pid])) * h["faktor"])), sumber="harga_dasar")
         hasil["sumber_text"] = SUMBER_TEKS.get(hasil["sumber"])
+        if daftar and daftar["asal"] == "kategori" and hasil["sumber"] in ("daftar", "daftar_konversi"):  # BUG-338A: teks label dari SERVER (putusan MASTER); sumber tetap
+            hasil["sumber_text"] = hasil["sumber_text"].replace("Daftar harga", f"Kategori pelanggan {daftar['kategori_name']}", 1)
         out.append(hasil)
-    return {"price_list": ({"id": str(daftar["id"]), "code": daftar["code"], "name": daftar["name"], "asal": daftar["asal"]}
+    return {"price_list": ({"id": str(daftar["id"]), "code": daftar["code"], "name": daftar["name"], "asal": daftar["asal"],
+                           "kategori_name": daftar.get("kategori_name")}  # BUG-338A: nama kategori bila asal='kategori', selain itu null
                            if daftar else None), "lines": out}
