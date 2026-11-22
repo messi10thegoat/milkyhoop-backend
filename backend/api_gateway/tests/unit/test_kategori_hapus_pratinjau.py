@@ -83,7 +83,7 @@ def test_404_tak_ada_atau_lintas_tenant_dan_bersaring_tenant(monkeypatch):
     r = _app(monkeypatch, k, tenant="t-lain").post(f"/api/customer-categories/{KID}/delete/preview")
     assert r.status_code == 404 and not _tulis(k)
     assert all("tenant_id = $" in q for q, _ in k.sql if "customer_categories" in q or "FROM customers" in q)
-    assert k.sql[0][1] == (KID, "t-lain")
+    assert [str(x) for x in k.sql[0][1]] == [KID, "t-lain"]
 
 
 def test_pratinjau_dan_delete_sama_kalimat_dan_jumlah(monkeypatch):
