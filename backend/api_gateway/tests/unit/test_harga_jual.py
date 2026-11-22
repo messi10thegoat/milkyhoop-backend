@@ -91,7 +91,7 @@ async def _satu(kon, pelanggan, item, unit, qty, tgl=HARI):
                                                (50, 90000.46, 50.0)])
 async def test_daftar_pelanggan_tingkat_qty_tertinggi_dan_dibulatkan_2dp(qty, harga, tingkat):
     pl, b = await _satu(Kon(), C_WARUNG, P, "Dus", qty)
-    assert pl == {"id": str(WARUNG), "code": "WARUNG", "name": "Warung", "asal": "pelanggan"}
+    assert pl == {"id": str(WARUNG), "code": "WARUNG", "name": "Warung", "asal": "pelanggan", "kategori_name": None}
     assert (b["harga"], b["sumber"], b["tingkat_min_qty"], b["daftar"]) == (harga, "daftar", tingkat, {"id": str(WARUNG), "code": "WARUNG"})
 
 
