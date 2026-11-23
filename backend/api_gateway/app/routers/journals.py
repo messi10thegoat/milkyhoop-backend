@@ -691,7 +691,7 @@ async def reverse_journal(
             # Check journal exists and is posted
             journal = await conn.fetchrow(
                 """
-                SELECT je.id, je.status, je.reversed_by_id, je.journal_number, je.description, je.source_type, je.reversal_of_id,
+                SELECT je.id, je.status, je.reversed_by_id, je.journal_number, je.description, je.source_type, je.reversal_of_id, je.journal_date,
                        rb.journal_number AS nomor_pembalik
                 FROM journal_entries je
                 LEFT JOIN journal_entries rb ON rb.id = je.reversed_by_id AND rb.tenant_id = je.tenant_id
@@ -718,20 +718,25 @@ async def reverse_journal(
                 journal_id,
             )
 
+            # BUG-354 (putusan pemilik LANGSUNG 23 Nov): tanggal pembalik bawaan = TANGGAL JURNAL ASLI (pola Accurate); FE lama hanya kirim reason
+            tgl_balik = body.reversal_date or journal["journal_date"]
+
             # Check reversal period is open
             period = await conn.fetchrow(
                 """
-                SELECT id, status FROM fiscal_periods
+                SELECT id, status, period_name FROM fiscal_periods
                 WHERE tenant_id = $1 AND $2 BETWEEN start_date AND end_date
             """,
                 ctx["tenant_id"],
-                body.reversal_date,
+                tgl_balik,
             )
 
             if period and period["status"] in ("CLOSED", "LOCKED"):
                 raise HTTPException(
-                    status_code=403,
-                    detail=tg.periode_tertutup(None, period['status']),
+                    status_code=409,
+                    detail=tg.periode_tertutup(period["period_name"], period["status"])
+                    + (f" Jurnal pembalik bertanggal {tgl_balik.isoformat()} (tanggal jurnal asli); kirim reversal_date di periode yang terbuka bila perlu."
+                       if body.reversal_date is None else ""),
                 )
 
             # Gate 5: pagar lapisan-turunan yang ada di jalur PEMBUATAN (baris ~483) kini juga di jalur PEMBALIKAN —
@@ -761,7 +766,7 @@ async def reverse_journal(
 
                 # Law 23: Generate journal number inside transaction
                 reversal_number = await get_next_journal_number(
-                    conn, ctx["tenant_id"], "JV", body.reversal_date
+                    conn, ctx["tenant_id"], "JV", tgl_balik
                 )
 
                 # Law 20: Create reversal journal as DRAFT first
@@ -777,7 +782,7 @@ async def reverse_journal(
                 """,
                     ctx["tenant_id"],
                     reversal_number,
-                    body.reversal_date,
+                    tgl_balik,
                     f"Reversal of {journal['journal_number']}: {body.reason}",
                     total_debit,
                     total_credit,
