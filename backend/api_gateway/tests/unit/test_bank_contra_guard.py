@@ -42,6 +42,9 @@ class _Txn:
         return False
 
 
+RENCANA_LAWAN_BANK = uuid.uuid4()  # akun lawan yang ternyata CoA rekening kas/bank
+
+
 class _Conn:
     def transaction(self):
         return _Txn()
@@ -51,6 +54,8 @@ class _Conn:
 
     async def fetchrow(self, sql, *args):
         s = " ".join(str(sql).split())
+        if "SELECT 1 AS ada FROM bank_accounts" in s:  # 23 Nov: akun lawan = CoA rekening kas/bank lain? (lawan biasa = bukan)
+            return {"ada": 1} if args[0] == RENCANA_LAWAN_BANK else None
         if "FROM bank_accounts" in s:
             return {
                 "id": args[0],
@@ -124,6 +129,16 @@ async def test_a_green_contra_differs(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         await create_manual_transaction(_req(), BANK_ACCT_ID, _body(OTHER_COA))
     assert ei.value.status_code == 418
+
+
+@pytest.mark.asyncio
+async def test_a_red_contra_rekening_kas_bank_lain_422(monkeypatch):
+    """23 Nov 2026: lawan = CoA rekening kas/bank lain -> 422 'pakai Transfer' (bukan lolos ke periode)."""
+    _patch_pool(monkeypatch)
+    with pytest.raises(HTTPException) as ei:
+        await create_manual_transaction(_req(), BANK_ACCT_ID, _body(RENCANA_LAWAN_BANK))
+    assert ei.value.status_code == 422
+    assert "pakai Transfer" in ei.value.detail
 
 
 # (ii) /adjust DIHIDUPKAN LAGI di 70434814 (20 Sep, V274): akun lawan = peran per

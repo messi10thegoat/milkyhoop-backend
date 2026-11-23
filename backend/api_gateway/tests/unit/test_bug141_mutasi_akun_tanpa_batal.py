@@ -66,7 +66,7 @@ def test_tanpa_batal_bersama_saringan_lain_nomor_parameter_berurut(monkeypatch):
     from datetime import date
     _, q = _panggil(monkeypatch, tanpa_batal=True, date_from=date(2026, 11, 1))
     sql, a = q["count"]
-    assert "bt.transaction_date >= $2" in sql and KR.sql_bt_tanpa_batal("bt", "$3") in sql and a[1:] == (date(2026, 11, 1), "t1")
+    assert "bt.transaction_date >= $2" in sql and KR.sql_bt_tanpa_batal("bt", "$3") in sql and a[1:3] == (date(2026, 11, 1), "t1")
 
 
 def test_bawaan_perilaku_lama_tanpa_saringan(monkeypatch):

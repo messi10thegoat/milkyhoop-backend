@@ -933,12 +933,13 @@ _LABEL_TIPE = {"deposit": "Setoran", "withdrawal": "Penarikan", "transfer_in": "
 
 def _penanda_mutasi(row) -> dict:
     """Kontrak mutasi lama (23 Nov 2026): source, journal_id, is_void_reversal (baris pembalik batal), label_sumber (teks server)."""
-    jurnal = row["source"] == "jurnal_lawan"
+    jurnal = row.get("source") == "jurnal_lawan"
     ref = row["reference_number"] or ""
     pembalik = (not jurnal) and (str(row["description"] or "").startswith("[VOID]")
                                  or row["reference_type"] == "transfer_void" or ref.startswith("VOID-"))
     label = "Jurnal" if jurnal else "Pembalik batal" if pembalik else _LABEL_TIPE.get(row["transaction_type"], row["transaction_type"])
-    return {"source": row["source"], "journal_id": str(row["journal_id"]) if row["journal_id"] else None,
+    return {"source": "jurnal_lawan" if jurnal else "bank_transaction",
+            "journal_id": str(row["journal_id"]) if row.get("journal_id") else None,
             "is_void_reversal": pembalik, "label_sumber": label}
 
 
