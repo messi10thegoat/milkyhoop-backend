@@ -928,7 +928,10 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
 # =============================================================================
 
 
-_LABEL_TIPE = {"deposit": "Setoran", "withdrawal": "Penarikan", "transfer_in": "Transfer Masuk", "transfer_out": "Transfer Keluar"}
+_LABEL_TIPE = {"deposit": "Setoran", "withdrawal": "Penarikan", "transfer_in": "Transfer Masuk", "transfer_out": "Transfer Keluar",
+               # BUG-353: tipe bank_transactions lain (CHECK) -> teks Indonesia dari server, bukan nilai mentah
+               "payment_received": "Pembayaran Diterima", "payment_made": "Pembayaran Keluar", "adjustment": "Penyesuaian Saldo",
+               "opening": "Saldo Awal", "fee": "Biaya Bank", "interest": "Bunga", "charge": "Biaya"}
 
 
 def _penanda_mutasi(row) -> dict:

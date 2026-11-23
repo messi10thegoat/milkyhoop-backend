@@ -87,3 +87,11 @@ def test_penanda_baris_pembalik_dan_label_sumber():
     j = uuid4()
     r = P(_baris(source="jurnal_lawan", journal_id=j, transaction_type="jurnal_lawan"))
     assert r == {"source": "jurnal_lawan", "journal_id": str(j), "is_void_reversal": False, "label_sumber": "Jurnal"}
+
+
+def test_label_sumber_tipe_lain_bukan_nilai_mentah():
+    """BUG-353: payment_made/adjustment/opening dst. -> teks Indonesia."""
+    peta = {"payment_received": "Pembayaran Diterima", "payment_made": "Pembayaran Keluar", "adjustment": "Penyesuaian Saldo",
+            "opening": "Saldo Awal", "fee": "Biaya Bank", "interest": "Bunga", "charge": "Biaya"}
+    for tipe, teks in peta.items():
+        assert RB._penanda_mutasi(_baris(transaction_type=tipe))["label_sumber"] == teks, tipe
