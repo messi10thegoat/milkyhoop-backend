@@ -783,7 +783,7 @@ async def reverse_journal(
                     ctx["tenant_id"],
                     reversal_number,
                     tgl_balik,
-                    f"Reversal of {journal['journal_number']}: {body.reason}",
+                    f"Pembalik {journal['journal_number']} — {body.reason}",  # teks Indonesia (tampil di mutasi Kas&Bank); pembalik lama tak diubah
                     total_debit,
                     total_credit,
                     period["id"] if period else None,

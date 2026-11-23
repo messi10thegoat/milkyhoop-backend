@@ -78,3 +78,65 @@ def test_reversal_date_eksplisit_dipakai_dan_pesan_tanpa_catatan_tanggal_asli(mo
                     ReverseJournalRequest(reason="x", reversal_date=date(2026, 10, 3)))
     assert t["tgl_periode"] == date(2026, 10, 3)
     assert e.status_code == 409 and "Okt 2026" in e.detail and "tanggal jurnal asli" not in e.detail
+
+
+def test_deskripsi_pembalik_baru_indonesia(monkeypatch):
+    """23 Nov: 'Reversal of JV-…' -> 'Pembalik JV-… — alasan' (tampil di mutasi Kas&Bank); data lama tak diubah."""
+    sisip = []
+
+    class K:
+        def transaction(self):
+            class T:
+                async def __aenter__(s):
+                    return s
+
+                async def __aexit__(s, *a):
+                    return False
+            return T()
+
+        async def fetchrow(self, sql, *a):
+            if "FROM fiscal_periods" in sql:
+                return None
+            return {"id": a[0], "status": "POSTED", "reversed_by_id": None, "journal_number": "JV-2611-0004", "description": "x",
+                    "source_type": "MANUAL", "reversal_of_id": None, "journal_date": TGL_ASLI, "nomor_pembalik": None}
+
+        async def fetch(self, sql, *a):
+            return [{"account_id": uuid4(), "memo": "", "debit": 1000, "credit": 0}]
+
+        async def fetchval(self, sql, *a):
+            sisip.append(a)
+            return uuid4()
+
+        async def execute(self, *a, **k):
+            return None
+
+    class P:
+        def acquire(self):
+            class Cm:
+                async def __aenter__(s):
+                    return K()
+
+                async def __aexit__(s, *a):
+                    return False
+            return Cm()
+
+    async def pool():
+        return P()
+
+    async def nomor(*a, **k):
+        return "JV-2611-0005"
+
+    async def ambil(request, jid):
+        return {"ok": True}
+
+    async def tanpa_turunan(*a, **k):
+        return None
+    monkeypatch.setattr(RJ, "get_pool", pool)
+    monkeypatch.setattr(RJ, "get_next_journal_number", nomor)
+    monkeypatch.setattr(RJ, "get_journal", ambil)
+    monkeypatch.setattr(RJ, "validate_no_derived_layer_accounts", tanpa_turunan)
+    r = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    r.state.user = {"tenant_id": "t1", "user_id": "00000000-0000-0000-0000-000000000001"}
+    asyncio.run(RJ.reverse_journal(r, uuid4(), ReverseJournalRequest(reason="salah input")))
+    deskripsi = next(a[3] for a in sisip if len(a) > 3)
+    assert deskripsi == "Pembalik JV-2611-0004 — salah input" and "Reversal of" not in deskripsi
