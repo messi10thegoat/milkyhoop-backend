@@ -41,9 +41,10 @@ class _Tx:
 class _C:
     """Tiruan asyncpg: rekening per id/coa, akun lawan, periode, baris transfer; mencatat execute/fetchval (tulisan)."""
 
-    def __init__(self, akun=(), lawan_tipe="EQUITY", periode=None, transfer=None):
+    def __init__(self, akun=(), lawan_tipe="EQUITY", periode=None, transfer=None, lawan_bank=()):
         self.akun = {a["id"]: a for a in akun}
         self.lawan_tipe, self.periode, self.transfer = lawan_tipe, periode, transfer
+        self.lawan_bank = set(lawan_bank)  # CoA lawan yang ternyata CoA rekening kas/bank lain
         self.tulis, self.akun_args, self.readonly = [], [], []
 
     def transaction(self, readonly=False):
@@ -55,6 +56,8 @@ class _C:
             return self.akun.get(a[0])
         if sql == KT.SQL_AKUN_COA:
             return next((x for x in self.akun.values() if x["coa_id"] == a[0]), None)
+        if sql == KT.SQL_REKENING_DARI_COA:
+            return {"ada": 1} if a[0] in self.lawan_bank else None
         if sql == KT.SQL_TRANSFER_POSTING:
             return self.transfer
         if "FROM chart_of_accounts WHERE id" in sql:
@@ -150,6 +153,20 @@ def test_blok_lama_tetap_urut_piutang_akun_sama_periode_rekening():
     assert [b["code"] for b in run(KT.rencana_tx_manual(_C([a], periode=tutup), T, a["id"], _tx(), True))["blocks"]] == ["PERIODE_TERTUTUP"]
     r = run(KT.rencana_tx_manual(_C([]), T, uuid4(), _tx(), True))
     assert [(b["code"], b["status"]) for b in r["blocks"]] == [("REKENING_TIDAK_DITEMUKAN", 404)]
+
+
+def test_akun_lawan_rekening_kas_bank_ditolak_422_pesan_indonesia():
+    """23 Nov 2026: Uang Masuk/Keluar dgn akun lawan = CoA rekening kas/bank LAIN -> blok 422 'pakai Transfer' (kasus grapgrap Kas Operasional)."""
+    a = _akun("bank", 10 ** 9, coa=BANK)
+    for arah in ("in", "out"):
+        r = run(KT.rencana_tx_manual(_C([a], lawan_bank=[LAWAN]), T, a["id"], _tx(arah, 5000), True))
+        assert [(b["code"], b["status"]) for b in r["blocks"]] == [("AKUN_LAWAN_REKENING_KAS_BANK", 422)]
+        assert r["blocks"][0]["message"] == "Akun lawan adalah rekening kas/bank — pakai Transfer."
+    with pytest.raises(GalatBerkode) as e:
+        run(KT.rencana_tx_manual(_C([a], lawan_bank=[LAWAN]), T, a["id"], _tx("out", 5000), False))
+    assert e.value.status_code == 422
+    # lawan biasa (bukan rekening) tetap lolos
+    assert run(KT.rencana_tx_manual(_C([a]), T, a["id"], _tx("out", 5000), True))["blocks"] == []
 
 
 # ---------------------------------------------------------------- hitung fisik

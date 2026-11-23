@@ -928,6 +928,20 @@ async def delete_bank_account(request: Request, bank_account_id: UUID):
 # =============================================================================
 
 
+_LABEL_TIPE = {"deposit": "Setoran", "withdrawal": "Penarikan", "transfer_in": "Transfer Masuk", "transfer_out": "Transfer Keluar"}
+
+
+def _penanda_mutasi(row) -> dict:
+    """Kontrak mutasi lama (23 Nov 2026): source, journal_id, is_void_reversal (baris pembalik batal), label_sumber (teks server)."""
+    jurnal = row["source"] == "jurnal_lawan"
+    ref = row["reference_number"] or ""
+    pembalik = (not jurnal) and (str(row["description"] or "").startswith("[VOID]")
+                                 or row["reference_type"] == "transfer_void" or ref.startswith("VOID-"))
+    label = "Jurnal" if jurnal else "Pembalik batal" if pembalik else _LABEL_TIPE.get(row["transaction_type"], row["transaction_type"])
+    return {"source": row["source"], "journal_id": str(row["journal_id"]) if row["journal_id"] else None,
+            "is_void_reversal": pembalik, "label_sumber": label}
+
+
 @router.get(
     "/{bank_account_id}/transactions", response_model=BankTransactionListResponse
 )
@@ -974,12 +988,19 @@ async def get_bank_transactions(
                 params.append(transaction_type)
                 param_idx += 1
 
+            # Fix 1 (23 Nov): jurnal POSTED pada CoA rekening tanpa baris bank_transactions di rekening ini (mis. Uang Keluar rekening lain
+            # dgn akun lawan CoA kas ini) ikut Mutasi supaya saldo akhir = Σ jurnal (Law 1). Saringan tipe/rekon/tanpa_batal = hanya baris bt.
+            jl_conds = []
+            jurnal_ikut = is_reconciled is None and (not transaction_type or transaction_type == "jurnal_lawan")
+
             if date_from:
+                jl_conds.append(f"je.journal_date >= ${param_idx}")
                 conditions.append(f"bt.transaction_date >= ${param_idx}")
                 params.append(date_from)
                 param_idx += 1
 
             if date_to:
+                jl_conds.append(f"je.journal_date <= ${param_idx}")
                 conditions.append(f"bt.transaction_date <= ${param_idx}")
                 params.append(date_to)
                 param_idx += 1
@@ -996,12 +1017,6 @@ async def get_bank_transactions(
 
             where_clause = " AND ".join(conditions)
 
-            # Count total
-            count_query = (
-                f"SELECT COUNT(*) FROM bank_transactions bt WHERE {where_clause}"
-            )
-            total = await conn.fetchval(count_query, *params)
-
             # Law 1: Journal-derived amounts via LEFT JOIN to journal_lines
             # If bt.journal_id exists, use journal-derived amount; otherwise fallback to bt.amount
             # Running balance computed as window function over journal-derived amounts
@@ -1012,7 +1027,22 @@ async def get_bank_transactions(
             params.append(ctx["tenant_id"])
             param_idx += 1
 
-            query = f"""
+            jl_where = " AND ".join(jl_conds + [
+                f"jl.account_id = {coa_param}", "je.status = 'POSTED'", f"je.tenant_id = {tenant_param}",
+                "NOT EXISTS (SELECT 1 FROM bank_transactions bx WHERE bx.journal_id = je.id AND bx.bank_account_id = $1)"])
+            jurnal_sql = f"""
+                    UNION ALL
+                    SELECT je.id, je.journal_date, 'jurnal_lawan'::varchar, SUM(jl.debit - jl.credit)::numeric,
+                           je.description::text, NULL::varchar, NULL::varchar, NULL::uuid, NULL::varchar,
+                           NULL::uuid, NULL::timestamptz, NULL::text,
+                           false, je.created_at, NULL::varchar, 'POSTED'::varchar,
+                           je.journal_number::text, je.source_type::text,
+                           NULL::varchar, NULL::varchar, NULL::varchar, NULL::varchar,
+                           'jurnal_lawan'::text, je.id
+                    FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
+                    WHERE {jl_where}
+                    GROUP BY je.id, je.journal_date, je.description, je.created_at, je.journal_number, je.source_type""" if jurnal_ikut else ""
+            cte_sql = f"""
                 WITH txn_data AS (
                     SELECT bt.id, bt.transaction_date, bt.transaction_type,
                            -- Law 1: prefer journal-derived amount, fallback for unreconciled imports
@@ -1031,7 +1061,8 @@ async def get_bank_transactions(
                            c.nama AS customer_name,
                            -- Enrich: vendor name from bills via reference_id
                            b.invoice_number AS related_bill_number,
-                           v.name AS vendor_name
+                           v.name AS vendor_name,
+                           'bank_transaction'::text AS source, bt.journal_id AS journal_id
                     FROM bank_transactions bt
                     LEFT JOIN bank_accounts ba_coa ON ba_coa.id = bt.bank_account_id
                     LEFT JOIN journal_lines jl ON jl.journal_id = bt.journal_id AND jl.account_id = {coa_param}
@@ -1041,8 +1072,10 @@ async def get_bank_transactions(
                     LEFT JOIN bills b ON bt.reference_type = 'bill' AND b.id = bt.reference_id
                     LEFT JOIN vendors v ON b.vendor_id = v.id
                     LEFT JOIN bank_transfers trf ON bt.reference_type = 'transfer' AND trf.id = bt.reference_id AND trf.tenant_id = {tenant_param}
-                    WHERE {where_clause}
-                )
+                    WHERE {where_clause}{jurnal_sql}
+                )"""
+            total = await conn.fetchval(cte_sql + " SELECT COUNT(*) FROM txn_data", *params)
+            query = cte_sql + f"""
                 SELECT *,
                     SUM(amount) OVER (ORDER BY transaction_date ASC, created_at ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_balance
                 FROM txn_data
@@ -1078,6 +1111,7 @@ async def get_bank_transactions(
                     "voided_by": str(row["voided_by"]) if row["voided_by"] else None,
                     "voided_at": row["voided_at"].isoformat() if row["voided_at"] else None,
                     "void_reason": row["void_reason"],
+                    **_penanda_mutasi(row),
                 }
                 for row in rows
             ]

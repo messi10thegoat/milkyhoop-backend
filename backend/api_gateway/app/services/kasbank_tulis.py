@@ -52,6 +52,7 @@ async def akun(conn, tid: str, ba_id, per_tanggal=None):
     return await conn.fetchrow(SQL_AKUN, ba_id, tid, per_tanggal)
 
 
+SQL_REKENING_DARI_COA = "SELECT 1 AS ada FROM bank_accounts WHERE coa_id = $1 AND tenant_id = $2 LIMIT 1"
 SQL_AKUN_COA = SQL_AKUN.replace("WHERE ba.id = $1 AND ba.tenant_id = $2", "WHERE ba.coa_id = $1 AND ba.tenant_id = $2 AND ba.is_active = true")
 
 
@@ -140,6 +141,10 @@ async def rencana_tx_manual(conn, tid: str, ba_id, body, pratinjau: bool) -> dic
         # Dr X / Cr X pada akun yang sama seimbang TAPI ekonomis nol -> bank_transaction tanpa gerak saldo (kasus MT-C4057F2C).
         if str(c["id"]) == str(a["coa_id"]):
             bl.galat("AKUN_LAWAN_SAMA", 400, "Akun lawan tidak boleh sama dengan rekening ini. Pilih akun lawan, misalnya Modal Pemilik.")
+        elif await conn.fetchrow(SQL_REKENING_DARI_COA, c["id"], tid):
+            # Mutasi hanya memuat baris bank_transactions rekening itu: lawan kas/bank = kas pindah tanpa baris di rekening lawan
+            # (saldo header ≠ Mutasi; kasus grapgrap 22 Nov: setoran modal kas dicatat dua kali). Pola Accurate: pindah kas = Transfer.
+            bl.galat("AKUN_LAWAN_REKENING_KAS_BANK", 422, "Akun lawan adalah rekening kas/bank — pakai Transfer.")
     await periode_terbuka(conn, tid, body.transaction_date, bl)
     jumlah = _d(body.amount)
     if body.direction == "out":

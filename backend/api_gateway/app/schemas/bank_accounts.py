@@ -234,6 +234,11 @@ class BankTransactionListItem(BaseModel):
     voided_by: Optional[str] = None
     voided_at: Optional[str] = None
     void_reason: Optional[str] = None
+    # 23 Nov 2026 (kontrak mutasi lama): penanda tegas + label teks dari server; source 'bank_transaction' | 'jurnal_lawan'
+    source: str = "bank_transaction"
+    journal_id: Optional[str] = None
+    is_void_reversal: bool = False
+    label_sumber: Optional[str] = None
 
 
 class BankAccountBalanceInfo(BaseModel):
