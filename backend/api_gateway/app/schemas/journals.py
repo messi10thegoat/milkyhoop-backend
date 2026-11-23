@@ -91,7 +91,9 @@ class CreateJournalRequest(BaseModel):
 class ReverseJournalRequest(BaseModel):
     """Request body for reversing a journal entry."""
 
-    reversal_date: date = Field(..., description="Date for the reversal entry")
+    reversal_date: Optional[date] = Field(
+        None, description="Date for the reversal entry; kosong = tanggal jurnal asli (pola Accurate, BUG-354)"
+    )
     reason: str = Field(
         ..., min_length=1, max_length=500, description="Reason for reversal"
     )
