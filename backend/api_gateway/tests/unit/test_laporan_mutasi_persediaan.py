@@ -53,7 +53,7 @@ def test_baris_total_teks_dan_urutan():
     h = jalan(dasar(gl=("1000", "990")))
     assert [x["kode"] for x in h["baris"]] == ["A-1", "B-1"] and h["jumlah_minus"] == 1 and h["baris"][1]["minus"] is True
     x = h["baris"][0]
-    assert x["masuk"] == {"qty": 2.5, "qty_text": "2,50", "nilai": 250.0, "nilai_text": "250"} and x["awal"]["nilai_text"] == "1.000"
+    assert x["masuk"] == {"qty": 2.5, "qty_text": "2,5", "nilai": 250.0, "nilai_text": "250"} and x["awal"]["nilai_text"] == "1.000"
     assert {k: v["nilai"] for k, v in h["total"].items()} == {"awal": 1000, "masuk": 290, "keluar": 350, "pindah": 0, "revaluasi": 50, "akhir": 990}
     assert h["baris"][1]["akhir"]["nilai_text"] == "(10)" and h["dari"] == "2026-11-01" and h["sampai"] == "2026-11-24" and h["periode_text"]
 

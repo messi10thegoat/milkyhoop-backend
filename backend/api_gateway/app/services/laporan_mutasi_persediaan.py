@@ -14,6 +14,7 @@ from typing import Optional
 
 from . import gudang_transit as GT
 from . import teks_galat as tg
+from . import teks_laporan_persediaan as TLP
 from .laporan_nilai_persediaan import BATAS_BARIS, SEN, SQL_BARANG, LaporanTerlaluBesar, _d, _r2
 
 KOLOM = ("awal", "masuk", "keluar", "pindah", "revaluasi", "akhir")
@@ -51,10 +52,6 @@ SQL_GL = ("SELECT COALESCE(SUM(jl.debit - jl.credit) FILTER (WHERE je.journal_da
           "FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id "
           "WHERE je.tenant_id = $1 AND jl.account_id = $2 AND je.journal_date <= $4 AND je.status = 'POSTED'")
 SQL_GUDANG = "SELECT id, name, is_system FROM warehouses WHERE tenant_id = $1 AND id = ANY($2::uuid[])"
-
-
-def _qty_text(q: Decimal) -> str:
-    return tg.angka_laporan(q, 0) if q == q.to_integral_value() else tg.angka_laporan(q, 2 if q == q.quantize(SEN) else 4)
 
 
 def rekonsiliasi(ledger, gl, presisi: int) -> dict:
@@ -106,7 +103,7 @@ async def muat_mutasi_persediaan(conn, tid: str, dari: date, sampai: date, presi
                 "kategori": b["kategori"] if b else None, "satuan": b["satuan"] if b else None, "minus": _d(r["q_akhir"]) < 0}
         for k in KOLOM:
             q, n = _d(r[f"q_{k}"]), _r2(r[f"n_{k}"])
-            item[k] = {"qty": float(q), "qty_text": _qty_text(q), "nilai": float(n), "nilai_text": tg.angka_laporan(n, presisi)}
+            item[k] = {"qty": float(q), "qty_text": TLP.qty(q), "nilai": float(n), "nilai_text": tg.angka_laporan(n, presisi)}
             total[k] += n
         if per_gudang:
             g = str(r["warehouse_id"]) if r["warehouse_id"] else None
