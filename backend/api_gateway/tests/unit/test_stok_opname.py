@@ -266,7 +266,8 @@ def test_rollback_melepas_semua():
 
 
 def test_ddl_aditif_tanpa_menyentuh_data_lama():
-    assert not re.search(r"\b(UPDATE|DELETE FROM|ALTER TABLE)\b", SQL.replace("ENABLE ROW LEVEL SECURITY", ""))      # hanya CREATE baru; trigger di tabel lama = CREATE TRIGGER
+    kode = "\n".join(l for l in SQL.split("\n") if not l.lstrip().startswith("--"))
+    assert not re.search(r"(?<!DO )\bUPDATE\b|\bDELETE FROM\b|\bALTER TABLE (?!stock_opname)\w+ (?!ENABLE ROW LEVEL SECURITY)", kode)   # hanya CREATE baru (+ upsert nomor milik tabel baru); tabel lama tak diubah
 
 
 # ----------------------------------------------------------------------------- Iron Laws pada penulis
