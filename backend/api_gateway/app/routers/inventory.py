@@ -692,6 +692,24 @@ async def get_low_stock_alerts(
         raise HTTPException(status_code=500, detail="Failed to fetch low stock alerts")
 
 
+@router.get("/reorder")
+async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=500)):
+    """Daftar pesan ulang dari products.reorder_level (services/reorder_persediaan: stok ledger + dipesan PO terbuka -> usulan beli). Server-hitung."""
+    from ..services import reorder_persediaan as RP
+    from fastapi.encoders import jsonable_encoder
+    if not hasattr(request.state, "user") or not request.state.user:
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
+    tenant_id = request.state.user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
+    conn = await get_db_connection()
+    try:
+        hasil = await RP.daftar(conn, tenant_id, limit)
+        return jsonable_encoder({"success": True, "data": hasil})
+    finally:
+        await conn.close()
+
+
 @router.get("/categories", response_model=CategoryListResponse)
 async def get_categories(request: Request):
     """
@@ -766,6 +784,8 @@ async def get_inventory_summary(request: Request):
                 WHERE p.tenant_id = $1 AND COALESCE(p.track_inventory, true) = true
             """
             row = await conn.fetchrow(query, tenant_id)
+            from ..services import reorder_persediaan as RP
+            reorder_perlu = (await RP.daftar(conn, tenant_id))["jumlah_perlu_pesan"]
 
             logger.info(
                 f"Inventory summary: tenant={tenant_id}, total={row['total_products']}"
@@ -777,7 +797,7 @@ async def get_inventory_summary(request: Request):
                 menipis_count=row["menipis_count"] or 0,
                 habis_count=row["habis_count"] or 0,
                 aset_count=0,  # Placeholder - different table
-                reorder_count=0,  # Placeholder - not implemented yet
+                reorder_count=reorder_perlu,  # barang yang perlu dipesan ulang (services/reorder_persediaan, penentu SAMA dgn GET /reorder)
             )
 
         finally:
