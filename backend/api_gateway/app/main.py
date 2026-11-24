@@ -61,6 +61,7 @@ from .routers import storage_locations
 from .routers import bank_accounts
 from .routers import bank_transfers
 from .routers import stock_adjustments
+from .routers import stock_opnames
 from .routers import customer_deposits
 from .routers import receive_payments
 from .routers import purchase_orders
@@ -342,6 +343,19 @@ from .services.galat_berkode import GalatBerkode as _GalatBerkode  # noqa: E402
 @app.exception_handler(_GalatBerkode)
 async def _galat_berkode_handler(request, exc):  # noqa: ANN001
     return _JSONResp(status_code=exc.status_code, content=exc.badan(), headers=exc.headers)
+
+
+import asyncpg as _asyncpg  # noqa: E402
+
+
+@app.exception_handler(_asyncpg.PostgresError)
+async def _gudang_terkunci_trigger_handler(request, exc):  # noqa: ANN001
+    """Stok Opname (V509): trigger trg_gudang_terkunci menolak gerak stok ke gudang yang sedang dihitung (SQLSTATE P0409) -> 409 berkalimat untuk jalur inline
+    lama yang tak lewat helper. Galat DB lain TIDAK diubah: dilempar ulang ke penangan 500 bawaan."""
+    if getattr(exc, "sqlstate", None) == "P0409":
+        pesan = str(exc).split("GUDANG_TERKUNCI:", 1)[-1].strip() or "Gudang sedang dihitung."
+        return _JSONResp(status_code=409, content={"detail": pesan, "code": "GUDANG_TERKUNCI", "message": pesan})
+    raise exc
 
 
 from .services.galat_berkode import GalatDetailObjek as _GalatDetailObjek  # noqa: E402
@@ -696,6 +710,13 @@ app.include_router(
     stock_adjustments.router,
     prefix="/api/stock-adjustments",
     tags=["stock-adjustments"],
+)
+
+# Stok Opname bernomor (V509; flag gelap stok_opname_v1 -- router menolak 404 bila tenant belum menyalakan)
+app.include_router(
+    stock_opnames.router,
+    prefix="/api/stock-opnames",
+    tags=["stock-opnames"],
 )
 
 # Customer Deposits router (Uang Muka Pelanggan)

@@ -1045,6 +1045,123 @@ async def post_stock_adjustment(request: Request, adjustment_id: UUID, response:
         raise HTTPException(status_code=500, detail="Failed to post stock adjustment")
 
 
+async def _tulis_void(conn, ctx, adjustment_id, r, alasan):
+    """Tulis jurnal pembalik + pembalikan gerak stok + status 'void' dari penentu `r` (SS.rencana_batal, bukan draf). DI DALAM transaksi pemanggil.
+    -> reversal_journal_id|None. SATU penulis: handler POST /{id}/void DAN Stok Opname (void opname = void SA tertaut)."""
+    sa = r["sa"]
+    hari_ini = r["hari_ini"]  # t10-tanggal-bisnis
+
+    # Create reversal journal
+    reversal_journal_id = None
+    if sa["journal_id"]:
+        reversal_journal_id = uuid_module.uuid4()
+
+        # Canonical reversal number via self-healing generator
+        # (V176): GREATEST(counter+1, anchored-actual-max+1). Mirrors
+        # sales_invoices.void_invoice -- avoids hardcoded RV-{num}
+        # collisions and keeps the JV counter in sync. chain_sequence
+        # is left NULL so the AFTER trigger (assign_hash_and_sequence)
+        # assigns max+1 atomically (Law 22 -- no (tenant,seq) collision).
+        reversal_number = await conn.fetchval(
+            "SELECT get_next_journal_number($1, $2, $3)",
+            ctx["tenant_id"],
+            "JV-REV",
+            hari_ini,  # t10-tanggal-bisnis
+        )
+        reversal_trace = str(uuid_module.uuid4())
+
+        # Step 1: INSERT reversal as DRAFT (Law 20)
+        await conn.execute(
+            """
+            INSERT INTO journal_entries (
+                id, tenant_id, journal_number, journal_date,
+                description, source_type, source_id, reversal_of_id,
+                trace_id, status, total_debit, total_credit, created_by
+            ) VALUES ($1, $2, $3, $10, $4, 'STOCK_ADJUSTMENT', $5, $6, $7, 'DRAFT', $8, $8, $9)
+        """,
+            reversal_journal_id,
+            ctx["tenant_id"],
+            reversal_number,
+            f"Void {sa['adjustment_number']} - {alasan}",
+            adjustment_id,
+            sa["journal_id"],
+            reversal_trace,
+            sa["total_value"],  # Law 25: pass Decimal directly
+            ctx["user_id"],
+            hari_ini,  # t10-tanggal-bisnis
+        )
+
+        # Step 2: INSERT reversal journal_lines dari penentu (== pratinjau): debit/kredit ditukar
+        for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
+            await conn.execute(
+                """
+                INSERT INTO journal_lines (
+                    id, journal_id, line_number, account_id, debit, credit, memo
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+                uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
+            )
+
+        # Step 3: UPDATE reversal to POSTED (Law 20)
+        await conn.execute(
+            "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
+            reversal_journal_id,
+        )
+
+        # Law 26 + Law 2: Link reversal -- set reversed_by_id (+
+        # reversed_at) on the ORIGINAL journal and leave it
+        # status='POSTED' (immutability). is_effective_journal()
+        # drops it via reversed_by_id; the reversal carries
+        # reversal_of_id. Mirrors sales_invoices.void_invoice exactly.
+        await conn.execute(
+            """
+            UPDATE journal_entries
+            SET reversed_by_id = $2, reversed_at = NOW()
+            WHERE id = $1
+        """,
+            sa["journal_id"],
+            reversal_journal_id,
+        )
+
+    # Reverse inventory changes via the canonical shared helper (milkyhoop-inventory Rule 9)
+    # BUG-212: SELALU balik gerak stok -- dokumen nilai 0 tak punya jurnal (reversal_journal_id None), tetap harus dibalik (putusan pemilik).
+    from ..services.inventory_helpers import (
+        record_inventory_reversal,
+    )
+
+    await record_inventory_reversal(
+        conn,
+        ctx["tenant_id"],
+        source_type="STOCK_ADJUSTMENT",
+        source_id=adjustment_id,
+        reversal_journal_id=reversal_journal_id,
+        created_by=ctx["user_id"],
+        reversal_date=hari_ini,  # t10-tanggal-bisnis
+        notes_prefix=f"VOID {sa['adjustment_number']}",
+        pindah_batch=False,  # BE-A: trigger trg_update_batch_stock sudah menggeser batch dari baris pembalik ber-batch_id
+    )
+    # batch yang sempat 'depleted' oleh penyesuaian dokumen ini aktif lagi bila saldonya pulih
+    await conn.execute(
+        "UPDATE item_batches SET status = 'active', updated_at = NOW() WHERE tenant_id = $1 AND status = 'depleted' AND current_quantity > 0 "
+        "AND id IN (SELECT batch_id FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 AND batch_id IS NOT NULL)",
+        ctx["tenant_id"], adjustment_id)
+
+    # Update status
+    await conn.execute(
+        """
+        UPDATE stock_adjustments
+        SET status = 'void', voided_at = NOW(),
+            voided_by = $2, voided_reason = $3, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $4
+    """,
+        adjustment_id,
+        ctx["user_id"],
+        alasan,
+        ctx["tenant_id"],
+    )
+    return reversal_journal_id
+
+
 # =============================================================================
 # VOID STOCK ADJUSTMENT
 # =============================================================================
@@ -1105,116 +1222,7 @@ async def void_stock_adjustment(
                         "data": {"id": str(adjustment_id)},
                     }, adjustment_id)
 
-                hari_ini = r["hari_ini"]  # t10-tanggal-bisnis
-
-                # Create reversal journal
-                reversal_journal_id = None
-                if sa["journal_id"]:
-                    reversal_journal_id = uuid_module.uuid4()
-
-                    # Canonical reversal number via self-healing generator
-                    # (V176): GREATEST(counter+1, anchored-actual-max+1). Mirrors
-                    # sales_invoices.void_invoice -- avoids hardcoded RV-{num}
-                    # collisions and keeps the JV counter in sync. chain_sequence
-                    # is left NULL so the AFTER trigger (assign_hash_and_sequence)
-                    # assigns max+1 atomically (Law 22 -- no (tenant,seq) collision).
-                    reversal_number = await conn.fetchval(
-                        "SELECT get_next_journal_number($1, $2, $3)",
-                        ctx["tenant_id"],
-                        "JV-REV",
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-                    reversal_trace = str(uuid_module.uuid4())
-
-                    # Step 1: INSERT reversal as DRAFT (Law 20)
-                    await conn.execute(
-                        """
-                        INSERT INTO journal_entries (
-                            id, tenant_id, journal_number, journal_date,
-                            description, source_type, source_id, reversal_of_id,
-                            trace_id, status, total_debit, total_credit, created_by
-                        ) VALUES ($1, $2, $3, $10, $4, 'STOCK_ADJUSTMENT', $5, $6, $7, 'DRAFT', $8, $8, $9)
-                    """,
-                        reversal_journal_id,
-                        ctx["tenant_id"],
-                        reversal_number,
-                        f"Void {sa['adjustment_number']} - {body.reason}",
-                        adjustment_id,
-                        sa["journal_id"],
-                        reversal_trace,
-                        sa["total_value"],  # Law 25: pass Decimal directly
-                        ctx["user_id"],
-                        hari_ini,  # t10-tanggal-bisnis
-                    )
-
-                    # Step 2: INSERT reversal journal_lines dari penentu (== pratinjau): debit/kredit ditukar
-                    for idx, (_akun, _debit, _kredit, _memo) in enumerate(r["baris"], 1):
-                        await conn.execute(
-                            """
-                            INSERT INTO journal_lines (
-                                id, journal_id, line_number, account_id, debit, credit, memo
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                            uuid_module.uuid4(), reversal_journal_id, idx, _akun, _debit, _kredit, _memo,
-                        )
-
-                    # Step 3: UPDATE reversal to POSTED (Law 20)
-                    await conn.execute(
-                        "UPDATE journal_entries SET status = 'POSTED' WHERE id = $1",
-                        reversal_journal_id,
-                    )
-
-                    # Law 26 + Law 2: Link reversal -- set reversed_by_id (+
-                    # reversed_at) on the ORIGINAL journal and leave it
-                    # status='POSTED' (immutability). is_effective_journal()
-                    # drops it via reversed_by_id; the reversal carries
-                    # reversal_of_id. Mirrors sales_invoices.void_invoice exactly.
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET reversed_by_id = $2, reversed_at = NOW()
-                        WHERE id = $1
-                    """,
-                        sa["journal_id"],
-                        reversal_journal_id,
-                    )
-
-                # Reverse inventory changes via the canonical shared helper (milkyhoop-inventory Rule 9)
-                # BUG-212: SELALU balik gerak stok -- dokumen nilai 0 tak punya jurnal (reversal_journal_id None), tetap harus dibalik (putusan pemilik).
-                from ..services.inventory_helpers import (
-                    record_inventory_reversal,
-                )
-
-                await record_inventory_reversal(
-                    conn,
-                    ctx["tenant_id"],
-                    source_type="STOCK_ADJUSTMENT",
-                    source_id=adjustment_id,
-                    reversal_journal_id=reversal_journal_id,
-                    created_by=ctx["user_id"],
-                    reversal_date=hari_ini,  # t10-tanggal-bisnis
-                    notes_prefix=f"VOID {sa['adjustment_number']}",
-                    pindah_batch=False,  # BE-A: trigger trg_update_batch_stock sudah menggeser batch dari baris pembalik ber-batch_id
-                )
-                # batch yang sempat 'depleted' oleh penyesuaian dokumen ini aktif lagi bila saldonya pulih
-                await conn.execute(
-                    "UPDATE item_batches SET status = 'active', updated_at = NOW() WHERE tenant_id = $1 AND status = 'depleted' AND current_quantity > 0 "
-                    "AND id IN (SELECT batch_id FROM inventory_ledger WHERE tenant_id = $1 AND source_type = 'STOCK_ADJUSTMENT' AND source_id = $2 AND batch_id IS NOT NULL)",
-                    ctx["tenant_id"], adjustment_id)
-
-                # Update status
-                await conn.execute(
-                    """
-                    UPDATE stock_adjustments
-                    SET status = 'void', voided_at = NOW(),
-                        voided_by = $2, voided_reason = $3, updated_at = NOW()
-                    WHERE id = $1 AND tenant_id = $4
-                """,
-                    adjustment_id,
-                    ctx["user_id"],
-                    body.reason,
-                    ctx["tenant_id"],
-                )
+                reversal_journal_id = await _tulis_void(conn, ctx, adjustment_id, r, body.reason)
 
                 logger.info(f"Stock adjustment voided: {adjustment_id}")
 

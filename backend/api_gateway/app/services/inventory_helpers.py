@@ -98,6 +98,21 @@ async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
     }
 
 
+async def assert_gudang_tidak_terkunci(conn, tenant_id: str, warehouse_id, source_type: Optional[str] = None, source_id=None) -> None:
+    """STOK OPNAME (V509, putusan pemilik 24 Nov 2026): gudang yang sedang DIHITUNG (stock_opnames.status='hitung') menolak SEMUA gerakan stok
+    baru (juga pembalik/void), kecuali gerakan Penyesuaian Stok milik opname itu sendiri. Lapis 1 = pesan 409 rapi sebelum menulis;
+    lapis 2 = trigger DB trg_gudang_terkunci (jaring untuk jalur inline lama yang tak lewat helper). Predikat SAMA dengan trigger."""
+    if warehouse_id is None:
+        return
+    nomor = await conn.fetchval(
+        "SELECT o.opname_number FROM stock_opnames o WHERE o.tenant_id = $1 AND o.warehouse_id = $2 AND o.status = 'hitung' "
+        "AND NOT ($3::text = 'STOCK_ADJUSTMENT' AND o.adjustment_id IS NOT NULL AND o.adjustment_id::text = $4::text) LIMIT 1",
+        tenant_id, warehouse_id, source_type, str(source_id) if source_id is not None else None)
+    if nomor:
+        from .galat_berkode import GalatBerkode
+        raise GalatBerkode(409, "GUDANG_TERKUNCI", f"Gudang sedang dihitung ({nomor}); selesaikan atau batalkan opname dulu.")
+
+
 async def record_inventory_outbound(
     conn,
     tenant_id: str,
@@ -144,6 +159,8 @@ async def record_inventory_outbound(
     # Ini SATU tempat yang menutup jalur tulis BERIKUTNYA. Pemanggil yang tak
     # tahu harus mengisi gudang kini MENDENGARNYA, bukan menulis kekosongan
     # dengan tenang.
+    await assert_gudang_tidak_terkunci(conn, tenant_id, warehouse_id, source_type, source_id)  # Stok Opname: gudang dihitung = tolak
+
     if warehouse_id is None:
         raise ValueError(
             f"warehouse_id wajib untuk gerakan persediaan "
@@ -365,6 +382,8 @@ async def record_inventory_inbound(
     # Ini SATU tempat yang menutup jalur tulis BERIKUTNYA. Pemanggil yang tak
     # tahu harus mengisi gudang kini MENDENGARNYA, bukan menulis kekosongan
     # dengan tenang.
+    await assert_gudang_tidak_terkunci(conn, tenant_id, warehouse_id, source_type, source_id)  # Stok Opname: gudang dihitung = tolak
+
     if warehouse_id is None:
         raise ValueError(
             f"warehouse_id wajib untuk gerakan persediaan "
@@ -618,6 +637,7 @@ async def record_inventory_reversal(
     results = []
 
     for entry in original_entries:
+        await assert_gudang_tidak_terkunci(conn, tenant_id, entry["warehouse_id"], void_source_type, source_id)  # Stok Opname: void ke gudang dihitung = tolak
         product_id = entry["product_id"]
         orig_qty_in = Decimal(str(entry["quantity_in"] or 0))
         orig_qty_out = Decimal(str(entry["quantity_out"] or 0))

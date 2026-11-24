@@ -870,3 +870,15 @@ POST /api/customer-categories
 PATCH /api/customer-categories/{kategori_id}
 DELETE /api/customer-categories/{kategori_id}
 POST /api/customer-categories/{kategori_id}/delete/preview
+DELETE /api/stock-opnames/{opname_id}
+POST /api/stock-opnames
+POST /api/stock-opnames/preview
+POST /api/stock-opnames/{opname_id}/mulai
+POST /api/stock-opnames/{opname_id}/mulai/preview
+POST /api/stock-opnames/{opname_id}/post
+POST /api/stock-opnames/{opname_id}/post/preview
+POST /api/stock-opnames/{opname_id}/batal
+POST /api/stock-opnames/{opname_id}/batal/preview
+POST /api/stock-opnames/{opname_id}/void
+POST /api/stock-opnames/{opname_id}/void/preview
+PUT /api/stock-opnames/{opname_id}/baris

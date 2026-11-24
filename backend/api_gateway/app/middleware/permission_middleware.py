@@ -679,6 +679,14 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/stock-adjustments", ["GET"], "stock_adjust", "R"),
     (r"^/api/stock-adjustments", ["POST"], "stock_adjust", "C"),
     (r"^/api/stock-adjustments/[^/]+", ["GET"], "stock_adjust", "R"),
+    # Stok Opname (V509): izin modul STOCK_ADJUST. Posting(+pratinjau) P, void(+pratinjau) V, mulai/batal/isi hitung/ubah U, hapus D; buat C, baca R. Pola khusus DI ATAS yang generik.
+    (r"^/api/stock-opnames/[^/]+/(post|post/preview)$", ["POST"], "stock_adjust", "P"),
+    (r"^/api/stock-opnames/[^/]+/(void|void/preview)$", ["POST"], "stock_adjust", "V"),
+    (r"^/api/stock-opnames/[^/]+/(mulai|mulai/preview|batal|batal/preview)$", ["POST"], "stock_adjust", "U"),
+    (r"^/api/stock-opnames/[^/]+/baris$", ["PUT"], "stock_adjust", "U"),
+    (r"^/api/stock-opnames/[^/]+$", ["DELETE"], "stock_adjust", "D"),
+    (r"^/api/stock-opnames", ["GET"], "stock_adjust", "R"),
+    (r"^/api/stock-opnames", ["POST"], "stock_adjust", "C"),
     # Warehouses
     (r"^/api/warehouses/preview$", ["POST"], "warehouse", "C"),  # G3: pratinjau BUAT
     (r"^/api/warehouses/[^/]+/(edit|status)/preview$", ["POST"], "warehouse", "U"),  # G3: pratinjau ubah/status
