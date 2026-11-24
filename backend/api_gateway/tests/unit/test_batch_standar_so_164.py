@@ -390,7 +390,7 @@ def test_pratinjau_status_bentuk_g3_dan_penulis_memakai_rencana_sama(monkeypatch
     assert set(d) == {"ok", "blocks", "peringatan", "rencana", "payload"} and d["payload"] == {"status": "quarantine"}
     src_patch, src_post = inspect.getsource(IB.update_item_batch), inspect.getsource(IB.set_batch_status)
     assert "BA.rencana_ubah(" in src_patch and "Blok(False)" in src_patch                # penulis PATCH: rencana yang SAMA (rencana_ubah memanggil rencana_status untuk status; Batch B)
-    assert "BA.rencana_status(" in inspect.getsource(BA.rencana_ubah)
+    assert "await rencana_status(" in inspect.getsource(BA.rencana_ubah)
     assert "update_item_batch(" in src_post                                                # POST /status = PATCH status (satu penulis)
 
 
