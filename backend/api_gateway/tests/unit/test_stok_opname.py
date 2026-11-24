@@ -320,3 +320,19 @@ def test_izin_rute_dipetakan_ke_modul_stock_adjust():
                  '"stock_adjust", "U"', '^/api/stock-opnames", ["GET"], "stock_adjust", "R"', '^/api/stock-opnames", ["POST"], "stock_adjust", "C"'):
         assert frag in mw
     assert mw.index("/api/stock-opnames/[^/]+/(post|post/preview)") < mw.index('^/api/stock-opnames", ["POST"]')    # khusus di atas generik
+
+
+def test_posting_memeriksa_periode_tanggal_opname(siapkan, monkeypatch):
+    siapkan(opname(), [garis(P1, D("1"), D("1"))], {P1: 1})
+    dipanggil = []
+    async def periode(conn, tid, tgl, bl): dipanggil.append(tgl)
+    monkeypatch.setattr(SS, "periode", periode)
+    jalan(SO.rencana_posting(None, TID, OID, Blok(False)))
+    assert dipanggil == [date(2026, 11, 24)]                                   # Law 5: periode TANGGAL opname harus terbuka
+
+
+def test_handler_main_menerjemahkan_trigger_p0409_ke_409_dan_meneruskan_galat_db_lain():
+    m = (DISINI.parents[1] / "app" / "main.py").read_text()
+    blok = m[m.index("async def _gudang_terkunci_trigger_handler"):]
+    blok = blok[:blok.index("from .services.galat_berkode import GalatDetailObjek")]
+    assert 'sqlstate", None) == "P0409"' in blok and "status_code=409" in blok and '"GUDANG_TERKUNCI"' in blok and "raise exc" in blok
