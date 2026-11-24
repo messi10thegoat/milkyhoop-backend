@@ -53,6 +53,8 @@ class Kon:
         return None
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         self.sql.append(sql)
         if "journal_entries" in sql and "EXISTS" in sql:
             return self.berjalan
@@ -142,6 +144,8 @@ class Tulis:
     async def fetchrow(self, sql, *a): return None
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         self.fv.append((sql, a))
         if "SQL_SUDAH" in sql or ("EXISTS" in sql and "journal_entries" in sql): return False
         if "COUNT(*)" in sql: return 0

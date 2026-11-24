@@ -38,6 +38,9 @@ class Kon:
         return [{"id": uuid.uuid4(), "product_id": uuid.uuid4(), "product_code": "P", "product_name": "Minyak", "quantity_in": D("10"), "quantity_out": D("0"),
                  "unit_cost": D("1000"), "total_cost": D("10000"), "warehouse_id": uuid.uuid4(), "source_number": "BILL-1", "batch_id": uuid.uuid4()}]
 
+    async def fetchval(self, sql, *a):
+        return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
+
     async def execute(self, sql, *a):
         self.exe.append(sql)
         return "UPDATE 1"

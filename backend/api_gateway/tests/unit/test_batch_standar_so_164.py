@@ -97,6 +97,8 @@ class Kon:
         raise AssertionError(sql[:80])
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         if "FROM batch_warehouse_stock" in sql:
             return self.stok_batch
         if "FROM inventory_ledger" in sql:
@@ -285,6 +287,8 @@ class KonDaftar(Kon):
         self.sql = []
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         self.sql.append((sql, a))
         return 0
 

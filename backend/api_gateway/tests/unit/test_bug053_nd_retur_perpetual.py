@@ -91,6 +91,8 @@ class _KH:
         self.exec = []
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         return D(10) if "SUM(quantity_in - quantity_out)" in sql else D("33.33")
 
     async def execute(self, sql, *a):
