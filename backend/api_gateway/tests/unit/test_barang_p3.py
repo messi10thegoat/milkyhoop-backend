@@ -255,3 +255,12 @@ def test_ubah_kunci_idempotensi_dan_pratinjau_memakai_penentu_konversi_dan_dupli
 def test_bulk_status_wajib_kunci_idempotensi():
     src = BULK.read_text()
     assert "if not kunci:" in src and "BULK_KUNCI_WAJIB" in src.split("if not kunci:", 1)[1][:200]
+
+
+def test_izin_duplikat_barang_adalah_C_bukan_P():
+    """Duplikat membuat barang BARU -> izin C (create), pratinjau = huruf tulisnya. Dulu 'P' (sapuan izin 14 Sep: P = penyesuaian stok barang) -> peran
+    pembuat barang (C) ditolak, peran penyesuai stok (P) justru boleh menggandakan barang."""
+    mw = MW.read_text()
+    assert r'(r"^/api/items/[^/]+/duplicate$", ["POST"], "item", "C")' in mw
+    assert r'(r"^/api/items/[^/]+/duplicate/preview$", ["POST"], "item", "C")' in mw
+    assert r'duplicate$", ["POST"], "item", "P"' not in mw and r'duplicate/preview$", ["POST"], "item", "P"' not in mw

@@ -841,9 +841,9 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/[^/]+/status/preview$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/edit/preview$", ["POST"], "item", "U"),
     (r"^/api/items/[^/]+/delete/preview$", ["POST"], "item", "D"),
-    (r"^/api/items/[^/]+/duplicate/preview$", ["POST"], "item", "P"),
+    (r"^/api/items/[^/]+/duplicate/preview$", ["POST"], "item", "C"),
     (r"^/api/items/categories/delete/preview$", ["POST"], "item", "D"),
-    (r"^/api/items/[^/]+/duplicate$", ["POST"], "item", "P"),
+    (r"^/api/items/[^/]+/duplicate$", ["POST"], "item", "C"),  # duplikat = membuat barang baru: izin C (dulu P dari sapuan izin 14 Sep; P = izin penyesuaian stok barang)
     (r"^/api/items/[^/]+/status$", ["PATCH"], "item", "U"),
     (r"^/api/items/[^/]+/stock-adjustment$", ["POST"], "item", "P"),
     (r"^/api/items/[^/]+/stock-transfer$", ["POST"], "item", "P"),
