@@ -21,6 +21,7 @@ def jalan(c):
     (3, 10, 0, "7"), (3, 10, 4, "3"), (3, 10, 7, "0"), (3, 10, 20, "0"), (10, 10, 0, "0"),
     (-2, 10, 0, "12"),          # stok negatif (ledger jujur) menambah kekurangan
     (5, 0, 0, "0"), (5, None, 0, "0"), (0, 2.5, 0.5, "2"),
+    (-2, 0, 0, "0"),            # tanpa batas minimum = tidak dipantau, sekalipun stok negatif
 ])
 def test_usulan_beli(stok, minimum, dipesan, harap):
     assert RP.usulan_beli(stok, minimum, dipesan) == D(harap)
