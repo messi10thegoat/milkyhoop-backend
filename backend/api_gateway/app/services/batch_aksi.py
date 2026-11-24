@@ -226,7 +226,7 @@ def _teks(v, tanggal: bool) -> str:
 
 async def pemakai_batch(conn, tid: str, b) -> int:
     """Jumlah rujukan ke batch ini (baris tabel rujukan + penerimaan asal bill/PO). >0 = nomor batch terkunci."""
-    n = 1 if (b["bill_id"] or b["purchase_order_id"]) else 0
+    n = 1 if (b.get("bill_id") or b.get("purchase_order_id")) else 0
     for t in TABEL_RUJUKAN_BATCH:
         n += int(await conn.fetchval(f"SELECT count(*) FROM {t} WHERE batch_id = $1", b["id"]) or 0)
     return n
@@ -252,9 +252,9 @@ async def rencana_ubah(conn, tid: str, batch_id, body, bl, hari_ini: date, kunci
             if not baru:
                 bl.galat("NOMOR_BATCH_KOSONG", 422, "Nomor batch tidak boleh kosong.")
                 continue
-        if baru != b[f]:
+        if baru != b.get(f):
             tgl = f in ("manufacture_date", "expiry_date")
-            perubahan.append({"field": f, "label": LABEL_UBAH[f], "sebelum_text": _teks(b[f], tgl), "sesudah_text": _teks(baru, tgl), "_baru": baru})
+            perubahan.append({"field": f, "label": LABEL_UBAH[f], "sebelum_text": _teks(b.get(f), tgl), "sesudah_text": _teks(baru, tgl), "_baru": baru})
     ganti = {x["field"]: x["_baru"] for x in perubahan}
     if "batch_number" in ganti:
         if await conn.fetchval("SELECT 1 FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3 AND id <> $4",
@@ -265,7 +265,7 @@ async def rencana_ubah(conn, tid: str, batch_id, body, bl, hari_ini: date, kunci
             if n:
                 bl.galat("NOMOR_BATCH_TERPAKAI", 409,
                          f"Batch {nomor_lama} sudah punya gerakan atau dirujuk dokumen, jadi nomornya tidak bisa diganti. Tanggal dan mutu masih bisa diubah.")
-    prod, kedal = ganti.get("manufacture_date", b["manufacture_date"]), ganti.get("expiry_date", b["expiry_date"])
+    prod, kedal = ganti.get("manufacture_date", b.get("manufacture_date")), ganti.get("expiry_date", b.get("expiry_date"))
     if prod and kedal and kedal < prod and ("manufacture_date" in ganti or "expiry_date" in ganti):
         bl.galat("TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI", 422,
                  f"Tanggal kedaluwarsa ({tgl_text(kedal)}) tidak boleh sebelum tanggal produksi ({tgl_text(prod)}).")

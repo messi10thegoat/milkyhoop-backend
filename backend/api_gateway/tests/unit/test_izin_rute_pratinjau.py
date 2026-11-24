@@ -23,6 +23,8 @@ INVENTARIS = DISINI / "inventaris_rute_tulis.txt"
 
 # pratinjau -> rute tulis yang benar-benar dijalankan, bila bukan "jalur tanpa /preview"
 KHUSUS = {
+    # Batch B: pratinjau ubah batch -> PATCH /item-batches/{id} (penentu SAMA: batch_aksi.rencana_ubah; izin item_batch U)
+    "POST /api/item-batches/{batch_id}/ubah/preview": "PATCH /api/item-batches/{batch_id}",
     # BUG-338A pasca: pratinjau hapus kategori pelanggan -> DELETE /customer-categories/{id} (penentu SAMA: kategori_pelanggan.rencana_hapus; izin customer D)
     "POST /api/customer-categories/{kategori_id}/delete/preview": "DELETE /api/customer-categories/{kategori_id}",
     # Biaya B7 (gelombang 1): pratinjau hapus draf -> DELETE /expenses/{id} (penentu SAMA: biaya_daftar.blok_hapus; izin expense D)
