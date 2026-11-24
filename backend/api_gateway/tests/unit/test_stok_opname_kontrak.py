@@ -132,4 +132,4 @@ def test_daftar_detail_dan_post_preview_membawa_medan_kontrak():
 
 def test_teks_memakai_minus_unicode_dari_penentu_bersama():
     src = (APP / "services" / "stok_opname_tampil.py").read_text()
-    assert "SS.teks_bertanda" in src and "SS.nilai_bertanda" in src and '"\\u2212' in src
+    assert "SS.teks_bertanda" in src and "SS.nilai_bertanda" in src and MINUS in src
