@@ -922,6 +922,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/proformas", ["POST"], "proforma", "C"),
     (r"^/api/proformas", ["PUT", "PATCH"], "proforma", "U"),
     (r"^/api/proformas", ["DELETE"], "proforma", "D"),
+    (r"^/api/item-batches/[^/]+/ubah/preview$", ["POST"], "item_batch", "U"),  # Batch B: pratinjau ubah = huruf PATCH (di atas pola POST generik C)
     (r"^/api/item-batches", ["POST"], "item_batch", "C"),
     (r"^/api/item-batches", ["PUT", "PATCH"], "item_batch", "U"),
     (r"^/api/item-batches", ["DELETE"], "item_batch", "D"),

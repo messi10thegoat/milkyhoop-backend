@@ -133,7 +133,9 @@ STATUS_KE_KUNCI = {"active": "aktif", "expired": "kedaluwarsa", "depleted": "hab
 KUNCI_KE_STATUS = {"aktif": "active", "kedaluwarsa": "expired", "habis": "depleted", "karantina": "quarantine"}
 KODE_FIELD = {"BATCH_STOK_TIDAK_CUKUP": "quantity_change", "STOK_TIDAK_CUKUP": "quantity_change", "JUMLAH_NOL": "quantity_change",
               "GUDANG_TIDAK_DITEMUKAN": "warehouse_id", "GUDANG_NONAKTIF": "warehouse_id", "GUDANG_TIDAK_ADA": "warehouse_id",
-              "BATCH_AKSI_TIDAK_TERSEDIA": "status", "STATUS_TAK_SAH": "status"}
+              "BATCH_AKSI_TIDAK_TERSEDIA": "status", "STATUS_TAK_SAH": "status",
+              "NOMOR_BATCH_KEMBAR": "batch_number", "NOMOR_BATCH_TERPAKAI": "batch_number", "NOMOR_BATCH_KOSONG": "batch_number",
+              "TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI": "expiry_date"}
 
 
 def kunci_dari_baris(status: str, expiry: Optional[date], hari_ini: date) -> str:
@@ -201,6 +203,86 @@ async def rencana_status(conn, tid: str, batch_id, status, bl, hari_ini: date, k
                         "status_sebelum_text": status_text(b["status"], b["expiry_date"], hari_ini), "status_sesudah_text": sesudah,
                         "stock_text": stock_text(b["current_quantity"], b["base_unit"]),
                         "ringkas": f"Batch {b['batch_number']}: {status_text(b['status'], b['expiry_date'], hari_ini)} → {sesudah}"}
+    return hasil
+
+# ---------------------------------------------------------------- ubah batch (Batch B, 24 Nov 2026): pratinjau == PATCH
+# Tabel yang merujuk batch lewat batch_id (diukur dari migrasi: V047 sales_invoice/sales_receipt/stock_adjustment/stock_transfer/bill_items/ledger,
+# V048 serial, V062 cabang, V064 produksi). Dokumen menyalin batch_number sebagai TEKS (sales_receipt/stock_transfer/PO) dan penerimaan bill mencocokkan
+# batch lewat nomor (ON CONFLICT tenant,item,batch_number) -> nomor yang sudah punya gerakan/dirujuk dokumen TIDAK boleh diganti (pola Accurate);
+# tanggal & mutu tetap boleh.
+TABEL_RUJUKAN_BATCH = ("inventory_ledger", "bill_items", "sales_invoice_items", "sales_receipt_items", "stock_adjustment_items", "stock_transfer_items", "item_serials")
+LABEL_UBAH = {"batch_number": "Nomor batch", "manufacture_date": "Tanggal produksi", "expiry_date": "Tanggal kedaluwarsa",
+              "supplier_batch_number": "Nomor batch pemasok", "quality_grade": "Mutu", "quality_notes": "Catatan mutu"}
+BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def tgl_text(d: Optional[date]) -> str:
+    return f"{d.day} {BULAN[d.month - 1]} {d.year}" if d else "—"
+
+
+def _teks(v, tanggal: bool) -> str:
+    return tgl_text(v) if tanggal else (str(v).strip() if v not in (None, "") else "—")
+
+
+async def pemakai_batch(conn, tid: str, b) -> int:
+    """Jumlah rujukan ke batch ini (baris tabel rujukan + penerimaan asal bill/PO). >0 = nomor batch terkunci."""
+    n = 1 if (b["bill_id"] or b["purchase_order_id"]) else 0
+    for t in TABEL_RUJUKAN_BATCH:
+        n += int(await conn.fetchval(f"SELECT count(*) FROM {t} WHERE batch_id = $1", b["id"]) or 0)
+    return n
+
+
+async def rencana_ubah(conn, tid: str, batch_id, body, bl, hari_ini: date, kunci: bool = False) -> dict:
+    """Pratinjau == PATCH /item-batches/{id}. Blok: NOMOR_BATCH_KOSONG 422, NOMOR_BATCH_KEMBAR 409, NOMOR_BATCH_TERPAKAI 409,
+    TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI 422 (+ blok status bila status ikut). rencana = sebelum -> sesudah sebagai TEKS server."""
+    hasil = {"blocks": bl.daftar, "peringatan": [], "rencana": None, "batch": None}
+    b = await muat_batch(conn, tid, batch_id, kunci)
+    if not b:
+        bl.galat("BATCH_TIDAK_DITEMUKAN", 404, "Batch tidak ditemukan.")
+        return hasil
+    hasil["batch"] = b
+    nomor_lama = b["batch_number"]
+    perubahan = []
+    for f in ("batch_number", "manufacture_date", "expiry_date", "supplier_batch_number", "quality_grade", "quality_notes"):
+        baru = getattr(body, f, None)
+        if baru is None:
+            continue
+        if f == "batch_number":
+            baru = baru.strip()
+            if not baru:
+                bl.galat("NOMOR_BATCH_KOSONG", 422, "Nomor batch tidak boleh kosong.")
+                continue
+        if baru != b[f]:
+            tgl = f in ("manufacture_date", "expiry_date")
+            perubahan.append({"field": f, "label": LABEL_UBAH[f], "sebelum_text": _teks(b[f], tgl), "sesudah_text": _teks(baru, tgl), "_baru": baru})
+    ganti = {x["field"]: x["_baru"] for x in perubahan}
+    if "batch_number" in ganti:
+        if await conn.fetchval("SELECT 1 FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3 AND id <> $4",
+                               tid, b["item_id"], ganti["batch_number"], b["id"]):
+            bl.galat("NOMOR_BATCH_KEMBAR", 409, f"Nomor batch {ganti['batch_number']} sudah dipakai batch lain untuk barang {b['item_name']}.")
+        else:
+            n = await pemakai_batch(conn, tid, b)
+            if n:
+                bl.galat("NOMOR_BATCH_TERPAKAI", 409,
+                         f"Batch {nomor_lama} sudah punya gerakan atau dirujuk dokumen, jadi nomornya tidak bisa diganti. Tanggal dan mutu masih bisa diubah.")
+    prod, kedal = ganti.get("manufacture_date", b["manufacture_date"]), ganti.get("expiry_date", b["expiry_date"])
+    if prod and kedal and kedal < prod and ("manufacture_date" in ganti or "expiry_date" in ganti):
+        bl.galat("TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI", 422,
+                 f"Tanggal kedaluwarsa ({tgl_text(kedal)}) tidak boleh sebelum tanggal produksi ({tgl_text(prod)}).")
+    if "expiry_date" in ganti and kedal and kedal < hari_ini:
+        hasil["peringatan"].append(f"Tanggal kedaluwarsa {tgl_text(kedal)} sudah lewat; batch {nomor_lama} akan tampil Kedaluwarsa dan tidak bisa dijual.")
+    if getattr(body, "status", None) in ("quarantine", "active"):
+        st = await rencana_status(conn, tid, batch_id, body.status, bl, hari_ini, kunci)
+        hasil["peringatan"] += st["peringatan"]
+        if st["rencana"]:
+            perubahan.append({"field": "status", "label": "Status", "sebelum_text": st["rencana"]["status_sebelum_text"], "sesudah_text": st["rencana"]["status_sesudah_text"]})
+    for x in perubahan:
+        x.pop("_baru", None)
+    hasil["rencana"] = {"batch_number": nomor_lama, "item_name": b["item_name"], "perubahan": perubahan, "ganti": ganti,
+                        "ringkas": (f"Batch {nomor_lama}: " + "; ".join(f"{x['label']} {x['sebelum_text']} → {x['sesudah_text']}" for x in perubahan)) if perubahan
+                        else f"Batch {nomor_lama}: tidak ada perubahan."}
+    if not perubahan:
+        hasil["peringatan"].append("Tidak ada yang berubah dari data sekarang.")
     return hasil
 
 

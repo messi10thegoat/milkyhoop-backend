@@ -882,3 +882,4 @@ POST /api/stock-opnames/{opname_id}/batal/preview
 POST /api/stock-opnames/{opname_id}/void
 POST /api/stock-opnames/{opname_id}/void/preview
 PUT /api/stock-opnames/{opname_id}/baris
+POST /api/item-batches/{batch_id}/ubah/preview

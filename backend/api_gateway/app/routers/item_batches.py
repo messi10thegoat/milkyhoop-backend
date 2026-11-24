@@ -338,6 +338,20 @@ async def create_item_batch(request: Request, body: CreateItemBatchRequest):
             )
 
 
+@router.post("/{batch_id}/ubah/preview")
+async def preview_ubah_batch(request: Request, batch_id: UUID, body: UpdateItemBatchRequest):
+    """Pratinjau ubah batch (BACA SAJA; penentu BA.rencana_ubah == PATCH /{id}). Badan = medan PATCH. Bentuk G3."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            bl = Blok(True)
+            r = await BA.rencana_ubah(conn, ctx["tenant_id"], batch_id, body, bl, await tanggal_dokumen(conn, ctx["tenant_id"]))
+            rencana = {k: v for k, v in r["rencana"].items() if k != "ganti"} if r["rencana"] else None
+            return BA.pratinjau({"blocks": bl.daftar, "peringatan": r["peringatan"], "rencana": rencana}, body.model_dump(mode="json"))
+
+
 @router.post("/{batch_id}/status/preview")
 async def preview_status_batch(request: Request, batch_id: UUID, body: SetBatchStatusRequest):
     """Pratinjau karantina / aktifkan (BACA SAJA; penentu BA.rencana_status == POST /status dan PATCH status). Bentuk G3."""
@@ -370,14 +384,12 @@ async def update_item_batch(
             "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
         )
 
-        existing = await conn.fetchrow(
-            "SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2",
-            batch_id,
-            ctx["tenant_id"],
-        )
-
+        existing = await BA.muat_batch(conn, ctx["tenant_id"], batch_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Batch not found")
+
+        # penentu SAMA dgn POST /{id}/ubah/preview (nomor kembar/terpakai, tanggal, status): blok pertama -> galat berkode, bukan 500
+        await BA.rencana_ubah(conn, ctx["tenant_id"], batch_id, body, Blok(False), await tanggal_dokumen(conn, ctx["tenant_id"]))
 
         updates = []
         params = []
@@ -393,27 +405,29 @@ async def update_item_batch(
             "status",
         ]:
             value = getattr(body, field, None)
+            if field == "batch_number" and value is not None:
+                value = value.strip()
             if value is not None:
                 updates.append(f"{field} = ${param_idx}")
                 params.append(value)
                 param_idx += 1
-
-        if body.status in ("quarantine", "active"):   # penentu SAMA dgn POST /{id}/status dan pratinjaunya
-            await BA.rencana_status(conn, ctx["tenant_id"], batch_id, body.status, Blok(False), await tanggal_dokumen(conn, ctx["tenant_id"]))
 
         if not updates:
             return UpdateItemBatchResponse(data=ItemBatchData(**dict(existing)))
 
         params.append(batch_id)
 
-        row = await conn.fetchrow(
-            f"""
-            UPDATE item_batches SET {', '.join(updates)}, updated_at = NOW()
-            WHERE id = ${param_idx}
-            RETURNING *
-            """,
-            *params,
-        )
+        try:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE item_batches SET {', '.join(updates)}, updated_at = NOW()
+                WHERE id = ${param_idx}
+                RETURNING *
+                """,
+                *params,
+            )
+        except asyncpg.UniqueViolationError:   # dua pengubah bersamaan memilih nomor yang sama: kendala UNIQUE(tenant,item,batch_number) menang -> 409, bukan 500
+            raise GalatBerkode(409, "NOMOR_BATCH_KEMBAR", f"Nomor batch {body.batch_number} sudah dipakai batch lain untuk barang ini.", field="batch_number")
 
         item = await conn.fetchrow(
             "SELECT sku as code, nama_produk as name, base_unit FROM products WHERE id = $1 AND tenant_id = $2",
