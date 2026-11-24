@@ -75,6 +75,12 @@ def test_nomor_kembar_409_berkode_di_penulis_dan_blok_di_pratinjau():
     assert e.value.status_code == 409 and e.value.code == "NOMOR_BATCH_KEMBAR" and "LOT-009" in e.value.detail
 
 
+def test_tabel_rujukan_batch_mencakup_semua_pengacu_batch_id():
+    """Daftar WAJIB memuat semua tabel dokumen/gerakan yang merujuk batch_id (V047/V048); daftar yang menyusut diam-diam = nomor terkunci bolong."""
+    assert set(BA.TABEL_RUJUKAN_BATCH) >= {"inventory_ledger", "bill_items", "sales_invoice_items", "sales_receipt_items", "stock_adjustment_items",
+                                           "stock_transfer_items", "item_serials"}
+
+
 @pytest.mark.parametrize("tabel", list(BA.TABEL_RUJUKAN_BATCH))
 def test_nomor_terpakai_diblok_bila_dirujuk_tabel_mana_pun(tabel):
     r = pr(Konn(batch(), rujukan={tabel: 2}), batch_number="LOT-777")
