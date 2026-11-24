@@ -245,6 +245,9 @@ class KonPembalik:
         return [{"id": uuid.uuid4(), "product_id": uuid.uuid4(), "product_code": "P", "product_name": "M", "quantity_in": D("0"), "quantity_out": D("3"), "unit_cost": D("1"),
                  "total_cost": D("3"), "warehouse_id": uuid.uuid4(), "source_number": "INV", "batch_id": uuid.uuid4()}]
 
+    async def fetchval(self, sql, *a):
+        return None   # Stok Opname: penjaga gudang terkunci -- tak ada opname
+
     async def execute(self, sql, *a):
         self.exe.append(sql)
         return "UPDATE 1"
