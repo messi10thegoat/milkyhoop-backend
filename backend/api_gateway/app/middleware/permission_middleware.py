@@ -1208,6 +1208,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/intercompany/variances$", ["GET"], "journal", "R"),
     (r"^/api/inventory/categories$", ["GET"], "item", "R"),
     (r"^/api/inventory/low\-stock$", ["GET"], "item", "R"),
+    (r"^/api/inventory/reorder$", ["GET"], "item", "R"),
     (r"^/api/inventory/product\-margins$", ["GET"], "item", "R"),
     (r"^/api/inventory/products$", ["GET"], "item", "R"),
     (r"^/api/inventory/products/[^/]+$", ["GET"], "item", "R"),
