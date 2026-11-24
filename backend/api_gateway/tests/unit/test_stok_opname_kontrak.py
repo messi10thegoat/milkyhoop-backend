@@ -61,7 +61,6 @@ def test_position_text_per_status():
 # ---------------------------------------------------------------- selisih & nilai bertanda
 def test_selisih_text_tanda_minus_unicode_dan_nol():
     assert TP.selisih_text(D("3"), "pcs") == "+3 pcs"
-    assert TP.selisih_text(D("-2.5000"), "kg") == f"{MINUS}2,5 kg".replace(",", ".") or True   # format angka: titik desimal
     assert TP.selisih_text(D("-2.5"), "kg") == f"{MINUS}2.5 kg"
     assert TP.selisih_text(D("0"), "pcs") == "0 pcs" and TP.selisih_text(None, "pcs") is None
     assert TP.selisih_text(D("4"), None) == "+4" and "-" not in TP.selisih_text(D("-1"), "pcs")      # ASCII '-' dilarang
