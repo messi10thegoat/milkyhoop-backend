@@ -16,6 +16,8 @@ class _K:
         self.exec = []
 
     async def fetchval(self, sql, *a):
+        if "stock_opnames" in sql:
+            return None   # Stok Opname: penjaga gudang terkunci -- tak ada opname
         if "SUM(quantity_in - quantity_out)" in sql:
             return D(10)
         if "get_weighted_average_cost" in sql:
