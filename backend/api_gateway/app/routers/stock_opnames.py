@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from . import stock_adjustments as SA
 from ..schemas.stock_adjustments import CreateStockAdjustmentRequest, StockAdjustmentItemCreate
 from ..services import idem_buat
+from ..services import stok_opname_tampil as TP
 from ..services import stok_sesuai as SS
 from ..services.bayar_keluar_rencana import Blok
 from ..services.galat_berkode import GalatBerkode
@@ -271,7 +272,9 @@ async def daftar_opname(request: Request, status: Optional[str] = Query(None), w
             f"CASE WHEN o.status = 'hitung' THEN (CURRENT_DATE - o.started_at::date) END AS umur_hari "
             f"FROM stock_opnames o JOIN warehouses w ON w.id = o.warehouse_id WHERE {' AND '.join(kond)} "
             f"ORDER BY o.created_at DESC LIMIT ${len(par) - 1} OFFSET ${len(par)}", *par)
-        return jsonable_encoder({"success": True, "data": [{**dict(r), "status_teks": STATUS_TEKS[r["status"]]} for r in rows]})
+        return jsonable_encoder({"success": True, "data": [
+            {**dict(r), "status_teks": STATUS_TEKS[r["status"]], "aksi_tersedia": TP.aksi_tersedia(r["status"], r["jumlah_baris"]),
+             "position_text": TP.position_text(r["status"], r["jumlah_baris"], r["sudah_dihitung"], r["umur_hari"])} for r in rows]})
 
 
 @router.get("/{opname_id}")
@@ -286,9 +289,32 @@ async def detail_opname(request: Request, opname_id: UUID):
         g = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1", o["warehouse_id"])
         sa = await conn.fetchrow("SELECT adjustment_number, journal_id, total_value, status FROM stock_adjustments WHERE id = $1 AND tenant_id = $2",
                                  o["adjustment_id"], ctx["tenant_id"]) if o["adjustment_id"] else None
+        garis = [dict(b) for b in await _baris(conn, opname_id)]
+        selisih_baris, total = await _selisih_tampil(conn, ctx["tenant_id"], o, garis)
+        for b in garis:
+            b.update(TP.medan_baris(*selisih_baris.get(b["product_id"], (None, None)), b["unit"]))
+        sudah = sum(1 for b in garis if b["physical_quantity"] is not None)
+        umur = await conn.fetchval("SELECT (CURRENT_DATE - $1::timestamptz::date)", o["started_at"]) if o["status"] == "hitung" and o["started_at"] else None
         return jsonable_encoder({"success": True, "data": {
             **dict(o), "status_teks": STATUS_TEKS[o["status"]], "gudang": g, "terkunci": o["status"] == "hitung",
-            "penyesuaian": dict(sa) if sa else None, "baris": [dict(b) for b in await _baris(conn, opname_id)]}})
+            "aksi_tersedia": TP.aksi_tersedia(o["status"], len(garis)), "position_text": TP.position_text(o["status"], len(garis), sudah, umur),
+            **TP.total_bertanda(total), "penyesuaian": dict(sa) if sa else None, "baris": garis}})
+
+
+async def _selisih_tampil(conn, tid: str, o, garis: list) -> tuple:
+    """-> ({product_id: (selisih bertanda|None, |nilai|)}, total bertanda). hitung = penentu posting (== /post/preview, ledger kini);
+    posted/void = angka dokumen Penyesuaian Stok tertaut (qty bertanda + total_value baris); draf/batal = belum ada."""
+    if o["status"] == "hitung":
+        h = await rencana_posting(conn, tid, o["id"], Blok(True))
+        return ({UUID(b["product_id"]): (b["selisih"], b["nilai"]) for b in h["baris"] if b["dihitung"]}, h.get("total_nilai_bertanda", NOL))
+    if o["status"] in ("posted", "void") and o["adjustment_id"]:
+        rows = await conn.fetch("SELECT product_id, quantity_adjustment, total_value FROM stock_adjustment_items WHERE stock_adjustment_id = $1", o["adjustment_id"])
+        d = {r["product_id"]: (Decimal(str(r["quantity_adjustment"])), Decimal(str(r["total_value"]))) for r in rows}
+        for b in garis:   # dihitung tapi selisih 0 = tak punya baris SA -> selisih 0
+            if b["physical_quantity"] is not None and b["product_id"] not in d:
+                d[b["product_id"]] = (NOL, NOL)
+        return d, sum((SS.nilai_bertanda(q, v) for q, v in d.values()), NOL)
+    return {}, NOL
 
 
 # ------------------------------------------------------------------ buat / hapus / isi hitung
@@ -429,7 +455,8 @@ async def mulai_hitung(request: Request, opname_id: UUID, response: Response = N
 async def pratinjau_post(request: Request, opname_id: UUID):
     async def r(conn, tid, bl):
         h = await rencana_posting(conn, tid, opname_id, bl)
-        return {"baris": h["baris"], "total_nilai_bertanda": h.get("total_nilai_bertanda"), "belum_dihitung": h.get("belum_dihitung"),
+        baris = [{**b, **TP.medan_baris(b["selisih"] if b["dihitung"] else None, b["nilai"], b["unit"])} for b in h["baris"]]
+        return {"baris": baris, **TP.total_bertanda(h.get("total_nilai_bertanda", NOL)), "belum_dihitung": h.get("belum_dihitung"),
                 "baris_selisih": h.get("baris_selisih"), "catatan": h.get("catatan"), "tanpa_jurnal": h.get("tanpa_selisih")}
     return await _pratinjau(request, r)
 
