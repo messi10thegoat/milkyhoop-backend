@@ -158,6 +158,8 @@ class BankAccountListItem(BaseModel):
     created_at: str
     # Kas&Bank standar SO (9 Nov 2026): saldo jurnal string + services/kasbank_daftar
     saldo: Optional[str] = None
+    jumlah_text: Optional[str] = None       # KB-1 (25 Nov)
+    account_type_text: Optional[str] = None
     position_text: Optional[str] = None
     aksi: Optional[str] = None
     aksi_semua: List[str] = []
@@ -204,6 +206,10 @@ class BankAccountDetail(BaseModel):
 
     # Kas&Bank standar SO (9 Nov 2026): teks + aksi dari penentu tulis (services/kasbank_daftar)
     position_text: Optional[str] = None
+    opening_balance_text: Optional[str] = None  # KB-1 (25 Nov)
+    saldo_text: Optional[str] = None
+    status_text: Optional[str] = None
+    account_type_text: Optional[str] = None
     aksi_tersedia: Optional[AksiTersediaPeta] = None
 
 

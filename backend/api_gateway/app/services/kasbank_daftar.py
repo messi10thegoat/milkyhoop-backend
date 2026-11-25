@@ -176,6 +176,18 @@ def aksi_semua_rekening(is_active: bool, tipe: Optional[str], saldo) -> list:
     return ["saldo_minus"] if is_active and tipe != TIPE_KARTU and Decimal(str(saldo or 0)) < 0 else []
 
 
+TIPE_TEKS = {"bank": "Bank", "cash": "Kas", "petty_cash": "Kas kecil", "e_wallet": "Dompet digital", "credit_card": "Kartu kredit"}
+
+
+def tipe_text(tipe: Optional[str]) -> str:
+    """KB-1: label tipe rekening untuk FE (FE tak merangkai teks)."""
+    return TIPE_TEKS.get(tipe or "", tipe or "")
+
+
+def status_text_rekening(is_active: bool, is_default: bool = False) -> str:
+    return "Nonaktif" if not is_active else ("Aktif · utama" if is_default else "Aktif")
+
+
 def position_text_rekening(is_active: bool, tipe: Optional[str], saldo, is_default: bool = False) -> str:
     s = Decimal(str(saldo or 0))
     if not is_active:
