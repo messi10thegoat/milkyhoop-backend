@@ -7,7 +7,7 @@ Items are the master data for goods and services used in transactions.
 
 from decimal import Decimal
 from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator, AfterValidator
-from typing import Annotated, Optional, List, Literal, Dict, Any, Annotated
+from typing import Annotated, Optional, List, Literal, Dict, Any
 
 from ..services.satuan_dasar import faktor_sah as _faktor_sah
 from uuid import UUID
