@@ -21,7 +21,7 @@ LEFT JOIN LATERAL (
     SELECT SUM(jl.debit) - SUM(jl.credit) AS saldo, MAX(je.journal_date) AS mutasi_terakhir, COUNT(*) AS jumlah
     FROM journal_lines jl
     JOIN journal_entries je ON je.id = jl.journal_id
-    WHERE je.tenant_id = ba.tenant_id AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
+    WHERE je.tenant_id = ba.tenant_id AND is_effective_journal(je.id) AND jl.account_id = ba.coa_id
 ) j ON true
 WHERE ba.tenant_id = $1 AND ba.is_active = true
 ORDER BY ba.account_type, ba.account_name"""

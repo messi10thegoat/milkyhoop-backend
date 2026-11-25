@@ -43,10 +43,10 @@ def test_ringkasan_akun_tanpa_jurnal_nol():
     assert (r["akun"][0]["mutasi_terakhir_at"], r["akun"][0]["jumlah_mutasi"], r["total_saldo"], r["total_kewajiban_kartu"]) == (None, 0, "0.00", "0.00")
 
 
-def test_sql_ringkasan_dari_jurnal_posted_per_coa_tenant():
+def test_sql_ringkasan_dari_jurnal_efektif_per_coa_tenant():
     s = KR.SQL_RINGKASAN
     assert "current_balance" not in s and "opening_balance" not in s
-    for k in ("je.status = 'POSTED'", "jl.account_id = ba.coa_id", "je.tenant_id = ba.tenant_id", "ba.tenant_id = $1", "ba.is_active = true"):
+    for k in ("is_effective_journal(je.id)", "jl.account_id = ba.coa_id", "je.tenant_id = ba.tenant_id", "ba.tenant_id = $1", "ba.is_active = true"):
         assert k in s, k
 
 
