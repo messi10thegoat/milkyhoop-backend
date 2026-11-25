@@ -33,8 +33,8 @@ class CreateItemBatchRequest(BaseModel):
     manufacture_date: Optional[date] = None
     expiry_date: Optional[date] = None
     received_date: Optional[date] = None
-    initial_quantity: Decimal = Field(..., gt=0)
-    unit_cost: int = 0
+    initial_quantity: Decimal = Field(Decimal(0), ge=0)   # Batch C (25 Nov): daftar batch SAJA, stok masuk lewat Penerimaan/Penyesuaian; >0 ditolak 422 STOK_AWAL_TIDAK_DI_SINI
+    unit_cost: Decimal = Field(Decimal(0), ge=0)
     warehouse_id: Optional[UUID] = None  # Initial warehouse
     purchase_order_id: Optional[UUID] = None
     bill_id: Optional[UUID] = None

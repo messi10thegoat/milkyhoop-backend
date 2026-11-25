@@ -135,7 +135,7 @@ KODE_FIELD = {"BATCH_STOK_TIDAK_CUKUP": "quantity_change", "STOK_TIDAK_CUKUP": "
               "GUDANG_TIDAK_DITEMUKAN": "warehouse_id", "GUDANG_NONAKTIF": "warehouse_id", "GUDANG_TIDAK_ADA": "warehouse_id",
               "BATCH_AKSI_TIDAK_TERSEDIA": "status", "STATUS_TAK_SAH": "status",
               "NOMOR_BATCH_KEMBAR": "batch_number", "NOMOR_BATCH_TERPAKAI": "batch_number", "NOMOR_BATCH_KOSONG": "batch_number",
-              "TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI": "expiry_date"}
+              "TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI": "expiry_date", "BARANG_TIDAK_DITEMUKAN": "item_id", "STOK_AWAL_TIDAK_DI_SINI": "initial_quantity"}
 
 
 def kunci_dari_baris(status: str, expiry: Optional[date], hari_ini: date) -> str:
@@ -230,6 +230,33 @@ async def pemakai_batch(conn, tid: str, b) -> int:
     for t in TABEL_RUJUKAN_BATCH:
         n += int(await conn.fetchval(f"SELECT count(*) FROM {t} WHERE batch_id = $1", b["id"]) or 0)
     return n
+
+
+async def rencana_buat(conn, tid: str, body, bl, hari_ini: date) -> dict:
+    """Pratinjau == POST /item-batches (Batch C, 25 Nov 2026): HANYA mendaftarkan batch (nomor/kedaluwarsa/mutu), tanpa stok, ledger, atau jurnal.
+    Blok: BARANG_TIDAK_DITEMUKAN 404, NOMOR_BATCH_KOSONG 422, NOMOR_BATCH_KEMBAR 409, TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI 422, STOK_AWAL_TIDAK_DI_SINI 422."""
+    hasil = {"blocks": bl.daftar, "peringatan": [], "rencana": None}
+    item = await conn.fetchrow("SELECT id, nama_produk FROM products WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL", body.item_id, tid)
+    if not item:
+        bl.galat("BARANG_TIDAK_DITEMUKAN", 404, "Barang tidak ditemukan.")
+        return hasil
+    nomor = (body.batch_number or "").strip()
+    if not nomor:
+        bl.galat("NOMOR_BATCH_KOSONG", 422, "Nomor batch tidak boleh kosong.")
+    elif await conn.fetchval("SELECT 1 FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3", tid, body.item_id, nomor):
+        bl.galat("NOMOR_BATCH_KEMBAR", 409, f"Nomor batch {nomor} sudah dipakai batch lain untuk barang {item['nama_produk']}.")
+    prod, kedal = body.manufacture_date, body.expiry_date
+    if prod and kedal and kedal < prod:
+        bl.galat("TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI", 422, f"Tanggal kedaluwarsa ({tgl_text(kedal)}) tidak boleh sebelum tanggal produksi ({tgl_text(prod)}).")
+    if body.initial_quantity and body.initial_quantity > 0:
+        bl.galat("STOK_AWAL_TIDAK_DI_SINI", 422,
+                 "Di sini batch hanya didaftarkan. Stok masuk lewat Penerimaan barang atau Penyesuaian stok, lalu pilih batch ini.")
+    if kedal and kedal < hari_ini:
+        hasil["peringatan"].append(f"Tanggal kedaluwarsa {tgl_text(kedal)} sudah lewat; batch {nomor} akan tampil Kedaluwarsa dan tidak bisa dijual.")
+    ket = f", kedaluwarsa {tgl_text(kedal)}" if kedal else ""
+    hasil["rencana"] = {"batch_number": nomor, "item_name": item["nama_produk"], "stok_awal_text": "Stok tidak berubah (batch baru kosong).",
+                        "ringkas": f"Daftarkan batch {nomor} untuk {item['nama_produk']}{ket}. Stok tidak berubah."}
+    return hasil
 
 
 async def rencana_ubah(conn, tid: str, batch_id, body, bl, hari_ini: date, kunci: bool = False) -> dict:
