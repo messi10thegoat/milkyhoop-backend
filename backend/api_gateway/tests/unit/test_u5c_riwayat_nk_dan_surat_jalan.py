@@ -136,7 +136,7 @@ def test_riwayat_sj_posting_terpisah_dan_batal_dengan_alasan():
     d = _jalan(SR.riwayat_surat_jalan(_Conn(sj), "t1", sj["id"], _semua))
     assert [e["jenis"] for e in d["events"]] == ["SURAT_JALAN_DIBATALKAN", "SURAT_JALAN_DIPOSTING", "SURAT_JALAN_DIBUAT"]
     assert d["events"][0]["ringkas"] == "Surat Jalan SJ-2610-0004 dibatalkan: salah gudang"
-    assert d["events"][1]["ringkas"].endswith("diposting (barang keluar)")
+    assert d["events"][1]["ringkas"].endswith("diterbitkan (barang keluar)")
 
 
 def test_riwayat_sj_audit_beraktor_menggantikan_kolom_batal_tanpa_aktor():

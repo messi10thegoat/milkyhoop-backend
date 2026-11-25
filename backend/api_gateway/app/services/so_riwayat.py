@@ -885,7 +885,7 @@ async def riwayat_surat_jalan(conn, tenant_id: str, delivery_id, boleh: Callable
     asal = f" (faktur {f['invoice_number']})" if lihat["sales_invoice"] and f["invoice_number"] else ""
     k.tambah(f["created_at"], "SURAT_JALAN_DIBUAT", f"Surat Jalan {n} dibuat{asal}", f["created_by"], "fulfillment", f["id"], n)
     if f["posted_at"] and f["created_at"] and abs((f["posted_at"] - f["created_at"]).total_seconds()) > 1:
-        k.tambah(f["posted_at"], "SURAT_JALAN_DIPOSTING", f"Surat Jalan {n} diposting (barang keluar)", f["posted_by"],
+        k.tambah(f["posted_at"], "SURAT_JALAN_DIPOSTING", f"Surat Jalan {n} diterbitkan (barang keluar)", f["posted_by"],
                  "fulfillment", f["id"], n)
     al = f": {f['voided_reason']}" if f["voided_reason"] else ""
     k.tambah(f["voided_at"], "SURAT_JALAN_DIBATALKAN", f"Surat Jalan {n} dibatalkan{al}", None, "fulfillment", f["id"], n)
