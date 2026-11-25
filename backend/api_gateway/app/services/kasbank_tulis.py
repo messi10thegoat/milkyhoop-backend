@@ -30,7 +30,7 @@ SEN = Decimal("0.01")
 
 SQL_AKUN = """SELECT ba.id, ba.account_name, ba.account_type, ba.coa_id, ba.is_active,
        COALESCE((SELECT SUM(jl.debit) - SUM(jl.credit) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
-                 WHERE jl.account_id = ba.coa_id AND je.status = 'POSTED' AND je.tenant_id = ba.tenant_id
+                 WHERE jl.account_id = ba.coa_id AND is_effective_journal(je.id) AND je.tenant_id = ba.tenant_id
                    AND ($3::date IS NULL OR je.journal_date <= $3::date)), 0) AS saldo
 FROM bank_accounts ba WHERE ba.id = $1 AND ba.tenant_id = $2"""
 
@@ -241,10 +241,10 @@ async def rencana_posting_transfer(conn, tid: str, t, bl: Blok) -> dict:
 
 SQL_TRANSFER_POSTING = """SELECT bt.*, fb.account_name AS from_name, fb.coa_id AS from_coa_id, fb.account_type AS from_type,
        COALESCE((SELECT SUM(jl.debit) - SUM(jl.credit) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
-                 WHERE jl.account_id = fb.coa_id AND je.status = 'POSTED' AND je.tenant_id = bt.tenant_id), 0) AS from_balance,
+                 WHERE jl.account_id = fb.coa_id AND is_effective_journal(je.id) AND je.tenant_id = bt.tenant_id), 0) AS from_balance,
        tb.account_name AS to_name, tb.coa_id AS to_coa_id,
        COALESCE((SELECT SUM(jl.debit) - SUM(jl.credit) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id
-                 WHERE jl.account_id = tb.coa_id AND je.status = 'POSTED' AND je.tenant_id = bt.tenant_id), 0) AS to_balance
+                 WHERE jl.account_id = tb.coa_id AND is_effective_journal(je.id) AND je.tenant_id = bt.tenant_id), 0) AS to_balance
 FROM bank_transfers bt
 LEFT JOIN bank_accounts fb ON bt.from_bank_id = fb.id
 LEFT JOIN bank_accounts tb ON bt.to_bank_id = tb.id

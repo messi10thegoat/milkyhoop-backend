@@ -92,7 +92,7 @@ async def list_kasbank_accounts(request: Request):
                     FROM journal_lines jl
                     JOIN journal_entries je ON jl.journal_id = je.id
                     WHERE je.tenant_id = ba.tenant_id
-                      AND je.status = 'POSTED'
+                      AND is_effective_journal(je.id)
                       AND jl.account_id = ba.coa_id
                 ) jb ON true
                 WHERE ba.tenant_id = $1 AND ba.is_active = true
@@ -169,7 +169,7 @@ async def get_account_transactions(
                         SELECT SUM(jl.debit - jl.credit)
                         FROM journal_lines jl
                         JOIN journal_entries je ON jl.journal_id = je.id
-                        WHERE je.tenant_id = $2 AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
+                        WHERE je.tenant_id = $2 AND is_effective_journal(je.id) AND jl.account_id = ba.coa_id
                     ), 0) as balance
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
@@ -301,7 +301,7 @@ async def get_account_summary(
                         SELECT SUM(jl.debit - jl.credit)
                         FROM journal_lines jl
                         JOIN journal_entries je ON jl.journal_id = je.id
-                        WHERE je.tenant_id = $2 AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
+                        WHERE je.tenant_id = $2 AND is_effective_journal(je.id) AND jl.account_id = ba.coa_id
                     ), 0) as balance
                 FROM bank_accounts ba
                 WHERE ba.id = $1 AND ba.tenant_id = $2
@@ -394,7 +394,7 @@ async def get_kasbank_stats(request: Request):
                     SELECT COALESCE(SUM(jl.debit - jl.credit), 0) as balance
                     FROM journal_lines jl
                     JOIN journal_entries je ON jl.journal_id = je.id
-                    WHERE je.tenant_id = ba.tenant_id AND je.status = 'POSTED' AND jl.account_id = ba.coa_id
+                    WHERE je.tenant_id = ba.tenant_id AND is_effective_journal(je.id) AND jl.account_id = ba.coa_id
                 ) jb ON true
                 WHERE ba.tenant_id = $1 AND ba.is_active = true
                 """,

@@ -180,7 +180,7 @@ async def list_bank_accounts(
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE jl.account_id = ba.coa_id
-                      AND je.status = 'POSTED'
+                      AND is_effective_journal(je.id)
                       AND je.tenant_id = $1
                 ) lb ON true
                 WHERE {where_clause}
@@ -256,7 +256,7 @@ async def get_bank_accounts_dropdown(request: Request):
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE jl.account_id = ba.coa_id
-                      AND je.status = 'POSTED'
+                      AND is_effective_journal(je.id)
                       AND je.tenant_id = $1
                 ) lb ON true
                 WHERE ba.tenant_id = $1 AND ba.is_active = true
@@ -336,7 +336,7 @@ async def get_bank_account(request: Request, bank_account_id: UUID):
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE jl.account_id = ba.coa_id
-                      AND je.status = 'POSTED'
+                      AND is_effective_journal(je.id)
                       AND je.tenant_id = $2
                 ) lb ON true
                 WHERE ba.id = $1 AND ba.tenant_id = $2
@@ -1174,7 +1174,7 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                     FROM journal_lines jl
                     JOIN journal_entries je ON je.id = jl.journal_id
                     WHERE jl.account_id = ba.coa_id
-                      AND je.status = 'POSTED'
+                      AND is_effective_journal(je.id)
                       AND je.tenant_id = $2
                 ) lb ON true
                 WHERE ba.id = $1 AND ba.tenant_id = $2
