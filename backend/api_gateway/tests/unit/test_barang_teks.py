@@ -133,3 +133,9 @@ def test_semua_konstanta_ledger_pemindahan_dua_langkah_terpetakan():
     from app.services import pemindahan_dua_langkah as PD
     for mv in (PD.KIRIM_KELUAR, PD.KIRIM_MASUK, PD.TERIMA_KELUAR, PD.TERIMA_MASUK, PD.SUMBER_KIRIM_BATAL):
         assert BT.jenis_text(mv, None) != BT.GENERIK, mv
+
+
+def test_history_memuat_movement_type_text_dari_kamus_yang_sama():
+    fn = _fn("get_item_history")
+    assert '"movement_type_text": BT.jenis_text(row["movement_type"], row["source_type"])' in fn
+    assert '"jenis_text": BT.jenis_text(row["movement_type"], row["source_type"])' in fn   # medan lama utuh

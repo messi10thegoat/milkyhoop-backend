@@ -3617,6 +3617,7 @@ async def get_item_history(
                     "id": str(row["id"]),
                     "movement_type": row["movement_type"],
                     "jenis_text": BT.jenis_text(row["movement_type"], row["source_type"]),
+                    "movement_type_text": BT.jenis_text(row["movement_type"], row["source_type"]),  # nama medan kontrak FE (labelPergerakan FE dihapus); satu kamus
                     "movement_date": row["movement_date"].isoformat()
                     if row["movement_date"]
                     else None,
