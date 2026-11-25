@@ -361,3 +361,15 @@ def test_izin_pratinjau_dan_penulis_status_sama():
     assert '(r"^/api/units/[^/]+/edit/preview$", ["POST"], "unit", "U")' in pm                    # = izin PATCH
     assert '(r"^/api/units/[^/]+/status(/preview)?$", ["POST"], "unit", "D")' in pm              # = izin DELETE lama (nonaktif = hapus lunak)
     assert pm.index("/edit/preview$\", [\"POST\"], \"unit\"") < pm.index('(r"^/api/units", ["POST"], "unit", "C")')   # pola khusus SEBELUM prefiks umum
+
+
+def test_turunan_sama_nama_atau_singkatan_dengan_baris_tenant_tak_jadi_baris_kembar():
+    """BUG-363: 'Kilogram'/'kg'/'meter' (teks di barang) = baris tenant Kilogram(kg)/Meter(m); turunan baru ('ikat') tetap muncul."""
+    kon = Kon([sat(U1, "Kilogram", "kg"), sat(U2, "Meter", "m")], barang=[("Kilogram", 1), ("meter", 2), ("kg", 3), ("ikat", 1)],
+              turunan=["Kilogram", "kg", "meter", "METER", "ikat"])
+    semua = jalan(SM.daftar(kon, T))
+    nama = [b["name"].lower() for b in semua]
+    assert nama.count("kilogram") == 1 and nama.count("meter") == 1 and "kg" not in nama and "ikat" in nama
+    baris = {b["id"]: b for b in SP.susun(semua, jalan(SP.muat_pemakai(kon, T, semua)))}
+    assert baris[U1]["jumlah_barang"] == 4 and baris[U2]["jumlah_barang"] == 2                    # pemakai tetap terhitung ke baris tenant
+    assert SP.ringkasan(list(baris.values()))["terpakai"] == 3                                    # Kilogram, Meter, ikat

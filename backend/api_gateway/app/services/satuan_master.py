@@ -32,8 +32,13 @@ async def daftar(conn, tenant_id: str, cari: Optional[str] = None) -> list:
         tenant_id,
     )
     hasil = {}
+    # BUG-363: turunan (id None) yang NAMA atau SINGKATANNYA sama (tanpa beda huruf) dengan baris tenant mana pun = satuan itu juga ('Kilogram' ~ Kilogram/kg, 'meter' ~ Meter/m);
+    # tak boleh jadi baris kembar 0 pemakai. Pemakainya sudah dihitung ke baris tenant lewat kunci nama+singkatan (satuan_pakai._peta). Data tak diubah.
+    dikenal = {kunci(t) for r in rows if r["id"] for t in (r["name"], r["abbreviation"]) if kunci(t)}
     for r in rows:  # baris tenant dulu (UNION ALL: product_units di depan), turunan hanya mengisi yang belum ada
         k = kunci(r["abbreviation"])
+        if r["id"] is None and kunci(r["name"]) in dikenal:
+            continue
         if k and k not in hasil:
             hasil[k] = {"id": r["id"] or ID_TERPAKAI + r["abbreviation"], "name": r["name"], "abbreviation": r["abbreviation"],
                         "is_system": bool(r["is_system"]), "bawaan": False}
