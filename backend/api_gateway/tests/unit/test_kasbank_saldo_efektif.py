@@ -31,6 +31,6 @@ def test_daftar_mutasi_lintas_akun_efektif_sama_dengan_saldo():
 
 def test_register_per_akun_saldo_dan_laporan_efektif():
     """-r4 (MASTER 26 Nov, pola ACCURATE/QuickBooks): register/saldo-by-id/statement/arus per akun KONSISTEN dengan saldo akun (efektif)."""
-    for rel, n in (("routers/bank_accounts.py", 4), ("routers/kasbank.py", 8)):
+    for rel, n in (("routers/bank_accounts.py", 8), ("routers/kasbank.py", 8)):
         s = (APP / rel).read_text()
         assert len(re.findall(r"is_effective_journal\(je\.id\)", s)) >= n, rel
