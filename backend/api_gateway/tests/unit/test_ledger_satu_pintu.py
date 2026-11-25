@@ -52,6 +52,11 @@ def test_satu_penulis():
     assert pola.search("insert into public.inventory_ledger (id)")   # penjaga bisa merah
 
 
+def _teks(n):
+    """Tanda kutip dinormalkan: ast.unparse f-string beda antar versi Python."""
+    return ast.unparse(n).replace("\\'", "'").replace('"', "'")
+
+
 def _panggilan():
     out = []
     for p in sorted(APP.rglob("*.py")):
@@ -62,7 +67,7 @@ def _panggilan():
             if isinstance(f, (ast.AsyncFunctionDef, ast.FunctionDef)):
                 for c in ast.walk(f):
                     if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "tulis_kartu":
-                        out.append(f"{p.stem}.{f.name} :: " + " | ".join(sorted(f"{k.arg or '**'}={ast.unparse(k.value)}" for k in c.keywords)))
+                        out.append(f"{p.stem}.{f.name} :: " + " | ".join(sorted(f"{k.arg or '**'}={_teks(k.value)}" for k in c.keywords)))
     return sorted(out)
 
 

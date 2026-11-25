@@ -97,9 +97,9 @@ def test_jurnal_lalu_kartu_urutan_dan_isi():
     assert dr[2][1] == AKUN_INV and dr[2][2] == Decimal("128000.00")
     assert cr[2][1] == AKUN_EKU and cr[2][2] == Decimal("128000.00") and "0, $3" in cr[1]  # kredit = nilai yang sama
     kartu = w[4]
-    assert kartu[2][0] == T and kartu[2][1] == PID
-    assert kartu[2][7] == JID  # source_id kartu = id jurnal (Law 6), BUKAN gen_random_uuid()
-    assert kartu[2][6] == "OPENING_BALANCE" and kartu[2][11] == Decimal("128000.00")  # total_cost == nilai jurnal
+    assert kartu[2][1] == T and kartu[2][2] == PID
+    assert kartu[2][8] == JID  # source_id kartu = id jurnal (Law 6), BUKAN gen_random_uuid()
+    assert kartu[2][7] == "OPENING_BALANCE" and kartu[2][14] == Decimal("128000.00")  # total_cost == nilai jurnal
     assert w[0][2][0] == T and w[0][2][5] == PID and w[0][2][6] == Decimal("128000.00")  # tenant eksplisit; jurnal.source_id = produk
     assert any("pg_advisory_xact_lock" in s and a == (f"OB_STOK:{T}",) for _, s, a in k.log)  # Law 13
 
@@ -117,7 +117,7 @@ def test_pembulatan_half_up_satu_angka_untuk_jurnal_dan_kartu():
     k = Konek()
     out = _catat(k, qty=Decimal("3"), rate=Decimal("33.335"))  # 100,005 -> 100,01
     w = k.tulis()
-    assert out["nilai"] == Decimal("100.01") and w[1][2][2] == w[2][2][2] == w[4][2][11] == Decimal("100.01")
+    assert out["nilai"] == Decimal("100.01") and w[1][2][2] == w[2][2][2] == w[4][2][14] == Decimal("100.01")
     assert S.nilai_saldo_awal(3, 33.335) == Decimal("100.01")
 
 
@@ -125,8 +125,8 @@ def test_movement_type_dan_catatan_bisa_dipilih_pemanggil_inventory():
     k = Konek()
     _catat(k, product_code=None, movement_type="IN", catatan="Initial stock from product creation")
     kartu = k.tulis()[4]
-    assert kartu[2][4] == "IN" and kartu[2][13] == "Initial stock from product creation"
-    assert kartu[2][8] == "OB-S-260904-001"  # tanpa kode barang -> nomor jurnal
+    assert kartu[2][5] == "IN" and kartu[2][19] == "Initial stock from product creation"
+    assert kartu[2][9] == "OB-S-260904-001"  # tanpa kode barang -> nomor jurnal
 
 
 # ---------------- (3) penolakan tanpa tulisan ----------------
