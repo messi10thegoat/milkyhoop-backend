@@ -6,8 +6,8 @@ Items are the master data for goods and services used in transactions.
 """
 
 from decimal import Decimal
-from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator
-from typing import Annotated, Optional, List, Literal, Dict, Any
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator, AfterValidator
+from typing import Annotated, Optional, List, Literal, Dict, Any, Annotated
 
 from ..services.satuan_dasar import faktor_sah as _faktor_sah
 from uuid import UUID
@@ -43,6 +43,13 @@ TAX_CODES = ['', 'PPN_11', 'PPN_12', 'PPH_23_2', 'PPH_23_15']
 # =============================================================================
 
 FaktorKonversi = Annotated[Decimal, BeforeValidator(_faktor_sah)]  # SATU validator dgn units.set_conversion (putusan pemilik 5 Nov)
+
+
+def _fifo_belum_aktif(v):
+    """FIFO ditolak 422 sampai jalurnya hidup (putusan pemilik 24 Nov): dulu diterima tanpa efek pada HPP."""
+    if v == "fifo":
+        raise ValueError("Metode FIFO belum aktif; gunakan rata-rata.")
+    return v
 
 
 class UnitConversionInput(BaseModel):
@@ -175,7 +182,7 @@ class CreateItemRequest(_BadanItem):
     cogs_account_id: Optional[str] = Field(None, description="Cost of Goods Sold account UUID from CoA")
 
     # Costing method
-    costing_method: Literal["weighted_average", "fifo"] = Field("weighted_average", description="Inventory costing method")
+    costing_method: Annotated[Literal["weighted_average", "fifo"], AfterValidator(_fifo_belum_aktif)] = Field("weighted_average", description="Inventory costing method")
 
     # Opening Stock (for importing existing inventory)
     opening_stock: Optional[float] = Field(None, ge=0, description="Initial stock quantity")
@@ -274,7 +281,7 @@ class UpdateItemRequest(_BadanItem):
     cogs_account_id: Optional[str] = None
 
     # Costing method
-    costing_method: Optional[Literal["weighted_average", "fifo"]] = None
+    costing_method: Annotated[Optional[Literal["weighted_average", "fifo"]], AfterValidator(_fifo_belum_aktif)] = None
 
     # Opening Stock
     opening_stock: Optional[float] = Field(None, ge=0)
