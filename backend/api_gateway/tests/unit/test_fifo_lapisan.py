@@ -70,4 +70,4 @@ def test_migrasi_aditif_tanpa_flag_tanpa_backfill_dan_pembalik_menolak():
     for x in ("INSERT INTO", "UPDATE products", "tenant_features", "DROP "):
         assert x not in up
     assert "FIFO_SISA" in up and "FIFO_TAMBAH_SAJA" in up and "FIFO_METODE_TERKUNCI" in up and up.count("ENABLE ROW LEVEL SECURITY") == 2
-    assert dn.index("RAISE EXCEPTION") < dn.index("DROP")
+    assert dn.index("RAISE EXCEPTION") < dn.index("\nDROP")
