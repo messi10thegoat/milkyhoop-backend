@@ -1628,7 +1628,10 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                                 tenant_id, product_id, base_unit, conversion_unit, conversion_factor,
                                 purchase_price, sales_price, is_active, created_at, updated_at
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW(), NOW())
-                            """,
+                            ON CONFLICT (tenant_id, product_id, base_unit, conversion_unit) DO UPDATE SET
+                                conversion_factor = EXCLUDED.conversion_factor, purchase_price = EXCLUDED.purchase_price,
+                                sales_price = EXCLUDED.sales_price, is_active = true, updated_at = NOW()
+                            """,   # BUG-373: konversi yang sama (juga baris nonaktif/soft-delete) diaktifkan ulang, bukan INSERT kembar yang menabrak uq_unit_conversion
                             tenant_id,
                             str(item_id),
                             base_unit,
