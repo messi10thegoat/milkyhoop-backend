@@ -354,7 +354,7 @@ def test_daftar_manual_bawaan_tercatat_dan_bentuk(monkeypatch):
     assert (h["sum_masuk"], h["sum_keluar"], h["sum_neto"]) == ("1500.00", "200.00", "1300.00")
     x = h["items"][0]
     assert set(x) == {"id", "nomor", "transaction_date", "arah", "amount", "bank_account", "akun_lawan", "pihak", "description", "status",
-                      "position_text", "aksi", "aksi_semua", "documents", "doc_count", "journal_id", "journal_number"}
+                      "position_text", "jumlah_text", "arah_text", "status_text", "aksi", "aksi_semua", "documents", "doc_count", "journal_id", "journal_number"}
     assert (x["arah"], x["amount"], x["position_text"], x["aksi"], x["aksi_semua"]) == ("masuk", "1000.00", "Masuk ke Kas Toko", None, [])
     assert x["akun_lawan"] == {"id": str(COA_LAWAN), "kode": "3-10100", "nama": "Modal Pemilik"}
 
