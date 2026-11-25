@@ -19,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
+from . import fifo_lapisan
 from .ledger_kartu import tulis_kartu
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .role_resolver import (
@@ -76,11 +77,20 @@ async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> 
     return {"cogs_account_id": cogs_acct, "inventory_account_id": inv_acct}
 
 
-async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
+async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID, qty=None) -> dict:
     """
     Get unit cost for a sale using WAC with fallback to purchase_price.
     Returns {"unit_cost": Decimal, "cost_source": str}.
+    qty (FIFO unit 2, pratinjau): barang FIFO aktif -> rencana lapisan yang SAMA dengan penulis (tanpa kunci); kurang -> 409 seperti posting.
     """
+    if qty and await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):
+        try:
+            ambil = await fifo_lapisan.rencana_keluar(conn, tenant_id, product_id, Decimal(str(qty)))
+        except fifo_lapisan.StokFifoKurang as e:
+            from .galat_berkode import GalatBerkode
+            raise GalatBerkode(409, "STOK_FIFO_KURANG", f"Stok tidak cukup: diminta {e.diminta:f}, tersedia {e.tersedia:f}.")
+        total = sum((a.nilai for a in ambil), Decimal("0"))
+        return {"unit_cost": (total / Decimal(str(qty))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "cost_source": "FIFO", "total_cost": total}
     avg_cost = await conn.fetchval(
         "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
     )
@@ -97,6 +107,17 @@ async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
         "unit_cost": Decimal(str(avg_cost)) if avg_cost else Decimal("0"),
         "cost_source": cost_source,
     }
+
+
+async def _fifo_ambil(conn, tenant_id: str, product_id, quantity):
+    """None = bukan barang FIFO aktif. Selain itu daftar Ambil (sudah terkunci). T4: kurang -> 409 STOK_FIFO_KURANG."""
+    if not await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):
+        return None
+    try:
+        return await fifo_lapisan.ambil_keluar(conn, tenant_id, product_id, quantity)
+    except fifo_lapisan.StokFifoKurang as e:
+        from .galat_berkode import GalatBerkode
+        raise GalatBerkode(409, "STOK_FIFO_KURANG", f"Stok tidak cukup: diminta {e.diminta:f}, tersedia {e.tersedia:f}.")
 
 
 async def assert_gudang_tidak_terkunci(conn, tenant_id: str, warehouse_id, source_type: Optional[str] = None, source_id=None) -> None:
@@ -173,12 +194,19 @@ async def record_inventory_outbound(
     # t10-tanggal-bisnis: cadangan = hari ini zona tenant, bukan date.today().
     movement_date = receipt_date or await tanggal_dokumen(conn, tenant_id)
 
-    # 1. Get weighted average cost
-    cost_info = await get_cost_for_sale(conn, tenant_id, product_id)
-    unit_cost = cost_info["unit_cost"]
-    cost_source = cost_info["cost_source"]
-    # Law 25 (6 Nov 2026): dulu int(float x float) MEMOTONG sen -> jurnal HPP < nilai kartu stok (qty x unit_cost) -> HC15 bergeser
-    total_cost = (Decimal(str(quantity)) * Decimal(str(unit_cost))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    # FIFO unit 2 (flag fifo_v1 + barang fifo + costing_mulai): HPP = Σ nilai lapisan yang dimakan (T4: kurang -> 409). Selain itu jalur WAC lama.
+    ambil = await _fifo_ambil(conn, tenant_id, product_id, quantity)
+    if ambil is not None:
+        total_cost = sum((a.nilai for a in ambil), Decimal("0"))
+        unit_cost = (total_cost / Decimal(str(quantity))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)  # kolom 2dp; total_cost = penentu (Σ lapisan)
+        cost_source = "FIFO"
+    else:
+        # 1. Get weighted average cost
+        cost_info = await get_cost_for_sale(conn, tenant_id, product_id)
+        unit_cost = cost_info["unit_cost"]
+        cost_source = cost_info["cost_source"]
+        # Law 25 (6 Nov 2026): dulu int(float x float) MEMOTONG sen -> jurnal HPP < nilai kartu stok (qty x unit_cost) -> HC15 bergeser
+        total_cost = (Decimal(str(quantity)) * Decimal(str(unit_cost))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if total_cost == 0:
         logger.warning(
@@ -200,13 +228,11 @@ async def record_inventory_outbound(
             f"NEGATIVE INVENTORY: product_id={product_id} balance={new_balance} warehouse={warehouse_id}"
         )
 
-    # Get average_cost snapshot
+    # Get average_cost snapshot (FIFO: nilai sisa lapisan ÷ qty sisa SESUDAH baris ini, aturan 3.3)
     avg_cost_snapshot = (
-        await conn.fetchval(
-            "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
-        )
-        or unit_cost
-    )
+        await fifo_lapisan.rata_sisa_sesudah(conn, tenant_id, product_id, ambil) if ambil is not None
+        else await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id)
+    ) or unit_cost
 
     # 3. Insert inventory_ledger (trigger handles warehouse_stock)
     ledger_id = uuid4()
@@ -216,6 +242,8 @@ async def record_inventory_outbound(
         movement_date=movement_date, source_type=source_type, source_id=source_id, source_number=source_number, quantity_in=0,
         quantity_out=quantity, quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost_snapshot,
         warehouse_id=warehouse_id, created_by=user_id, notes=notes)
+    if ambil is not None:
+        await fifo_lapisan.catat_pakai(conn, tenant_id, ledger_id, ambil)
 
     # 4. Create COGS journal (if cost > 0)
     journal_id = jurnal_pemanggil
@@ -433,6 +461,9 @@ async def record_inventory_inbound(
         average_cost=new_avg_cost, warehouse_id=warehouse_id, journal_id=journal_id, created_by=user_id, notes=notes, batch_id=batch_id,
         transaction_unit=transaction_unit, transaction_quantity=txn_qty_dec, conversion_factor=conv_factor_dec,
         storage_location_id=storage_location_id)
+    if await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):   # FIFO unit 2: satu baris masuk = satu lapisan
+        await fifo_lapisan.catat_masuk(conn, tenant_id, product_id, ledger_id, movement_date, quantity_dec,
+                                       fifo_lapisan.nilai_masuk(quantity_dec, unit_cost_dec), batch_id)
 
     return {
         "ledger_id": ledger_id,
@@ -603,6 +634,11 @@ async def record_inventory_reversal(
         avg_cost = await snapshot_wac_sesudah(conn, tenant_id, product_id, rev_qty_in, rev_qty_out, unit_cost, (current_balance, nilai_sebelum))
 
         total_cost = quantity_reversed * unit_cost
+        # FIFO unit 2: nilai pembalik = nilai lapisan asal (bukan qty x unit_cost 2dp) -> lapisan dan kartu pulih persis; T5 = 409 bila lapisan terpakai
+        rencana_fifo = (await fifo_lapisan.rencana_balik(conn, tenant_id, product_id, entry["id"], orig_qty_in > 0)
+                        if await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id) else None)
+        if rencana_fifo is not None:
+            total_cost = rencana_fifo.nilai
 
         # Insert reversal entry — DB trigger auto-updates warehouse_stock
         ledger_id = uuid4()
@@ -613,6 +649,8 @@ async def record_inventory_reversal(
             source_number=entry["source_number"], quantity_in=rev_qty_in, quantity_out=rev_qty_out, quantity_balance=new_balance,
             unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost, warehouse_id=entry["warehouse_id"],
             journal_id=reversal_journal_id, created_by=created_by, notes=f"{notes_prefix} - inventory reversal", batch_id=entry["batch_id"])
+        if rencana_fifo is not None:
+            await fifo_lapisan.catat_balik(conn, tenant_id, ledger_id, rencana_fifo)
 
         # Reverse batch quantities if batch_id present
         batch_id = (

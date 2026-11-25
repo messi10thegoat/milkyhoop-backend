@@ -216,9 +216,10 @@ async def rencana_retur(conn, tid: str, keluar: list, baris_dok) -> Optional[dic
     baris = []
     for k in keluar:
         p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
-        biaya = await get_cost_for_sale(conn, tid, p["id"])
+        biaya = await get_cost_for_sale(conn, tid, p["id"], k["qty"])   # FIFO unit 2: barang FIFO -> Σ lapisan, SAMA dengan penulis
         akun = await resolve_inventory_accounts(conn, tid, p["id"])
-        baris.append({**k, "produk": p, "unit_cost": Decimal(str(biaya["unit_cost"])), "total": _r2(Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"]))),
+        baris.append({**k, "produk": p, "unit_cost": Decimal(str(biaya["unit_cost"])),
+                      "total": biaya.get("total_cost", _r2(Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"])))),
                       "cost_source": biaya["cost_source"], "akun": akun["inventory_account_id"]})
     nilai = {str(it["id"]): Decimal(str(it["total"] or 0)) for it in baris_dok}
     stok_id = {str(b["item_row_id"]) for b in baris if b["akun"]}
