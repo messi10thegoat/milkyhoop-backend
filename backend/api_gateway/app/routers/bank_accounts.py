@@ -1038,7 +1038,7 @@ async def get_bank_transactions(
             param_idx += 1
 
             jl_where = " AND ".join(jl_conds + [
-                f"jl.account_id = {coa_param}", "je.status = 'POSTED'", f"je.tenant_id = {tenant_param}",
+                f"jl.account_id = {coa_param}", "is_effective_journal(je.id)", f"je.tenant_id = {tenant_param}",
                 "NOT EXISTS (SELECT 1 FROM bank_transactions bx WHERE bx.journal_id = je.id AND bx.bank_account_id = $1)"])
             jurnal_sql = f"""
                     UNION ALL
@@ -1197,7 +1197,7 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                 FROM journal_lines jl
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = (SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2)
-                    AND je.tenant_id = $2 AND je.status = 'POSTED'
+                    AND je.tenant_id = $2 AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
             """,
                 bank_account_id,
@@ -1430,7 +1430,7 @@ async def get_bank_account_statement(
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.journal_date < $3
                     AND je.reversed_by_id IS NULL
             """,
@@ -1453,7 +1453,7 @@ async def get_bank_account_statement(
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.journal_date BETWEEN $3 AND $4
                     AND je.reversed_by_id IS NULL
                 ORDER BY je.journal_date ASC, je.created_at ASC

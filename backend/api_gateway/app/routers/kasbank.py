@@ -220,7 +220,7 @@ async def get_account_transactions(
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
                     {date_filter}
                     {search_filter}
@@ -239,7 +239,7 @@ async def get_account_transactions(
                 JOIN journal_lines jl ON jl.journal_id = je.id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
                     {date_filter}
                     {search_filter}
@@ -330,7 +330,7 @@ async def get_account_summary(
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
                     AND je.journal_date >= $3::date - INTERVAL '{period_filter}'
                     AND jl.debit > 0
@@ -347,7 +347,7 @@ async def get_account_summary(
                 JOIN journal_entries je ON je.id = jl.journal_id
                 WHERE jl.account_id = $1
                     AND je.tenant_id = $2
-                    AND je.status = 'POSTED'
+                    AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
                     AND je.journal_date >= $3::date - INTERVAL '{period_filter}'
                     AND jl.credit > 0
