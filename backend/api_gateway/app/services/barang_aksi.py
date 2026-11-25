@@ -9,14 +9,58 @@ from .barang_daftar import _d, _q, aksi_tersedia, dilacak
 
 # SATU daftar jejak: penulis DELETE /items/{id} (smart_delete) dan pratinjau hapus memakai daftar yang sama.
 JEJAK_BARANG = [
+    # (tabel, kolom barang, None) -- BUG U3-3 (25 Nov 2026): SEMUA rujukan ke products (diukur dari information_schema live): FK NO ACTION + tabel tanpa FK.
     ("inventory_ledger", "product_id", None),
     ("sales_invoice_items", "item_id", None),
+    ("sales_receipt_items", "item_id", None),
+    ("sales_order_items", "item_id", None),
+    ("quote_items", "item_id", None),
+    ("credit_note_items", "item_id", None),
+    ("invoice_fulfillment_items", "product_id", None),
     ("bill_items", "product_id", None),
+    ("purchase_order_items", "item_id", None),
+    ("goods_receipt_items", "item_id", None),
+    ("vendor_credit_items", "item_id", None),
+    ("recurring_bill_items", "item_id", None),
     ("stock_adjustment_items", "product_id", None),
+    ("stock_opname_lines", "product_id", None),
     ("stock_transfer_items", "item_id", None),
+    ("branch_transfer_lines", "product_id", None),
+    ("item_batches", "item_id", None),
+    ("item_serials", "item_id", None),
+    ("price_list_items", "item_id", None),
+    ("journal_lines", "item_id", None),
     ("production_orders", "product_id", None),
+    ("production_order_materials", "product_id", None),
+    ("bill_of_materials", "product_id", None),
+    ("bom_components", "component_product_id", None),
+    ("bom_substitutes", "substitute_product_id", None),
     ("recipes", "product_id", None),
+    ("recipe_ingredients", "ingredient_product_id", None),
+    ("standard_costs", "product_id", None),
+    ("cost_variances", "product_id", None),
+    ("kds_order_items", "product_id", None),
+    ("kds_item_history", "product_id", None),
+    ("products", "matrix_parent_id", None),
 ]
+# Teks ramah per sumber jejak (server; FE tak membuat peta label). Tabel tak berlabel -> nama generik, bukan nama tabel mentah.
+LABEL_JEJAK = {
+    "inventory_ledger": "Kartu stok", "sales_invoice_items": "Faktur penjualan", "sales_receipt_items": "Penjualan tunai", "sales_order_items": "Pesanan penjualan",
+    "quote_items": "Penawaran", "credit_note_items": "Nota kredit", "invoice_fulfillment_items": "Pengiriman barang", "bill_items": "Faktur pembelian",
+    "purchase_order_items": "Pesanan pembelian", "goods_receipt_items": "Penerimaan barang", "vendor_credit_items": "Nota debit", "recurring_bill_items": "Tagihan berulang",
+    "stock_adjustment_items": "Penyesuaian stok", "stock_opname_lines": "Stok opname", "stock_transfer_items": "Pemindahan barang", "branch_transfer_lines": "Transfer cabang",
+    "item_batches": "Batch", "item_serials": "Nomor seri", "price_list_items": "Daftar harga", "journal_lines": "Jurnal", "production_orders": "Perintah produksi",
+    "production_order_materials": "Bahan perintah produksi", "bill_of_materials": "Formula produksi (BOM)", "bom_components": "Komponen formula produksi",
+    "bom_substitutes": "Pengganti komponen formula", "recipes": "Resep", "recipe_ingredients": "Bahan resep", "standard_costs": "Biaya standar",
+    "cost_variances": "Selisih biaya", "kds_order_items": "Pesanan dapur", "kds_item_history": "Riwayat dapur", "products": "Varian barang",
+}
+SQL_HITUNG_JEJAK = "SELECT COUNT(*) FROM (" + " UNION ALL ".join(f"SELECT 1 FROM {t} WHERE {c} = p.id" for t, c, _ in JEJAK_BARANG) + ") txns"   # detail satu barang; sama dgn JEJAK_BARANG
+
+
+def label_jejak(tabel: str) -> str:
+    return LABEL_JEJAK.get(tabel, "Transaksi lain")
+
+
 SO_TERBUKA = ("draft", "confirmed", "partial_shipped", "shipped", "partial_invoiced", "invoiced")   # belum completed/cancelled
 PO_TERBUKA = ("draft", "sent", "partial_received", "received", "partial_billed", "billed")         # belum closed/cancelled
 
@@ -75,11 +119,15 @@ def rencana_hapus(b: Optional[dict], jejak: list) -> dict:
     if not b:
         return _hasil([_blok("BARANG_TAK_ADA", "Barang tidak ditemukan.")], None)
     nama = b.get("nama_produk") or b.get("name") or "Barang"
-    rinci = [{"sumber": s, "jumlah": int(n)} for s, n in jejak if n]
+    rinci = [{"sumber": s, "sumber_text": label_jejak(s), "jumlah": int(n)} for s, n in jejak if n]
     if rinci:
-        return _hasil([_blok("BARANG_BERJEJAK", f"{nama} tidak bisa dihapus karena masih memiliki transaksi. Gunakan Nonaktifkan.", id=str(b.get("id")))],
-                      {"jenis": "tak_bisa", "jejak": rinci, "saran": "Nonaktifkan"})
-    return _hasil([], {"jenis": "hapus_permanen", "jejak": [], "saran": None})
+        label = list(dict.fromkeys(r["sumber_text"] for r in rinci))
+        sebut = ", ".join(label[:3]) + (f" dan {len(label) - 3} lainnya" if len(label) > 3 else "")
+        teks = f"{nama} sudah dipakai di {sebut}, jadi tidak bisa dihapus. Gunakan Nonaktifkan."
+        return _hasil([_blok("BARANG_BERJEJAK", teks, id=str(b.get("id")))],
+                      {"jenis": "tak_bisa", "jejak": rinci, "saran": "Nonaktifkan", "teks": teks})
+    return _hasil([], {"jenis": "hapus_permanen", "jejak": [], "saran": None,
+                       "teks": f"{nama} belum pernah dipakai. Menghapus bersifat permanen dan tidak bisa dibatalkan."})
 
 
 def rencana_kategori_hapus(nama: str, dipakai: int, ada: bool) -> dict:

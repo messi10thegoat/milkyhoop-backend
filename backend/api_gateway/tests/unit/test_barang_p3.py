@@ -73,7 +73,7 @@ def test_hapus_berjejak_blok_dengan_rincian_dan_saran():
     r = BA.rencana_hapus(_b(), [("inventory_ledger", 4), ("sales_invoice_items", 2)])
     assert not r["ok"] and r["blocks"][0]["code"] == "BARANG_BERJEJAK"
     assert r["rencana"]["jenis"] == "tak_bisa" and r["rencana"]["saran"] == "Nonaktifkan"
-    assert r["rencana"]["jejak"] == [{"sumber": "inventory_ledger", "jumlah": 4}, {"sumber": "sales_invoice_items", "jumlah": 2}]
+    assert r["rencana"]["jejak"] == [{"sumber": "inventory_ledger", "sumber_text": "Kartu stok", "jumlah": 4}, {"sumber": "sales_invoice_items", "sumber_text": "Faktur penjualan", "jumlah": 2}]
 
 
 def test_hapus_tanpa_jejak_permanen():

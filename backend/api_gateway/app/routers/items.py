@@ -1935,6 +1935,10 @@ async def delete_item(request: Request, item_id: UUID):
         async with conn.transaction():
             async def kerja():
                 b = await BA.ukur_barang(conn, tenant_id, str(item_id))
+                if b:   # U3-3: penentu SAMA dgn pratinjau (BA.rencana_hapus) -> 409 berkalimat; smart_delete tetap penjaga kedua
+                    rc = BA.rencana_hapus(b, await BA.ukur_jejak(conn, str(item_id)))
+                    if rc["blocks"]:
+                        raise HTTPException(status_code=409, detail=rc["blocks"][0]["message"])
                 result = await smart_delete(
                     conn,
                     tenant_id=tenant_id,
@@ -1957,9 +1961,12 @@ async def delete_item(request: Request, item_id: UUID):
         return DeleteItemResponse(success=True, message=r["message"])
     except HTTPException:
         raise
+    except asyncpg.ForeignKeyViolationError as e:   # U3-3: rujukan yang belum terdaftar di JEJAK_BARANG -> 409 berkalimat, bukan teks galat mentah
+        logger.warning(f"Hapus barang ditolak FK: {e}")
+        raise HTTPException(status_code=409, detail="Barang masih dipakai data lain, jadi tidak bisa dihapus. Gunakan Nonaktifkan.")
     except Exception as e:
         logger.error(f"Error deleting item: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Barang gagal dihapus.")
     finally:
         if conn:
             await conn.close()
@@ -3703,21 +3710,7 @@ async def get_item(request: Request, item_id: UUID):
                             SELECT COALESCE(SUM(il.quantity_in) - SUM(il.quantity_out), 0) as jumlah,
                             COALESCE(SUM(il.total_cost * SIGN(il.quantity_in - il.quantity_out)), 0) as total_nilai,
                             (
-                                SELECT COUNT(*) FROM (
-                                    SELECT 1 FROM inventory_ledger WHERE product_id = p.id AND tenant_id = p.tenant_id
-                                    UNION ALL
-                                    SELECT 1 FROM sales_invoice_items WHERE item_id = p.id
-                                    UNION ALL
-                                    SELECT 1 FROM bill_items WHERE product_id = p.id
-                                    UNION ALL
-                                    SELECT 1 FROM stock_adjustment_items WHERE product_id = p.id
-                                    UNION ALL
-                                    SELECT 1 FROM stock_transfer_items WHERE item_id = p.id
-                                    UNION ALL
-                                    SELECT 1 FROM production_orders WHERE product_id = p.id AND tenant_id = p.tenant_id
-                                    UNION ALL
-                                    SELECT 1 FROM recipes WHERE product_id = p.id AND tenant_id = p.tenant_id
-                                ) txns
+                                """ + BA.SQL_HITUNG_JEJAK + """
                             ) as transaction_count
                             FROM inventory_ledger il
                             WHERE il.product_id = p.id AND il.tenant_id = CAST(p.tenant_id AS TEXT)
