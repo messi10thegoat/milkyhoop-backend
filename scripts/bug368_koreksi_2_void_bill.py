@@ -43,7 +43,7 @@ async def main():
             "SELECT je.journal_number, je.source_id AS bill_id, b.status, b.created_by FROM journal_entries je JOIN bills b ON b.id::text=je.source_id::text AND b.tenant_id=je.tenant_id "
             "WHERE je.tenant_id=$1 AND je.source_type='BILL' AND je.journal_number = ANY($2::text[]) AND je.reversed_by_id IS NULL "
             "AND NOT EXISTS (SELECT 1 FROM inventory_ledger il WHERE il.journal_id=je.id) ORDER BY 1", TENANT, list(JURNAL))
-        pemakai = await conn.fetchval("SELECT id FROM users WHERE tenant_id=$1 AND is_active ORDER BY created_at LIMIT 1", TENANT)
+        pemakai = await conn.fetchval("SELECT created_by FROM bills WHERE tenant_id=$1 AND created_by IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC LIMIT 1", TENANT)  # pengguna pembuat bill kaos (tabel pengguna = "User", bukan users)
     assert len(rows) == 4, f"diharapkan 4 bill, dapat {len(rows)}"
     print("pemakai servis:", pemakai)
     if APPLY:
