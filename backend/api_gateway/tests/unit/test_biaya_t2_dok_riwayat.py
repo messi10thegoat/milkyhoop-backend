@@ -103,7 +103,7 @@ def test_riwayat_lengkap(tangkap):
     jenis = [e["jenis"] for e in tangkap["ev"]]
     assert jenis == ["BIAYA_DIBUAT", "BIAYA_DIPOSTING", "BIAYA_DIBATALKAN", "BUKTI_DITAMBAH"]
     ev = {e["jenis"]: e for e in tangkap["ev"]}
-    assert ev["BIAYA_DIBATALKAN"]["ringkas"] == "Biaya EXP-0001 dibatalkan (void): salah input"
+    assert ev["BIAYA_DIBATALKAN"]["ringkas"] == "Biaya EXP-0001 dibatalkan: salah input"
     assert ev["BIAYA_DIBATALKAN"]["aktor_id"] == str(U2)
     assert ev["BIAYA_DIPOSTING"]["aktor_id"] == str(U2) and "Kas Toko" in ev["BIAYA_DIPOSTING"]["ringkas"]
     assert "Rp" not in ev["BIAYA_DIBUAT"]["ringkas"]  # nominal saat dibuat tak tersimpan (Law 12): tak diklaim

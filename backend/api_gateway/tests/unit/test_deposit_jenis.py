@@ -258,7 +258,7 @@ def test_label_ringkas():
 def test_riwayat_so_memakai_jenis():
     src = _rata(SR.riwayat_so)
     assert 'sql_jenis_efektif("customer_deposits")' in src
-    assert 'f"{lb} {n} {_rp(d[\'amount\'])} diterima (diposting)"' in src
+    assert 'f"{lb} {n} {_rp(d[\'amount\'])} diterima"' in src
     assert "Uang muka {n}" not in src
 
 
