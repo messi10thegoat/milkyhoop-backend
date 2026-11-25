@@ -446,6 +446,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/inventory/products$", ["POST"], "product", "C"),
     (r"^/api/inventory/stok\-baris$", ["POST"], "item", "R"),  # B1 BUG-049/075: POST baca-saja (badan daftar barang)
     (r"^/api/inventory/products/[^/]+/adjust$", ["POST"], "stock_adjust", "C"),
+    (r"^/api/inventory/stok\-minimum/[^/]+$", ["PUT"], "item", "U"),  # MN-1 minimum per gudang = ubah master barang
     (r"^/api/members/add-points$", ["POST"], "customer", "U"),
     (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),
     (r"^/api/payment-requests/[^/]+/cancel$", ["POST"], "payment_request", "U"),
@@ -1213,6 +1214,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/inventory/categories$", ["GET"], "item", "R"),
     (r"^/api/inventory/low\-stock$", ["GET"], "item", "R"),
     (r"^/api/inventory/reorder$", ["GET"], "item", "R"),
+    (r"^/api/inventory/stok\-minimum/[^/]+$", ["GET"], "item", "R"),  # MN-1 minimum per gudang (baca)
     (r"^/api/inventory/product\-margins$", ["GET"], "item", "R"),
     (r"^/api/inventory/products$", ["GET"], "item", "R"),
     (r"^/api/inventory/products/[^/]+$", ["GET"], "item", "R"),

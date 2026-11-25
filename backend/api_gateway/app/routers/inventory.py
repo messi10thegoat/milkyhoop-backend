@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
+from uuid import UUID
 import asyncpg
 
 # Import centralized config
@@ -693,7 +694,7 @@ async def get_low_stock_alerts(
 
 
 @router.get("/reorder")
-async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=500)):
+async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=500), per_gudang: bool = Query(False)):
     """Daftar pesan ulang dari products.reorder_level (services/reorder_persediaan: stok ledger + dipesan PO terbuka -> usulan beli). Server-hitung."""
     from ..services import reorder_persediaan as RP
     from fastapi.encoders import jsonable_encoder
@@ -704,8 +705,58 @@ async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=50
         raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
     conn = await get_db_connection()
     try:
+        if per_gudang:   # MN-1 (flag gelap stok_minimum_gudang_v1): minimum per gudang
+            from ..services import stok_minimum_gudang as SMG
+            await SMG.wajib_flag(conn, tenant_id)
+            return jsonable_encoder({"success": True, "data": await SMG.daftar_pesan_ulang(conn, tenant_id, limit)})
         hasil = await RP.daftar(conn, tenant_id, limit)
         return jsonable_encoder({"success": True, "data": hasil})
+    finally:
+        await conn.close()
+
+
+class _BarisMinimumGudang(BaseModel):
+    gudang_id: UUID
+    minimum: float = 0
+    maksimum: Optional[float] = None
+
+
+class _SimpanMinimumGudang(BaseModel):
+    baris: List[_BarisMinimumGudang]
+
+
+def _ctx_tenant(request: Request):
+    if not hasattr(request.state, "user") or not request.state.user or not request.state.user.get("tenant_id"):
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
+    return request.state.user["tenant_id"], request.state.user.get("user_id")
+
+
+@router.get("/stok-minimum/{item_id}")
+async def get_stok_minimum_gudang(request: Request, item_id: UUID):
+    """MN-1: minimum/maksimum + stok per gudang (ledger) satu barang. Flag gelap stok_minimum_gudang_v1."""
+    from ..services import stok_minimum_gudang as SMG
+    from fastapi.encoders import jsonable_encoder
+    tid, _ = _ctx_tenant(request)
+    conn = await get_db_connection()
+    try:
+        await SMG.wajib_flag(conn, tid)
+        return jsonable_encoder({"success": True, "data": {"gudang": await SMG.baca(conn, tid, item_id)}})
+    finally:
+        await conn.close()
+
+
+@router.put("/stok-minimum/{item_id}")
+async def put_stok_minimum_gudang(request: Request, item_id: UUID, body: _SimpanMinimumGudang):
+    """MN-1: simpan minimum/maksimum per gudang (minimum 0 + maksimum kosong = hapus). Master data, tanpa jurnal."""
+    from ..services import stok_minimum_gudang as SMG
+    from fastapi.encoders import jsonable_encoder
+    tid, uid = _ctx_tenant(request)
+    conn = await get_db_connection()
+    try:
+        await SMG.wajib_flag(conn, tid)
+        async with conn.transaction():
+            await SMG.simpan(conn, tid, item_id, [b.model_dump() for b in body.baris], uid)
+        return jsonable_encoder({"success": True, "data": {"gudang": await SMG.baca(conn, tid, item_id)}})
     finally:
         await conn.close()
 
