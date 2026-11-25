@@ -210,13 +210,13 @@ async def rencana_retur(conn, tid: str, keluar: list, baris_dok) -> Optional[dic
     """BUG-053: biaya retur barang dilacak, BACA-SAJA, fungsi baca YANG SAMA dengan record_inventory_outbound. keluar = NG.rencana_keluar
     (gudang asal; ND-GUDANG) -- gudang SAMA dengan penulis. Biaya = WAC saat ini (Rule 3), total = r2(qty × unit_cost) == penulis.
     -> {baris: [{**keluar, produk, unit_cost, total, cost_source, akun}], bagian, semua, akun_selisih} | None (tanpa barang dilacak)."""
-    from .inventory_helpers import get_cost_for_sale, resolve_inventory_accounts
+    from .inventory_helpers import biaya_keluar_fifo, get_cost_for_sale, resolve_inventory_accounts
     if not keluar:
         return None
     baris = []
     for k in keluar:
         p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
-        biaya = await get_cost_for_sale(conn, tid, p["id"], k["qty"])   # FIFO unit 2: barang FIFO -> Σ lapisan, SAMA dengan penulis
+        biaya = await biaya_keluar_fifo(conn, tid, p["id"], k["qty"]) or await get_cost_for_sale(conn, tid, p["id"])   # FIFO unit 2: Σ lapisan, SAMA dgn penulis
         akun = await resolve_inventory_accounts(conn, tid, p["id"])
         baris.append({**k, "produk": p, "unit_cost": Decimal(str(biaya["unit_cost"])),
                       "total": biaya.get("total_cost", _r2(Decimal(str(k["qty"])) * Decimal(str(biaya["unit_cost"])))),

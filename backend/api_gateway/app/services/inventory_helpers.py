@@ -77,20 +77,29 @@ async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> 
     return {"cogs_account_id": cogs_acct, "inventory_account_id": inv_acct}
 
 
-async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID, qty=None) -> dict:
+async def biaya_keluar_fifo(conn, tenant_id: str, product_id, qty) -> Optional[dict]:
+    """FIFO unit 2, PRATINJAU: barang FIFO aktif -> rencana lapisan yang SAMA dengan penulis (tanpa kunci); kurang -> 409 seperti posting.
+    None = bukan barang FIFO aktif (pemanggil memakai get_cost_for_sale / WAC)."""
+    if not await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):
+        return None
+    try:
+        ambil = await fifo_lapisan.rencana_keluar(conn, tenant_id, product_id, Decimal(str(qty)))
+    except fifo_lapisan.StokFifoKurang as e:
+        _tolak_kurang(e)
+    total = sum((a.nilai for a in ambil), Decimal("0"))
+    return {"unit_cost": (total / Decimal(str(qty))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "cost_source": "FIFO", "total_cost": total}
+
+
+def _tolak_kurang(e):
+    from .galat_berkode import GalatBerkode
+    raise GalatBerkode(409, "STOK_FIFO_KURANG", f"Stok tidak cukup: diminta {e.diminta:f}, tersedia {e.tersedia:f}.")
+
+
+async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
     """
     Get unit cost for a sale using WAC with fallback to purchase_price.
     Returns {"unit_cost": Decimal, "cost_source": str}.
-    qty (FIFO unit 2, pratinjau): barang FIFO aktif -> rencana lapisan yang SAMA dengan penulis (tanpa kunci); kurang -> 409 seperti posting.
     """
-    if qty and await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):
-        try:
-            ambil = await fifo_lapisan.rencana_keluar(conn, tenant_id, product_id, Decimal(str(qty)))
-        except fifo_lapisan.StokFifoKurang as e:
-            from .galat_berkode import GalatBerkode
-            raise GalatBerkode(409, "STOK_FIFO_KURANG", f"Stok tidak cukup: diminta {e.diminta:f}, tersedia {e.tersedia:f}.")
-        total = sum((a.nilai for a in ambil), Decimal("0"))
-        return {"unit_cost": (total / Decimal(str(qty))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "cost_source": "FIFO", "total_cost": total}
     avg_cost = await conn.fetchval(
         "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
     )
@@ -116,8 +125,7 @@ async def _fifo_ambil(conn, tenant_id: str, product_id, quantity):
     try:
         return await fifo_lapisan.ambil_keluar(conn, tenant_id, product_id, quantity)
     except fifo_lapisan.StokFifoKurang as e:
-        from .galat_berkode import GalatBerkode
-        raise GalatBerkode(409, "STOK_FIFO_KURANG", f"Stok tidak cukup: diminta {e.diminta:f}, tersedia {e.tersedia:f}.")
+        _tolak_kurang(e)
 
 
 async def assert_gudang_tidak_terkunci(conn, tenant_id: str, warehouse_id, source_type: Optional[str] = None, source_id=None) -> None:
