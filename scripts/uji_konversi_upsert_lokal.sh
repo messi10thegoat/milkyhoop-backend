@@ -43,7 +43,7 @@ nonaktif_semua
 cek "2 dibuang: tak ada konversi aktif"        "$(Q "SELECT count(*) FROM unit_conversions WHERE product_id='$P' AND is_active")" "0"
 out=$(pasang Dus 24)
 cek "2 pasang Dus lagi tanpa galat"            "$(echo "$out" | grep -c 'duplicate key')" "0"
-cek "2 faktor baru, satu baris, aktif"         "$(Q "SELECT conversion_factor::int||'/'||count(*)||'/'||bool_and(is_active) FROM unit_conversions WHERE product_id='$P' AND conversion_unit='Dus' GROUP BY conversion_factor")" "24/1/t"
+cek "2 faktor baru, satu baris, aktif"         "$(Q "SELECT conversion_factor::int||'/'||count(*)||'/'||bool_and(is_active) FROM unit_conversions WHERE product_id='$P' AND conversion_unit='Dus' GROUP BY conversion_factor")" "24/1/true"
 # 3 nama konversi BERBEDA = baris terpisah (tak menimpa Dus)
 nonaktif_semua; pasang Dus 24 >/dev/null; pasang Karton 48 >/dev/null
 cek "3 dua nama berbeda = dua baris aktif"     "$(Q "SELECT count(*) FROM unit_conversions WHERE product_id='$P' AND is_active")" "2"
