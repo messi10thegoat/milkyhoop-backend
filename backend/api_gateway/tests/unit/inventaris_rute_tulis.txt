@@ -431,6 +431,7 @@ POST /api/inventory/stok-baris
 POST /api/invite/{token}/accept
 POST /api/invite/{token}/decline
 POST /api/item-batches
+POST /api/item-batches/preview
 POST /api/item-batches/{batch_id}/adjust
 POST /api/item-batches/{batch_id}/adjust/preview
 POST /api/item-batches/{batch_id}/status

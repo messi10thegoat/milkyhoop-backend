@@ -12,6 +12,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..services import batch_aksi as BA
+from ..services import idem_buat
 from ..services import stok_sesuai as SS
 from ..services.bayar_keluar_rencana import Blok
 from ..services.galat_berkode import GalatBerkode
@@ -250,92 +251,59 @@ async def get_item_batch(request: Request, batch_id: UUID):
         return ItemBatchDetailResponse(data=data)
 
 
+@router.post("/preview")
+async def preview_buat_batch(request: Request, body: CreateItemBatchRequest):
+    """Pratinjau daftarkan batch (BACA SAJA; penentu BA.rencana_buat == POST /item-batches). Bentuk G3."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            bl = Blok(True)
+            r = await BA.rencana_buat(conn, ctx["tenant_id"], body, bl, await tanggal_dokumen(conn, ctx["tenant_id"]))
+            return BA.pratinjau({"blocks": bl.daftar, "peringatan": r["peringatan"], "rencana": r["rencana"]}, body.model_dump(mode="json"))
+
+
 @router.post("", response_model=CreateItemBatchResponse)
-async def create_item_batch(request: Request, body: CreateItemBatchRequest):
-    """Create a new batch"""
+async def create_item_batch(request: Request, body: CreateItemBatchRequest, response: Response = None):
+    """Daftarkan batch baru (Batch C): nomor/kedaluwarsa/mutu SAJA, qty 0, tanpa ledger/jurnal; stok masuk lewat Penerimaan/Penyesuaian.
+    Penentu SAMA dgn POST /preview (blok pertama -> galat berkode). X-Idempotency-Key opsional (kunci sama + isi sama = respons asli)."""
     ctx = get_user_context(request)
     pool = await get_pool()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"]
-            )
-
-            # Check batch number uniqueness
-            existing = await conn.fetchval(
-                "SELECT id FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3",
-                ctx["tenant_id"],
-                body.item_id,
-                body.batch_number,
-            )
-            if existing:
-                raise HTTPException(
-                    status_code=400, detail="Batch number already exists for this item"
-                )
-
-            total_value = int(body.initial_quantity * body.unit_cost)
-
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            kp, sidik, lama = await idem_buat.mulai(conn, ctx, idem_buat.kunci_dari(request), "ITEM_BATCH_CREATE", body, "item_batches", "batch", response)
+            if lama is not None:
+                return lama
+            await BA.rencana_buat(conn, ctx["tenant_id"], body, Blok(False), await tanggal_dokumen(conn, ctx["tenant_id"]))
+            nomor = body.batch_number.strip()
             # t10-tanggal-bisnis: cadangan received_date = hari ini zona tenant.
-            received_date = body.received_date or await tanggal_dokumen(
-                conn, ctx["tenant_id"]
-            )
-
-            row = await conn.fetchrow(
-                """
-                INSERT INTO item_batches (
-                    tenant_id, item_id, batch_number, manufacture_date, expiry_date,
-                    received_date, initial_quantity, current_quantity, unit_cost, total_value,
-                    purchase_order_id, bill_id, supplier_batch_number, quality_grade, quality_notes,
-                    created_by
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                RETURNING *
-                """,
-                ctx["tenant_id"],
-                body.item_id,
-                body.batch_number,
-                body.manufacture_date,
-                body.expiry_date,
-                received_date,
-                body.initial_quantity,
-                body.unit_cost,
-                total_value,
-                body.purchase_order_id,
-                body.bill_id,
-                body.supplier_batch_number,
-                body.quality_grade,
-                body.quality_notes,
-                ctx.get("user_id"),
-            )
-
-            batch_id = row["id"]
-
-            # Create warehouse stock if warehouse provided
-            if body.warehouse_id:
-                await conn.execute(
+            received_date = body.received_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+            try:
+                row = await conn.fetchrow(
                     """
-                    INSERT INTO batch_warehouse_stock (tenant_id, batch_id, warehouse_id, quantity)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO item_batches (
+                        tenant_id, item_id, batch_number, manufacture_date, expiry_date,
+                        received_date, initial_quantity, current_quantity, unit_cost, total_value,
+                        purchase_order_id, bill_id, supplier_batch_number, quality_grade, quality_notes,
+                        created_by
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, $7, $8, $9, $10, $11, $12)
+                    RETURNING *
                     """,
-                    ctx["tenant_id"],
-                    batch_id,
-                    body.warehouse_id,
-                    body.initial_quantity,
+                    ctx["tenant_id"], body.item_id, nomor, body.manufacture_date, body.expiry_date, received_date,
+                    body.purchase_order_id, body.bill_id, body.supplier_batch_number, body.quality_grade, body.quality_notes,
+                    ctx.get("user_id"),
                 )
+            except asyncpg.UniqueViolationError:   # dua pembuat bersamaan: kendala UNIQUE menang -> 409, bukan 500
+                raise GalatBerkode(409, "NOMOR_BATCH_KEMBAR", f"Nomor batch {nomor} sudah dipakai batch lain untuk barang ini.", field="batch_number")
 
-            # Get item info
             item = await conn.fetchrow(
-                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1",
-                body.item_id,
-            )
-
-            return CreateItemBatchResponse(
-                data=ItemBatchData(
-                    **dict(row),
-                    item_code=item["code"] if item else None,
-                    item_name=item["name"] if item else None,
-                )
-            )
+                "SELECT sku as code, nama_produk as name FROM products WHERE id = $1 AND tenant_id = $2", body.item_id, ctx["tenant_id"])
+            resp = CreateItemBatchResponse(
+                data=ItemBatchData(**dict(row), item_code=item["code"] if item else None, item_name=item["name"] if item else None))
+            return await idem_buat.simpan(conn, ctx, kp, sidik, "ITEM_BATCH_CREATE", resp, row["id"])
 
 
 @router.post("/{batch_id}/ubah/preview")
