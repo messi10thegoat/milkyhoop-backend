@@ -309,7 +309,7 @@ async def create_warehouse(request: Request, body: CreateWarehouseRequest, respo
                     n["manager_name"], n["is_default"], n["is_active"], n["is_branch"], n["branch_code"], ctx.get("user_id"))
             except asyncpg.UniqueViolationError:
                 raise GR.GalatBerkode(400, "GUDANG_KODE_SUDAH_ADA", f"Kode gudang '{n['code']}' sudah dipakai.", "code")
-            resp = {"success": True, "message": "Warehouse created successfully", "data": (await _data(conn, ctx["tenant_id"], row)).model_dump(mode="json")}
+            resp = {"success": True, "message": "Gudang disimpan", "data": (await _data(conn, ctx["tenant_id"], row)).model_dump(mode="json")}
             return await idem_buat.simpan(conn, ctx, kp, sidik, "WH_CREATE", resp, row["id"])
 
 

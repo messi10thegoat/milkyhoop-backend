@@ -147,14 +147,14 @@ class CreateItemBatchResponse(BaseModel):
     """Response for batch creation"""
     success: bool = True
     data: ItemBatchData
-    message: str = "Batch created successfully"
+    message: str = "Batch didaftarkan"
 
 
 class UpdateItemBatchResponse(BaseModel):
     """Response for batch update"""
     success: bool = True
     data: ItemBatchData
-    message: str = "Batch updated successfully"
+    message: str = "Batch diperbarui"
 
 
 class AdjustBatchResponse(BaseModel):

@@ -206,17 +206,17 @@ class CreateWarehouseResponse(BaseModel):
     """Response for warehouse creation"""
     success: bool = True
     data: WarehouseData
-    message: str = "Warehouse created successfully"
+    message: str = "Gudang disimpan"
 
 
 class UpdateWarehouseResponse(BaseModel):
     """Response for warehouse update"""
     success: bool = True
     data: WarehouseData
-    message: str = "Warehouse updated successfully"
+    message: str = "Gudang diperbarui"
 
 
 class DeleteWarehouseResponse(BaseModel):
     """Response for warehouse deletion (soft delete)"""
     success: bool = True
-    message: str = "Warehouse deactivated successfully"
+    message: str = "Gudang dinonaktifkan"
