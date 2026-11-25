@@ -67,16 +67,16 @@ def test_pembalik_wo_ditulis_dengan_wac_sesudah_bukan_unit_cost_asli():
     buku = Buku([baris(masuk=10, uc=100, avg=100, source="OPENING"), baris(masuk=10, uc=50, avg=75, source="PRODUCTION_OUTPUT", source_id=sid)])
     asyncio.run(PR._reverse_inventory_ledger(buku, T, "u1", "PRODUCTION_OUTPUT", sid, uuid.uuid4(), "PRODUCTION_OUTPUT", hari_ini=date(2026, 11, 17)))
     a = buku.insert[0]
-    assert (a[8], a[9], a[11]) == (D("0"), D("10"), D("50")) and a[18] == D("100.00")      # unit_cost 50 TETAP; average_cost = WAC sesudah (bukan 50)
+    assert (a[10], a[11], a[13]) == (D("0"), D("10"), D("50")) and a[15] == D("100.00")      # unit_cost 50 TETAP; average_cost = WAC sesudah (bukan 50)
 
 
 def test_sumber_void_pos_dan_wo_memakai_penentu_bersama_dan_parameter_snapshot():
     pos = inspect.getsource(__import__("app.routers.sales_receipts", fromlist=["x"]).void_sales_receipt)
-    assert "_IH.snapshot_wac_sesudah(conn, ctx[\"tenant_id\"], item[\"item_id\"], _qdv[\"qty_dasar\"], 0, item[\"unit_cost\"])" in pos and "$9, $10, $15," in pos and "_avg,\n" in pos
-    assert "$9, $10, $9," not in pos                                       # pola lama (average_cost = unit_cost) hilang
+    assert "_IH.snapshot_wac_sesudah(conn, ctx[\"tenant_id\"], item[\"item_id\"], _qdv[\"qty_dasar\"], 0, item[\"unit_cost\"])" in pos and "average_cost=_avg," in pos
+    assert "average_cost=item[" not in pos                                       # pola lama (average_cost = unit_cost) hilang
     wo = inspect.getsource(__import__("app.routers.production", fromlist=["x"])._reverse_inventory_ledger)
-    assert "_IH.snapshot_wac_sesudah(conn, tenant_id, r[\"product_id\"], new_in, new_out, r[\"unit_cost\"])" in wo and "$12, $13, $19," in wo and "avg_sesudah,\n" in wo
-    assert "$12, $13, $12," not in wo
+    assert "_IH.snapshot_wac_sesudah(conn, tenant_id, r[\"product_id\"], new_in, new_out, r[\"unit_cost\"])" in wo and "average_cost=avg_sesudah," in wo
+    assert "average_cost=r[" not in wo
     for src in (pos, wo):
         assert "UPDATE inventory_ledger" not in src and "DELETE FROM inventory_ledger" not in src      # Rule 8
 

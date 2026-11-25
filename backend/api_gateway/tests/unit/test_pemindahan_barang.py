@@ -253,7 +253,7 @@ def test_selesai_dua_baris_kartu_nilai_wac():
         assert r["source_type"] == "RELOKASI_GUDANG" and r["source_id"] == U
         assert r["unit_cost"] == r["average_cost"] == Decimal("43332.95")      # WAC, TIDAK dihitung ulang
         assert r["total_cost"] == Decimal("433329.50")
-        assert "journal_id" not in r                                           # tanpa jurnal, SENGAJA
+        assert r["journal_id"] is None                                          # tanpa jurnal, SENGAJA
     assert out["quantity_balance"] == Decimal("120") and masuk["quantity_balance"] == Decimal("130")
     assert any("status = 'completed'" in s for s, _ in c.updates)
 
@@ -419,7 +419,7 @@ def test_tiap_insert_ledger_memakai_kolom_yang_ada():
             hantu = [k for k in kol if k not in KOLOM_LEDGER]
             if hantu:
                 salah[str(p.relative_to(APP))] = hantu
-    assert banyak >= 10, banyak               # pemindai bisa melihat: bukan hijau hampa
+    assert banyak == 1, banyak               # satu pintu: services/ledger_kartu; pemindai bisa melihat (bukan hijau hampa)
     assert salah == {}, salah
 
 
@@ -727,7 +727,7 @@ def test_k8_kirim_dua_kaki_asal_ke_transit_tanpa_jurnal_wac_tetap():
         [(GA, 10, 0, "RELOKASI_KIRIM"), (GTR, 0, 10, "RELOKASI_KIRIM")]                      # keluar asal, MASUK Transit (Σ on_hand tetap)
     assert all(r["unit_cost"] == k.wac and r["average_cost"] == k.wac and r["total_cost"] == Decimal("433329.50") for r in k.ledger)   # WAC tak dihitung ulang
     assert _upd(k, "SET status = 'in_transit'") and _upd(k, "SET quantity_shipped")
-    assert not any("journal" in s for s in k.log)                                              # TANPA jurnal
+    assert not any(re.search(r"\bjournal_(entries|lines)\b", s) for s in k.log) and all(r["journal_id"] is None for r in k.ledger)                                              # TANPA jurnal
     assert k.transit_dibuat == 0
 
 
@@ -757,7 +757,7 @@ def test_k8_terima_semua_keluar_transit_masuk_tujuan_status_received(_pasang_d2)
     assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
         [(GTR, 10, 0, "RELOKASI_TERIMA"), (GB, 0, 10, "RELOKASI_TERIMA")]
     assert not _upd(k, "stock_transfer_items") and _upd(k, "SET status = 'received'") and len(_upd(k, "UPDATE stock_transfers")) == 1   # trigger DB: hanya transisi status
-    assert ("PEMINDAHAN_BARANG_DITERIMA", "ST-2610-0001") in _pasang_d2 and not any("journal" in s for s in k.log)
+    assert ("PEMINDAHAN_BARANG_DITERIMA", "ST-2610-0001") in _pasang_d2 and not any(re.search(r"\bjournal_(entries|lines)\b", s) for s in k.log) and all(r["journal_id"] is None for r in k.ledger)
 
 
 def test_k8_terima_sebagian_lalu_sisa_status_turunan_dan_tuntas():
@@ -816,7 +816,7 @@ def test_k8_void_kirim_balik_dari_transit_ke_asal_status_voided():
     assert jalan(D2.void_kirim(k, ctx(), U, "salah kirim")) == {"ulang": False, "catatan_fase": None}
     assert [(r["warehouse_id"], r["quantity_out"], r["quantity_in"], r["source_type"]) for r in k.ledger] == \
         [(GTR, 10, 0, "RELOKASI_KIRIM_VOID"), (GA, 0, 10, "RELOKASI_KIRIM_VOID")]               # kaki masuk Transit dibalik jadi KELUAR dulu
-    assert _upd(k, "SET status = 'voided'") and not any("journal" in s for s in k.log)
+    assert _upd(k, "SET status = 'voided'") and not any(re.search(r"\bjournal_(entries|lines)\b", s) for s in k.log) and all(r["journal_id"] is None for r in k.ledger)
 
 
 @pytest.mark.parametrize("hdr,dit,asli,harap", [
