@@ -64,7 +64,7 @@ def _pasang(monkeypatch, aktif, ambil=None):
 
 
 def _keluar(k):
-    return asyncio.run(IH.record_inventory_outbound(k, "t", uuid4(), "X", "X", uuid4(), 3, "SALES_INVOICE", uuid4(), "INV-1", None, "uji", receipt_date=TGL))
+    return asyncio.run(IH.record_inventory_outbound(k, "t", uuid4(), "X", "X", uuid4(), 3, "SALES_INVOICE", uuid4(), "INV-1", None, "uji", receipt_date=TGL, jurnal_pemanggil=uuid4()))
 
 
 def test_keluar_fifo_hpp_sigma_lapisan_dan_moves_sesudah_kartu(monkeypatch):
