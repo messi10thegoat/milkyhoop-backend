@@ -65,7 +65,7 @@ def test_mutasi_arah_jumlah_status_label():
 
 def test_sql_mutasi_semua_baris_posted_tanpa_sembunyikan_pembalik():
     s = KR.SQL_MUTASI
-    assert "je.tenant_id = $1" in s and "je.status = 'POSTED'" in s and "ba.tenant_id = je.tenant_id" in s and "LIMIT $2" in s
+    assert "je.tenant_id = $1" in s and "is_effective_journal(je.id)" in s and "ba.tenant_id = je.tenant_id" in s and "LIMIT $2" in s
     assert "reversed_by_id IS NULL" not in s and "reversal_of_id IS NULL" not in s  # disembunyikan -> daftar tak cocok dengan saldo
     assert "ORDER BY je.journal_date DESC, je.created_at DESC" in s
 

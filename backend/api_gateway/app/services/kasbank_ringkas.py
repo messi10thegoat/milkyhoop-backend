@@ -2,9 +2,8 @@
 
 B1 ringkasan: saldo per akun = SUM(debit) - SUM(credit) journal_lines POSTED pada coa_id akun (Law 1/16; BUKAN current_balance).
 total_saldo = akun aktif selain kartu kredit; kartu kredit (CoA LIABILITY) dipisah sebagai total_kewajiban_kartu (positif = terutang).
-B2 mutasi terakhir lintas akun = baris jurnal POSTED pada CoA kas/bank. SEMUA baris POSTED ikut: jurnal asli yang dibatalkan dan
-pembaliknya ditandai lewat status, tidak disembunyikan, supaya jumlah mutasi selalu sama dengan saldo (kaos punya pembalik POSTED
-yang jurnal aslinya VOID; menyembunyikan pembalik akan membuat daftar tak cocok dengan saldo). Tenant eksplisit (Law 24).
+B2 mutasi terakhir lintas akun = baris jurnal EFEKTIF pada CoA kas/bank (BUG-383 A1, putusan pemilik 25 Nov 2026: SATU definisi dengan saldo B1 dan
+dashboard; jurnal asli yang dibatalkan/dibalik dan pembaliknya TIDAK tampil, jadi jumlah mutasi == saldo).
 B2b (MASTER 7 Nov, halaman Kas & Bank standar SO): `nomor_dokumen` + `pihak` {jenis pelanggan|vendor|null, id, nama} dari DOKUMEN SUMBER
 (je.source_id -> satu tabel per source_type; diukur 7 Nov: tiap source_type kas/bank cocok ke tepat satu tabel), bukan diurai dari
 description. Mutasi manual = pihak teks bebas payee_payer (jenis/id null); transfer/saldo awal = tanpa pihak; tak dikenal -> null."""
@@ -71,13 +70,13 @@ SELECT jl.id, je.id AS journal_id, je.journal_number, je.journal_date, je.create
 FROM journal_lines jl
 JOIN journal_entries je ON je.id = jl.journal_id
 JOIN bank_accounts ba ON ba.coa_id = jl.account_id AND ba.tenant_id = je.tenant_id
-""" + SQL_JOIN_DOKUMEN + """WHERE je.tenant_id = $1 AND je.status = 'POSTED' AND ba.is_active = true
+""" + SQL_JOIN_DOKUMEN + """WHERE je.tenant_id = $1 AND is_effective_journal(je.id) AND ba.is_active = true
 ORDER BY je.journal_date DESC, je.created_at DESC, jl.id DESC
 LIMIT $2"""
 
 # ROW (q) 8 Nov 2026: ?tanpa_batal=true (FE ui_v3 "Mutasi terakhir") -- baris dibatalkan + pembaliknya disaring di WHERE, SEBELUM
 # LIMIT (cermin status_mutasi != "tercatat"). Dulu FE menyaring sesudah limit -> kaos: 10 terbaru semuanya batal/pembalik -> daftar
-# kosong. Tanpa parameter = SQL_MUTASI apa adanya (semua baris POSTED, cocok dengan saldo).
+# kosong. Tanpa parameter = SQL_MUTASI apa adanya (jurnal efektif, cocok dengan saldo).
 SARING_TANPA_BATAL = """
   AND je.reversed_by_id IS NULL AND je.reversal_of_id IS NULL
   AND COALESCE(je.source_type, '') <> 'REVERSAL' AND right(COALESCE(je.source_type, ''), 9) <> '_REVERSAL'"""

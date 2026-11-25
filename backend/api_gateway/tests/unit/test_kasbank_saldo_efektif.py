@@ -20,3 +20,10 @@ def test_tak_ada_saldo_ringkasan_status_posted_saja():
     from app.services import kasbank_ringkas as KR, kasbank_daftar as KD, kasbank_tulis as KT
     for sql in (KR.SQL_RINGKASAN, KD.sql_saldo("ba"), KT.SQL_AKUN):
         assert "is_effective_journal(je.id)" in sql and "je.status = 'POSTED'" not in sql
+
+
+def test_daftar_mutasi_lintas_akun_efektif_sama_dengan_saldo():
+    """A1 (pemilik 25 Nov): daftar mutasi == saldo == dashboard. Kasus kaos: 16 beban VOID + pembalik POSTED tak tampil di daftar."""
+    from app.services import kasbank_ringkas as KR
+    for sql in (KR.SQL_MUTASI, KR.SQL_MUTASI_TANPA_BATAL, KR.SQL_RINGKASAN):
+        assert "is_effective_journal(je.id)" in sql and "je.status = 'POSTED'" not in sql
