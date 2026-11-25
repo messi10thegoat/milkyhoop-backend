@@ -71,8 +71,6 @@ from ..schemas.items import (
     ItemsStatsStockResponse,
     CoaAccountOption,
     CoaAccountsResponse,
-    ItemTransaction,
-    ItemTransactionsResponse,
     RelatedDocument,
     ItemRelatedResponse,
     CreateCategoryRequest,
@@ -3870,101 +3868,6 @@ async def get_item(request: Request, item_id: UUID):
         raise
     except Exception as e:
         logger.error(f"Error getting item: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if conn:
-            await conn.close()
-
-
-# =============================================================================
-# TRANSACTIONS (Tab Riwayat)
-# =============================================================================
-
-
-@router.get("/items/{item_id}/transactions", response_model=ItemTransactionsResponse)
-async def get_item_transactions(
-    request: Request,
-    item_id: UUID,
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """Get transaction history for an item (purchases, sales, adjustments)."""
-    tenant_id = get_tenant_id(request)
-    conn = None
-
-    try:
-        conn = await get_db_connection()
-
-        # Verify item exists
-        item_exists = await conn.fetchval(
-            "SELECT id FROM products WHERE id = $1 AND tenant_id = $2",
-            str(item_id),
-            tenant_id,
-        )
-        if not item_exists:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Query transaction history from inventory_ledger (Pure Ledger)
-        tx_query = f"""
-            SELECT
-                il.id::text,
-                to_char(il.movement_date, 'YYYY-MM-DD') as date,
-                CASE
-                    WHEN il.source_type = 'BILL' THEN 'pembelian'
-                    WHEN il.source_type IN {sql_daftar(KELUAR_JUAL)} THEN 'penjualan'
-                    WHEN il.source_type = 'OPENING_BALANCE' THEN 'saldo_awal'
-                    WHEN il.source_type IN {sql_daftar(BATAL_JUAL)} THEN 'void_penjualan'
-                    WHEN il.source_type = 'STOCK_ADJUSTMENT' THEN 'penyesuaian'
-                    ELSE LOWER(il.source_type)
-                END as transaction_type,
-                COALESCE(il.source_number, il.source_id::text) as document_number,
-                CASE
-                    WHEN il.quantity_in > 0 THEN il.quantity_in
-                    ELSE -il.quantity_out
-                END as qty_change,
-                il.unit_cost as unit_price,
-                il.total_cost as total,
-                il.notes
-            FROM inventory_ledger il
-            WHERE il.product_id = $1::uuid AND il.tenant_id = $2
-            ORDER BY il.movement_date DESC, il.created_at DESC, il.id DESC
-            LIMIT $3 OFFSET $4
-        """
-        rows = await conn.fetch(tx_query, str(item_id), tenant_id, limit, offset)
-
-        # Get total count
-        count = await conn.fetchval(
-            """SELECT COUNT(*) FROM inventory_ledger il
-               WHERE il.product_id = $1::uuid AND il.tenant_id = $2""",
-            str(item_id),
-            tenant_id,
-        )
-
-        transactions = [
-            ItemTransaction(
-                id=row.get("id"),
-                date=row["date"] or "",
-                transaction_type=row.get("transaction_type", "unknown"),
-                document_number=row.get("document_number"),
-                qty_change=row.get("qty_change") or 0,
-                unit_price=int(row["unit_price"]) if row.get("unit_price") else None,
-                total=int(row["total"]) if row.get("total") else None,
-                notes=row.get("notes"),
-            )
-            for row in rows
-        ]
-
-        return ItemTransactionsResponse(
-            success=True,
-            transactions=transactions,
-            total=count or 0,
-            has_more=(offset + limit) < (count or 0),
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting item transactions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if conn:

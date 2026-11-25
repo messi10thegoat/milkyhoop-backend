@@ -184,6 +184,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bills$", ["GET"], "purchase_invoice", "R"),
     (r"^/api/bills$", ["POST"], "purchase_invoice", "C"),
     (r"^/api/bills/[^/]+$", ["GET"], "purchase_invoice", "R"),
+    (r"^/api/bills/[^/]+/deposit-plan$", ["GET"], "purchase_invoice", "R"),  # izin-baca-peta (25 Nov)
     (r"^/api/bills/[^/]+$", ["PATCH", "PUT"], "purchase_invoice", "U"),
     (r"^/api/bills/[^/]+$", ["DELETE"], "purchase_invoice", "D"),
     (r"^/api/bills/[^/]+/post$", ["POST"], "purchase_invoice", "P"),
@@ -272,6 +273,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/items/preview$", ["POST"], "item", "C"),  # AS-G14 pratinjau buat (huruf SAMA dgn buat)
     (r"^/api/items/form-bawaan$", ["GET"], "item", "R"),  # FORM BARANG CW: bawaan form Tambah Barang (baca)
     (r"^/api/items/impor/templat$", ["GET"], "item", "R"),  # BUG-021 impor barang
+    (r"^/api/items/impor/ekspor$", ["GET"], "item", "R"),  # izin-baca-peta (25 Nov): ekspor = baca barang
     (r"^/api/items/impor(/baca|/pratinjau)?$", ["POST"], "item", "C"),  # pratinjau/baca = huruf SAMA dgn tulis
     (r"^/api/items$", ["POST"], "item", "C"),
     # BUG-159 B1 barang matriks/varian: baca = item R; buat/pratinjau/tambah varian = item C (pratinjau = huruf SAMA dgn tulis)
@@ -763,6 +765,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bills/v2$", ["POST"], "purchase_invoice", "C"),
     (r"^/api/bills/v2/[^/]+$", ["PATCH"], "purchase_invoice", "U"),
     # budgets
+    (r"^/api/budgets(/variance-alerts|/[^/]+(/summary|/vs-actual)?)?$", ["GET"], "reports", "R"),  # izin-baca-peta (25 Nov): baca anggaran = baca laporan
     (r"^/api/budgets$", ["POST"], "reports", "C"),
     (r"^/api/budgets/[^/]+$", ["DELETE"], "reports", "D"),
     (r"^/api/budgets/[^/]+$", ["PATCH"], "reports", "U"),

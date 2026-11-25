@@ -518,31 +518,6 @@ class ItemsStatsResponse(BaseModel):
 
 
 # =============================================================================
-# RESPONSE MODELS - Transactions (Tab Riwayat)
-# =============================================================================
-
-class ItemTransaction(BaseModel):
-    """Single transaction entry for an item."""
-    id: Optional[str] = None
-    date: str
-    transaction_type: str  # 'purchase', 'sales', 'adjustment'
-    document_number: Optional[str] = None
-    qty_change: float  # positive = in, negative = out
-    unit_price: Optional[float] = None
-    total: Optional[float] = None
-    stock_balance: Optional[float] = None
-    notes: Optional[str] = None
-
-
-class ItemTransactionsResponse(BaseModel):
-    """Response for item transactions endpoint."""
-    success: bool = True
-    transactions: List[ItemTransaction] = []
-    total: int = 0
-    has_more: bool = False
-
-
-# =============================================================================
 # RESPONSE MODELS - Related Documents (Tab Terkait)
 # =============================================================================
 
