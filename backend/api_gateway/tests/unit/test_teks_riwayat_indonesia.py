@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-APP = Path(__file__).parents[1] / "app"
+APP = Path(__file__).parents[2] / "app"
 RIWAYAT = ["services/tagihan_riwayat.py", "services/bayar_keluar_riwayat.py", "services/biaya_riwayat.py", "services/nota_debit_riwayat.py",
            "services/kasbank_riwayat.py", "services/um_vendor_riwayat.py", "services/so_riwayat.py"]
 
