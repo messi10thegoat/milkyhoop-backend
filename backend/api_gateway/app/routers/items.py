@@ -3326,7 +3326,7 @@ async def update_item_status(request: Request, item_id: str):
                 async def kerja():
                     await BA.terapkan_status(conn, ctx["tenant_id"], item_id, is_active, ctx.get("user_id"),
                                              getattr(request.state, "user", {}).get("username"))
-                    return {"success": True, "message": "Status updated", "is_active": is_active}
+                    return {"success": True, "message": "Status barang diperbarui", "is_active": is_active}
                 return await BA.idem_aksi(conn, ctx, request, "ITEM_STATUS", item_id, {"is_active": is_active}, kerja)
     except HTTPException:
         raise

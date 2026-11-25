@@ -163,7 +163,7 @@ class CreateItemSerialResponse(BaseModel):
     """Response for serial creation"""
     success: bool = True
     data: ItemSerialData
-    message: str = "Serial number created successfully"
+    message: str = "Nomor seri disimpan"
 
 
 class BulkCreateSerialsResponse(BaseModel):
@@ -171,14 +171,14 @@ class BulkCreateSerialsResponse(BaseModel):
     success: bool = True
     data: List[ItemSerialData]
     created_count: int
-    message: str = "Serial numbers created successfully"
+    message: str = "Nomor seri disimpan"
 
 
 class UpdateItemSerialResponse(BaseModel):
     """Response for serial update"""
     success: bool = True
     data: ItemSerialData
-    message: str = "Serial number updated successfully"
+    message: str = "Nomor seri diperbarui"
 
 
 class TransferSerialResponse(BaseModel):
@@ -186,7 +186,7 @@ class TransferSerialResponse(BaseModel):
     success: bool = True
     data: ItemSerialData
     movement: SerialMovementData
-    message: str = "Serial transferred successfully"
+    message: str = "Nomor seri dipindahkan"
 
 
 class AdjustSerialResponse(BaseModel):

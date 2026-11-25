@@ -176,7 +176,7 @@ async def create_bin(request: Request):
 
         return {
             "success": True,
-            "message": "Bin created",
+            "message": "Bin disimpan",
             "data": {"id": str(row["id"])},
         }
 
@@ -212,4 +212,4 @@ async def delete_bin(request: Request, bin_id: str):
         if result == "DELETE 0":
             raise HTTPException(status_code=404, detail="Bin not found")
 
-        return {"success": True, "message": "Bin deleted"}
+        return {"success": True, "message": "Bin dihapus"}
