@@ -108,3 +108,22 @@ def test_masuk_dan_pembalik_bersambung():
     assert v.index("fifo_lapisan.rencana_balik(") < v.index("tulis_kartu(") < v.index("fifo_lapisan.catat_balik(")
     assert "total_cost = rencana_fifo.nilai" in v
     assert F.nilai_masuk(3, "33.335") == D("100.01")
+
+
+@pytest.mark.parametrize("aktif", [True, False])
+def test_masuk_fifo_satu_lapisan_bernilai_2dp(monkeypatch, aktif):
+    log = _pasang(monkeypatch, aktif)
+
+    async def masuk(conn, tid, pid, lid, tgl, q, n, b):
+        log.append(("lapisan", lid, q, n, b))
+    monkeypatch.setattr(F, "catat_masuk", masuk)
+
+    class K(_K):
+        async def fetchrow(self, sql, *a):
+            return {"balance": D(0), "net_value": D(0), "total_qty": D(0)}
+    b = uuid4()
+    r = asyncio.run(IH.record_inventory_inbound(K(), "t", uuid4(), "X", "X", uuid4(), 3, "33.335", "BILL", uuid4(), "B-1", None, "uji",
+                                                movement_date=TGL, batch_id=b))
+    lap = [x for x in log if x[0] == "lapisan"]
+    assert lap == ([("lapisan", r["ledger_id"], D(3), D("100.01"), b)] if aktif else [])
+    assert [x[0] for x in log][:1] == ["kartu"]
