@@ -38,6 +38,8 @@ class _Conn:
         return _Tr()
 
     async def fetchval(self, q, *a):
+        if "tenant_features" in q:
+            return False  # FIFO unit 2: barang WAC (fifo_aktif)
         assert "FROM vendors" in q
         return 1
 

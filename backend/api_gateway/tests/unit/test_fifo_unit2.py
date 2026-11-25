@@ -29,7 +29,7 @@ class _K:
         return D("33.33")
 
     async def fetchrow(self, sql, *a):
-        return {"inventory_account_id": None, "cogs_account_id": None}
+        return None   # resolve_inventory_accounts: tanpa akun -> tanpa jurnal HPP
 
     async def execute(self, sql, *a):
         self.exec.append((sql, a))
