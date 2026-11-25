@@ -13,6 +13,7 @@ from ..schemas.kasbank_v2 import VoidTransactionRequest
 from ..services import kasbank_daftar as KD
 from ..services import kasbank_riwayat as KRW
 from ..services import kasbank_tulis as KT
+from ..services import teks_galat as tg
 from ..services.bayar_keluar_rencana import Blok
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .kasbank_v2 import get_pool, get_user_context
@@ -78,7 +79,8 @@ async def list_bank_transactions(
         if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
             r = await conn.fetchrow(f"SELECT COALESCE(SUM(d.net) FILTER (WHERE d.net > 0 AND NOT d.batal), 0) AS masuk, "
                                     f"COALESCE(-SUM(d.net) FILTER (WHERE d.net < 0 AND NOT d.batal), 0) AS keluar {dasar}", *par)
-            jumlah = {"sum_masuk": KD.rp(r["masuk"]), "sum_keluar": KD.rp(r["keluar"]), "sum_neto": KD.rp(r["masuk"] - r["keluar"])}
+            jumlah = {"sum_masuk": KD.rp(r["masuk"]), "sum_keluar": KD.rp(r["keluar"]), "sum_neto": KD.rp(r["masuk"] - r["keluar"]),
+                      "sum_masuk_text": tg.rp(r["masuk"]), "sum_keluar_text": tg.rp(r["keluar"]), "sum_neto_text": tg.rp(r["masuk"] - r["keluar"])}
         urut = {"tanggal": "d.tgl", "nominal": "abs(d.net)"}[sort_by if sort_by in ("tanggal", "nominal") else "tanggal"]
         arah_urut = "ASC" if sort_order == "asc" else "DESC"
         rows = await conn.fetch(f"SELECT d.* {dasar} ORDER BY {urut} {arah_urut}, d.created_at {arah_urut}, d.id "

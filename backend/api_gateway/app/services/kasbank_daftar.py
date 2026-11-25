@@ -86,6 +86,8 @@ def baris_manual(r) -> dict:
     return {
         "id": str(r["id"]), "nomor": r["nomor"], "transaction_date": r["tgl"].isoformat() if r["tgl"] else None,
         "arah": arah(net), "amount": rp(abs(net)),
+        "jumlah_text": tg.rp(abs(net)), "arah_text": "Uang masuk" if arah(net) == "masuk" else "Uang keluar",
+        "status_text": "Dibatalkan" if r["batal"] else "Tercatat",
         "bank_account": {"id": str(r["ba_id"]), "account_name": r["account_name"], "account_type": r["account_type"]},
         "akun_lawan": ({"id": str(r["lawan_id"]), "kode": r["lawan_kode"], "nama": r["lawan_nama"]} if r["lawan_id"] else None),
         "pihak": r["pihak"], "description": r["description"], "status": "dibatalkan" if r["batal"] else "tercatat",
