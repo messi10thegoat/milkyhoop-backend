@@ -10,8 +10,15 @@ Sumber waktu/aktor (Law 34: hanya yang tercatat, tak ditebak):
 from typing import Optional
 
 from . import kasbank_daftar as KD
-from .biaya_riwayat import _dok, _tgl
+from .biaya_riwayat import _dok as _dok_dasar, _tgl
 from .so_riwayat import _Kumpul, _rp, _selesaikan
+
+
+def _dok(kind, id_, number, date, amount, status, batal=False) -> dict:
+    """_dok bersama + amount_text "Rp 1.234.567" (aditif; FE tak boleh memformat string angka polos)."""
+    d = _dok_dasar(kind, id_, number, date, amount, status, batal)
+    d["amount_text"] = _rp(amount)
+    return d
 
 
 async def _manual(conn, tid: str, tx_id):

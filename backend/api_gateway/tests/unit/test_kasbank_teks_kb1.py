@@ -38,3 +38,10 @@ def test_baris_manual_teks_uang_arah_status():
     assert (b["jumlah_text"], b["arah_text"], b["status_text"]) == ("Rp 1.234.567", "Uang keluar", "Tercatat")
     b = KD.baris_manual({**r, "net": Decimal("500"), "batal": True})
     assert (b["jumlah_text"], b["arah_text"], b["status_text"]) == ("Rp 500", "Uang masuk", "Dibatalkan")
+
+
+def test_dok_riwayat_kasbank_amount_text():
+    from datetime import date
+    from app.services import kasbank_riwayat as KRW
+    d = KRW._dok("journal", "j", "JE-1", date(2026, 11, 1), "1234567.00", "diposting")
+    assert d["amount"] == "1234567.00" and d["amount_text"] == "Rp 1.234.567"
