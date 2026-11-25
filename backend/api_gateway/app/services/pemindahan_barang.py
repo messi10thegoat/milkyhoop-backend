@@ -27,6 +27,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
+from .ledger_kartu import tulis_kartu
 from .galat_berkode import GalatDetailObjek  # BUG-248-c
 from pydantic import BaseModel, Field, model_validator
 
@@ -482,13 +483,12 @@ async def _saldo_produk(conn, tid: str, product_id) -> Decimal:
 async def _tulis_ledger(conn, tid: str, user_id, *, product_id, kode, nama, tipe: str, sumber: str, tanggal, transfer_id,
                         nomor: str, qty: Decimal, masuk: bool, saldo: Decimal, unit_cost: Decimal, total: Decimal,
                         wac: Decimal, gudang_id, catatan: str) -> None:
-    await conn.execute(
-        """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-                                         source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
-                                         unit_cost, total_cost, average_cost, warehouse_id, created_by, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)""",
-        tid, product_id, kode, nama, tipe, tanggal, sumber, transfer_id, nomor,
-        qty if masuk else _NOL, _NOL if masuk else qty, saldo, unit_cost, total, wac, gudang_id, user_id, catatan)
+    await tulis_kartu(
+        conn,
+        tenant_id=tid, product_id=product_id, product_code=kode, product_name=nama, movement_type=tipe, movement_date=tanggal,
+        source_type=sumber, source_id=transfer_id, source_number=nomor, quantity_in=qty if masuk else _NOL,
+        quantity_out=_NOL if masuk else qty, quantity_balance=saldo, unit_cost=unit_cost, total_cost=total, average_cost=wac,
+        warehouse_id=gudang_id, created_by=user_id, notes=catatan)
 
 
 async def _fase_so(conn, ctx: dict, h, ke_fase: Optional[str], gudang_id) -> Optional[str]:

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 import logging
 import asyncpg
 
+from ..services.ledger_kartu import tulis_kartu
 from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
@@ -2250,59 +2251,14 @@ async def _execute_fulfillment(
                 )
 
         # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE).
-        # DUA pernyataan STATIS utuh (penjaga kolom-hantu membaca teks SQL); baris dasar = pernyataan lama persis.
-        _arg_sd = (inv_item.get("unit"), str(req_qty), str(_f)) if _f != _SD.SATU else ()
-        await conn.execute(
-            """
-            INSERT INTO inventory_ledger (
-                tenant_id, product_id, product_code, product_name,
-                movement_type, movement_date,
-                source_type, source_id, source_number,
-                quantity_in, quantity_out, quantity_balance,
-                unit_cost, total_cost, average_cost,
-                created_by, notes, warehouse_id, batch_id
-            ) VALUES (
-                $1, $2, $3, $4,
-                'SALE', $5,
-                'INVOICE_FULFILLMENT', $6, $7,
-                0, $8, $9,
-                $10, $11, $10,
-                $12, $13, $14, $15
-            )
-        """ if _f == _SD.SATU else """
-            INSERT INTO inventory_ledger (
-                tenant_id, product_id, product_code, product_name,
-                movement_type, movement_date,
-                source_type, source_id, source_number,
-                quantity_in, quantity_out, quantity_balance,
-                unit_cost, total_cost, average_cost,
-                created_by, notes, warehouse_id, batch_id, transaction_unit, transaction_quantity, conversion_factor
-            ) VALUES (
-                $1, $2, $3, $4,
-                'SALE', $5,
-                'INVOICE_FULFILLMENT', $6, $7,
-                0, $8, $9,
-                $10, $11, $10,
-                $12, $13, $14, $15, $16, $17, $18
-            )
-        """,
-            tenant_id,
-            product_id,
-            p_code,
-            p_name,
-            fulfillment_date,
-            invoice_id,
-            invoice_number,
-            str(qd),
-            str(new_balance),
-            str(avg_cost),
-            str(line_cogs),
-            user_id,
-            f"Fulfillment: {invoice_number}",
-            warehouse_id,
-            batch_id,
-            *_arg_sd,
-        )
+        _arg_sd = {"transaction_unit": inv_item.get("unit"), "transaction_quantity": str(req_qty), "conversion_factor": str(_f)} if _f != _SD.SATU else {}
+        await tulis_kartu(
+            conn,
+            tenant_id=tenant_id, product_id=product_id, product_code=p_code, product_name=p_name, movement_type='SALE',
+            movement_date=fulfillment_date, source_type='INVOICE_FULFILLMENT', source_id=invoice_id, source_number=invoice_number,
+            quantity_in=0, quantity_out=str(qd), quantity_balance=str(new_balance), unit_cost=str(avg_cost), total_cost=str(line_cogs),
+            average_cost=str(avg_cost), created_by=user_id, notes=f"Fulfillment: {invoice_number}", warehouse_id=warehouse_id,
+            batch_id=batch_id, **_arg_sd)
 
         # Batch: saldo digeser HANYA oleh trigger trg_update_batch_stock saat INSERT inventory_ledger di atas (BUG-286: UPDATE manual dulu
         # menggandakan pengurangan); kecukupan batch diperiksa SEBELUM INSERT ledger (blok di atas).

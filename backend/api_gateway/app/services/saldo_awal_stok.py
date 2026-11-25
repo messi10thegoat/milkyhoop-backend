@@ -23,6 +23,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from .ledger_kartu import tulis_kartu
 from . import teks_galat as tg
 from .role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
 
@@ -164,12 +165,10 @@ async def catat_saldo_awal_per_gudang(
         kum_qty += qty_d
         kum_nilai += nilai_b
         wac = rate_d if len(rows) == 1 else (kum_nilai / kum_qty).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)   # satu gudang = persis harga yang diketik
-        await conn.execute(
-            """INSERT INTO inventory_ledger (
-                   id, tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-                   source_type, source_id, journal_id, source_number, quantity_in, quantity_out, quantity_balance,
-                   unit_cost, total_cost, average_cost, warehouse_id, notes, created_at
-               ) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, 0, $16, $11, $12, $15, $13, $14, NOW())""",
-            tenant_id, product_id, product_code, product_name, movement_type, tanggal, SUMBER, jurnal_id,
-            f"OB-{product_code}" if product_code else nomor, qty_d, rate_d, nilai_b, wid, catatan, wac, kum_qty)
+        await tulis_kartu(
+            conn,
+            tenant_id=tenant_id, product_id=product_id, product_code=product_code, product_name=product_name, movement_type=movement_type,
+            movement_date=tanggal, source_type=SUMBER, source_id=jurnal_id, journal_id=jurnal_id,
+            source_number=f"OB-{product_code}" if product_code else nomor, quantity_in=qty_d, quantity_out=0, quantity_balance=kum_qty,
+            unit_cost=rate_d, total_cost=nilai_b, average_cost=wac, warehouse_id=wid, notes=catatan)
     return {"journal_id": jurnal_id, "journal_number": nomor, "nilai": nilai}

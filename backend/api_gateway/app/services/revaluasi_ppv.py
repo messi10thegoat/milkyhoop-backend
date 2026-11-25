@@ -15,6 +15,8 @@ GL == kartu stok (health check 15). Void = pasangan dibalik urutan terbalik (bal
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID, uuid4
 
+from .ledger_kartu import tulis_kartu
+
 FLAG = "ppv_revaluasi_v1"
 SUMBER = "PPV_REVALUASI"
 NOL = Decimal("0")
@@ -78,14 +80,13 @@ async def _baris(conn, tid, uid, b, masuk, qty, biaya, rata, source_type, source
     saldo = await conn.fetchval(
         "SELECT COALESCE(SUM(quantity_in) - SUM(quantity_out), 0) FROM inventory_ledger WHERE tenant_id = $1 AND product_id = $2",
         tid, b["product_id"])
-    await conn.execute(
-        """INSERT INTO inventory_ledger (id, tenant_id, product_id, product_code, product_name, movement_type, movement_date, source_type,
-               source_id, source_number, quantity_in, quantity_out, quantity_balance, unit_cost, total_cost, average_cost, warehouse_id,
-               journal_id, created_by, notes, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, clock_timestamp())""",
-        uuid4(), tid, b["product_id"], b["kode"], b["nama"], "REVALUASI_MASUK" if masuk else "REVALUASI_KELUAR", tanggal, source_type,
-        source_id, nomor, qty if masuk else NOL, NOL if masuk else qty, Decimal(str(saldo)) + (qty if masuk else -qty), biaya,
-        r2(qty * biaya), rata, b["gudang"], jid, uid, catatan)
+    await tulis_kartu(
+        conn,
+        id=uuid4(), tenant_id=tid, product_id=b["product_id"], product_code=b["kode"], product_name=b["nama"],
+        movement_type="REVALUASI_MASUK" if masuk else "REVALUASI_KELUAR", movement_date=tanggal, source_type=source_type,
+        source_id=source_id, source_number=nomor, quantity_in=qty if masuk else NOL, quantity_out=NOL if masuk else qty,
+        quantity_balance=Decimal(str(saldo)) + (qty if masuk else -qty), unit_cost=biaya, total_cost=r2(qty * biaya), average_cost=rata,
+        warehouse_id=b["gudang"], journal_id=jid, created_by=uid, notes=catatan, jam_nyata=True)
 
 
 async def tulis(conn, ctx: dict, b: dict, source_id, nomor: str, jid, tanggal) -> None:

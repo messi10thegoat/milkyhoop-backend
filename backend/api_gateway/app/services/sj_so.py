@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from .ledger_kartu import tulis_kartu
 from . import pengiriman_serah as serah_mod
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
@@ -407,19 +408,14 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
         if l["stok"]:   # kartu keluar (trigger ledger -> warehouse_stock; Inventory Rule 1: tak ada UPDATE langsung)
             saldo = Decimal(str(await conn.fetchval("SELECT get_inventory_balance($1, $2)", tid, UUID(l["item_id"])) or 0))
             qd, f = l.get("qty_dasar", l["quantity"]), l.get("faktor", Decimal("1"))  # QTY-DASAR R2: kartu dalam SATUAN DASAR
-            sd_arg = (l["unit"], l["quantity"], f) if f != Decimal("1") else ()
-            await conn.execute(  # DUA pernyataan STATIS utuh (penjaga kolom-hantu membaca teks SQL); satuan dasar = pernyataan lama persis
-                """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-                                                 source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
-                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id)
-                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16)""" if f == Decimal("1") else
-                """INSERT INTO inventory_ledger (tenant_id, product_id, product_code, product_name, movement_type, movement_date,
-                                                 source_type, source_id, source_number, quantity_in, quantity_out, quantity_balance,
-                                                 unit_cost, total_cost, average_cost, journal_id, created_by, notes, warehouse_id,
-                                                 transaction_unit, transaction_quantity, conversion_factor)
-                   VALUES ($1, $2, $3, $4, 'SALE', $5, $6, $7, $8, 0, $9, $10, $11, $12, $11, $13, $14, $15, $16, $17, $18, $19)""",
-                tid, UUID(l["item_id"]), l["item_code"] or "", l["name"], tgl, SUMBER, fid, nomor, qd,
-                saldo - qd, l.get("wac", l["unit_cost"]), l["value"], jid, uid, f"Surat Jalan {nomor}", gudang_id, *sd_arg)
+            sd_arg = {"transaction_unit": l["unit"], "transaction_quantity": l["quantity"], "conversion_factor": f} if f != Decimal("1") else {}
+            await tulis_kartu(
+                conn,
+                tenant_id=tid, product_id=UUID(l["item_id"]), product_code=l["item_code"] or "", product_name=l["name"],
+                movement_type='SALE', movement_date=tgl, source_type=SUMBER, source_id=fid, source_number=nomor, quantity_in=0,
+                quantity_out=qd, quantity_balance=saldo - qd, unit_cost=l.get("wac", l["unit_cost"]), total_cost=l["value"],
+                average_cost=l.get("wac", l["unit_cost"]), journal_id=jid, created_by=uid, notes=f"Surat Jalan {nomor}",
+                warehouse_id=gudang_id, **sd_arg)
     if r.get("serah") is not None:   # SJ + serah + resi: SATU transaksi (Law 23); nol UPDATE ke SJ
         await serah_mod.tulis(conn, tid, uid, fid, r["serah"])
     await catat_riwayat(conn, tid, "invoice_fulfillments", fid, nomor, "SURAT_JALAN_SO_DIBUAT", uid,

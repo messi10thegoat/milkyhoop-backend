@@ -304,6 +304,6 @@ def test_kartu_saldo_awal_menaut_journal_id_ke_jurnal_yang_sama():
     assert isi["journal_id"] == out["journal_id"] == JID  # tautan baku kartu -> jurnal (dibaca daftar jurnal barang + hc_inventory_members)
     assert isi["source_id"] == JID and isi["source_type"] == "OPENING_BALANCE"
     # angka TIDAK berubah oleh tautan: qty/biaya/nilai kartu = nilai jurnal
-    assert isi["quantity_in"] == isi["quantity_balance"] == Decimal("1") and isi["quantity_out"] == "0"
+    assert isi["quantity_in"] == isi["quantity_balance"] == Decimal("1") and isi["quantity_out"] == 0
     assert isi["unit_cost"] == isi["average_cost"] == Decimal("128000") and isi["total_cost"] == Decimal("128000.00")
     assert isi["tenant_id"] == T and isi["product_id"] == PID and isi["warehouse_id"] == WH

@@ -19,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
+from .ledger_kartu import tulis_kartu
 from ..utils.tanggal_tenant import tanggal_dokumen
 from .role_resolver import (
     AccountRole,
@@ -209,40 +210,12 @@ async def record_inventory_outbound(
 
     # 3. Insert inventory_ledger (trigger handles warehouse_stock)
     ledger_id = uuid4()
-    await conn.execute(
-        """
-        INSERT INTO inventory_ledger (
-            id, tenant_id, product_id, product_code, product_name,
-            movement_type, movement_date, source_type, source_id, source_number,
-            quantity_in, quantity_out, quantity_balance,
-            unit_cost, total_cost, average_cost,
-            warehouse_id, created_by, notes
-        ) VALUES (
-            $1, $2, $3, $4, $5,
-            'SALE', $6, $7, $8, $9,
-            0, $10, $11,
-            $12, $13, $14,
-            $15, $16, $17
-        )
-        """,
-        ledger_id,
-        tenant_id,
-        product_id,
-        product_code,
-        product_name,
-        movement_date,
-        source_type,
-        source_id,
-        source_number,
-        quantity,
-        new_balance,
-        unit_cost,
-        total_cost,
-        avg_cost_snapshot,
-        warehouse_id,
-        user_id,
-        notes,
-    )
+    await tulis_kartu(
+        conn,
+        id=ledger_id, tenant_id=tenant_id, product_id=product_id, product_code=product_code, product_name=product_name, movement_type='SALE',
+        movement_date=movement_date, source_type=source_type, source_id=source_id, source_number=source_number, quantity_in=0,
+        quantity_out=quantity, quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost_snapshot,
+        warehouse_id=warehouse_id, created_by=user_id, notes=notes)
 
     # 4. Create COGS journal (if cost > 0)
     journal_id = jurnal_pemanggil
@@ -452,51 +425,14 @@ async def record_inventory_inbound(
     conv_factor_dec = (
         Decimal(str(conversion_factor)) if conversion_factor is not None else None
     )
-    await conn.execute(
-        """
-        INSERT INTO inventory_ledger (
-            id, tenant_id, product_id, product_code, product_name,
-            movement_type, movement_date, source_type, source_id, source_number,
-            quantity_in, quantity_out, quantity_balance,
-            unit_cost, total_cost, average_cost,
-            warehouse_id, journal_id, created_by, notes, batch_id,
-            transaction_unit, transaction_quantity, conversion_factor,
-            storage_location_id
-        ) VALUES (
-            $1, $2, $3, $4, $5,
-            $23, $6, $7, $8, $9,
-            $10, 0, $11,
-            $12, $13, $14,
-            $15, $16, $17, $18, $19,
-            $20, $21, $22,
-            $24
-        )
-        """,
-        ledger_id,
-        tenant_id,
-        product_id,
-        product_code,
-        product_name,
-        movement_date,
-        source_type,
-        source_id,
-        source_number,
-        quantity_dec,
-        new_balance,
-        unit_cost_dec,
-        total_cost,
-        new_avg_cost,
-        warehouse_id,
-        journal_id,
-        user_id,
-        notes,
-        batch_id,
-        transaction_unit,
-        txn_qty_dec,
-        conv_factor_dec,
-        movement_type,
-        storage_location_id,
-    )
+    await tulis_kartu(
+        conn,
+        id=ledger_id, tenant_id=tenant_id, product_id=product_id, product_code=product_code, product_name=product_name,
+        movement_type=movement_type, movement_date=movement_date, source_type=source_type, source_id=source_id, source_number=source_number,
+        quantity_in=quantity_dec, quantity_out=0, quantity_balance=new_balance, unit_cost=unit_cost_dec, total_cost=total_cost,
+        average_cost=new_avg_cost, warehouse_id=warehouse_id, journal_id=journal_id, created_by=user_id, notes=notes, batch_id=batch_id,
+        transaction_unit=transaction_unit, transaction_quantity=txn_qty_dec, conversion_factor=conv_factor_dec,
+        storage_location_id=storage_location_id)
 
     return {
         "ledger_id": ledger_id,
@@ -670,44 +606,13 @@ async def record_inventory_reversal(
 
         # Insert reversal entry — DB trigger auto-updates warehouse_stock
         ledger_id = uuid4()
-        await conn.execute(
-            """
-            INSERT INTO inventory_ledger (
-                id, tenant_id, product_id, product_code, product_name,
-                movement_type, movement_date, source_type, source_id, source_number,
-                quantity_in, quantity_out, quantity_balance,
-                unit_cost, total_cost, average_cost,
-                warehouse_id, journal_id, created_by, notes, batch_id
-            ) VALUES (
-                $1, $2, $3, $4, $5,
-                $6, $7, $8, $9, $10,
-                $11, $12, $13,
-                $14, $15, $16,
-                $17, $18, $19, $20, $21
-            )
-            """,
-            ledger_id,
-            tenant_id,
-            product_id,
-            entry["product_code"],
-            entry["product_name"],
-            movement_type,
-            movement_date,
-            void_source_type,
-            source_id,
-            entry["source_number"],
-            rev_qty_in,
-            rev_qty_out,
-            new_balance,
-            unit_cost,
-            total_cost,
-            avg_cost,
-            entry["warehouse_id"],
-            reversal_journal_id,
-            created_by,
-            f"{notes_prefix} - inventory reversal",
-            entry["batch_id"],
-        )
+        await tulis_kartu(
+            conn,
+            id=ledger_id, tenant_id=tenant_id, product_id=product_id, product_code=entry["product_code"], product_name=entry["product_name"],
+            movement_type=movement_type, movement_date=movement_date, source_type=void_source_type, source_id=source_id,
+            source_number=entry["source_number"], quantity_in=rev_qty_in, quantity_out=rev_qty_out, quantity_balance=new_balance,
+            unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost, warehouse_id=entry["warehouse_id"],
+            journal_id=reversal_journal_id, created_by=created_by, notes=f"{notes_prefix} - inventory reversal", batch_id=entry["batch_id"])
 
         # Reverse batch quantities if batch_id present
         batch_id = (

@@ -25,6 +25,7 @@ from backend.api_gateway.app.utils.conversational_parser import (
     validate_parsed_input,
 )
 from backend.api_gateway.app.routers.products import get_db_connection
+from ..services.ledger_kartu import tulis_kartu
 from ..services.role_resolver import (
     AccountRole,
     AccountRoleUnmappedError,
@@ -229,36 +230,14 @@ async def _create_pos_inventory_and_journals(
                                 "ini belum punya gudang aktif."
                             ),
                         )
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost, created_by, notes,
-                            warehouse_id
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            'SALE', $5, 'POS_SALE', $6,
-                            0, $7, $8,
-                            $9, $10, $9, $11, $12,
-                            $13
-                        )
-                    """,
-                        tenant_id,
-                        product_id,
-                        item.get("item_code") or (item.get("nama_produk") or ""),
-                        item.get("nama_produk") or item.get("item_name") or "",
-                        receipt_date,
-                        receipt_id,
-                        qty,
-                        new_balance,
-                        unit_cost,
-                        item_total_cost,
-                        uuid.UUID(user_id) if user_id else None,
-                        f"POS Sale: {txn['receipt_number']}",
-                        pos_warehouse,
-                    )
+                    await tulis_kartu(
+                        conn,
+                        tenant_id=tenant_id, product_id=product_id, product_code=item.get("item_code") or (item.get("nama_produk") or ""),
+                        product_name=item.get("nama_produk") or item.get("item_name") or "", movement_type='SALE',
+                        movement_date=receipt_date, source_type='POS_SALE', source_id=receipt_id, quantity_in=0, quantity_out=qty,
+                        quantity_balance=new_balance, unit_cost=unit_cost, total_cost=item_total_cost, average_cost=unit_cost,
+                        created_by=uuid.UUID(user_id) if user_id else None, notes=f"POS Sale: {txn['receipt_number']}",
+                        warehouse_id=pos_warehouse)
 
                     total_cogs += item_total_cost
 

@@ -83,8 +83,8 @@ def test_penulis_sql_mentah_dikenal():
             continue
         for n in ast.walk(t):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if any(isinstance(c, ast.Constant) and isinstance(c.value, str) and "INSERT INTO inventory_ledger" in c.value
-                       for c in ast.walk(n)):
+                if any((isinstance(c, ast.Constant) and isinstance(c.value, str) and "INSERT INTO inventory_ledger" in c.value)
+                       or (isinstance(c, ast.Call) and getattr(c.func, "id", getattr(c.func, "attr", None)) == "tulis_kartu") for c in ast.walk(n)):
                     dapat.add((str(p.relative_to(APP)), n.name))
     baru = {d for d in dapat if d not in PENULIS_SQL}
     assert not baru, f"penulis inventory_ledger BARU — klasifikasikan source_type-nya di kosakata_ledger: {sorted(baru)}"
