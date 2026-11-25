@@ -68,10 +68,10 @@ async def rencana_keluar(conn, tid: str, product_id, qty: Decimal) -> List[Ambil
 
 async def fifo_aktif(conn, tid: str, product_id) -> bool:
     """SATU penentu: barang ini dihitung FIFO? Flag mati / barang WAC / belum ada costing_mulai -> False (jalur WAC lama tak tersentuh)."""
-    return bool(await conn.fetchval(
+    return (await conn.fetchval(
         "SELECT EXISTS (SELECT 1 FROM tenant_features f JOIN products p ON p.tenant_id = f.tenant_id "
         "WHERE f.tenant_id = $1 AND f.feature = $2 AND f.enabled AND p.id = $3 "
-        "AND p.costing_method = 'fifo' AND p.costing_mulai IS NOT NULL)", tid, FLAG, product_id))
+        "AND p.costing_method = 'fifo' AND p.costing_mulai IS NOT NULL)", tid, FLAG, product_id)) is True   # EXISTS = bool asli; selain True -> WAC
 
 
 def nilai_masuk(qty, unit_cost) -> Decimal:
