@@ -162,7 +162,7 @@ SEMUA_KUNCI_REKENING = AKSI_REKENING + KARTU_REKENING
 def sql_saldo(a: str = "ba") -> str:
     """Saldo jurnal POSTED CoA rekening (Law 1/16; == kasbank_ringkas/kasbank_tulis), tenant eksplisit."""
     return (f"(SELECT COALESCE(SUM(jl.debit) - SUM(jl.credit), 0) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_id "
-            f"WHERE jl.account_id = {a}.coa_id AND je.status = 'POSTED' AND je.tenant_id = {a}.tenant_id)")
+            f"WHERE jl.account_id = {a}.coa_id AND is_effective_journal(je.id) AND je.tenant_id = {a}.tenant_id)")
 
 
 def sql_aksi_rekening(kunci: str, a: str = "ba") -> str:
