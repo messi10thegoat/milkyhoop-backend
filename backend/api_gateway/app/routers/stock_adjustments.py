@@ -29,6 +29,7 @@ from datetime import date
 from decimal import Decimal
 import uuid as uuid_module
 
+from ..services.ledger_kartu import tulis_kartu
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services import idem_buat
 from ..services import nomor_jurnal as NJ
@@ -920,40 +921,14 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
             else:
                 new_avg_cost = unit_cost
 
-            await conn.execute(
-                """
-                INSERT INTO inventory_ledger (
-                    tenant_id, product_id, product_code, product_name,
-                    movement_type, movement_date, source_type, source_id, source_number,
-                    quantity_in, quantity_out, quantity_balance,
-                    unit_cost, total_cost, average_cost,
-                    warehouse_id, storage_location_id, journal_id, created_by, notes
-                ) VALUES (
-                    $1, $2, $3, $4,
-                    'STOCK_ADJUSTMENT', $5, 'STOCK_ADJUSTMENT', $6, $7,
-                    0, $8, $9,
-                    $10, $11, $12,
-                    $13, $14, $15, $16, $17
-                )
-            """,
-                ctx["tenant_id"],
-                g["product_id"],
-                g["product_code"],
-                g["product_name"],
-                sa["adjustment_date"],
-                adjustment_id,
-                sa["adjustment_number"],
-                qty_out,
-                new_balance,
-                unit_cost,
-                total_cost,
-                new_avg_cost,
-                adj_warehouse_id,
-                sa["storage_location_id"],
-                journal_id,
-                ctx["user_id"],
-                f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
-            )
+            await tulis_kartu(
+                conn,
+                tenant_id=ctx["tenant_id"], product_id=g["product_id"], product_code=g["product_code"], product_name=g["product_name"],
+                movement_type='STOCK_ADJUSTMENT', movement_date=sa["adjustment_date"], source_type='STOCK_ADJUSTMENT',
+                source_id=adjustment_id, source_number=sa["adjustment_number"], quantity_in=0, quantity_out=qty_out,
+                quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=new_avg_cost,
+                warehouse_id=adj_warehouse_id, storage_location_id=sa["storage_location_id"], journal_id=journal_id,
+                created_by=ctx["user_id"], notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}")
 
     # Update stock adjustment status (+ gudang yang benar-benar dipakai, untuk draf lama tanpa warehouse_id)
     await conn.execute(

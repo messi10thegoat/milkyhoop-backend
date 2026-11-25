@@ -121,7 +121,7 @@ def test_pembalik_tak_mengubah_baris_lama_dan_hanya_menulis_kolom_snapshot_pada_
     src = inspect.getsource(IH.record_inventory_reversal)
     assert "UPDATE inventory_ledger" not in src and "DELETE FROM inventory_ledger" not in src      # Rule 8: append-only
     assert "snapshot_wac_sesudah(" in src and "saldo_dan_nilai(" in src
-    assert src.index("snapshot_wac_sesudah(") < src.index("INSERT INTO inventory_ledger")             # dihitung SEBELUM baris dituliskan, memakai efeknya
+    assert src.index("snapshot_wac_sesudah(") < src.index("tulis_kartu(")             # dihitung SEBELUM baris dituliskan, memakai efeknya
     hs = inspect.getsource(IH.snapshot_wac_sesudah)
     assert "hitung_wac_sesudah(" in hs and "SELECT get_weighted_average_cost($1, $2)" in hs            # get_weighted_average_cost hanya cadangan
     assert "SUM(quantity_in * unit_cost) - SUM(quantity_out * unit_cost)" in inspect.getsource(IH.saldo_dan_nilai)

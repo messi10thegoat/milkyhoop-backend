@@ -19,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import logging
 import asyncpg
 
+from ..services.ledger_kartu import tulis_kartu
 from ..services import teks_galat as tg  # PERIODE-TEKS (1 Nov 2026)
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..schemas.production import (
@@ -1399,42 +1400,13 @@ async def _reverse_inventory_ledger(
         # BUG-268c: snapshot average_cost = WAC SESUDAH efek pembalik (dulu = unit_cost baris asli, bukan WAC)
         from ..services import inventory_helpers as _IH
         avg_sesudah = await _IH.snapshot_wac_sesudah(conn, tenant_id, r["product_id"], new_in, new_out, r["unit_cost"])
-        await conn.execute(
-            """
-            INSERT INTO inventory_ledger (
-                id, tenant_id, product_id, product_code, product_name,
-                movement_type, movement_date, source_type, source_id, source_number,
-                quantity_in, quantity_out, quantity_balance,
-                unit_cost, total_cost, average_cost,
-                warehouse_id, created_by, notes, journal_id
-            ) VALUES (
-                gen_random_uuid(), $1, $2, $3, $4,
-                $5, $18::date, $6, $7, $8,
-                $9, $10, $11,
-                $12, $13, $19,
-                $14, $15, $16, $17
-            )
-            """,
-            tenant_id,
-            r["product_id"],
-            r["product_code"],
-            r["product_name"],
-            f"{movement_tag}_REVERSAL",
-            source_type,
-            source_id,
-            r["source_number"],
-            new_in,
-            new_out,
-            new_bal,
-            r["unit_cost"],
-            r["total_cost"],
-            r["warehouse_id"],
-            user_id,
-            "Reversal of production cancellation",
-            reversal_journal_id,
-            hari_ini,
-            avg_sesudah,
-        )
+        await tulis_kartu(
+            conn,
+            tenant_id=tenant_id, product_id=r["product_id"], product_code=r["product_code"], product_name=r["product_name"],
+            movement_type=f"{movement_tag}_REVERSAL", movement_date=hari_ini, source_type=source_type, source_id=source_id,
+            source_number=r["source_number"], quantity_in=new_in, quantity_out=new_out, quantity_balance=new_bal, unit_cost=r["unit_cost"],
+            total_cost=r["total_cost"], average_cost=avg_sesudah, warehouse_id=r["warehouse_id"], created_by=user_id,
+            notes="Reversal of production cancellation", journal_id=reversal_journal_id)
 
 
 @router.post("/{order_id}/cancel", response_model=ProductionResponse)
@@ -1939,39 +1911,14 @@ async def issue_materials(
                             )
                             or row["unit_cost"]
                         )
-                        await conn.execute(
-                            """
-                            INSERT INTO inventory_ledger (
-                                id, tenant_id, product_id, product_code, product_name,
-                                movement_type, movement_date, source_type, source_id, source_number,
-                                quantity_in, quantity_out, quantity_balance,
-                                unit_cost, total_cost, average_cost,
-                                warehouse_id, created_by, notes, journal_id
-                            ) VALUES (
-                                gen_random_uuid(), $1, $2, $3, $4,
-                                'MATERIAL_ISSUE', $16, 'MATERIAL_ISSUE', $5, $6,
-                                0, $7, $8,
-                                $9, $10, $11,
-                                $12, $13, $14, $15
-                            )
-                            """,
-                            ctx["tenant_id"],
-                            row["product_id"],
-                            row["product_code"],
-                            row["product_name"],
-                            order_id,
-                            order_number,
-                            row["quantity"],
-                            new_bal,
-                            row["unit_cost"],
-                            row["total_cost"],
-                            avg_snap,
-                            row["warehouse_id"],
-                            ctx["user_id"],
-                            f"Pengeluaran bahan untuk {order_number}",
-                            mi_journal_id,
-                            effective_date,
-                        )
+                        await tulis_kartu(
+                            conn,
+                            tenant_id=ctx["tenant_id"], product_id=row["product_id"], product_code=row["product_code"],
+                            product_name=row["product_name"], movement_type='MATERIAL_ISSUE', movement_date=effective_date,
+                            source_type='MATERIAL_ISSUE', source_id=order_id, source_number=order_number, quantity_in=0,
+                            quantity_out=row["quantity"], quantity_balance=new_bal, unit_cost=row["unit_cost"], total_cost=row["total_cost"],
+                            average_cost=avg_snap, warehouse_id=row["warehouse_id"], created_by=ctx["user_id"],
+                            notes=f"Pengeluaran bahan untuk {order_number}", journal_id=mi_journal_id)
 
                     # Link journal to WO
                     await conn.execute(

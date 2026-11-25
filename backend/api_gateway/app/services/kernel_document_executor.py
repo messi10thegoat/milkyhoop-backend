@@ -19,6 +19,7 @@ Iron Laws enforced:
   Law 25: Decimal precision (int amounts in payloads)
 """
 
+from .ledger_kartu import tulis_kartu
 from ..utils.tanggal_tenant import tanggal_dokumen
 import json
 import logging
@@ -911,27 +912,15 @@ class KernelDocumentExecutor:
             movement_type = "PURCHASE" if direction == "IN" else "SALE"
             movement_date = await self._parse_date(conn, tenant_id, {"date": mv.get("date")})
 
-            row = await conn.fetchrow(
-                """INSERT INTO inventory_ledger (
-                    tenant_id, product_id, product_code, product_name,
-                    movement_type, movement_date, source_type, source_id,
-                    quantity_in, quantity_out, quantity_balance,
-                    unit_cost, total_cost, average_cost,
-                    warehouse_id, journal_id, created_by, notes
-                ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8,
-                    $9, $10, $11, $12, $13, $12,
-                    $14, $15, $16, $17
-                ) RETURNING id""",
-                tenant_id, product_uuid, product_code, product_name,
-                movement_type, movement_date, SOURCE_TYPE, doc_uuid,
-                quantity_in, quantity_out, new_balance,
-                unit_cost, unit_cost * quantity,
-                uuid.UUID(mv["warehouse_id"]) if mv.get("warehouse_id") else None,
-                journal_id, user_uuid,
-                mv.get("notes", f"Document Intake: {product_name}"),
-            )
-            ledger_ids.append(str(row["id"]))
+            baris_id = await tulis_kartu(
+                conn,
+                tenant_id=tenant_id, product_id=product_uuid, product_code=product_code, product_name=product_name,
+                movement_type=movement_type, movement_date=movement_date, source_type=SOURCE_TYPE, source_id=doc_uuid,
+                quantity_in=quantity_in, quantity_out=quantity_out, quantity_balance=new_balance, unit_cost=unit_cost,
+                total_cost=unit_cost * quantity, average_cost=unit_cost,
+                warehouse_id=uuid.UUID(mv["warehouse_id"]) if mv.get("warehouse_id") else None, journal_id=journal_id, created_by=user_uuid,
+                notes=mv.get("notes", f"Document Intake: {product_name}"))
+            ledger_ids.append(str(baris_id))
         return ledger_ids
 
 

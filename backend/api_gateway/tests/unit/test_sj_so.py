@@ -475,9 +475,9 @@ def test_tulis_stok_jurnal_kartu_dan_tautan():
     assert "'DRAFT'" in je[0] and je[1][5] == "DELIVERY_NOTE"
     assert any("SET status = 'POSTED'" in u[0] for u in c.updates)
     led = [i for i in c.inserts if i[0].startswith("INSERT INTO inventory_ledger")]
-    assert len(led) == 1 and "'SALE'" in led[0][0]
-    assert led[0][1][5] == "DELIVERY_NOTE" and led[0][1][9] == Decimal("490")    # saldo 500 - 10
-    assert led[0][1][12] == h["journal_id"]                                          # kartu tertaut jurnal
+    assert len(led) == 1 and led[0][1][5] == "SALE"
+    assert led[0][1][7] == "DELIVERY_NOTE" and led[0][1][12] == Decimal("490")    # saldo 500 - 10
+    assert led[0][1][17] == h["journal_id"]                                          # kartu tertaut jurnal
     hdr = [i for i in c.inserts if i[0].startswith("INSERT INTO invoice_fulfillments (")][0]
     assert hdr[1][5] == GUD and hdr[1][7] == h["journal_id"]
     assert not any("UPDATE warehouse_stock" in s or "INSERT INTO warehouse_stock" in s for s in c.log)   # trigger yang menulis

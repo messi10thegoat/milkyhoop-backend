@@ -25,7 +25,7 @@ def test_faktur_jual_tak_mengurangi_batch_manual_dan_cek_sebelum_ledger():
     src = tanpa_komentar(inspect.getsource(SI._execute_fulfillment))
     assert "UPDATE batch_warehouse_stock" not in src
     assert "SELECT available_quantity FROM batch_warehouse_stock" in src and "FOR UPDATE" in src
-    assert src.index("SELECT available_quantity FROM batch_warehouse_stock") < src.index("INSERT INTO inventory_ledger")   # cek kecukupan SEBELUM kartu stok (trigger menggeser sesudahnya)
+    assert src.index("SELECT available_quantity FROM batch_warehouse_stock") < src.index("tulis_kartu(")   # cek kecukupan SEBELUM kartu stok (trigger menggeser sesudahnya)
     assert "tenant_id = $3 AND batch_id = $1" in src     # disaring tenant
     assert "Stok batch tidak cukup" in src
 

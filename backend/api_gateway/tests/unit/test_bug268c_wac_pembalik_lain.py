@@ -42,7 +42,7 @@ class Buku:
     async def execute(self, sql, *a):
         if "INSERT INTO inventory_ledger" in sql:
             self.insert.append(a)
-            self.rows.append({**baris(), "quantity_in": a[8], "quantity_out": a[9], "unit_cost": a[11], "total_cost": a[12], "average_cost": a[18], "source_type": a[5], "source_id": a[6]})
+            self.rows.append({**baris(), "quantity_in": a[10], "quantity_out": a[11], "unit_cost": a[13], "total_cost": a[14], "average_cost": a[15], "source_type": a[7], "source_id": a[8]})
         return "OK"
 
 

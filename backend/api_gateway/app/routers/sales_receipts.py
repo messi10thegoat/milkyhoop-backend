@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services.ledger_kartu import tulis_kartu
 from ..services import teks_galat as tg
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..services.jaga_rekonsiliasi import tolak_void_bila_terekonsiliasi
@@ -485,36 +486,15 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
                         item["item_id"],
                     )
                     new_balance = current_balance - item["qty_dasar"]
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, created_by, notes
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            'SALE', $5, 'POS_SALE', $6,
-                            0, $7, $8,
-                            $9, $10, $9,
-                            $11, $12, $13
-                        )
-                        """,
-                        ctx["tenant_id"],
-                        item["item_id"],
-                        item.get("item_code_from_db") or item.get("item_code"),
-                        item.get("item_name_from_db") or item.get("item_name"),
-                        body.receipt_date,
-                        receipt_id,
-                        item["qty_dasar"],
-                        new_balance,
-                        item["unit_cost"],
-                        item["total_cost"],
-                        warehouse_id,
-                        ctx.get("user_id"),
-                        f"Sales Receipt {receipt_number}",
-                    )
+                    await tulis_kartu(
+                        conn,
+                        tenant_id=ctx["tenant_id"], product_id=item["item_id"],
+                        product_code=item.get("item_code_from_db") or item.get("item_code"),
+                        product_name=item.get("item_name_from_db") or item.get("item_name"), movement_type='SALE',
+                        movement_date=body.receipt_date, source_type='POS_SALE', source_id=receipt_id, quantity_in=0,
+                        quantity_out=item["qty_dasar"], quantity_balance=new_balance, unit_cost=item["unit_cost"],
+                        total_cost=item["total_cost"], average_cost=item["unit_cost"], warehouse_id=warehouse_id,
+                        created_by=ctx.get("user_id"), notes=f"Sales Receipt {receipt_number}")
 
             # Law 5: Period check before journal creation
             period = await conn.fetchrow(
@@ -982,38 +962,14 @@ async def void_sales_receipt(
                     # BUG-268c: snapshot average_cost = WAC SESUDAH restock pada biaya baris (dulu = unit_cost baris asli, bukan WAC)
                     from ..services import inventory_helpers as _IH
                     _avg = await _IH.snapshot_wac_sesudah(conn, ctx["tenant_id"], item["item_id"], _qdv["qty_dasar"], 0, item["unit_cost"])
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_ledger (
-                            tenant_id, product_id, product_code, product_name,
-                            movement_type, movement_date, source_type, source_id,
-                            quantity_in, quantity_out, quantity_balance,
-                            unit_cost, total_cost, average_cost,
-                            warehouse_id, journal_id, created_by, notes
-                        ) VALUES (
-                            $1, $2, $3, $4,
-                            'SALE_VOID', $5, 'POS_SALE_VOID', $6,
-                            $7, 0, $8,
-                            $9, $10, $15,
-                            $11, $12, $13, $14
-                        )
-                        """,
-                        ctx["tenant_id"],
-                        item["item_id"],
-                        prod_info["item_code"] if prod_info else None,
-                        prod_info["nama_produk"] if prod_info else item["item_name"],
-                        void_date,
-                        receipt_id,
-                        _qdv["qty_dasar"],
-                        new_balance,
-                        item["unit_cost"],
-                        item["total_cost"],
-                        existing["warehouse_id"],
-                        rev_cogs_id,
-                        ctx.get("user_id"),
-                        f"Void Sales Receipt {existing['receipt_number']}",
-                        _avg,
-                    )
+                    await tulis_kartu(
+                        conn,
+                        tenant_id=ctx["tenant_id"], product_id=item["item_id"], product_code=prod_info["item_code"] if prod_info else None,
+                        product_name=prod_info["nama_produk"] if prod_info else item["item_name"], movement_type='SALE_VOID',
+                        movement_date=void_date, source_type='POS_SALE_VOID', source_id=receipt_id, quantity_in=_qdv["qty_dasar"],
+                        quantity_out=0, quantity_balance=new_balance, unit_cost=item["unit_cost"], total_cost=item["total_cost"],
+                        average_cost=_avg, warehouse_id=existing["warehouse_id"], journal_id=rev_cogs_id, created_by=ctx.get("user_id"),
+                        notes=f"Void Sales Receipt {existing['receipt_number']}")
 
             # Update receipt status
             row = await conn.fetchrow(

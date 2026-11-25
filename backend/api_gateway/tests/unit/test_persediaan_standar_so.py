@@ -279,7 +279,7 @@ def test_tulis_posting_jurnal_ledger_gudang_dari_penentu(monkeypatch):
     jl = [(a[3], a[4], a[5]) for s, a in k.exe if s.startswith("INSERT INTO journal_lines")]
     assert jl == [(AK_ADJ, D("3000"), D("0")), (AK_PERS, D("0"), D("3000"))]
     il = [a for s, a in k.exe if s.startswith("INSERT INTO inventory_ledger")]
-    assert len(il) == 1 and il[0][12] == G_UTAMA and il[0][7] == D("3")  # gudang utama, qty keluar 3
+    assert len(il) == 1 and il[0][16] == G_UTAMA and il[0][11] == D("3")  # gudang utama, qty keluar 3
     up = [a for s, a in k.exe if s.startswith("UPDATE stock_adjustments SET status = 'posted'")]
     assert up and up[0][3] == G_UTAMA and up[0][4] == T
 
