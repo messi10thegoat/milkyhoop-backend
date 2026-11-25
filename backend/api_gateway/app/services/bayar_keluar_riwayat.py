@@ -29,7 +29,7 @@ async def riwayat_bayar_keluar(conn, tenant_id: str, payment_id, boleh: Callable
     k = _Kumpul()
     n = p["payment_number"]
     k.tambah(p["created_at"], "PEMBAYARAN_DIBUAT", f"Pembayaran {n} {_rp(p['total_amount'])} dibuat", p["created_by"], "payment_out", p["id"], n)
-    k.tambah(p["posted_at"], "PEMBAYARAN_DIBAYAR", f"Pembayaran {n} diposting", p["posted_by"], "payment_out", p["id"], n)
+    k.tambah(p["posted_at"], "PEMBAYARAN_DIBAYAR", f"Pembayaran {n} dibayar", p["posted_by"], "payment_out", p["id"], n)
     alasan = f": {p['void_reason']}" if p["void_reason"] else ""
     k.tambah(p["voided_at"], "PEMBAYARAN_DIBATALKAN", f"Pembayaran {n} dibatalkan{alasan}", p["voided_by"], "payment_out", p["id"], n)
     if lihat["bill"] and p["posted_at"]:

@@ -31,7 +31,7 @@ async def riwayat_um_vendor(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     if vd["journal_id"]:
         j = await conn.fetchrow("SELECT created_at, created_by FROM journal_entries WHERE id = $1 AND tenant_id = $2", vd["journal_id"], tenant_id)
         if j:
-            k.tambah(j["created_at"], "UM_DIPOSTING", f"Uang muka pembelian {n} diposting", j["created_by"], "vendor_deposit", vd["id"], n)
+            k.tambah(j["created_at"], "UM_DIPOSTING", f"Uang muka pembelian {n} dicatat", j["created_by"], "vendor_deposit", vd["id"], n)
     for a in await conn.fetch(
         """SELECT a.id, a.amount, a.created_at, a.created_by, a.reversed_at, a.reversed_by, a.bill_id, b.invoice_number
            FROM vendor_deposit_applications a LEFT JOIN bills b ON b.id = a.bill_id AND b.tenant_id = $2

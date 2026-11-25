@@ -134,6 +134,7 @@ SQL_SJ_MUNGKIN = """
                                    WHERE a.fulfillment_item_id = i.id AND a.voided_at IS NULL), 0))"""
 
 CATATAN_SEBAGIAN = "Pratinjau sebagian: HPP dan pengakuan barang terkirim dihitung saat faktur diterbitkan."
+CATATAN_DIMUKA = "Pendapatan diakui saat barang dikirim (Surat Jalan). Sebelum itu tercatat sebagai Pendapatan Diterima Dimuka, bukan salah akun."   # BUG-264: teks saja, jurnal tak berubah
 
 
 def _pesan(detail) -> str:
@@ -348,6 +349,10 @@ async def rencana_terbit_ro(conn, ctx: dict, invoice_id, skip_deposit_ids=()) ->
                                      "description": f"Apply Deposit {p['deposit_number']} to {inv['invoice_number']}",
                                      "lines": await _tampil(conn, tid, baris)})
     ringkas, nol_netto = ringkas_per_akun(journals + deposit_journals)
+    if akun_dimuka is not None:   # BUG-264: pendapatan masih tertahan di akun Dimuka setelah semua pengakuan yang direncanakan -> satu kalimat penjelas
+        kode_dimuka = await conn.fetchval("SELECT account_code FROM chart_of_accounts WHERE id = $1 AND tenant_id = $2", akun_dimuka, tid)
+        if kode_dimuka is not None and any(r["account_code"] == kode_dimuka and r["credit"] > 0 for r in ringkas):
+            catatan.append(CATATAN_DIMUKA)
     return {"invoice": inv, "blocks": blocks, "warnings": warnings, "notes": catatan, "complete": complete, "cabang": cabang,
             "journals": journals, "deposit_applications": deposit_apps, "deposit_application_journals": deposit_journals,
             "deposit_plan": rencana, "ringkas_per_akun": ringkas, "akun_nol_netto": nol_netto}

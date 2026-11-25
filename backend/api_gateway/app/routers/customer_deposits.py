@@ -1829,7 +1829,7 @@ async def _post_deposit(conn, ctx: dict, deposit_id: UUID) -> dict:
                 reference_type="CUSTOMER_DEPOSIT",
                 reference_id=deposit_id,
                 reference_number=dep["reference"],
-                description=f"Customer Deposit - {dep['customer_name']}",
+                description=f"Uang muka pelanggan - {dep['customer_name']}",
                 payee_payer=dep["customer_name"],
                 created_by=ctx["user_id"],
             )

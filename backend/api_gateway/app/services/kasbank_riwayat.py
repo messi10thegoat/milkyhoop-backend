@@ -70,7 +70,7 @@ async def riwayat_manual(conn, tid: str, tx_id, limit: int = 200) -> Optional[di
         r = await _pembalik(conn, tid, m["reversed_by_id"])
         at, aktor = (m["voided_at"], m["voided_by"]) if m["voided_at"] else ((r["created_at"], r["created_by"]) if r else (None, None))
         alasan = f": {m['void_reason']}" if m["void_reason"] else ""
-        k.tambah(at, "MUTASI_DIBATALKAN", f"{jenis} {n} dibatalkan (void){alasan}", aktor, "bank_transaction", m["id"], n)
+        k.tambah(at, "MUTASI_DIBATALKAN", f"{jenis} {n} dibatalkan{alasan}", aktor, "bank_transaction", m["id"], n)
     keluar, total = await _selesaikan(conn, tid, k, {}, {}, limit)
     return {"transaction_id": str(m["id"]), "nomor": n, "events": keluar, "total": total, "omitted": []}
 
@@ -123,9 +123,9 @@ async def riwayat_transfer(conn, tid: str, transfer_id, limit: int = 200) -> Opt
     k = _Kumpul()
     k.tambah(t["created_at"], "TRANSFER_DIBUAT", f"Transfer {n} {_rp(t['amount'])} dari {t['asal']} ke {t['tujuan']} dibuat", t["created_by"],
              "bank_transfer", t["id"], n)
-    k.tambah(t["posted_at"], "TRANSFER_DIPOSTING", f"Transfer {n} diposting", t["posted_by"], "bank_transfer", t["id"], n)
+    k.tambah(t["posted_at"], "TRANSFER_DIPOSTING", f"Transfer {n} dicatat", t["posted_by"], "bank_transfer", t["id"], n)
     alasan = f": {t['voided_reason']}" if t["voided_reason"] else ""
-    k.tambah(t["voided_at"], "TRANSFER_DIBATALKAN", f"Transfer {n} dibatalkan (void){alasan}", t["voided_by"], "bank_transfer", t["id"], n)
+    k.tambah(t["voided_at"], "TRANSFER_DIBATALKAN", f"Transfer {n} dibatalkan{alasan}", t["voided_by"], "bank_transfer", t["id"], n)
     keluar, total = await _selesaikan(conn, tid, k, {}, {}, limit)
     return {"transfer_id": str(t["id"]), "transfer_number": n, "events": keluar, "total": total, "omitted": []}
 

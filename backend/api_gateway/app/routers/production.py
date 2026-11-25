@@ -2965,8 +2965,8 @@ async def month_end_reconcile(request: Request, body: dict):
                     raise HTTPException(
                         status_code=409,
                         detail=(
-                            f"Period '{period}' already reconciled "
-                            f"({existing['journal_number']}). Void it first to re-run."
+                            f"Periode '{period}' sudah ditutup "
+                            f"({existing['journal_number']}). Batalkan penutupan itu dulu untuk mengulang."
                         ),
                     )
 

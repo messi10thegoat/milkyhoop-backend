@@ -43,9 +43,9 @@ async def bagian_tagihan(conn, tenant_id: str, k: _Kumpul, bills: list, lihat: d
             nama_event("bill", "updated"))
         k.tambah(b["created_at"], "TAGIHAN_DIBUAT", f"Faktur pembelian {n} {_rp(awal if awal is not None else b['amount'])} dibuat{asal}",
                  b["created_by"], "bill", b["id"], n)
-        k.tambah(b["posted_at"], "TAGIHAN_DIPOSTING", f"Faktur pembelian {n} diposting", b["posted_by"], "bill", b["id"], n)
+        k.tambah(b["posted_at"], "TAGIHAN_DIPOSTING", f"Faktur pembelian {n} diterbitkan", b["posted_by"], "bill", b["id"], n)
         alasan = f": {b['voided_reason']}" if b["voided_reason"] else ""
-        k.tambah(b["voided_at"], "TAGIHAN_DIBATALKAN", f"Faktur pembelian {n} dibatalkan (void){alasan}", None, "bill", b["id"], n)
+        k.tambah(b["voided_at"], "TAGIHAN_DIBATALKAN", f"Faktur pembelian {n} dibatalkan{alasan}", None, "bill", b["id"], n)
 
     if lihat["payment_out"]:
         batal = set()  # satu pembayaran beralokasi ke beberapa tagihan PO -> "dibatalkan" sekali
@@ -100,7 +100,7 @@ async def bagian_tagihan(conn, tenant_id: str, k: _Kumpul, bills: list, lihat: d
         for v in vcs:
             cn = v["credit_number"]
             k.tambah(v["created_at"], "NOTA_DEBIT_DIBUAT", f"Nota debit {cn} {_rp(v['total_amount'])} dibuat", v["created_by"], "debit_note", v["id"], cn)
-            k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {cn} diposting", v["posted_by"], "debit_note", v["id"], cn)
+            k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {cn} diterbitkan", v["posted_by"], "debit_note", v["id"], cn)
             al = f": {v['voided_reason']}" if v["voided_reason"] else ""
             k.tambah(v["voided_at"], "NOTA_DEBIT_DIBATALKAN", f"Nota debit {cn} dibatalkan{al}", v["voided_by"], "debit_note", v["id"], cn)
 

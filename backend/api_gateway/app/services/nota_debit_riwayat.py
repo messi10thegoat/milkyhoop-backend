@@ -31,9 +31,9 @@ async def riwayat_nota_debit(conn, tenant_id: str, vc_id, boleh: Callable[[str],
     k = _Kumpul()
     n = v["credit_number"]
     k.tambah(v["created_at"], "NOTA_DEBIT_DIBUAT", f"Nota debit {n} {_rp(v['total_amount'])} dibuat", v["created_by"], "debit_note", v["id"], n)
-    k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {n} diposting", v["posted_by"], "debit_note", v["id"], n)
+    k.tambah(v["posted_at"], "NOTA_DEBIT_DIPOSTING", f"Nota debit {n} diterbitkan", v["posted_by"], "debit_note", v["id"], n)
     alasan = f": {v['voided_reason']}" if v["voided_reason"] else ""
-    k.tambah(v["voided_at"], "NOTA_DEBIT_DIBATALKAN", f"Nota debit {n} dibatalkan (void){alasan}", v["voided_by"], "debit_note", v["id"], n)
+    k.tambah(v["voided_at"], "NOTA_DEBIT_DIBATALKAN", f"Nota debit {n} dibatalkan{alasan}", v["voided_by"], "debit_note", v["id"], n)
 
     for a in await conn.fetch(
         """SELECT vca.id AS kunci, vca.amount_applied, vca.created_at, vca.created_by, vca.reversed_at, vca.reversed_by, vca.reversal_reason,

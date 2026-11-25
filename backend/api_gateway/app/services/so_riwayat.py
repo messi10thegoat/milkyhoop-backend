@@ -129,7 +129,7 @@ RINGKAS_AUDIT = {
     "QUOTE_UPDATED": "Penawaran diubah",
     "SALES_INVOICE_LINKED_TO_ORDER": "Faktur ditautkan ke pesanan",
     "REVENUE_RECOGNIZED_NON_STOCK": "Pendapatan non-stok diakui",
-    "SALES_INVOICE_VOIDED": "Faktur dibatalkan (void)",
+    "SALES_INVOICE_VOIDED": "Faktur dibatalkan",
     "FULFILLMENT_VOIDED": "Surat Jalan dibatalkan",
     "DOCUMENT_DELETED": "Dokumen dihapus",
     "DEPOSIT_VOIDED": "Uang muka dibatalkan",
@@ -219,9 +219,9 @@ async def _bagian_faktur(conn, tenant_id: str, k: "_Kumpul", fakturs, lihat: dic
         for f in fakturs:
             n = f["invoice_number"]
             k.tambah(f["created_at"], "FAKTUR_DIBUAT", f"Faktur {n} {_rp(f['total_amount'])} dibuat{akhiran_dibuat}", f["created_by"], "sales_invoice", f["id"], n)
-            k.tambah(f["posted_at"], "FAKTUR_DITERBITKAN", f"Faktur {n} diterbitkan (diposting)", f["posted_by"], "sales_invoice", f["id"], n)
+            k.tambah(f["posted_at"], "FAKTUR_DITERBITKAN", f"Faktur {n} diterbitkan", f["posted_by"], "sales_invoice", f["id"], n)
             alasan = f": {f['voided_reason']}" if f["voided_reason"] else ""
-            k.tambah(f["voided_at"], "FAKTUR_DIBATALKAN", f"Faktur {n} dibatalkan (void){alasan}", None, "sales_invoice", f["id"], n)
+            k.tambah(f["voided_at"], "FAKTUR_DIBATALKAN", f"Faktur {n} dibatalkan{alasan}", None, "sales_invoice", f["id"], n)
         if id_faktur:
             sjs = await conn.fetch(
                 """SELECT f.id, f.fulfillment_number, f.created_at, f.created_by, f.posted_at, f.posted_by,
@@ -415,7 +415,7 @@ async def riwayat_so(conn, tenant_id: str, so_id, boleh: Callable[[str], Awaitab
             n = d["deposit_number"]
             lb = jenis_dp[d["id"]]
             k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {n} {_rp(d['amount'])} dibuat", d["created_by"], "customer_deposit", d["id"], n)
-            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima (diposting)", d["posted_by"], "customer_deposit", d["id"], n)
+            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima", d["posted_by"], "customer_deposit", d["id"], n)
             alasan = f": {d['voided_reason']}" if d["voided_reason"] else ""
             k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {n} dibatalkan{alasan}", d["voided_by"], "customer_deposit", d["id"], n)
         if dps:
@@ -582,7 +582,7 @@ async def riwayat_uang_muka(conn, tenant_id: str, deposit_id, boleh: Callable[[s
     k.label_dp[str(d["id"])] = lb
     k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {n} {_rp(d['amount'])} dibuat", d["created_by"],
              "customer_deposit", d["id"], n)
-    k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima (diposting)",
+    k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {n} {_rp(d['amount'])} diterima",
              d["posted_by"], "customer_deposit", d["id"], n)
     al = f": {d['voided_reason']}" if d["voided_reason"] else ""
     k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {n} dibatalkan{al}", d["voided_by"],
@@ -655,7 +655,7 @@ async def riwayat_proforma(conn, tenant_id: str, proforma_id, boleh: Callable[[s
             k.label_dp[str(d["id"])] = lb
             k.tambah(d["created_at"], "UANG_MUKA_DIBUAT", f"{lb} {dn} {_rp(d['amount'])} dibuat untuk proforma {n}",
                      d["created_by"], "customer_deposit", d["id"], dn)
-            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {dn} {_rp(d['amount'])} diterima (diposting)",
+            k.tambah(d["posted_at"], "UANG_MUKA_DITERIMA", f"{lb} {dn} {_rp(d['amount'])} diterima",
                      d["posted_by"], "customer_deposit", d["id"], dn)
             al = f": {d['voided_reason']}" if d["voided_reason"] else ""
             k.tambah(d["voided_at"], "UANG_MUKA_DIBATALKAN", f"{lb} {dn} dibatalkan{al}", d["voided_by"],
@@ -826,7 +826,7 @@ async def riwayat_nota_kredit(conn, tenant_id: str, cn_id, boleh: Callable[[str]
     asal = f" atas faktur {c['invoice_number']}" if c["invoice_number"] and lihat["sales_invoice"] else ""
     k.tambah(c["created_at"], "NOTA_KREDIT_DIBUAT", f"Nota kredit {n} {_rp(c['total_amount'])} dibuat{asal}", c["created_by"],
              "credit_note", c["id"], n)
-    k.tambah(c["posted_at"], "NOTA_KREDIT_DITERBITKAN", f"Nota kredit {n} diterbitkan (diposting)", c["posted_by"],
+    k.tambah(c["posted_at"], "NOTA_KREDIT_DITERBITKAN", f"Nota kredit {n} diterbitkan", c["posted_by"],
              "credit_note", c["id"], n)
     al = f": {c['voided_reason']}" if c["voided_reason"] else ""
     k.tambah(c["voided_at"], "NOTA_KREDIT_DIBATALKAN", f"Nota kredit {n} dibatalkan{al}", c["voided_by"],

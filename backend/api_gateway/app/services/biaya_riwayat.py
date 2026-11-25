@@ -109,14 +109,14 @@ async def riwayat_biaya(conn, tid: str, expense_id, limit: int = 200) -> Optiona
     k.tambah(e["created_at"], "BIAYA_DIBUAT", f"Biaya {n} dibuat", e["created_by"], "expense", e["id"], n)
     if j:
         dari = f", dibayar dari {e['paid_through_name']}" if e["paid_through_name"] else ""
-        k.tambah(j["created_at"], "BIAYA_DIPOSTING", f"Biaya {n} {_rp(e['total_amount'])} diposting{dari}", j["created_by"],
+        k.tambah(j["created_at"], "BIAYA_DIPOSTING", f"Biaya {n} {_rp(e['total_amount'])} diterbitkan{dari}", j["created_by"],
                  "expense", e["id"], n)
     if r:
         aktor = await conn.fetchval(
             """SELECT voided_by FROM bank_transactions WHERE journal_id = $1 AND tenant_id = $2 AND voided_by IS NOT NULL
                ORDER BY voided_at LIMIT 1""", e["journal_id"], tid)
         alasan = alasan_dari_deskripsi(r["description"], n)
-        k.tambah(r["created_at"], "BIAYA_DIBATALKAN", f"Biaya {n} dibatalkan (void){': ' + alasan if alasan else ''}", aktor,
+        k.tambah(r["created_at"], "BIAYA_DIBATALKAN", f"Biaya {n} dibatalkan{': ' + alasan if alasan else ''}", aktor,
                  "expense", e["id"], n)
     for b in await _bukti(conn, tid, expense_id):
         k.tambah(b["uploaded_at"], "BUKTI_DITAMBAH", f"Bukti {b['file_name']} ditambahkan ke biaya {n}", b["uploaded_by"],

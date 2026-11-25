@@ -365,7 +365,7 @@ async def efek_posting_bayar(conn, ctx: dict, *, payment_id, payment_number: str
                 bt_amount,
                 payment_id,
                 payment_number,
-                f"Payment to {vendor_name}",
+                f"Pembayaran ke {vendor_name}",
                 vendor_name,
                 journal_id,
                 ctx["user_id"],
