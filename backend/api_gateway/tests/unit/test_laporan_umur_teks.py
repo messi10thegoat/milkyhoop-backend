@@ -49,3 +49,13 @@ def test_kedua_rute_memakai_pembantu_bersama_dengan_tanggal_bisnis():
                     (RP.get_aging_payable, '"vendors", "bills", "bill_number", "vendor", hari_ini')):
         s = inspect.getsource(f)
         assert "LU.tambah_tampilan(" in s and args in s and "hari_ini = await tanggal_dokumen(conn" in s
+
+
+def test_umur_teks_rupiah():
+    h = LU.tambah_tampilan(_hasil(), "customers", "invoices", "invoice_number", "pelanggan", date(2026, 11, 10))
+    assert (h["total_outstanding_text"], h["jatuh_tempo_total_text"], h["belum_jatuh_tempo_total_text"]) == ("Rp 200", "Rp 300", "Rp -100")
+    assert h["ember"][1]["total_text"] == "Rp 300"
+    assert h["ringkas_text"] == "1 pelanggan, total Rp 200, jatuh tempo Rp 300"
+    p = h["customers"][0]
+    assert (p["total_text"], p["jatuh_tempo_total_text"]) == ("Rp 200", "Rp 300")
+    assert p["invoices"][0]["balance_text"] == "Rp 300" and p["invoices"][0]["total_amount_text"] == "Rp 0"

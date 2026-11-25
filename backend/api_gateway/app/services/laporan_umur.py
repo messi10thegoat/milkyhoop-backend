@@ -36,11 +36,21 @@ def tambah_tampilan(hasil: dict, kunci_pihak: str, kunci_dok: str, kunci_nomor: 
     belum = Decimal(str(summary["current"] or 0))
     hasil["belum_jatuh_tempo_total"] = nilai(belum)
     hasil["jatuh_tempo_total"] = nilai(total - belum)
+    for e in hasil["ember"]:
+        e["total_text"] = tg.rp(e["total"])
+    hasil["total_outstanding_text"] = tg.rp(total)
+    hasil["belum_jatuh_tempo_total_text"] = tg.rp(belum)
+    hasil["jatuh_tempo_total_text"] = tg.rp(total - belum)
+    hasil["ringkas_text"] = f"{len(hasil[kunci_pihak])} {label_pihak}, total {tg.rp(total)}, jatuh tempo {tg.rp(total - belum)}"
     hasil["jumlah_pihak"] = len(hasil[kunci_pihak])
     hasil["jumlah_pihak_text"] = f"{len(hasil[kunci_pihak])} {label_pihak}"
     for p in hasil[kunci_pihak]:
         p["jatuh_tempo_total"] = nilai(Decimal(str(p["total"] or 0)) - Decimal(str(p["totals"]["current"] or 0)))
+        p["total_text"] = tg.rp(p["total"] or 0)
+        p["jatuh_tempo_total_text"] = tg.rp(p["jatuh_tempo_total"])
         for d in p[kunci_dok]:
+            for k in ("total_amount", "amount_paid", "balance"):
+                d[f"{k}_text"] = tg.rp(d.get(k) or 0)
             d["nomor_text"] = d.get(kunci_nomor) or TANPA_DOKUMEN
             d["jatuh_tempo_text"] = f"jatuh tempo {tg.tanggal_pendek(d['due_date'])}" if d.get("due_date") else None
             d["telat_text"] = f"telat {d['days_overdue']} hari" if (d.get("days_overdue") or 0) > 0 else None
