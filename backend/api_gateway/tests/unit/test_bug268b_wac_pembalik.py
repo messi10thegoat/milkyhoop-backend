@@ -44,6 +44,8 @@ class Buku:
     async def fetchval(self, sql, *a):
         if "stock_opnames" in sql:
             return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
+        if "tenant_features" in sql:
+            return False  # FIFO unit 2: barang WAC (fifo_aktif)
         assert "get_weighted_average_cost" in sql
         q, v = self._qty_nilai()
         if q > 0 and v >= 0:
