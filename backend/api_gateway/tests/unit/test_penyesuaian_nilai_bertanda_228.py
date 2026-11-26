@@ -51,6 +51,8 @@ class Kon:
         self.sql.append(sql)
         if "GROUP BY stock_adjustment_id" in sql:
             return self.agg
+        if "AS n_baris" in sql:      # BUG-332: ringkas_baris (items_summary_text/warehouse_name), bukan baris dokumen
+            return []
         return self.rows
 
 
