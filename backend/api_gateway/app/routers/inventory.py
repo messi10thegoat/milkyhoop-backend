@@ -726,9 +726,11 @@ class _SimpanMinimumGudang(BaseModel):
 
 
 def _ctx_tenant(request: Request):
-    if not hasattr(request.state, "user") or not request.state.user or not request.state.user.get("tenant_id"):
+    user = getattr(request.state, "user", None) or {}
+    tid = user.get("tenant_id")   # dari token saja
+    if not tid:
         raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
-    return request.state.user["tenant_id"], request.state.user.get("user_id")
+    return tid, user.get("user_id")
 
 
 @router.get("/stok-minimum/{item_id}")
