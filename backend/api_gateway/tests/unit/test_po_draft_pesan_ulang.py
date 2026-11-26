@@ -48,7 +48,7 @@ def jalan(k, body):
 
 
 def req(items, vendor_id=None):
-    return PoDraftRequest(items=[PoDraftBaris(item_id=str(i), qty=q) for i, q in items], vendor_id=vendor_id)
+    return PoDraftRequest(baris=[PoDraftBaris(item_id=str(i), jumlah=q) for i, q in items], vendor_id=vendor_id)
 
 
 def test_kelompok_per_vendor_utama_dan_terakhir(monkeypatch):
@@ -62,7 +62,7 @@ def test_kelompok_per_vendor_utama_dan_terakhir(monkeypatch):
     assert bl == [] and r["diblok"] == []
     por = {g["vendor_nama"]: g for g in r["kelompok"]}
     assert set(por) == {"PT Satu", "CV Dua"}
-    assert por["PT Satu"]["baris"][0]["qty_text"] == "12 pcs" and por["PT Satu"]["baris"][0]["harga_text"] == "Rp 1.000"
+    assert por["PT Satu"]["baris"][0]["jumlah_text"] == "12" and por["PT Satu"]["baris"][0]["satuan_text"] == "pcs" and por["PT Satu"]["baris"][0]["harga_text"] == "Rp 1.000"
     assert por["PT Satu"]["total_text"] == "Rp 12.000" and por["CV Dua"]["total_text"] == "Rp 10.000"   # harga tagihan terakhir vendor itu
 
 
