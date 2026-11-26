@@ -74,3 +74,47 @@ def test_endpoint_dan_ringkasan_memakai_penentu_yang_sama_serta_izin_item_R():
     assert '@router.get("/reorder")' in inv and inv.count("RP.daftar(conn, tenant_id") == 2 and "reorder_count=reorder_perlu" in inv
     assert "reorder_count=0" not in inv
     assert '^/api/inventory/reorder$", ["GET"], "item", "R"' in (APP / "middleware" / "permission_middleware.py").read_text()
+
+
+# --- Pesan Ulang SO (VONIS gerbang-cloud/diag-pesan-ulang-so §3, 26 Nov) ---------------------------------------------
+class KonnPO(Konn):
+    def __init__(self, rows, po=()): super().__init__(rows); self.po = list(po)
+    async def fetch(self, sql, *a):
+        return self.po if sql == RP.SQL_PO_TERBUKA else await super().fetch(sql, *a)
+
+
+def _k():
+    return Konn([dict(r(1, "Beras", 2, 10), kode="BRS-1"), r(2, "Cabai", 0, 4, dipesan=1), r(3, "Minyak", 0, 10, lain=3), r(4, "Aqua", 50, 10)])
+
+
+def test_teks_server_dan_penanda_pill_per_baris():
+    x = jalan(RP.daftar(_k(), "t"))["items"][0]
+    assert (x["stok_text"], x["minimum_text"], x["dipesan_text"], x["usulan_beli_text"]) == ("2 pcs", "10 pcs", "0 pcs", "8 pcs")
+    assert x["belum_dipesan"] and not x["sebagian_dipesan"] and not x["ada_po_satuan_lain"]
+
+
+def test_cari_nama_atau_kode_dan_saring_status_server():
+    assert [x["nama_produk"] for x in jalan(RP.daftar(_k(), "t", search="brs"))["items"]] == ["Beras"]
+    h = jalan(RP.daftar(_k(), "t", status="sebagian_dipesan"))
+    assert [x["nama_produk"] for x in h["items"]] == ["Cabai"] and h["total"] == 1 and h["jumlah_perlu_pesan"] == 3
+    f = {x["kode"]: x["jumlah"] for x in h["filter_tersedia"]}
+    assert f == {"belum_dipesan": 2, "sebagian_dipesan": 1, "ada_po_satuan_lain": 1}
+    assert h["ringkasan"] == {"jumlah_perlu_pesan_text": "3 barang perlu dipesan", "jumlah_dipantau_text": "4 barang dipantau"}
+
+
+def test_skip_limit_has_more():
+    k = Konn([r(i, f"B{i}", 0, 5) for i in range(5)])
+    a, b = jalan(RP.daftar(k, "t", 2)), jalan(RP.daftar(k, "t", 2, skip=4))
+    assert a["has_more"] and a["total"] == 5 and len(b["items"]) == 1 and not b["has_more"] and b["skip"] == 4
+
+
+def test_po_terbuka_hanya_untuk_baris_halaman():
+    k = KonnPO([r(1, "Beras", 0, 10, dipesan=2)], [{"item_id": "1", "id": "po1", "nomor": "PO-0001"}])
+    x = jalan(RP.daftar(k, "t", po=True))["items"][0]
+    assert x["po_terbuka"] == [{"id": "po1", "nomor": "PO-0001"}]
+    assert "po.tenant_id = $1" in RP.SQL_PO_TERBUKA and "'sent', 'partial_received'" in RP.SQL_PO_TERBUKA
+
+
+def test_status_tak_dikenal_ditolak_422_di_router():
+    inv = (APP / "routers" / "inventory.py").read_text()
+    assert "status not in RP.STATUS" in inv and "status_code=422" in inv

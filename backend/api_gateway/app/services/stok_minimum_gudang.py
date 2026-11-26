@@ -88,7 +88,8 @@ WHERE m.tenant_id = $1 AND m.minimum > 0 AND p.deleted_at IS NULL AND NOT w.is_s
 """
 
 
-async def daftar_pesan_ulang(conn, tid: str, limit: Optional[int] = None) -> dict:
+async def daftar_pesan_ulang(conn, tid: str, limit: Optional[int] = None, search: Optional[str] = None, status: Optional[str] = None,
+                            skip: int = 0, warehouse_id: Optional[str] = None) -> dict:
     """Pesan Ulang per gudang: baris (barang, gudang) yang stoknya di bawah minimum gudang. Urut kekurangan terbesar."""
     semua = []
     for r in await conn.fetch(_SQL_PESAN, tid):
@@ -97,6 +98,10 @@ async def daftar_pesan_ulang(conn, tid: str, limit: Optional[int] = None) -> dic
         teks += f" — usul pesan {_f(u)} {s}." if u > 0 else " — aman."
         semua.append({"id": r["id"], "nama_produk": r["nama_produk"], "satuan": s, "gudang_id": r["gudang_id"], "gudang": r["gudang"],
                       "stok": Decimal(str(r["stok"])), "minimum": Decimal(str(r["minimum"])), "usulan_beli": u, "teks": teks})
+    if warehouse_id:
+        semua = [x for x in semua if x["gudang_id"] == str(warehouse_id)]
     perlu = sorted((x for x in semua if x["usulan_beli"] > 0), key=lambda x: (-x["usulan_beli"], x["nama_produk"].lower(), x["gudang"].lower()))
-    return {"items": perlu[:limit] if limit else perlu, "jumlah_perlu_pesan": len(perlu), "jumlah_dipantau": len(semua),
+    from .reorder_persediaan import halaman
+    gudang = sorted({(x["gudang_id"], x["gudang"]) for x in perlu}, key=lambda g: g[1].lower())
+    return {**halaman(perlu, len(semua), search, status, skip, limit), "gudang_tersedia": [{"id": i, "nama": n} for i, n in gudang],
             "catatan": "Pesanan pembelian terbuka belum dibagi per gudang; usulan hanya memakai stok gudang."}

@@ -694,7 +694,8 @@ async def get_low_stock_alerts(
 
 
 @router.get("/reorder")
-async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=500), per_gudang: bool = Query(False)):
+async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=500), per_gudang: bool = Query(False), skip: int = Query(0, ge=0),
+                           search: Optional[str] = Query(None, max_length=100), status: Optional[str] = Query(None), warehouse_id: Optional[UUID] = Query(None)):
     """Daftar pesan ulang dari products.reorder_level (services/reorder_persediaan: stok ledger + dipesan PO terbuka -> usulan beli). Server-hitung."""
     from ..services import reorder_persediaan as RP
     from fastapi.encoders import jsonable_encoder
@@ -703,13 +704,15 @@ async def get_reorder_list(request: Request, limit: int = Query(200, ge=1, le=50
     tenant_id = request.state.user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Sesi tidak valid, silakan masuk lagi.")
+    if status and status not in RP.STATUS:
+        raise HTTPException(status_code=422, detail=f"Saringan tidak dikenal. Pilih salah satu: {', '.join(RP.STATUS)}.")
     conn = await get_db_connection()
     try:
         if per_gudang:   # MN-1 (flag gelap stok_minimum_gudang_v1): minimum per gudang
             from ..services import stok_minimum_gudang as SMG
             await SMG.wajib_flag(conn, tenant_id)
-            return jsonable_encoder({"success": True, "data": await SMG.daftar_pesan_ulang(conn, tenant_id, limit)})
-        hasil = await RP.daftar(conn, tenant_id, limit)
+            return jsonable_encoder({"success": True, "data": await SMG.daftar_pesan_ulang(conn, tenant_id, limit, search, status, skip, warehouse_id)})
+        hasil = await RP.daftar(conn, tenant_id, limit, search, status, skip, po=True)
         return jsonable_encoder({"success": True, "data": hasil})
     finally:
         await conn.close()
