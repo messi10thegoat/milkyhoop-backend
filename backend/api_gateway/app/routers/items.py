@@ -2943,6 +2943,7 @@ async def autocomplete_items(
                   {cari_sql}
                   AND p.status = 'active'
                   AND p.deleted_at IS NULL
+                  AND NOT COALESCE(p.is_matrix_parent, false)  -- U-V2 Q1: induk varian tak dipilih di dokumen (pilih variannya)
                   {type_filter}
                 ORDER BY name ASC
                 LIMIT $2

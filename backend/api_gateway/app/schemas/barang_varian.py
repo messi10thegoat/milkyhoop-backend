@@ -1,6 +1,6 @@
 """Skema barang MATRIKS / varian (BUG-159 B1, 12 Nov 2026). Daftar dimensi sengaja TIDAK dibatasi di skema: batas + pesan ada di
 services/barang_varian.rakit (satu bentuk galat VARIAN_TAK_VALID, bukan format galat bawaan pydantic)."""
-from typing import Dict, List, Optional
+from typing import Literal, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,18 @@ class DimensiVarian(BaseModel):
     nilai: List[str] = Field(..., description="Nilai dimensi, mis. S, M, L")
 
 
-class BuatMatriksRequest(BaseModel):
+class HargaVarian(BaseModel):
+    atribut: Dict[str, str] = Field(..., description="kombinasi, mis. {ukuran: XL, warna: Hitam}")
+    sales_price: Optional[float] = Field(None, ge=0)
+    purchase_price: Optional[float] = Field(None, ge=0)
+
+
+class _HargaMode(BaseModel):
+    mode_harga: Literal["sama", "per_varian"] = Field("sama", description="U-V2 (flag varian_v1): sama = harga induk; per_varian = harga_varian[]")
+    harga_varian: Optional[List[HargaVarian]] = None
+
+
+class BuatMatriksRequest(_HargaMode):
     name: str = Field(..., min_length=1, max_length=100, description="Nama barang induk")
     base_unit: str = Field(..., min_length=1, max_length=50)
     kategori: Optional[str] = Field(None, max_length=100)
@@ -20,13 +31,18 @@ class BuatMatriksRequest(BaseModel):
     dimensi: List[DimensiVarian]
 
 
-class TambahVarianRequest(BaseModel):
+class TambahVarianRequest(_HargaMode):
     dimensi: List[DimensiVarian]
 
 
 class RencanaVarian(BaseModel):
     name: str
     atribut: Dict[str, str]
+    sku: Optional[str] = Field(None, description="U-V2: SKU server <KODE-INDUK>-<NILAI>-..")
+    sales_price: Optional[float] = None
+    purchase_price: Optional[float] = None
+    harga_jual_text: Optional[str] = None
+    harga_beli_text: Optional[str] = None
 
 
 class BlokVarian(BaseModel):
@@ -41,6 +57,7 @@ class DataPratinjau(BaseModel):
     varian: List[RencanaVarian]
     blocks: List[BlokVarian]
     jumlah: int
+    jumlah_varian_text: Optional[str] = None
 
 
 class PratinjauResponse(BaseModel):
@@ -52,6 +69,7 @@ class VarianDibuat(BaseModel):
     id: str
     name: str
     atribut: Dict[str, str]
+    sku: Optional[str] = None
 
 
 class HasilBuat(BaseModel):
@@ -161,3 +179,38 @@ class DaftarVarianResponse(BaseModel):
     has_more: bool
     ringkasan: RingkasanVarian = Field(..., description="dihitung dari SEMUA varian tersaring (bukan satu halaman)")
     filter_atribut: List[SaringAtribut] = Field(..., description="dari SEMUA varian induk; jumlah = banyak varian per nilai")
+
+
+# ---- U-V2 Q3: terapkan harga induk ke semua varian (pratinjau + tulis)
+class TerapkanHargaRequest(BaseModel):
+    sales_price: Optional[float] = Field(None, ge=0, description="harga jual baru induk; kosong = harga induk sekarang")
+    purchase_price: Optional[float] = Field(None, ge=0)
+    terapkan_jual: bool = True
+    terapkan_beli: bool = False
+
+
+class BarisTerapkanHarga(BaseModel):
+    id: str
+    nama: str
+    berubah: bool
+    harga_jual_lama_text: str
+    harga_beli_lama_text: str
+    harga_jual_baru_text: str
+    harga_beli_baru_text: str
+
+
+class DataTerapkanHarga(BaseModel):
+    ok: bool
+    blocks: List[BlokVarian]
+    induk: IndukRingkas
+    sales_price: Optional[float] = None
+    purchase_price: Optional[float] = None
+    baris: List[BarisTerapkanHarga]
+    jumlah_berubah: int
+    teks: Optional[str] = None
+
+
+class TerapkanHargaResponse(BaseModel):
+    success: bool = True
+    message: Optional[str] = None
+    data: DataTerapkanHarga

@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..schemas.barang_varian import (
-    BuatMatriksRequest, BuatMatriksResponse, DaftarMatriksResponse, DaftarVarianResponse, DetailMatriksResponse, PratinjauResponse, TambahVarianRequest,
+    BuatMatriksRequest, BuatMatriksResponse, DaftarMatriksResponse, DaftarVarianResponse, TerapkanHargaRequest, TerapkanHargaResponse, DetailMatriksResponse, PratinjauResponse, TambahVarianRequest,
 )
 from ..services import barang_varian as BV
 from ..services import idem_buat
@@ -38,6 +38,20 @@ def _nama_pengguna(request: Request):
     return u.get("username") or u.get("email")
 
 
+async def _v1(conn, tenant_id: str, body=None) -> bool:
+    """Flag gelap varian_v1: nyala -> SKU server + harga per varian; mati -> perilaku B1 (mode_harga per_varian ditolak 404)."""
+    from ..services.tenant_features import fitur_aktif
+    nyala = BV.FLAG_V1 in await fitur_aktif(conn, tenant_id)
+    if not nyala and getattr(body, "mode_harga", "sama") != "sama":
+        raise HTTPException(status_code=404, detail={"code": "FITUR_BELUM_AKTIF", "message": "Harga per varian belum diaktifkan untuk usaha ini."})
+    return nyala
+
+
+async def _wajib_v1(conn, tenant_id: str) -> None:
+    if not await _v1(conn, tenant_id):
+        raise HTTPException(status_code=404, detail={"code": "FITUR_BELUM_AKTIF", "message": "Varian barang belum diaktifkan untuk usaha ini."})
+
+
 def _galat_tulis(e: Exception, pesan: str) -> HTTPException:
     from .items import galat_nama_barang_dipakai, nama_barang_bentrok
     if nama_barang_bentrok(e):  # balapan serentak: indeks unik nama menolak -> 409 berkode, bukan 500
@@ -64,7 +78,7 @@ async def pratinjau_matriks(request: Request, body: BuatMatriksRequest):
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return {"success": True, "data": await BV.rencana(conn, ctx["tenant_id"], body)}
+        return {"success": True, "data": await BV.rencana(conn, ctx["tenant_id"], body, await _v1(conn, ctx["tenant_id"], body))}
 
 
 @router.post("", response_model=BuatMatriksResponse, status_code=201)
@@ -79,7 +93,7 @@ async def buat_matriks(request: Request, body: BuatMatriksRequest, response: Res
                 kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "MATRIX_CREATE", "batch", lambda: body.model_dump(), response)
                 if lama is not None:
                     return lama
-                data = await BV.tulis(conn, ctx, body, ctx["user_id"], _nama_pengguna(request))
+                data = await BV.tulis(conn, ctx, body, ctx["user_id"], _nama_pengguna(request), await _v1(conn, ctx["tenant_id"], body))
                 resp = {"success": True, "message": f"Barang matriks '{body.name}' dibuat dengan {len(data['varian'])} varian.", "data": data}
                 return await idem_buat.simpan(conn, ctx, kp, sd, "MATRIX_CREATE", resp, None)
     except HTTPException:
@@ -94,7 +108,7 @@ async def pratinjau_tambah_varian(request: Request, item_id: UUID, body: TambahV
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        return {"success": True, "data": await BV.rencana_tambah(conn, ctx["tenant_id"], item_id, body.dimensi)}
+        return {"success": True, "data": await BV.rencana_tambah(conn, ctx["tenant_id"], item_id, body, await _v1(conn, ctx["tenant_id"], body))}
 
 
 @router.post("/{item_id}/variants", response_model=BuatMatriksResponse, status_code=201)
@@ -109,13 +123,40 @@ async def tambah_varian(request: Request, item_id: UUID, body: TambahVarianReque
                 kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "MATRIX_VARIAN", str(item_id), lambda: body.model_dump(), response)
                 if lama is not None:
                     return lama
-                data = await BV.tambah(conn, ctx, item_id, body.dimensi, ctx["user_id"], _nama_pengguna(request))
+                data = await BV.tambah(conn, ctx, item_id, body, ctx["user_id"], _nama_pengguna(request), await _v1(conn, ctx["tenant_id"], body))
                 resp = {"success": True, "message": f"{len(data['varian'])} varian ditambahkan ke '{data['name']}'.", "data": data}
                 return await idem_buat.simpan(conn, ctx, kp, sd, "MATRIX_VARIAN", resp, None)
     except HTTPException:
         raise
     except Exception as e:
         raise _galat_tulis(e, "Gagal menambah varian.") from e
+
+
+@router.post("/{item_id}/harga/preview", response_model=TerapkanHargaResponse)
+async def pratinjau_terapkan_harga(request: Request, item_id: UUID, body: TerapkanHargaRequest):
+    """U-V2 Q3 (flag varian_v1): pratinjau ubah harga induk + terapkan ke semua varian (baca saja; penentu SAMA dgn POST)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _wajib_v1(conn, ctx["tenant_id"])
+        return {"success": True, "data": await BV.rencana_harga(conn, ctx["tenant_id"], item_id, body)}
+
+
+@router.post("/{item_id}/harga", response_model=TerapkanHargaResponse)
+async def terapkan_harga(request: Request, item_id: UUID, body: TerapkanHargaRequest, response: Response = None):
+    """U-V2 Q3: harga induk TIDAK menjalar otomatis; aksi eksplisit ini menulis harga induk + varian terpilih (atomik, idem)."""
+    ctx = get_user_context(request)
+    kunci = idem_buat.kunci_dari(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _wajib_v1(conn, ctx["tenant_id"])
+        async with conn.transaction():
+            kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, kunci, "MATRIX_HARGA", str(item_id), lambda: body.model_dump(), response)
+            if lama is not None:
+                return lama
+            data = await BV.terapkan_harga(conn, ctx, item_id, body)
+            resp = {"success": True, "message": data["teks"], "data": data}
+            return await idem_buat.simpan(conn, ctx, kp, sd, "MATRIX_HARGA", resp, None)
 
 
 @router.get("/{item_id}/variants", response_model=DaftarVarianResponse)

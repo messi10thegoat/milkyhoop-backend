@@ -7,6 +7,7 @@ Penulisan memakai jalur resmi routers.items.tulis_barang_baru (kode barang, nama
 transaksi PEMANGGIL (atomik: satu anak bentrok = tak ada yang tertulis). Batas wajar: 2 dimensi, 20 nilai/dimensi, 100 varian/induk."""
 import itertools
 import json
+import re
 from types import SimpleNamespace
 from typing import Optional
 
@@ -75,24 +76,90 @@ async def _bentrok(conn, tenant_id: str, nama: list) -> list:
             for n in sorted({r["nama_produk"] for r in rows})]
 
 
-async def rencana(conn, tenant_id: str, body) -> dict:
-    """Pratinjau BUAT matriks (baca saja, SAMA dengan tulis): induk + varian yang akan dibuat + blok bentrok nama."""
+async def rencana(conn, tenant_id: str, body, v1: bool = False) -> dict:
+    """Pratinjau BUAT matriks (baca saja, SAMA dengan tulis): induk + varian yang akan dibuat + blok bentrok nama.
+    v1 (flag varian_v1): + SKU server per varian (kode induk berikutnya), harga per varian (mode_harga), jumlah_varian_text."""
     anak = rakit(body.name, _dimensi_dict(body.dimensi))
     blocks = await _bentrok(conn, tenant_id, [body.name, *[a["name"] for a in anak]])
-    return {"ok": not blocks, "induk": {"name": body.name}, "varian": anak, "blocks": blocks, "jumlah": len(anak)}
+    if v1:
+        from ..routers.items import _kode_otomatis
+        pasang_harga(anak, body)
+        blocks += await pasang_sku(conn, tenant_id, anak, await _kode_otomatis(conn, tenant_id, "goods"))
+    return _hasil_rencana(body.name, anak, blocks, v1)
+
+
+def _hasil_rencana(nama_induk: str, anak: list, blocks: list, v1: bool) -> dict:
+    r = {"ok": not blocks, "induk": {"name": nama_induk}, "varian": anak, "blocks": blocks, "jumlah": len(anak)}
+    if v1:
+        r["jumlah_varian_text"] = f"{len(anak)} varian akan dibuat"
+    return r
+
+
+# ---------------------------------------------------------------- U-V2 (flag varian_v1): SKU server + harga per varian
+MAKS_SKU = 50  # == CreateItemRequest.sku
+
+
+def sku_varian(kode_induk: str, atribut: dict) -> str:
+    """<KODE-INDUK>-<NILAI>-<NILAI>: huruf besar, hanya A-Z0-9 per bagian (spasi/tanda dibuang). Murni."""
+    bagian = [re.sub(r"[^A-Z0-9]", "", str(v).upper()) for v in atribut.values()]
+    return "-".join([str(kode_induk).upper(), *[b for b in bagian if b]])
+
+
+async def pasang_sku(conn, tenant_id: str, anak: list, kode_induk: str) -> list:
+    """Isi anak[i]['sku']; -> blok SKU_DIPAKAI (sudah dipakai barang tenant) / SKU_TERLALU_PANJANG. Baca saja."""
+    blocks = []
+    for a in anak:
+        a["sku"] = sku_varian(kode_induk, a["atribut"])
+        if len(a["sku"]) > MAKS_SKU:
+            blocks.append({"code": "SKU_TERLALU_PANJANG", "name": a["name"],
+                           "message": f"SKU \"{a['sku'][:30]}…\" melebihi {MAKS_SKU} karakter; pendekkan nilai varian."})
+    dipakai = await conn.fetch(
+        "SELECT sku FROM products WHERE tenant_id = $1 AND deleted_at IS NULL AND upper(sku) = ANY($2::text[])",
+        tenant_id, [a["sku"] for a in anak])
+    for sku in sorted({r["sku"].upper() for r in dipakai}):
+        nama = next(a["name"] for a in anak if a["sku"] == sku)
+        blocks.append({"code": "SKU_DIPAKAI", "name": nama, "message": f"SKU \"{sku}\" sudah dipakai barang lain."})
+    return blocks
+
+
+def _kunci_atr(atr: dict) -> tuple:
+    return tuple(sorted((_rapi(k).lower(), _rapi(v).lower()) for k, v in (atr or {}).items()))
+
+
+def pasang_harga(anak: list, body) -> None:
+    """mode_harga 'sama' (bawaan) = harga induk; 'per_varian' = harga_varian[] dicocokkan per atribut (tak disebut = harga induk).
+    Atribut harga_varian yang tak ada di kombinasi -> 422. Isi anak[i] sales_price/purchase_price + *_text."""
+    from .barang_aksi import rp
+    mode = getattr(body, "mode_harga", "sama") or "sama"
+    peta = {}
+    if mode == "per_varian":
+        ada = {_kunci_atr(a["atribut"]) for a in anak}
+        for h in getattr(body, "harga_varian", None) or []:
+            h = h if isinstance(h, dict) else h.model_dump()
+            k = _kunci_atr(h.get("atribut"))
+            if k not in ada:
+                raise _galat("Harga varian untuk " + " ".join(v for _, v in k) + " tidak cocok dengan kombinasi mana pun.")
+            peta[k] = h
+    for a in anak:
+        h = peta.get(_kunci_atr(a["atribut"]), {})
+        a["sales_price"] = h.get("sales_price") if h.get("sales_price") is not None else getattr(body, "sales_price", None)
+        a["purchase_price"] = h.get("purchase_price") if h.get("purchase_price") is not None else getattr(body, "purchase_price", None)
+        a["harga_jual_text"], a["harga_beli_text"] = rp(a["sales_price"]), rp(a["purchase_price"])
 
 
 def _ditolak(blocks: list) -> HTTPException:
     return HTTPException(status_code=409, detail={"code": "VARIAN_DITOLAK", "blocks": blocks,
-                                                  "message": "Nama barang sudah dipakai: " + ", ".join(b["name"] for b in blocks) + "."})
+                                                  "message": " ".join(b["message"] for b in blocks)})
 
 
-async def _tulis_barang(conn, ctx: dict, dasar, nama: str, berstok: bool, user_id, user_name):
+async def _tulis_barang(conn, ctx: dict, dasar, nama: str, berstok: bool, user_id, user_name, anak: Optional[dict] = None):
     """Satu baris barang lewat jalur resmi (prasyarat yang diwajibkan docstring tulis_barang_baru dipanggil lebih dulu)."""
     from ..routers import items as I
     from ..schemas.items import CreateItemRequest
     b = CreateItemRequest(name=nama, item_type="goods", track_inventory=berstok, base_unit=dasar.base_unit, kategori=dasar.kategori,
-                          deskripsi=dasar.deskripsi, sales_price=dasar.sales_price, purchase_price=dasar.purchase_price)
+                          deskripsi=dasar.deskripsi,
+                          sales_price=(anak or {}).get("sales_price", dasar.sales_price),
+                          purchase_price=(anak or {}).get("purchase_price", dasar.purchase_price), sku=(anak or {}).get("sku"))
     I.tanpa_stok_bila_bukan_barang(b)
     I.periksa_badan_item(b, "POST /items")
     return await I.tulis_barang_baru(conn, ctx, b, user_id, user_name)
@@ -101,11 +168,11 @@ async def _tulis_barang(conn, ctx: dict, dasar, nama: str, berstok: bool, user_i
 async def _tulis_anak(conn, ctx: dict, dasar, induk_id, anak: list, user_id, user_name) -> list:
     hasil = []
     for a in anak:
-        vid = await _tulis_barang(conn, ctx, dasar, a["name"], True, user_id, user_name)
+        vid = await _tulis_barang(conn, ctx, dasar, a["name"], True, user_id, user_name, a)
         await conn.execute(
             "UPDATE products SET matrix_parent_id = $2, matrix_attributes = $3::jsonb WHERE id = $1 AND tenant_id = $4",
             vid, induk_id, json.dumps(a["atribut"], ensure_ascii=False), ctx["tenant_id"])
-        hasil.append({"id": str(vid), "name": a["name"], "atribut": a["atribut"]})
+        hasil.append({"id": str(vid), "name": a["name"], "atribut": a["atribut"], **({"sku": a["sku"]} if a.get("sku") else {})})
     return hasil
 
 
@@ -115,21 +182,27 @@ async def _kunci_tenant(conn, tenant_id: str) -> None:
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"MATRIX:{tenant_id}")
 
 
-async def tulis(conn, ctx: dict, body, user_id, user_name) -> dict:
-    """Buat induk + semua anak di transaksi PEMANGGIL. Bentrok nama -> 409 VARIAN_DITOLAK sebelum menulis apa pun."""
+async def tulis(conn, ctx: dict, body, user_id, user_name, v1: bool = False) -> dict:
+    """Buat induk + semua anak di transaksi PEMANGGIL. Bentrok nama/SKU -> 409 VARIAN_DITOLAK sebelum menulis apa pun.
+    v1: SKU dihitung ULANG dari kode induk yang benar-benar tertulis (pratinjau memakai tebakan kode berikutnya)."""
     await _kunci_tenant(conn, ctx["tenant_id"])
-    r = await rencana(conn, ctx["tenant_id"], body)
+    r = await rencana(conn, ctx["tenant_id"], body, v1)
     if r["blocks"]:
         raise _ditolak(r["blocks"])
     induk_id = await _tulis_barang(conn, ctx, body, body.name, False, user_id, user_name)
     await conn.execute("UPDATE products SET is_matrix_parent = true WHERE id = $1 AND tenant_id = $2", induk_id, ctx["tenant_id"])
+    if v1:
+        kode = await conn.fetchval("SELECT item_code FROM products WHERE id = $1 AND tenant_id = $2", induk_id, ctx["tenant_id"])
+        blocks = await pasang_sku(conn, ctx["tenant_id"], r["varian"], kode)
+        if blocks:
+            raise _ditolak(blocks)
     varian = await _tulis_anak(conn, ctx, body, induk_id, r["varian"], user_id, user_name)
     return {"id": str(induk_id), "name": body.name, "varian": varian}
 
 
 async def _induk(conn, tenant_id: str, induk_id):
     induk = await conn.fetchrow(
-        "SELECT id, nama_produk, base_unit, kategori, deskripsi, sales_price, purchase_price FROM products "
+        "SELECT id, nama_produk, item_code, base_unit, kategori, deskripsi, sales_price, purchase_price FROM products "
         "WHERE tenant_id = $1 AND id = $2 AND is_matrix_parent AND deleted_at IS NULL", tenant_id, induk_id)
     if not induk:
         raise HTTPException(status_code=404, detail={"code": "BARANG_MATRIKS_TAK_ADA", "message": "Barang matriks tidak ditemukan."})
@@ -157,19 +230,33 @@ async def _rencana_tambah(conn, tenant_id: str, induk_id, dimensi) -> tuple:
     return induk, anak, await _bentrok(conn, tenant_id, [a["name"] for a in anak])
 
 
-async def rencana_tambah(conn, tenant_id: str, induk_id, dimensi) -> dict:
+def _dasar_induk(induk, body=None):
+    return SimpleNamespace(base_unit=induk["base_unit"], kategori=induk["kategori"], deskripsi=induk["deskripsi"],
+                           sales_price=_angka(induk["sales_price"]), purchase_price=_angka(induk["purchase_price"]),
+                           mode_harga=getattr(body, "mode_harga", "sama"), harga_varian=getattr(body, "harga_varian", None))
+
+
+async def _rencana_tambah_v(conn, tenant_id: str, induk_id, body, v1: bool) -> tuple:
+    dimensi = body.dimensi if hasattr(body, "dimensi") else body
     induk, anak, blocks = await _rencana_tambah(conn, tenant_id, induk_id, dimensi)
-    return {"ok": not blocks, "induk": {"name": induk["nama_produk"]}, "varian": anak, "blocks": blocks, "jumlah": len(anak)}
+    if v1:
+        pasang_harga(anak, _dasar_induk(induk, body))
+        blocks += await pasang_sku(conn, tenant_id, anak, induk["item_code"])
+    return induk, anak, blocks
 
 
-async def tambah(conn, ctx: dict, induk_id, dimensi, user_id, user_name) -> dict:
-    """Tambah varian ke induk yang ada (harga/satuan/kategori mengikuti induk). Bentrok nama -> 409 sebelum menulis."""
+async def rencana_tambah(conn, tenant_id: str, induk_id, body, v1: bool = False) -> dict:
+    induk, anak, blocks = await _rencana_tambah_v(conn, tenant_id, induk_id, body, v1)
+    return _hasil_rencana(induk["nama_produk"], anak, blocks, v1)
+
+
+async def tambah(conn, ctx: dict, induk_id, body, user_id, user_name, v1: bool = False) -> dict:
+    """Tambah varian ke induk yang ada (harga/satuan/kategori mengikuti induk; v1: + SKU server, harga per varian). Bentrok -> 409."""
     await _kunci_tenant(conn, ctx["tenant_id"])
-    induk, anak, blocks = await _rencana_tambah(conn, ctx["tenant_id"], induk_id, dimensi)
+    induk, anak, blocks = await _rencana_tambah_v(conn, ctx["tenant_id"], induk_id, body, v1)
     if blocks:
         raise _ditolak(blocks)
-    dasar = SimpleNamespace(base_unit=induk["base_unit"], kategori=induk["kategori"], deskripsi=induk["deskripsi"],
-                            sales_price=_angka(induk["sales_price"]), purchase_price=_angka(induk["purchase_price"]))
+    dasar = _dasar_induk(induk, body)
     varian = await _tulis_anak(conn, ctx, dasar, induk["id"], anak, user_id, user_name)
     return {"id": str(induk["id"]), "name": induk["nama_produk"], "varian": varian}
 
@@ -341,3 +428,49 @@ async def info_varian_barang(conn, tenant_id: str, row) -> dict:
     atr = _atr(row.get("matrix_attributes"))
     return {"is_matrix_parent": bool(row.get("is_matrix_parent")), "matrix_parent": induk,
             "atribut": [{"nama": k, "nilai": str(v)} for k, v in atr.items()] if pid else []}
+
+
+# ---------------------------------------------------------------- U-V2 Q3 (putusan 26 Nov: harga induk TIDAK menjalar otomatis;
+# aksi eksplisit "terapkan ke semua varian" dengan pratinjau). Data master saja (tanpa jurnal); sama dgn PUT /items yang mengubah harga.
+async def rencana_harga(conn, tenant_id: str, induk_id, body) -> dict:
+    from .barang_aksi import rp
+    induk = await _induk(conn, tenant_id, induk_id)
+    jual = body.sales_price if body.sales_price is not None else _angka(induk["sales_price"])
+    beli = body.purchase_price if body.purchase_price is not None else _angka(induk["purchase_price"])
+    anak = await conn.fetch(
+        "SELECT id, nama_produk, sales_price, purchase_price FROM products WHERE tenant_id = $1 AND matrix_parent_id = $2 "
+        "AND deleted_at IS NULL ORDER BY created_at, nama_produk", tenant_id, induk_id)
+    baris = []
+    for a in anak:
+        berubah = (body.terapkan_jual and _angka(a["sales_price"]) != jual) or (body.terapkan_beli and _angka(a["purchase_price"]) != beli)
+        baris.append({"id": str(a["id"]), "nama": a["nama_produk"], "berubah": bool(berubah),
+                      "harga_jual_lama_text": rp(a["sales_price"]), "harga_beli_lama_text": rp(a["purchase_price"]),
+                      "harga_jual_baru_text": rp(jual if body.terapkan_jual else a["sales_price"]),
+                      "harga_beli_baru_text": rp(beli if body.terapkan_beli else a["purchase_price"])})
+    blocks = []
+    if not (body.terapkan_jual or body.terapkan_beli):
+        blocks.append({"code": "HARGA_TAK_DIPILIH", "message": "Pilih harga jual dan/atau harga beli yang diterapkan."})
+    elif not anak:
+        blocks.append({"code": "VARIAN_KOSONG", "message": "Barang ini belum punya varian."})
+    n = sum(1 for b in baris if b["berubah"])
+    return {"ok": not blocks, "blocks": blocks, "induk": {"id": str(induk["id"]), "nama": induk["nama_produk"]},
+            "sales_price": jual, "purchase_price": beli, "baris": baris, "jumlah_berubah": n,
+            "teks": f"Harga {induk['nama_produk']} diterapkan ke {n} dari {len(baris)} varian." if not blocks else None}
+
+
+async def terapkan_harga(conn, ctx: dict, induk_id, body) -> dict:
+    """Tulis harga induk (+ semua varian sesuai pilihan) di transaksi PEMANGGIL; kunci MATRIX per tenant. Blok -> 422 berkalimat."""
+    await _kunci_tenant(conn, ctx["tenant_id"])
+    r = await rencana_harga(conn, ctx["tenant_id"], induk_id, body)
+    if r["blocks"]:
+        raise HTTPException(status_code=422, detail={"code": r["blocks"][0]["code"], "message": r["blocks"][0]["message"], "blocks": r["blocks"]})
+    tid = ctx["tenant_id"]
+    await conn.execute("UPDATE products SET sales_price = $3, harga_jual = $3, purchase_price = $4, updated_at = NOW() WHERE tenant_id = $1 AND id = $2",
+                       tid, induk_id, r["sales_price"], r["purchase_price"])
+    if body.terapkan_jual:
+        await conn.execute("UPDATE products SET sales_price = $3, harga_jual = $3, updated_at = NOW() WHERE tenant_id = $1 AND matrix_parent_id = $2 "
+                           "AND deleted_at IS NULL", tid, induk_id, r["sales_price"])
+    if body.terapkan_beli:
+        await conn.execute("UPDATE products SET purchase_price = $3, updated_at = NOW() WHERE tenant_id = $1 AND matrix_parent_id = $2 "
+                           "AND deleted_at IS NULL", tid, induk_id, r["purchase_price"])
+    return r
