@@ -48,3 +48,39 @@ def test_rute_terpetakan_izin_item():
     src = pathlib.Path(P.__file__).read_text()
     assert '(r"^/api/inventory/stok\\-minimum/[^/]+$", ["GET"], "item", "R")' in src
     assert '(r"^/api/inventory/stok\\-minimum/[^/]+$", ["PUT"], "item", "U")' in src
+
+
+# --- MN-1 *_text + pratinjau (BE-BUTUH MASTER 26 Nov) ---------------------------------------------------------------
+from decimal import Decimal as _D  # noqa: E402
+SMG, Path = S, pathlib.Path
+
+
+def _g(gid="g1", mi="10", mk=None, stok="3"):
+    return {"gudang_id": gid, "gudang": "Gudang A", "minimum": _D(mi), "maksimum": _D(mk) if mk else None, "stok": _D(stok),
+            "usulan_beli": SMG.usulan(_D(stok), _D(mi))}
+
+
+def test_teks_baris_format_indonesia_dan_status():
+    b = SMG.beri_teks(_g(mi="1500", stok="2.5"), "kg")
+    assert (b["minimum_text"], b["maksimum_text"], b["stok_text"], b["usulan_beli_text"]) == ("1.500 kg", None, "2,5 kg", "1.497,5 kg")
+    assert b["status_text"] == "Di bawah minimum" and b["di_bawah_minimum"]
+    c = SMG.beri_teks(_g(mi="0", stok="0"), "pcs")
+    assert c["status_text"] is None and c["minimum_text"] is None
+
+
+def test_rencana_simpan_dari_ke_dan_blok():
+    lama = [_g()]
+    r = SMG.rencana_simpan(lama, [{"gudang_id": "g1", "minimum": 20, "maksimum": 50}], "pcs")
+    assert r["ok"] and r["baris"] == [{"gudang_id": "g1", "gudang": "Gudang A", "dari_text": "minimum 10 pcs", "ke_text": "minimum 20 pcs, maksimum 50 pcs"}]
+    assert SMG.rencana_simpan(lama, [{"gudang_id": "g1", "minimum": 0, "maksimum": None}], "pcs")["baris"][0]["ke_text"] == "(tidak diatur)"
+    assert SMG.rencana_simpan(lama, [{"gudang_id": "g1", "minimum": 10, "maksimum": None}], "pcs")["teks"] == "Tidak ada perubahan."
+    b = SMG.rencana_simpan(lama, [{"gudang_id": "g1", "minimum": 5, "maksimum": 2}, {"gudang_id": "gX", "minimum": 1}], "pcs")
+    assert not b["ok"] and [x["code"] for x in b["blocks"]] == ["MINIMUM_TAK_SAH", "GUDANG_TAK_SAH"] and b["blocks"][0]["field"] == "minimum"
+    assert SMG.rencana_simpan([], [], None)["blocks"][0]["code"] == "BARANG_TAK_ADA"
+
+
+def test_put_dan_pratinjau_penentu_sama():
+    src = (Path(__file__).parents[2] / "app" / "services" / "stok_minimum_gudang.py").read_text()
+    assert "tolak(await ukur_rencana(" in src
+    inv = (Path(__file__).parents[2] / "app" / "routers" / "inventory.py").read_text()
+    assert "SMG.ukur_rencana(conn, tid, item_id" in inv and '"/stok-minimum/{item_id}/preview"' in inv

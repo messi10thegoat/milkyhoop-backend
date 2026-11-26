@@ -766,6 +766,20 @@ async def put_stok_minimum_gudang(request: Request, item_id: UUID, body: _Simpan
         await conn.close()
 
 
+@router.post("/stok-minimum/{item_id}/preview")
+async def preview_stok_minimum_gudang(request: Request, item_id: UUID, body: _SimpanMinimumGudang):
+    """MN-1: pratinjau simpan minimum/maksimum per gudang (READ ONLY; penentu SAMA dgn PUT: SMG.ukur_rencana)."""
+    from ..services import stok_minimum_gudang as SMG
+    from fastapi.encoders import jsonable_encoder
+    tid, _ = _ctx_tenant(request)
+    conn = await get_db_connection()
+    try:
+        await SMG.wajib_flag(conn, tid)
+        return jsonable_encoder({"success": True, "data": await SMG.ukur_rencana(conn, tid, item_id, [b.model_dump() for b in body.baris])})
+    finally:
+        await conn.close()
+
+
 @router.get("/categories", response_model=CategoryListResponse)
 async def get_categories(request: Request):
     """

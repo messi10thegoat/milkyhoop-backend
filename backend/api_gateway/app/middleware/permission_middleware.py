@@ -447,6 +447,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/inventory/stok\-baris$", ["POST"], "item", "R"),  # B1 BUG-049/075: POST baca-saja (badan daftar barang)
     (r"^/api/inventory/products/[^/]+/adjust$", ["POST"], "stock_adjust", "C"),
     (r"^/api/inventory/stok\-minimum/[^/]+$", ["PUT"], "item", "U"),  # MN-1 minimum per gudang = ubah master barang
+    (r"^/api/inventory/stok\-minimum/[^/]+/preview$", ["POST"], "item", "U"),  # MN-1 pratinjau = izin sama dgn PUT
     (r"^/api/members/add-points$", ["POST"], "customer", "U"),
     (r"^/api/payment-requests/[^/]+/mark-paid$", ["POST"], "payment_request", "P"),
     (r"^/api/payment-requests/[^/]+/cancel$", ["POST"], "payment_request", "U"),

@@ -42,11 +42,77 @@ ORDER BY lower(w.name), w.id
 """
 
 
+def qt(x, satuan: str) -> Optional[str]:
+    """Angka + satuan format Indonesia (1.000 pcs · 1,5 kg); None tetap None (maksimum kosong)."""
+    from .barang_daftar import _q
+    return None if x is None else f"{_q(Decimal(str(x)))} {satuan}"
+
+
+def beri_teks(b: dict, satuan: str) -> dict:
+    """KONTRAK-mn1: *_text per baris + status_text bila stok < minimum (MURNI)."""
+    b.update(minimum_text=qt(b["minimum"], satuan) if b["minimum"] > 0 else None, maksimum_text=qt(b["maksimum"], satuan),
+             stok_text=qt(b["stok"], satuan), usulan_beli_text=qt(b["usulan_beli"], satuan),
+             di_bawah_minimum=b["minimum"] > 0 and b["stok"] < b["minimum"])
+    b["status_text"] = "Di bawah minimum" if b["di_bawah_minimum"] else None
+    return b
+
+
+async def satuan_barang(conn, tid: str, product_id) -> Optional[str]:
+    """None = barang tak ada (atau terhapus)."""
+    r = await conn.fetchrow("SELECT COALESCE(NULLIF(base_unit, ''), satuan, 'pcs') AS u FROM products WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+                            tid, product_id)
+    return (r["u"] or "pcs") if r else None
+
+
 async def baca(conn, tid: str, product_id) -> List[dict]:
     rows = await conn.fetch(_SQL_BARIS, tid, product_id)
-    return [{"gudang_id": r["gudang_id"], "gudang": r["gudang"], "minimum": Decimal(str(r["minimum"])),
-             "maksimum": Decimal(str(r["maksimum"])) if r["maksimum"] is not None else None, "stok": Decimal(str(r["stok"])),
-             "usulan_beli": usulan(r["stok"], r["minimum"])} for r in rows]
+    satuan = await satuan_barang(conn, tid, product_id) or "pcs"
+    return [beri_teks({"gudang_id": r["gudang_id"], "gudang": r["gudang"], "minimum": Decimal(str(r["minimum"])),
+                       "maksimum": Decimal(str(r["maksimum"])) if r["maksimum"] is not None else None, "stok": Decimal(str(r["stok"])),
+                       "usulan_beli": usulan(r["stok"], r["minimum"])}, satuan) for r in rows]
+
+
+def _teks_nilai(mi, mk, satuan: str) -> str:
+    mi = Decimal(str(mi or 0))
+    if mi == 0 and mk is None:
+        return "(tidak diatur)"
+    t = f"minimum {qt(mi, satuan)}"
+    return t + (f", maksimum {qt(mk, satuan)}" if mk is not None else "")
+
+
+def rencana_simpan(lama: List[dict], baris: List[dict], satuan: Optional[str]) -> dict:
+    """SATU penentu pratinjau + PUT (MURNI). lama = baca(); baris = badan PUT. -> {ok, blocks[{code,message,field}], baris[{gudang,dari_text,ke_text}], teks}."""
+    if satuan is None:
+        return {"ok": False, "blocks": [{"code": "BARANG_TAK_ADA", "message": "Barang tidak ditemukan.", "field": None}], "baris": [], "teks": None}
+    peta = {g["gudang_id"]: g for g in lama}
+    blocks, ubah = [], []
+    for b in baris:
+        gid = str(b["gudang_id"])
+        pesan = periksa(b.get("minimum"), b.get("maksimum"))
+        if pesan:
+            blocks.append({"code": "MINIMUM_TAK_SAH", "message": pesan, "field": "minimum", "gudang_id": gid})
+            continue
+        g = peta.get(gid)
+        if not g:
+            blocks.append({"code": "GUDANG_TAK_SAH", "message": "Gudang tidak ditemukan.", "field": "gudang_id", "gudang_id": gid})
+            continue
+        mk = b.get("maksimum")
+        dari, ke = _teks_nilai(g["minimum"], g["maksimum"], satuan), _teks_nilai(b.get("minimum"), Decimal(str(mk)) if mk is not None else None, satuan)
+        if dari != ke:
+            ubah.append({"gudang_id": gid, "gudang": g["gudang"], "dari_text": dari, "ke_text": ke})
+    if blocks:
+        teks = blocks[0]["message"]
+    elif ubah:
+        teks = f"Stok minimum di {len(ubah)} gudang akan diubah."
+    else:
+        teks = "Tidak ada perubahan."
+    return {"ok": not blocks, "blocks": blocks, "baris": ubah, "teks": teks}
+
+
+def tolak(r: dict) -> None:
+    if r["blocks"]:
+        b = r["blocks"][0]
+        raise GalatBerkode(404 if b["code"] == "BARANG_TAK_ADA" else 422, b["code"], b["message"], field=b["field"])
 
 
 def usulan(stok, minimum) -> Decimal:
@@ -55,17 +121,10 @@ def usulan(stok, minimum) -> Decimal:
 
 
 async def simpan(conn, tid: str, product_id, baris: List[dict], user_id=None) -> None:
-    """Ganti pengaturan barang ini per gudang yang disebut. minimum 0 + maksimum kosong = hapus pengaturan gudang itu."""
-    ada = await conn.fetchval("SELECT 1 FROM products WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL", tid, product_id)
-    if not ada:
-        raise GalatBerkode(404, "BARANG_TAK_ADA", "Barang tidak ditemukan.")
+    """Ganti pengaturan barang ini per gudang yang disebut. minimum 0 + maksimum kosong = hapus pengaturan gudang itu.
+    Penghalang = rencana_simpan (penentu SAMA dgn POST .../preview)."""
+    tolak(await ukur_rencana(conn, tid, product_id, baris))
     for b in baris:
-        pesan = periksa(b.get("minimum"), b.get("maksimum"))
-        if pesan:
-            raise GalatBerkode(422, "MINIMUM_TAK_SAH", pesan, field="minimum")
-        g = await conn.fetchval("SELECT 1 FROM warehouses WHERE tenant_id = $1 AND id = $2 AND NOT is_system", tid, b["gudang_id"])
-        if not g:
-            raise GalatBerkode(422, "GUDANG_TAK_SAH", "Gudang tidak ditemukan.", field="gudang_id")
         mi, mk = Decimal(str(b.get("minimum") or 0)), b.get("maksimum")
         if mi == 0 and mk is None:
             await conn.execute("DELETE FROM stok_minimum_gudang WHERE tenant_id = $1 AND product_id = $2 AND warehouse_id = $3", tid, product_id, b["gudang_id"])
@@ -75,6 +134,11 @@ async def simpan(conn, tid: str, product_id, baris: List[dict], user_id=None) ->
             "ON CONFLICT (tenant_id, product_id, warehouse_id) DO UPDATE SET minimum = EXCLUDED.minimum, maksimum = EXCLUDED.maksimum, "
             "updated_by = EXCLUDED.updated_by, updated_at = now()",
             tid, product_id, b["gudang_id"], mi, Decimal(str(mk)) if mk is not None else None, user_id)
+
+
+async def ukur_rencana(conn, tid: str, product_id, baris: List[dict]) -> dict:
+    satuan = await satuan_barang(conn, tid, product_id)
+    return rencana_simpan(await baca(conn, tid, product_id) if satuan else [], baris, satuan)
 
 
 _SQL_PESAN = """
