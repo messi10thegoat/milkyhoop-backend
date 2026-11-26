@@ -982,6 +982,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/purchase-orders/[^/]+/to-bill$", ["POST"], "purchase_order", "P"),
     # kontrak PO tahap 2 (22 Okt 2026): pratinjau = izin rute TULISNYA (test_izin_rute_pratinjau); calculate = baca (pola SO /calculate)
     (r"^/api/purchase-orders/calculate$", ["POST"], "purchase_order", "R"),
+    (r"^/api/purchase-orders/po-draft(/preview)?$", ["POST"], "purchase_order", "C"),  # PU-1: izin SAMA dgn buat PO (POST /purchase-orders = C)
     (r"^/api/purchase-orders/[^/]+/edit/preview$", ["POST"], "purchase_order", "U"),
     (r"^/api/purchase-orders/[^/]+/send/preview$", ["POST"], "purchase_order", "P"),
     (r"^/api/purchase-orders/[^/]+/receive/preview$", ["POST"], "purchase_order", "P"),

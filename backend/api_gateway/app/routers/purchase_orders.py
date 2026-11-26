@@ -52,6 +52,7 @@ from ..services import grn_ditolak as GT  # BUG-203: teks ditolak + petunjuk sis
 from ..services.galat_berkode import GalatBerkode  # BUG-203: ITEMS_KOSONG berkode
 from ..services import jual_bawah_hpp as JB  # BUG-207: peringatan biaya terima janggal
 from ..services import po_alamat_kirim as PAK  # BUG-216: alamat kirim bawaan
+from ..services import po_draft_pesan_ulang as PDP  # PU-1: Pesan ulang -> PO draf per vendor
 from ..services import po_rencana as PR  # kontrak PO tahap 2: penentu per aksi = SATU sumber tulis + pratinjau
 from ..services import grn_rencana as G  # Penerimaan Barang (GRN) di balik flag penerimaan_barang_v1
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit kirim/batal/tutup + nama event (Law 12)
@@ -73,6 +74,10 @@ from ..schemas.purchase_orders import (
     PurchaseOrderDetailResponse,
     PurchaseOrderListResponse,
     PurchaseOrderSummaryResponse,
+    PoDraftRequest,
+    PoDraftPreviewResponse,
+    PoDraftBuatResponse,
+    PurchaseOrderItemCreate,
 )
 
 logger = logging.getLogger(__name__)
@@ -1508,6 +1513,60 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
     bloks = list(bloks) + [PR.blok(c, m, st) for c, m, st in _alamat["blocks"]] + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
     return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), "peringatan": peringatan, **PR.hitung_json(h),
                                       "alamat_kirim_bawaan": PAK.petunjuk(_alamat), "payload": body.model_dump(mode="json")}}
+
+
+def _turunan_idem(request: Request, kunci: str) -> Request:
+    """Salinan Request dgn X-Idempotency-Key diganti (PU-1: satu kunci per vendor, penulis create PO dipakai UTUH). state (user) ikut."""
+    h = [(k, v) for k, v in request.scope["headers"] if k.lower() not in (b"x-idempotency-key", b"idempotency-key")]
+    sc = dict(request.scope)
+    sc["headers"] = h + [(b"x-idempotency-key", kunci.encode())]
+    return Request(sc)
+
+
+async def _rencana_po_draft(request: Request, body: PoDraftRequest):
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        bl: list = []
+        r = await PDP.rencana(conn, ctx["tenant_id"], body, bl)
+        hari_ini = body.po_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+    return ctx, r, bl, hari_ini
+
+
+@router.post("/po-draft/preview", response_model=PoDraftPreviewResponse)
+async def preview_po_draft(request: Request, body: PoDraftRequest):
+    """PU-1 pratinjau Pesan ulang -> PO draf per vendor (tanpa menyimpan). Vendor: body.vendor_id > vendor utama barang > vendor tagihan terakhir; tanpa vendor = diblok per barang."""
+    _ctx, r, bl, _tgl = await _rencana_po_draft(request, body)
+    if not bl and not r["kelompok"]:
+        bl.append(PR.blok("TIDAK_ADA_PO", "Tidak ada PO yang bisa dibuat: pilih vendor untuk barang yang belum punya vendor.", 422))
+    return {"success": True, "data": {"ok": not bl, "blocks": PR.untuk_respons(bl), "peringatan": r["peringatan"],
+                                      "rencana": {"kelompok": [{k: v for k, v in g.items() if k != "items"} for g in r["kelompok"]],
+                                                  "diblok": r["diblok"], "teks": PDP.teks_ringkas(r)}}}
+
+
+@router.post("/po-draft", response_model=PoDraftBuatResponse, status_code=201)
+async def buat_po_draft(request: Request, body: PoDraftRequest, response: Response = None):
+    """PU-1: buat PO DRAF per vendor lewat penulis create PO yang SAMA (nomor, harga, alamat, idempotensi tak diduplikasi). Idempotensi: X-Idempotency-Key
+    klien (kunci per vendor = <kunci>:<vendor>); tanpa header = kunci dari isi permintaan, jadi ulang yang sama TIDAK membuat PO ganda. PO draf tanpa jurnal."""
+    import hashlib
+    ctx, r, bl, tgl = await _rencana_po_draft(request, body)
+    if bl:
+        raise GalatBerkode(bl[0]["status"], bl[0]["code"], bl[0]["message"])
+    if not r["kelompok"]:
+        raise GalatBerkode(422, "TIDAK_ADA_PO", "Tidak ada PO yang bisa dibuat: pilih vendor untuk barang yang belum punya vendor.")
+    dasar = _kunci_idem(request) or "pu1-" + hashlib.sha256(
+        (ctx["tenant_id"] + "|" + str(ctx["user_id"]) + "|" + body.model_dump_json()).encode()).hexdigest()[:24]
+    dibuat = []
+    for g in r["kelompok"]:
+        po = CreatePurchaseOrderRequest(
+            vendor_id=g["vendor_id"], vendor_name=g["vendor_nama"] or "Vendor", po_date=tgl, notes="Dibuat dari Pesan ulang",
+            items=[PurchaseOrderItemCreate(item_id=i["item_id"], item_code=i["item_code"], description=i["description"], quantity=i["quantity"],
+                                           unit=i["unit"], unit_price=i["unit_price"]) for i in g["items"]])
+        hasil = await create_purchase_order(_turunan_idem(request, f"{dasar}:{g['vendor_id']}"[:200]), po, Response())
+        d = hasil["data"] if isinstance(hasil, dict) else hasil.data
+        dibuat.append({"vendor_id": g["vendor_id"], "vendor_nama": g["vendor_nama"], "po_id": d["id"], "nomor": d["po_number"], "total_text": g["total_text"]})
+    return {"success": True, "message": f"{len(dibuat)} PO draf dibuat.",
+            "data": {"dibuat": dibuat, "diblok": r["diblok"], "ringkas_text": PDP.teks_ringkas(r)}}
 
 
 @router.post("/{po_id}/edit/preview")
