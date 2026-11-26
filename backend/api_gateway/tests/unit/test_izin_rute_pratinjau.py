@@ -23,6 +23,8 @@ INVENTARIS = DISINI / "inventaris_rute_tulis.txt"
 
 # pratinjau -> rute tulis yang benar-benar dijalankan, bila bukan "jalur tanpa /preview"
 KHUSUS = {
+    # MN-1: pratinjau simpan minimum per gudang -> PUT /inventory/stok-minimum/{id} (penentu SAMA: stok_minimum_gudang.ukur_rencana; izin item U)
+    "POST /api/inventory/stok-minimum/{item_id}/preview": "PUT /api/inventory/stok-minimum/{item_id}",
     # Batch B: pratinjau ubah batch -> PATCH /item-batches/{id} (penentu SAMA: batch_aksi.rencana_ubah; izin item_batch U)
     "POST /api/item-batches/{batch_id}/ubah/preview": "PATCH /api/item-batches/{batch_id}",
     # BUG-338A pasca: pratinjau hapus kategori pelanggan -> DELETE /customer-categories/{id} (penentu SAMA: kategori_pelanggan.rencana_hapus; izin customer D)
