@@ -820,7 +820,7 @@ def test_k8_void_kirim_balik_dari_transit_ke_asal_status_voided():
 
 
 @pytest.mark.parametrize("hdr,dit,asli,harap", [
-    ({}, {P1: Decimal("4")}, None, "PB_SUDAH_ADA_PENERIMAAN"),
+    ({}, {P1: Decimal("4")}, None, "PB_VOID_SEBAGIAN_DITERIMA"),
     ({"status": "received"}, {P1: Decimal("10")}, None, "PB_DUA_LANGKAH_SUDAH_DITERIMA"),
     ({}, {}, [], "PB_LEDGER_TAK_ADA"),
     ({"status": "draft"}, {}, None, "PB_STATUS_TIDAK_BOLEH"),
@@ -986,3 +986,13 @@ def test_k8_void_rute_received_ke_jalur_dua_langkah():
     """Dokumen dua langkah yang sudah diterima (status received) harus dapat galat PB_DUA_LANGKAH_SUDAH_DITERIMA, bukan 'hanya yang selesai' jalur satu langkah (completed)."""
     src = (APP / "routers" / "stock_transfers.py").read_text()
     assert '_h["status"] in ("in_transit", "received")' in src
+
+
+def test_bug386_void_sesudah_penerimaan_ditolak_berkalimat():
+    """BUG-386 (putusan MASTER 26 Nov, pola Accurate/SAP): void in_transit yang sudah ada penerimaan -> 409 PB_VOID_SEBAGIAN_DITERIMA, kalimat menyebut yang diterima."""
+    k = KonekD(header=draf(status="in_transit"), items=[b8()], diterima={P1: Decimal("6")}, asli=_asli_kirim())
+    with pytest.raises(HTTPException) as e:
+        jalan(D2.void_kirim(k, ctx(), U, "x"))
+    assert kode(e) == "PB_VOID_SEBAGIAN_DITERIMA" and e.value.status_code == 409 and k.ledger == []
+    pesan = str(e.value.detail if isinstance(e.value.detail, str) else e.value.detail.get("message"))
+    assert pesan.startswith("6 ") and "sudah diterima di Gudang A; pembatalan tidak bisa. Terima sisanya atau buat pemindahan balik." in pesan

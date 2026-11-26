@@ -330,8 +330,11 @@ async def rencana_void_kirim(conn, tid: str, h, kunci: bool) -> dict:
         blocks.append(_blok("PB_STATUS_TIDAK_BOLEH", f"Pemindahan {h['transfer_number']} berstatus {h['status']}; hanya yang sedang dikirim bisa di-void."))
     elif any(_d(i.get("quantity_resolved")) > _NOL for i in items):
         blocks.append(_blok("PB_SUDAH_ADA_PENYELESAIAN", f"Pemindahan {h['transfer_number']} punya selisih yang sudah diselesaikan lewat Penyesuaian; batalkan penyesuaiannya dulu."))
-    elif any(_d(i["quantity_received"]) > _NOL for i in items):
-        blocks.append(_blok("PB_SUDAH_ADA_PENERIMAAN", f"Pemindahan {h['transfer_number']} sudah diterima sebagian; terima sisanya atau buat pemindahan balik."))
+    elif (dit := [i for i in items if _d(i["quantity_received"]) > _NOL]):
+        # BUG-386 (putusan MASTER 26 Nov, pola Accurate/SAP): sudah ada penerimaan (sebagian/tuntas) -> batal DITOLAK; kalimat menyebut yang sudah diterima.
+        tujuan = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", h["to_warehouse_id"], tid) or "gudang tujuan"
+        sebut = ", ".join(f"{_q(_d(i['quantity_received']))}{' ' + i['unit'] if i.get('unit') else ''} {i['item_name']}" for i in dit)
+        blocks.append(_blok("PB_VOID_SEBAGIAN_DITERIMA", f"{sebut} sudah diterima di {tujuan}; pembatalan tidak bisa. Terima sisanya atau buat pemindahan balik."))
     else:
         asli = await conn.fetch("SELECT * FROM inventory_ledger WHERE tenant_id = $1 AND source_type = $2 AND source_id = $3 ORDER BY created_at, id",
                                 tid, SUMBER_KIRIM, h["id"])
