@@ -318,3 +318,21 @@ def pratinjau(r: dict, payload=None) -> dict:
     return {"success": True, "data": {"ok": not r["blocks"],
                                       "blocks": [{"code": x["code"], "message": x["message"], "field": KODE_FIELD.get(x["code"])} for x in r["blocks"]],
                                       "peringatan": r.get("peringatan", []), "rencana": r.get("rencana"), "payload": payload}}
+
+
+FLAG_TOLAK_KEDALUWARSA = "batch_kedaluwarsa_tolak"
+
+
+async def tolak_jual_kedaluwarsa(conn, tid: str, batch_id, hari_ini: date) -> None:
+    """Flag GELAP per tenant `batch_kedaluwarsa_tolak`: pengeluaran stok penjualan dari batch yang sudah kedaluwarsa (status 'expired' ATAU lewat tanggal)
+    -> 422 BATCH_KEDALUWARSA berkalimat. Flag mati = perilaku lama (tak ada pemeriksaan). Dipanggil SEBELUM kartu stok ditulis."""
+    if not batch_id:
+        return
+    if not await conn.fetchval("SELECT 1 FROM tenant_features WHERE tenant_id = $1 AND feature = $2 AND enabled", tid, FLAG_TOLAK_KEDALUWARSA):
+        return
+    b = await conn.fetchrow("SELECT batch_number, status, expiry_date FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
+    if b and keadaan(b["status"], b["expiry_date"], hari_ini) == "expired":
+        from .galat_berkode import GalatBerkode
+        tgl = f" ({tgl_text(b['expiry_date'])})" if b["expiry_date"] else ""
+        raise GalatBerkode(422, "BATCH_KEDALUWARSA", f"Batch {b['batch_number']} sudah kedaluwarsa{tgl} dan tidak boleh dijual. Pilih batch lain.", field="batch_id")
+

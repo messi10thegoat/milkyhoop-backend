@@ -17,6 +17,7 @@ from ..services.ledger_kartu import tulis_kartu
 from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
+from ..services import batch_aksi as BA  # flag gelap batch_kedaluwarsa_tolak
 from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services.galat_berkode import GalatBerkode
 from ..services.dokumen_nol import tolak_faktur_nol  # SI-FPB-RP0
@@ -2232,6 +2233,7 @@ async def _execute_fulfillment(
             else:
                 raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
 
+        await BA.tolak_jual_kedaluwarsa(conn, tenant_id, batch_id, today)   # flag gelap batch_kedaluwarsa_tolak: 422 BATCH_KEDALUWARSA
         if batch_id:   # BUG-286: cek kecukupan batch SEBELUM kartu stok ditulis (trigger lalu menggeser saldo); baris batch dikunci
             bws_row = await conn.fetchrow(
                 """
