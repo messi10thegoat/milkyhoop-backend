@@ -542,6 +542,8 @@ POST /api/proformas/{proforma_id}/issue/preview
 POST /api/proformas/{proforma_id}/update/preview
 POST /api/purchase-orders
 POST /api/purchase-orders/calculate
+POST /api/purchase-orders/po-draft
+POST /api/purchase-orders/po-draft/preview
 POST /api/purchase-orders/{doc_id}/attachments
 POST /api/purchase-orders/{po_id}/cancel
 POST /api/purchase-orders/{po_id}/cancel/preview
