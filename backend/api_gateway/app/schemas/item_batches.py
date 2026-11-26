@@ -288,3 +288,27 @@ class WarehouseBatchesResponse(BaseModel):
     summary: WarehouseBatchesSummary
     data: List[ItemBatchData]
     total: int
+
+
+class SaranBatchBaris(BaseModel):
+    batch_id: UUID
+    batch_no: str
+    exp_date: Optional[date] = None
+    exp_text: str
+    warehouse_id: UUID
+    warehouse_name: str
+    available_quantity: Decimal
+    available_text: str
+    saran_qty: Decimal
+    saran_text: str
+    kedaluwarsa: bool
+    status_text: str
+
+
+class SaranBatchResponse(BaseModel):
+    """Saran pengambilan batch lintas gudang (FEFO/FIFO). Baca saja."""
+    track_batches: bool
+    urutan: List[SaranBatchBaris]
+    cukup: bool
+    kurang_text: Optional[str] = None
+    ringkas_text: str

@@ -12,6 +12,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..services import batch_aksi as BA
+from ..services import batch_saran as BS
 from ..services import idem_buat
 from ..services import stok_sesuai as SS
 from ..services.bayar_keluar_rencana import Blok
@@ -31,6 +32,7 @@ from ..schemas.item_batches import (
     ItemBatchDetailData,
     ItemBatchDetailResponse,
     ItemBatchListResponse,
+    SaranBatchResponse,
     SetBatchStatusRequest,
     UpdateItemBatchRequest,
     UpdateItemBatchResponse,
@@ -578,3 +580,27 @@ async def get_available_batches_for_item(
             method=method,
             batches=batches,
         )
+
+
+@router.get("/items/{item_id}/saran", response_model=SaranBatchResponse)
+async def saran_batch_item(
+    request: Request,
+    item_id: UUID,
+    quantity: Decimal = Query(..., gt=0),
+    method: str = Query("FEFO", pattern="^(FEFO|FIFO)$"),
+    warehouse_id: Optional[UUID] = None,
+):
+    """Saran batch lintas gudang (warehouse_id opsional = semua gudang). Baca saja."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+        p = await conn.fetchrow(
+            "SELECT track_batches, base_unit FROM products WHERE id = $1 AND tenant_id = $2", item_id, ctx["tenant_id"])
+        if not p:
+            raise GalatBerkode(404, "BARANG_TIDAK_ADA", "Barang tidak ditemukan.", field="item_id")
+        if not p["track_batches"]:
+            return SaranBatchResponse(track_batches=False, **BS.tanpa_batch(quantity, p["base_unit"]))
+        hari_ini = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(BS.SQL_BATCH, ctx["tenant_id"], item_id, warehouse_id)
+        return SaranBatchResponse(track_batches=True, **BS.susun([dict(r) for r in rows], quantity, method, hari_ini, p["base_unit"]))
