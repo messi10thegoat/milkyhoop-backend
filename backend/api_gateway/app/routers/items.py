@@ -1500,7 +1500,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                 "default_expiry_days": "default_expiry_days",
             }
 
-            body_dict = body.model_dump(exclude_unset=True, exclude={"conversions"})
+            body_dict = BA.normal_kosong(body.model_dump(exclude_unset=True, exclude={"conversions"}))   # BUG-381
             # V318: jasa tak pernah bisa dikirim. Mengubah tipe ke jasa MEMATIKAN flag; menyalakan flag pada jasa = 422.
             _eff_tipe = body_dict.get("item_type", old_item["item_type"] if old_item else None)
             if _eff_tipe == "service":
@@ -1786,11 +1786,12 @@ async def preview_ubah_barang(request: Request, item_id: UUID, body: dict):
             periksa_badan_item(b, "POST /items/{id}/edit/preview")
             lama = await _periksa_ubah(conn, ctx, item_id, b)
             await _periksa_konversi(conn, ctx, item_id, b)
+            baru = BA.normal_kosong(b.model_dump(exclude_unset=True))   # BUG-381: penentu sama dgn PUT
         except HTTPException as e:
             if e.status_code == 404:
                 return BA.rencana_ubah(None, {})
             return {"ok": False, "blocks": [blok_dari_galat(e)], "peringatan": [], "rencana": None}
-        r = BA.rencana_ubah(dict(lama), b.model_dump(exclude_unset=True))
+        r = BA.rencana_ubah(dict(lama), baru)
         ids = BA.ids_perubahan(r)
         nama = {}
         if ids:   # FORM BARANG CW: id akun/pajak -> nama (satu kueri tiap jenis, disaring tenant)

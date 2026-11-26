@@ -247,7 +247,7 @@ def ids_perubahan(r: dict) -> list:
 
 
 def beri_teks_ubah(r: dict, nama: dict) -> dict:
-    """FORM BARANG CW: tiap perubahan + medan_text / dari_text / ke_text (id akun/pajak -> 'kode nama'; boolean -> Ya/Tidak; kosong -> '-'), + peringatan bila akun/pajak berubah.
+    """FORM BARANG CW: tiap perubahan + medan_text / dari_text / ke_text (id akun/pajak -> 'kode nama'; boolean -> Ya/Tidak; kosong -> '(kosong)'), + peringatan bila akun/pajak berubah.
     nama = {id: teks}. Mengubah di tempat; hanya penyajian (angka & aturan tetap dari rencana_ubah)."""
     if not r.get("rencana"):
         return r
@@ -258,15 +258,37 @@ def beri_teks_ubah(r: dict, nama: dict) -> dict:
         for k in ("dari", "ke"):
             v = p[k]
             if m in MEDAN_AKUN + MEDAN_PAJAK:
-                p[f"{k}_text"] = nama.get(v) or v or "-"
+                p[f"{k}_text"] = nama.get(v) or v or TEKS_KOSONG
                 ada_akun_pajak = True
             elif v in ("True", "False"):
                 p[f"{k}_text"] = "Ya" if v == "True" else "Tidak"
             else:
-                p[f"{k}_text"] = v or "-"
+                p[f"{k}_text"] = v or TEKS_KOSONG   # BUG-381: "Manado → (kosong)"
     if ada_akun_pajak:
         r["peringatan"].append(_blok("AKUN_PAJAK_BERLAKU_KEDEPAN", TEKS_KEDEPAN))
     return r
+
+
+# BUG-381: medan opsional yang BOLEH dikosongkan lewat PUT/pratinjau (null atau "" -> NULL). Harga & nama TIDAK boleh (422).
+BOLEH_KOSONG = ("barcode", "kategori", "merek", "deskripsi", "reorder_level")
+WAJIB_ISI = {"name": "Nama barang", "sales_price": "Harga jual", "purchase_price": "Harga beli"}
+TEKS_KOSONG = "(kosong)"
+
+
+def normal_kosong(baru: dict) -> dict:
+    """SATU penentu PUT + edit/preview: null/"" pada BOLEH_KOSONG = kosongkan (None); null pada WAJIB_ISI = 422; null lain = tak diubah (dibuang)."""
+    from fastapi import HTTPException
+    hasil = {}
+    for k, v in baru.items():
+        if isinstance(v, str) and not v.strip() and k in BOLEH_KOSONG:
+            v = None
+        if v is None:
+            if k in WAJIB_ISI:
+                raise HTTPException(status_code=422, detail=f"{WAJIB_ISI[k]} tidak boleh dikosongkan.")
+            if k not in BOLEH_KOSONG:
+                continue
+        hasil[k] = v
+    return hasil
 
 
 def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:
@@ -276,8 +298,13 @@ def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:
         return _hasil([_blok("BARANG_TAK_ADA", "Barang tidak ditemukan.")], None)
     perubahan = []
     for medan, kolom in _PETA_UBAH.items():
-        if medan in baru and baru[medan] is not None and _s(baru[medan]) != _s(lama.get(kolom)):
-            perubahan.append({"medan": medan, "dari": _s(lama.get(kolom)), "ke": _s(baru[medan])})
+        if medan not in baru or (baru[medan] is None and medan not in BOLEH_KOSONG):
+            continue
+        dari = lama.get(kolom)
+        if medan == "reorder_level" and not dari:   # 0 = belum diisi
+            dari = None
+        if _s(baru[medan]) != _s(dari):
+            perubahan.append({"medan": medan, "dari": _s(dari), "ke": _s(baru[medan])})
     per = [] if perubahan else [_blok("TANPA_PERUBAHAN", "Tidak ada perubahan pada data barang.")]
     return _hasil([], {"perubahan": perubahan, "efek": []}, per)
 
