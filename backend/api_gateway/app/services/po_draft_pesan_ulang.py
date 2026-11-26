@@ -6,6 +6,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from . import po_rencana as PR
+from . import satuan_dasar as SD   # BUG-401: harga tagihan per satuan BARIS -> per satuan DASAR (pola konversi satuan)
 from . import teks_galat as tg
 
 NOL = Decimal(0)
@@ -13,10 +14,12 @@ NOL = Decimal(0)
 SQL_BARANG = ("SELECT p.id, p.item_code, p.nama_produk, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS satuan, p.preferred_vendor_id, "
               "COALESCE(NULLIF(p.harga_beli, 0), NULLIF(p.purchase_price, 0), 0) AS harga_beli "
               "FROM products p WHERE p.tenant_id = $1 AND p.id = ANY($2::uuid[])")
-SQL_TERAKHIR = ("SELECT DISTINCT ON (bi.product_id, b.vendor_id) bi.product_id, b.vendor_id, bi.unit_price, b.created_at AS waktu "
+SQL_TERAKHIR = ("SELECT DISTINCT ON (bi.product_id, b.vendor_id) bi.product_id, b.vendor_id, bi.unit_price, bi.unit, b.created_at AS waktu "
                 "FROM bill_items bi JOIN bills b ON b.id = bi.bill_id AND b.tenant_id = $1 "
                 "WHERE bi.product_id = ANY($2::uuid[]) AND b.vendor_id IS NOT NULL AND b.status NOT IN ('void', 'draft') "
                 "ORDER BY bi.product_id, b.vendor_id, b.created_at DESC")
+SQL_DRAF = ("SELECT poi.item_id, po.po_number, poi.quantity, poi.unit FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id "
+            "WHERE po.tenant_id = $1 AND po.status = 'draft' AND poi.item_id = ANY($2::uuid[]) ORDER BY po.created_at DESC")
 SQL_VENDOR = "SELECT id, name FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])"
 
 
@@ -35,8 +38,15 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
     if vblok:
         return hasil
     terakhir = {}
+    ktx = await SD.muat(conn, tid, pids)
     for r in await conn.fetch(SQL_TERAKHIR, tid, pids):
-        terakhir.setdefault(str(r["product_id"]), {})[str(r["vendor_id"])] = (Decimal(str(r["unit_price"] or 0)), r["waktu"])
+        h = SD.hitung(ktx, r["product_id"], r["unit"], 1, "konversi")   # BUG-401: 140.000/Dus -> per Pcs = 140.000 / faktor
+        if h["blok"] or not h["faktor"]:
+            continue   # satuan tagihan tak terkonversi: JANGAN pakai mentah (jatuh ke harga beli barang)
+        terakhir.setdefault(str(r["product_id"]), {})[str(r["vendor_id"])] = ((Decimal(str(r["unit_price"] or 0)) / h["faktor"]).quantize(Decimal("0.01")), r["waktu"])
+    draf = {}
+    for r in await conn.fetch(SQL_DRAF, tid, pids):   # BUG-402: PO draf TIDAK dihitung 'dipesan' (ikut Accurate) -> peringatkan agar tak dobel
+        draf.setdefault(str(r["item_id"]), []).append(r)
     # vendor tiap barang
     per_vendor, tanpa = {}, []
     for i in body.baris:
@@ -45,6 +55,10 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
             bl.append(PR.blok("BARANG_TIDAK_DITEMUKAN", "Ada barang yang tidak ditemukan di usaha ini.", 422))
             continue
         harga_vendor = terakhir.get(str(i.item_id), {})
+        if draf.get(str(i.item_id)):
+            d = draf[str(i.item_id)]
+            hasil["peringatan"].append({"kode": "PO_DRAF_ADA", "teks": f"Sudah ada PO draf untuk {b['nama_produk']} ({d[0]['po_number']}"
+                                        + (f" dan {len(d) - 1} lainnya" if len(d) > 1 else "") + "). PO draf belum dihitung sebagai dipesan; periksa dulu agar tidak dobel."})
         if vendor_pilihan:
             vid = str(vendor_pilihan["id"])
         elif b["preferred_vendor_id"]:
