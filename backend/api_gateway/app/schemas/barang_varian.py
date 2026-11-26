@@ -104,15 +104,13 @@ class DetailMatriksResponse(BaseModel):
     data: DetailMatriks
 
 
+from .aksi_tersedia import AksiTersediaPeta  # noqa: E402  satu bentuk (penjaga test_aksi_tersedia_satu_bentuk)
+
+
 # ---- U-V1 (26 Nov, flag varian_v1): GET /api/matrix-items/{id}/variants
 class AtributVarian(BaseModel):
     nama: str
     nilai: str
-
-
-class AksiVarian(BaseModel):
-    tersedia: bool
-    alasan: Optional[str] = None
 
 
 class BarisVarian(BaseModel):
@@ -129,7 +127,7 @@ class BarisVarian(BaseModel):
     stok_status: Optional[str] = Field(None, description="ada | habis | minus; None bila tak dilacak")
     harga_jual_text: str
     harga_beli_text: str
-    aksi_tersedia: Dict[str, AksiVarian] = Field(..., description="aksi barang biasa; jalankan lewat /api/items/{id}")
+    aksi_tersedia: AksiTersediaPeta = Field(..., description="aksi barang biasa; jalankan lewat /api/items/{id}")
 
 
 class RingkasanVarian(BaseModel):

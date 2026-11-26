@@ -279,6 +279,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # BUG-159 B1 barang matriks/varian: baca = item R; buat/pratinjau/tambah varian = item C (pratinjau = huruf SAMA dgn tulis)
     (r"^/api/matrix-items$", ["GET"], "item", "R"),
     (r"^/api/matrix-items/[^/]+$", ["GET"], "item", "R"),
+    (r"^/api/matrix-items/[^/]+/variants$", ["GET"], "item", "R"),  # U-V1 baca varian (modul Barang, sama dgn detail induk)
     (r"^/api/matrix-items(/preview)?$", ["POST"], "item", "C"),
     (r"^/api/matrix-items/[^/]+/variants(/preview)?$", ["POST"], "item", "C"),
     (r"^/api/items/[^/]+$", ["GET"], "item", "R"),
