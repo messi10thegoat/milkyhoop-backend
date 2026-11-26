@@ -451,13 +451,44 @@ async def mulai_hitung(request: Request, opname_id: UUID, response: Response = N
                 "data": {"id": str(opname_id), "status": "hitung", "jumlah_baris": len(pids)}}, opname_id)
 
 
+async def _jurnal_teks(conn, tid: str, baris) -> list:
+    """jurnal_preview (Accurate menampilkan jurnal; FRONTEND 3): [{akun: 'kode · nama', debit_text, kredit_text}] dari baris (akun_id, debit, kredit, memo). Teks Rp dari server."""
+    from ..services import teks_galat as tg
+    ids = sorted({str(b[0]) for b in baris if b[0]})
+    nama = {str(r["id"]): f"{r['account_code']} · {r['name']}" for r in await conn.fetch(
+        "SELECT id, account_code, name FROM chart_of_accounts WHERE tenant_id = $1 AND id = ANY($2::uuid[])", tid, ids)} if ids else {}
+    return [{"akun": nama.get(str(a), "(akun tak dikenal)"), "debit_text": tg.rp(d) if d else None, "kredit_text": tg.rp(k) if k else None} for a, d, k, _m in baris]
+
+
+async def _jurnal_post(conn, tid: str, items) -> list:
+    """Jurnal Penyesuaian Stok tertaut yang AKAN ditulis posting (penentu sama dgn SS.rencana_posting: naik = Dr persediaan / Cr penyesuaian; turun sebaliknya;
+    nilai per baris dibulatkan sama dgn total_value draf). Tanpa selisih = []."""
+    naik = turun = NOL
+    for b, sel in items:
+        nilai = (abs(sel) * await SS.harga_pokok(conn, tid, b["product_id"])).quantize(Decimal("1"))
+        if sel > 0:
+            naik += nilai
+        else:
+            turun += nilai
+    persediaan, penyesuaian = await SS._akun(conn, tid, Blok(False))
+    if not persediaan or not penyesuaian:
+        return []
+    baris = []
+    if naik > 0:
+        baris += [(persediaan, naik, NOL, ""), (penyesuaian, NOL, naik, "")]
+    if turun > 0:
+        baris += [(penyesuaian, turun, NOL, ""), (persediaan, NOL, turun, "")]
+    return await _jurnal_teks(conn, tid, baris)
+
+
 @router.post("/{opname_id}/post/preview")
 async def pratinjau_post(request: Request, opname_id: UUID):
     async def r(conn, tid, bl):
         h = await rencana_posting(conn, tid, opname_id, bl)
         baris = [{**b, **TP.medan_baris(b["selisih"] if b["dihitung"] else None, b["nilai"], b["unit"])} for b in h["baris"]]
         return {"baris": baris, **TP.total_bertanda(h.get("total_nilai_bertanda", NOL)), "belum_dihitung": h.get("belum_dihitung"),
-                "baris_selisih": h.get("baris_selisih"), "catatan": h.get("catatan"), "tanpa_jurnal": h.get("tanpa_selisih")}
+                "baris_selisih": h.get("baris_selisih"), "catatan": h.get("catatan"), "tanpa_jurnal": h.get("tanpa_selisih"),
+                "jurnal_preview": [] if bl.daftar else await _jurnal_post(conn, tid, h["items"])}
     return await _pratinjau(request, r)
 
 
@@ -500,7 +531,7 @@ async def post_opname(request: Request, opname_id: UUID, response: Response = No
 async def pratinjau_batal(request: Request, opname_id: UUID):
     async def r(conn, tid, bl):
         h = await rencana_batal(conn, tid, opname_id, bl)
-        return {"catatan": h["catatan"]}
+        return {"catatan": h["catatan"], "jurnal_preview": []}   # batal = tanpa jurnal, tanpa stok
     return await _pratinjau(request, r)
 
 
@@ -528,7 +559,8 @@ async def pratinjau_void(request: Request, opname_id: UUID, body: Optional[Alasa
     async def r(conn, tid, bl):
         h = await rencana_void(conn, tid, opname_id, body.reason if body else None, bl)
         sa = h.get("sa_rencana") or {}
-        return {"catatan": h.get("catatan"), "jurnal_baris": len(sa.get("baris") or []), "tanpa_jurnal": bool(h.get("opname") and not h["opname"]["adjustment_id"])}
+        return {"catatan": h.get("catatan"), "jurnal_baris": len(sa.get("baris") or []), "tanpa_jurnal": bool(h.get("opname") and not h["opname"]["adjustment_id"]),
+                "jurnal_preview": await _jurnal_teks(conn, tid, sa.get("baris") or [])}
     return await _pratinjau(request, r)
 
 
