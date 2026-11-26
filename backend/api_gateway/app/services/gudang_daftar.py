@@ -89,7 +89,7 @@ async def stok_per_gudang(conn, tid: str, product_id) -> list:
         "HAVING SUM(il.quantity_in) - SUM(il.quantity_out) <> 0 ORDER BY nama, il.warehouse_id", tid, product_id)
     return [{"warehouse_id": str(r["warehouse_id"]) if r["warehouse_id"] else None, "nama": r["nama"], "kode": r["kode"], "aktif": bool(r["aktif"]),
              "saldo": float(Decimal(str(r["saldo"]))), "minus": Decimal(str(r["saldo"])) < 0,
-             "sistem": bool(r["is_system"]), "nama_text": GT.LABEL if r["is_system"] else r["nama"]} for r in rows]
+             "sistem": bool(r["is_system"]), "is_transit": bool(r["is_system"]), "nama_text": GT.LABEL if r["is_system"] else r["nama"]} for r in rows]
 
 
 def position_text(is_active: bool, is_default: bool, is_branch: bool = False) -> str:
@@ -135,3 +135,25 @@ async def aksi_tersedia(conn, tid: str, w) -> dict:
         alasan = await GH.alasan_tak_bisa(conn, tid, dict(w))
         t["hapus"] = aksi(alasan is None, alasan)
     return t
+
+
+SQL_TRANSIT = ("SELECT COALESCE(SUM(x.saldo), 0) AS qty, COALESCE(SUM(ROUND(x.saldo * get_weighted_average_cost($1, x.product_id), 0)), 0) AS nilai, COUNT(*) AS barang "
+               "FROM (SELECT il.product_id, SUM(il.quantity_in) - SUM(il.quantity_out) AS saldo FROM inventory_ledger il "
+               "JOIN warehouses w ON w.id = il.warehouse_id AND w.tenant_id = il.tenant_id AND w.is_system "
+               "WHERE il.tenant_id = $1 GROUP BY il.product_id HAVING SUM(il.quantity_in) - SUM(il.quantity_out) <> 0) x")
+
+
+def _rp(n: int) -> str:
+    return "Rp " + f"{n:,}".replace(",", ".")
+
+
+async def dalam_perjalanan(conn, tid: str) -> Optional[dict]:
+    """BUG-387 (pola Accurate: gudang transit = baris tersendiri): saldo LEDGER di gudang sistem Transit, nilai = Σ ROUND(saldo × WAC barang) -- rumus SAMA dgn
+    nilai gudang lain (tanpa aturan nilai baru). None bila tak ada barang dalam perjalanan. Daftar gudang: Σ gudang + baris ini = nilai stok semua barang."""
+    r = await conn.fetchrow(SQL_TRANSIT, tid)
+    if not r or not int(r["barang"] or 0):
+        return None
+    qty, nilai = Decimal(str(r["qty"])), int(r["nilai"])
+    q = f"{qty:f}".rstrip("0").rstrip(".") if "." in f"{qty:f}" else f"{qty:f}"
+    return {"is_transit": True, "nama_text": GT.LABEL, "jumlah_barang": int(r["barang"]), "qty": float(qty), "qty_text": q,
+            "nilai": nilai, "nilai_text": _rp(nilai), "teks": f"{r['barang']} barang dalam perjalanan senilai {_rp(nilai)}"}

@@ -121,9 +121,11 @@ async def list_warehouses(
             f"SELECT COUNT(*) FROM warehouses WHERE {where_sql}", *params
         )
 
-        sum_nilai = None
+        sum_nilai = transit = semua = None
         if with_totals is True:  # Query() default = objek truthy saat dipanggil langsung -> `is True`
             sum_nilai = int(await conn.fetchval(f"SELECT COALESCE(SUM({GD.sql_nilai()}), 0) FROM warehouses WHERE {where_sql}", *params))
+            transit = await GD.dalam_perjalanan(conn, ctx["tenant_id"])   # BUG-387: Transit tampil sebagai baris tersendiri (bukan baris data)
+            semua = sum_nilai + (transit["nilai"] if transit else 0)
 
         # Fetch warehouses
         rows = await conn.fetch(
@@ -141,7 +143,7 @@ async def list_warehouses(
         data = [WarehouseData(**{**dict(row), **GD.turunan(row)}, country_text=GD.negara_text(row["country"]), position_text=GD.position_text(row["is_active"], row["is_default"], row["is_branch"]))
                 for row in rows]
 
-        return WarehouseListResponse(data=data, total=total, sum_nilai=sum_nilai)
+        return WarehouseListResponse(data=data, total=total, sum_nilai=sum_nilai, dalam_perjalanan=transit, sum_nilai_semua=semua)
 
 
 # Standar SO: WAJIB di atas /{warehouse_id} (rute terdaftar duluan menang)

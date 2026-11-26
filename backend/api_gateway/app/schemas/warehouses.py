@@ -194,6 +194,8 @@ class WarehouseListResponse(BaseModel):
     data: List[WarehouseData]
     total: int
     sum_nilai: Optional[int] = None  # with_totals: Σ nilai stok gudang terfilter (services/gudang_daftar)
+    dalam_perjalanan: Optional[dict] = None  # BUG-387 with_totals: baris Transit {is_transit, nama_text, qty, qty_text, nilai, nilai_text, teks}; None = kosong
+    sum_nilai_semua: Optional[int] = None  # BUG-387 with_totals: sum_nilai + nilai dalam perjalanan (= nilai stok seluruh barang bila tanpa saringan)
 
 
 class WarehouseDetailResponse(BaseModel):
