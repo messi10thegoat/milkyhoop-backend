@@ -70,7 +70,7 @@ def test_kelompok_per_vendor_utama_dan_terakhir(monkeypatch):
         return {"baris": baris, "header": {"total_amount": sum(b["subtotal"] for b in baris)}}
     monkeypatch.setattr(PDP.PR, "hitung_po", hitung)
     k = Kon([barang(B1, "Kain", pref=V1, harga=1000), barang(B2, "Benang", harga=0)],
-            terakhir=[{"product_id": B2, "vendor_id": V2, "unit_price": D("2500"), "waktu": datetime(2026, 11, 1)}])
+            terakhir=[{"product_id": B2, "vendor_id": V2, "unit_price": D("2500"), "unit": "pcs", "waktu": datetime(2026, 11, 1)}])
     r, bl = jalan(k, req([(B1, 12), (B2, 4)]))
     assert bl == [] and r["diblok"] == []
     por = {g["vendor_nama"]: g for g in r["kelompok"]}
