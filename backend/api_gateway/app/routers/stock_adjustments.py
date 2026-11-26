@@ -186,6 +186,7 @@ async def list_stock_adjustments(
         Literal["increase", "decrease", "recount", "damaged", "expired"]
     ] = Query(None),
     search: Optional[str] = Query(None, description="Cari: nomor, catatan, nama/SKU barang di baris (semua kata wajib cocok)"),
+    warehouse_id: Optional[UUID] = Query(None, description="BUG-385: gudang header ATAU gudang baris"),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     skip: int = Query(0, ge=0),
@@ -207,15 +208,12 @@ async def list_stock_adjustments(
             params = [ctx["tenant_id"]]
             param_idx = 2
 
-            if status and status != "all":
-                conditions.append(f"status = ${param_idx}")
-                params.append(status)
-                param_idx += 1
-
-            if adjustment_type:
-                conditions.append(f"adjustment_type = ${param_idx}")
-                params.append(adjustment_type)
-                param_idx += 1
+            if date_from and date_to and date_from > date_to:
+                raise HTTPException(status_code=422, detail="Tanggal awal tidak boleh setelah tanggal akhir")
+            _sc, _sp = SS.syarat_saring(status, adjustment_type, warehouse_id, date_from, date_to, param_idx)  # BUG-385: SATU predikat dgn /summary
+            conditions.extend(_sc)
+            params.extend(_sp)
+            param_idx += len(_sp)
 
             if search:  # BUG-197: SATU predikat daftar + /summary (nomor, catatan, nama/SKU barang di baris); sum_total memakai WHERE yang sama
                 _c, _p = SS.syarat_cari(search, param_idx)
@@ -223,16 +221,6 @@ async def list_stock_adjustments(
                     conditions.append(_c)
                     params.extend(_p)
                     param_idx += len(_p)
-
-            if date_from:
-                conditions.append(f"adjustment_date >= ${param_idx}")
-                params.append(date_from)
-                param_idx += 1
-
-            if date_to:
-                conditions.append(f"adjustment_date <= ${param_idx}")
-                params.append(date_to)
-                param_idx += 1
 
             if aksi in SS.SEMUA_KUNCI:
                 predikat = SS.sql_aksi(aksi, f"${param_idx}")
@@ -283,9 +271,11 @@ async def list_stock_adjustments(
                    FROM stock_adjustment_items WHERE stock_adjustment_id = ANY($1::uuid[]) GROUP BY stock_adjustment_id""",
                 [r["id"] for r in rows])} if rows else {}
 
+            ringkas = await SS.ringkas_baris(conn, [r["id"] for r in rows], ctx["tenant_id"])
             items = [
                 {
                     "id": str(row["id"]),
+                    **(ringkas.get(str(row["id"])) or {}),
                     "adjustment_number": row["adjustment_number"],
                     "adjustment_date": row["adjustment_date"].isoformat(),
                     "adjustment_type": row["adjustment_type"],
@@ -306,7 +296,7 @@ async def list_stock_adjustments(
                 for row in rows
             ]
 
-            return {"items": items, "total": total, "has_more": (skip + limit) < total, **jumlah}
+            return {"items": items, "total": total, "has_more": (skip + limit) < total, "filter_tersedia": SS.filter_tersedia(), **jumlah}
 
     except HTTPException:
         raise
@@ -321,14 +311,26 @@ async def list_stock_adjustments(
 
 
 @router.get("/summary", response_model=StockAdjustmentSummaryResponse)
-async def get_stock_adjustments_summary(request: Request, search: Optional[str] = Query(None)):
+async def get_stock_adjustments_summary(
+    request: Request,
+    search: Optional[str] = Query(None),
+    status: Optional[Literal["all", "draft", "posted", "void"]] = Query("all"),
+    adjustment_type: Optional[Literal["increase", "decrease", "recount", "damaged", "expired"]] = Query(None),
+    warehouse_id: Optional[UUID] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+):
     """Get summary statistics for stock adjustments. + {k}_count/_value standar SO = predikat SAMA dgn ?aksi= daftar (services/stok_sesuai)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
 
         async with pool.acquire() as conn:
-            query = """
+            if date_from and date_to and date_from > date_to:
+                raise HTTPException(status_code=422, detail="Tanggal awal tidak boleh setelah tanggal akhir")
+            _sc, _sp = SS.syarat_saring(status, adjustment_type, warehouse_id, date_from, date_to, 2)  # BUG-385: predikat SAMA dgn daftar
+            saring = "".join(f" AND {c}" for c in _sc)
+            query = f"""
                 SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE status = 'draft') as draft_count,
@@ -341,17 +343,19 @@ async def get_stock_adjustments_summary(request: Request, search: Optional[str] 
                     COUNT(*) FILTER (WHERE adjustment_type = 'expired') as expired_count,
                     COALESCE(SUM(total_value) FILTER (WHERE status = 'posted'), 0) as total_value
                 FROM stock_adjustments
-                WHERE tenant_id = $1
+                WHERE stock_adjustments.tenant_id = $1{saring}
             """
-            row = await conn.fetchrow(query, ctx["tenant_id"])
+            row = await conn.fetchrow(query, ctx["tenant_id"], *_sp)
             _pc, par_cari = SS.syarat_cari(search, 3)  # predikat cari SAMA dgn daftar (BUG-197: nomor, catatan, nama/SKU barang)
             cari = f" AND {_pc}" if _pc else ""
+            _kc, _kp = SS.syarat_saring(status, adjustment_type, warehouse_id, date_from, date_to, 3 + len(par_cari))  # kartu/pill ikut tersaring
+            cari += "".join(f" AND {c}" for c in _kc)
             k_aksi = await conn.fetchrow(
                 "SELECT " + ", ".join(
                     f"COUNT(*) FILTER (WHERE {SS.sql_aksi(k, '$2')}) AS {k}_count, "
                     f"COALESCE(SUM(total_value) FILTER (WHERE {SS.sql_aksi(k, '$2')}), 0) AS {k}_value" for k in SS.SEMUA_KUNCI)
                 + f" FROM stock_adjustments WHERE stock_adjustments.tenant_id = $1{cari}",
-                ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), *par_cari)
+                ctx["tenant_id"], await tanggal_dokumen(conn, ctx["tenant_id"]), *par_cari, *_kp)
 
             return {
                 "success": True,
@@ -488,6 +492,7 @@ async def get_stock_adjustment(request: Request, adjustment_id: UUID):
                             "total_value_signed": int(SS.nilai_bertanda(item["quantity_adjustment"], item["total_value"])),  # BUG-228-3
                             "nilai_bertanda_text": SS.teks_bertanda(SS.nilai_bertanda(item["quantity_adjustment"], item["total_value"])),
                             "reason_detail": item["reason_detail"],
+                            "reason_text": SS.teks_alasan(item["reason_detail"]),  # BUG-379: tanpa gema kode jenis mentah
                             "system_quantity": float(item["system_quantity"])
                             if item["system_quantity"]
                             else None,  # Law 25: read path

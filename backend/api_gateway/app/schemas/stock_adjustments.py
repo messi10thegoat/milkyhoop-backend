@@ -111,6 +111,7 @@ class StockAdjustmentItemResponse(BaseModel):
     total_value_signed: int = 0               # BUG-228-3: nilai dgn tanda arah (kurang = negatif); total_value tetap magnitudo
     nilai_bertanda_text: Optional[str] = None
     reason_detail: Optional[str] = None
+    reason_text: Optional[str] = None  # BUG-379
     system_quantity: Optional[float] = None
     physical_quantity: Optional[float] = None
     line_number: int = 1
@@ -132,6 +133,8 @@ class StockAdjustmentListItem(BaseModel):
     adjustment_date: str
     adjustment_type: str
     storage_location_name: Optional[str] = None
+    items_summary_text: Optional[str] = None   # BUG-332: "Bodrex +1 lagi"
+    warehouse_name: Optional[str] = None       # BUG-332: satu gudang; beragam -> "Beberapa gudang"
     total_value: int
     arah: str = "nol"                         # BUG-228-3: tambah | kurang | campur | nol
     total_value_signed: int = 0
@@ -205,6 +208,7 @@ class StockAdjustmentListResponse(BaseModel):
     items: List[StockAdjustmentListItem]
     total: int
     has_more: bool
+    filter_tersedia: Optional[Dict[str, Any]] = None  # BUG-385: {status:[{nilai,label}], adjustment_type:[...]}
     sum_total: Optional[str] = None  # with_totals: Σ total_value tanpa void
     sum_total_signed: Optional[int] = None  # BUG-228-3: Σ BERTANDA (net, tanpa void; filter sama dgn sum_total); sum_total lama = mutlak
     sum_total_signed_text: Optional[str] = None

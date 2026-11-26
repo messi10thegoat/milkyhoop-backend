@@ -74,6 +74,65 @@ def jenis_text(tipe: Optional[str]) -> Optional[str]:
     return JENIS_TEXT.get(tipe or "", tipe)
 
 
+STATUS_LABEL = {"draft": "Draf", "posted": "Diposting", "void": "Dibatalkan"}
+
+
+def filter_tersedia() -> dict:
+    """Nilai + label saringan daftar (teks dari server; FE tak merangkai)."""
+    return {
+        "status": [{"nilai": "all", "label": "Semua status"}] + [{"nilai": k, "label": v} for k, v in STATUS_LABEL.items()],
+        "adjustment_type": [{"nilai": k, "label": v} for k, v in JENIS_TEXT.items()],
+    }
+
+
+def syarat_saring(status, adjustment_type, warehouse_id, date_from, date_to, mulai: int, a: str = "stock_adjustments") -> tuple:
+    """(daftar predikat, parameter) SATU predikat saringan daftar DAN /summary (BUG-385). Dikomposisi AND dgn search/aksi.
+    warehouse_id: gudang header ATAU gudang baris (baris NULL = ikut header). Tanggal: date_from/date_to inklusif; AND dgn aksi=bulan_ini."""
+    c, p = [], []
+    if status and status != "all":
+        p.append(status); c.append(f"{a}.status = ${mulai + len(p) - 1}")
+    if adjustment_type:
+        p.append(adjustment_type); c.append(f"{a}.adjustment_type = ${mulai + len(p) - 1}")
+    if warehouse_id:
+        p.append(warehouse_id)
+        n = mulai + len(p) - 1
+        c.append(f"({a}.warehouse_id = ${n} OR EXISTS (SELECT 1 FROM stock_adjustment_items wi WHERE wi.stock_adjustment_id = {a}.id AND wi.warehouse_id = ${n}))")
+    if date_from:
+        p.append(date_from); c.append(f"{a}.adjustment_date >= ${mulai + len(p) - 1}")
+    if date_to:
+        p.append(date_to); c.append(f"{a}.adjustment_date <= ${mulai + len(p) - 1}")
+    return c, p
+
+
+async def ringkas_baris(conn, ids: list, tenant_id: str) -> dict:
+    """Per dokumen (satu query per halaman): items_summary_text ('Bodrex +1 lagi') dan warehouse_name (satu gudang; beragam -> 'Beberapa gudang')."""
+    if not ids:
+        return {}
+    rows = await conn.fetch(
+        """SELECT sa.id, w.name AS gudang_header,
+                  (SELECT product_name FROM stock_adjustment_items WHERE stock_adjustment_id = sa.id ORDER BY line_number LIMIT 1) AS pertama,
+                  (SELECT COUNT(*) FROM stock_adjustment_items WHERE stock_adjustment_id = sa.id) AS n_baris,
+                  (SELECT COUNT(DISTINCT COALESCE(i.warehouse_id, sa.warehouse_id)) FROM stock_adjustment_items i WHERE i.stock_adjustment_id = sa.id) AS n_gudang
+           FROM stock_adjustments sa LEFT JOIN warehouses w ON w.id = sa.warehouse_id AND w.tenant_id = sa.tenant_id
+           WHERE sa.id = ANY($1::uuid[]) AND sa.tenant_id = $2""", ids, tenant_id)
+    out = {}
+    for r in rows:
+        n = int(r["n_baris"] or 0)
+        nama = r["pertama"] or None
+        teks = (f"{nama} +{n - 1} lagi" if n > 1 else nama) if nama else None
+        out[str(r["id"])] = {"items_summary_text": teks,
+                             "warehouse_name": "Beberapa gudang" if int(r["n_gudang"] or 0) > 1 else r["gudang_header"]}
+    return out
+
+
+def teks_alasan(alasan, tipe=None) -> Optional[str]:
+    """BUG-379: alasan baris tanpa gema kode jenis mentah ('correction'). Kosong/kode mentah -> None (FE tak menampilkan kode)."""
+    t = (alasan or "").strip()
+    if not t or t.lower() in {"correction", "increase", "decrease", "recount", "damaged", "expired", "other"}:
+        return None
+    return t
+
+
 def position_text(status: Optional[str], tipe: Optional[str]) -> str:
     if status == "draft":
         return "Draf · belum diposting"
