@@ -736,6 +736,7 @@ PUT /api/deliveries/{delivery_id}/serah
 PUT /api/employees/{employee_id}
 PUT /api/employees/{employee_id}/salary-config
 PUT /api/expense-policy
+PUT /api/inventory/stok-minimum/{item_id}
 PUT /api/items/{item_id}
 PUT /api/kds/stations/{station_id}
 PUT /api/milkybook/v2/percakapan/{percakapan_id}
