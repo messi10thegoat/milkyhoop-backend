@@ -388,22 +388,22 @@ class PurchaseOrderSummaryResponse(BaseModel):
 
 class PoDraftBaris(BaseModel):
     item_id: str = Field(..., description="Barang (UUID)")
-    qty: Decimal = Field(..., gt=0, description="Jumlah beli (satuan dasar barang)")
+    jumlah: Decimal = Field(..., gt=0, description="Jumlah beli (satuan dasar barang)")
     gudang_id: Optional[str] = Field(None, description="Gudang tujuan (opsional)")
 
 
 class PoDraftRequest(BaseModel):
-    items: List[PoDraftBaris] = Field(..., min_length=1)
+    baris: List[PoDraftBaris] = Field(..., min_length=1)
     vendor_id: Optional[str] = Field(None, description="Paksa satu vendor untuk semua baris; kosong = vendor utama/terakhir tiap barang")
     po_date: Optional[date] = Field(None, description="Kosong = tanggal bisnis hari ini")
 
 
 class PoDraftPreviewResponse(BaseModel):
     success: bool = True
-    data: Dict[str, Any]   # {ok, blocks[], peringatan[], rencana:{kelompok[], diblok[], teks}}
+    data: Dict[str, Any]   # {ok, blocks[], peringatan[], payload, rencana:{teks, total_text, kelompok[], diblok[]}}
 
 
 class PoDraftBuatResponse(BaseModel):
     success: bool
     message: str
-    data: Dict[str, Any]   # {dibuat:[{vendor_id, vendor_nama, po_id, nomor, total_text}], diblok[], ringkas_text}
+    data: Dict[str, Any]   # {po:[{id, nomor, vendor_id, vendor_nama, total_text}], diblok[], ringkas_text}

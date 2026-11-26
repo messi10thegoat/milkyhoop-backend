@@ -20,17 +20,12 @@ SQL_TERAKHIR = ("SELECT DISTINCT ON (bi.product_id, b.vendor_id) bi.product_id, 
 SQL_VENDOR = "SELECT id, name FROM vendors WHERE tenant_id = $1 AND id = ANY($2::uuid[])"
 
 
-def _qty_text(q: Decimal, satuan) -> str:
-    teks = tg.angka_laporan(q, 0) if q == q.to_integral_value() else tg.angka_laporan(q, 2)
-    return f"{teks} {satuan}".strip() if satuan else teks
-
-
 async def rencana(conn, tid: str, body, bl: list) -> dict:
     """-> {kelompok:[{vendor_id, vendor_nama, baris:[...], total_text, items:[PurchaseOrderItemCreate-dict]}], diblok:[...], peringatan:[...]}.
     bl = daftar blok (dict PR.blok); kosong = boleh ditulis."""
     hasil = {"kelompok": [], "diblok": [], "peringatan": []}
     try:
-        pids = [UUID(str(i.item_id)) for i in body.items]
+        pids = [UUID(str(i.item_id)) for i in body.baris]
     except (ValueError, TypeError):
         bl.append(PR.blok("BARANG_TIDAK_SAH", "ID barang tidak sah.", 422))
         return hasil
@@ -44,7 +39,7 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
         terakhir.setdefault(str(r["product_id"]), {})[str(r["vendor_id"])] = (Decimal(str(r["unit_price"] or 0)), r["waktu"])
     # vendor tiap barang
     per_vendor, tanpa = {}, []
-    for i in body.items:
+    for i in body.baris:
         b = barang.get(str(i.item_id))
         if not b:
             bl.append(PR.blok("BARANG_TIDAK_DITEMUKAN", "Ada barang yang tidak ditemukan di usaha ini.", 422))
@@ -67,18 +62,23 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
     nama_vendor = {str(r["id"]): r["name"] for r in await conn.fetch(SQL_VENDOR, tid, [UUID(v) for v in per_vendor])} if per_vendor else {}
     for vid in sorted(per_vendor, key=lambda v: nama_vendor.get(v, "")):
         baris_in = per_vendor[vid]
-        items = [{"item_id": str(b["id"]), "item_code": b["item_code"], "description": b["nama_produk"], "quantity": i.qty, "unit": b["satuan"],
+        items = [{"item_id": str(b["id"]), "item_code": b["item_code"], "description": b["nama_produk"], "quantity": i.jumlah, "unit": b["satuan"],
                   "unit_price": harga, "discount_percent": 0, "discount_amount": 0, "tax_rate": 0} for i, b, harga in baris_in]
         h = await PR.hitung_po(conn, tid, items, 0, 0, 0)
         baris = []
         for (i, b, harga), hb in zip(baris_in, h["baris"]):
-            baris.append({"item_id": str(b["id"]), "nama": b["nama_produk"], "qty": float(i.qty), "qty_text": _qty_text(Decimal(str(i.qty)), b["satuan"]),
-                          "satuan": b["satuan"], "unit_price": float(harga), "harga_text": tg.rp(harga), "subtotal_text": tg.rp(hb["subtotal"])})
+            q = Decimal(str(i.jumlah))
+            baris.append({"item_id": str(b["id"]), "nama": b["nama_produk"], "jumlah_text": tg.angka_laporan(q, 0) if q == q.to_integral_value() else tg.angka_laporan(q, 2),
+                          "satuan_text": b["satuan"] or "", "harga_text": tg.rp(harga), "subtotal_text": tg.rp(hb["subtotal"])})
             if not harga:
                 hasil["peringatan"].append({"kode": "HARGA_KOSONG", "teks": f"{b['nama_produk']}: harga beli belum ada; isi harga di PO."})
         hasil["kelompok"].append({"vendor_id": vid, "vendor_nama": nama_vendor.get(vid, ""), "baris": baris,
-                                  "total_text": tg.rp(h["header"]["total_amount"]), "items": items})
+                                  "total_text": tg.rp(h["header"]["total_amount"]), "total_nilai": str(h["header"]["total_amount"]), "items": items})
     return hasil
+
+
+def total_text(r: dict) -> str:
+    return tg.rp(sum((Decimal(str(g["total_nilai"])) for g in r["kelompok"]), NOL))
 
 
 def teks_ringkas(r: dict) -> str:

@@ -1540,8 +1540,10 @@ async def preview_po_draft(request: Request, body: PoDraftRequest):
     if not bl and not r["kelompok"]:
         bl.append(PR.blok("TIDAK_ADA_PO", "Tidak ada PO yang bisa dibuat: pilih vendor untuk barang yang belum punya vendor.", 422))
     return {"success": True, "data": {"ok": not bl, "blocks": PR.untuk_respons(bl), "peringatan": r["peringatan"],
-                                      "rencana": {"kelompok": [{k: v for k, v in g.items() if k != "items"} for g in r["kelompok"]],
-                                                  "diblok": r["diblok"], "teks": PDP.teks_ringkas(r)}}}
+                                      "payload": body.model_dump(mode="json", exclude_none=True),
+                                      "rencana": {"teks": PDP.teks_ringkas(r), "total_text": PDP.total_text(r),
+                                                  "kelompok": [{k: v for k, v in g.items() if k not in ("items", "total_nilai")} for g in r["kelompok"]],
+                                                  "diblok": r["diblok"]}}}
 
 
 @router.post("/po-draft", response_model=PoDraftBuatResponse, status_code=201)
@@ -1564,9 +1566,9 @@ async def buat_po_draft(request: Request, body: PoDraftRequest, response: Respon
                                            unit=i["unit"], unit_price=i["unit_price"]) for i in g["items"]])
         hasil = await create_purchase_order(_turunan_idem(request, f"{dasar}:{g['vendor_id']}"[:200]), po, Response())
         d = hasil["data"] if isinstance(hasil, dict) else hasil.data
-        dibuat.append({"vendor_id": g["vendor_id"], "vendor_nama": g["vendor_nama"], "po_id": d["id"], "nomor": d["po_number"], "total_text": g["total_text"]})
+        dibuat.append({"id": d["id"], "nomor": d["po_number"], "vendor_id": g["vendor_id"], "vendor_nama": g["vendor_nama"], "total_text": g["total_text"]})
     return {"success": True, "message": f"{len(dibuat)} PO draf dibuat.",
-            "data": {"dibuat": dibuat, "diblok": r["diblok"], "ringkas_text": PDP.teks_ringkas(r)}}
+            "data": {"po": dibuat, "diblok": r["diblok"], "ringkas_text": PDP.teks_ringkas(r)}}
 
 
 @router.post("/{po_id}/edit/preview")
