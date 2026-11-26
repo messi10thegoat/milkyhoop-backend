@@ -865,6 +865,8 @@ POST /api/items/categories/{category_id}/status
 POST /api/items/categories/{category_id}/status/preview
 POST /api/warehouses/preview
 POST /api/warehouses/{warehouse_id}/edit/preview
+POST /api/warehouses/{warehouse_id}/delete
+POST /api/warehouses/{warehouse_id}/delete/preview
 POST /api/warehouses/{warehouse_id}/set-default/preview
 POST /api/warehouses/{warehouse_id}/status
 POST /api/warehouses/{warehouse_id}/status/preview

@@ -12,6 +12,9 @@ from decimal import Decimal
 from typing import Optional
 
 from ..schemas.aksi_tersedia import aksi
+from .tenant_features import fitur_aktif
+
+FLAG_HAPUS = "aksipage_gudang_v1"
 
 WAC_GUDANG = "CROSS JOIN LATERAL (SELECT get_weighted_average_cost($2, ws.item_id) AS wac) w"
 NILAI_GUDANG = "ROUND(ws.quantity * w.wac, 0)"
@@ -121,9 +124,14 @@ def alasan_utama(is_active: bool, is_default: bool) -> Optional[str]:
 async def aksi_tersedia(conn, tid: str, w) -> dict:
     nonaktif = alasan_nonaktif(w["is_active"], w["is_default"])
     utama = alasan_utama(w["is_active"], w["is_default"])
-    return {
+    t = {
         "ubah": aksi(True, None),
         "jadikan_utama": aksi(utama is None, utama),
         "nonaktifkan": aksi(nonaktif is None, nonaktif),
         "aktifkan": aksi(not w["is_active"], "Gudang ini sudah aktif."),
     }
+    if FLAG_HAPUS in await fitur_aktif(conn, tid):   # G-hapus: aksi Hapus hanya bila flag halaman gudang nyala (rute tetap dijaga izin warehouse D)
+        from . import gudang_hapus as GH
+        alasan = await GH.alasan_tak_bisa(conn, tid, dict(w))
+        t["hapus"] = aksi(alasan is None, alasan)
+    return t

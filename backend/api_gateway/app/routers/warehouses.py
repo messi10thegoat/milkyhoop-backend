@@ -14,7 +14,10 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from ..services import gudang_daftar as GD
+from ..services import gudang_hapus as GH  # G-hapus: SATU penentu pratinjau + penulis hapus permanen
 from ..services import gudang_rencana as GR  # G3: SATU penentu pratinjau + penulis
+from ..services.galat_berkode import GalatBerkode
+from ..services.so_riwayat import catat_riwayat
 from ..services import idem_buat
 from ..services import lembar_hitung_stok as LH  # BUG-259 lembar penghitungan stok
 from ..services.rekap_pesanan import muat_kop
@@ -346,6 +349,43 @@ async def delete_warehouse(request: Request, warehouse_id: UUID):
             GR.tolak(r["blocks"])
             await _tulis_nilai(conn, ctx["tenant_id"], warehouse_id, r["nilai"])
             return DeleteWarehouseResponse()
+
+
+@router.post("/{warehouse_id}/delete/preview")
+async def preview_hapus_gudang(request: Request, warehouse_id: UUID):
+    """G-hapus: pratinjau hapus PERMANEN (baca saja; penentu SAMA dgn POST /delete): blok + rincian jejak + saran Nonaktifkan."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction(readonly=True):
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+            return {"success": True, "data": await GH.ukur_rencana(conn, ctx["tenant_id"], warehouse_id)}
+
+
+@router.post("/{warehouse_id}/delete")
+async def hapus_gudang(request: Request, warehouse_id: UUID, response: Response = None):
+    """G-hapus: PENULIS hapus permanen gudang yang belum pernah dipakai (Accurate). Kunci WAREHOUSE:{tenant}:{id}; X-Idempotency-Key opsional;
+    ditolak -> 409 berkode (blok pertama); FK yang belum terdaftar di JEJAK_GUDANG -> 409 GUDANG_BERJEJAK (jaring)."""
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", ctx["tenant_id"])
+                kp, sd, lama = await idem_buat.mulai_aksi(conn, ctx, idem_buat.kunci_dari(request), "WH_HAPUS", warehouse_id, lambda: {}, response)
+                if lama is not None:
+                    return lama
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"WAREHOUSE:{ctx['tenant_id']}:{warehouse_id}")
+                r = await GH.ukur_rencana(conn, ctx["tenant_id"], warehouse_id)
+                GH.tolak(r)
+                w = await GH.ukur_gudang(conn, ctx["tenant_id"], warehouse_id)
+                await conn.execute("DELETE FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, ctx["tenant_id"])
+                await catat_riwayat(conn, ctx["tenant_id"], "warehouse", warehouse_id, w.get("code"), "warehouse.delete", ctx.get("user_id"),
+                                    f"Gudang {w['name']} dihapus", {"nama": w["name"], "kode": w.get("code")})
+                resp = {"success": True, "message": "Gudang dihapus", "data": {"id": str(warehouse_id)}}
+                return await idem_buat.simpan(conn, ctx, kp, sd, "WH_HAPUS", resp, warehouse_id) if kp else resp
+    except asyncpg.ForeignKeyViolationError:
+        raise GalatBerkode(409, "GUDANG_BERJEJAK", GH.TEKS_GALAT_FK)
 
 
 @router.post("/{warehouse_id}/status")

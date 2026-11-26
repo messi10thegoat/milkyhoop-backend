@@ -695,6 +695,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/warehouses/[^/]+/(edit|status)/preview$", ["POST"], "warehouse", "U"),  # G3: pratinjau ubah/status
     (r"^/api/warehouses/[^/]+/set-default/preview$", ["POST"], "warehouse", "C"),  # G3: pratinjau utama = izin penulisnya (POST /set-default jatuh ke POST /warehouses = C; penjaga test_izin_rute_pratinjau)
     (r"^/api/warehouses/[^/]+/status$", ["POST"], "warehouse", "U"),  # G3: penulis aktif/nonaktif
+    (r"^/api/warehouses/[^/]+/delete(/preview)?$", ["POST"], "warehouse", "D"),  # G-hapus: hapus permanen + pratinjau = izin SAMA dgn DELETE
     (r"^/api/warehouses", ["GET"], "warehouse", "R"),
     (r"^/api/warehouses", ["POST"], "warehouse", "C"),
     (r"^/api/warehouses/[^/]+", ["PATCH", "PUT"], "warehouse", "U"),
