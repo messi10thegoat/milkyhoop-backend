@@ -88,7 +88,7 @@ def _k():
 
 
 def test_teks_server_dan_penanda_pill_per_baris():
-    x = jalan(RP.daftar(_k(), "t"))["items"][0]
+    x = next(i for i in jalan(RP.daftar(_k(), "t"))["items"] if i["nama_produk"] == "Beras")
     assert (x["stok_text"], x["minimum_text"], x["dipesan_text"], x["usulan_beli_text"]) == ("2 pcs", "10 pcs", "0 pcs", "8 pcs")
     assert x["belum_dipesan"] and not x["sebagian_dipesan"] and not x["ada_po_satuan_lain"]
 
