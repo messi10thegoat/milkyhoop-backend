@@ -332,6 +332,7 @@ async def rencana_void_kirim(conn, tid: str, h, kunci: bool) -> dict:
         blocks.append(_blok("PB_SUDAH_ADA_PENYELESAIAN", f"Pemindahan {h['transfer_number']} punya selisih yang sudah diselesaikan lewat Penyesuaian; batalkan penyesuaiannya dulu."))
     elif (dit := [i for i in items if _d(i["quantity_received"]) > _NOL]):
         # BUG-386 (putusan MASTER 26 Nov, pola Accurate/SAP): sudah ada penerimaan (sebagian/tuntas) -> batal DITOLAK; kalimat menyebut yang sudah diterima.
+        from .barang_daftar import _q
         tujuan = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", h["to_warehouse_id"], tid) or "gudang tujuan"
         sebut = ", ".join(f"{_q(_d(i['quantity_received']))}{' ' + i['unit'] if i.get('unit') else ''} {i['item_name']}" for i in dit)
         blocks.append(_blok("PB_VOID_SEBAGIAN_DITERIMA", f"{sebut} sudah diterima di {tujuan}; pembatalan tidak bisa. Terima sisanya atau buat pemindahan balik."))
