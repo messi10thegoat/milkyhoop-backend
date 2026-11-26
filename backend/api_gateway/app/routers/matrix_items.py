@@ -2,13 +2,13 @@
 services/barang_varian (batas 2 dimensi / 20 nilai / 100 varian; tulis lewat jalur resmi tulis_barang_baru, atomik). Izin = modul Barang
 (item R/C) lewat permission_middleware. Router lama (tak pernah dipasang) diganti seluruhnya."""
 import logging
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..schemas.barang_varian import (
-    BuatMatriksRequest, BuatMatriksResponse, DaftarMatriksResponse, DetailMatriksResponse, PratinjauResponse, TambahVarianRequest,
+    BuatMatriksRequest, BuatMatriksResponse, DaftarMatriksResponse, DaftarVarianResponse, DetailMatriksResponse, PratinjauResponse, TambahVarianRequest,
 )
 from ..services import barang_varian as BV
 from ..services import idem_buat
@@ -116,6 +116,20 @@ async def tambah_varian(request: Request, item_id: UUID, body: TambahVarianReque
         raise
     except Exception as e:
         raise _galat_tulis(e, "Gagal menambah varian.") from e
+
+
+@router.get("/{item_id}/variants", response_model=DaftarVarianResponse)
+async def daftar_varian(request: Request, item_id: UUID, search: Optional[str] = Query(None),
+                        atribut: List[str] = Query(default_factory=list, description="nama:nilai, boleh berulang (mis. ukuran:XL)"),
+                        skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=BV.MAKS_LIMIT_VARIAN)):
+    """U-V1 (flag gelap varian_v1): varian satu induk + stok/teks/aksi server, ringkasan, filter_atribut."""
+    from ..services.tenant_features import fitur_aktif
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if BV.FLAG_V1 not in await fitur_aktif(conn, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail={"code": "FITUR_BELUM_AKTIF", "message": "Varian barang belum diaktifkan untuk usaha ini."})
+        return {"success": True, **await BV.daftar_varian(conn, ctx["tenant_id"], item_id, search, atribut, skip, limit)}
 
 
 @router.get("/{item_id}", response_model=DetailMatriksResponse)

@@ -102,3 +102,64 @@ class DetailMatriks(MatriksRingkas):
 class DetailMatriksResponse(BaseModel):
     success: bool = True
     data: DetailMatriks
+
+
+# ---- U-V1 (26 Nov, flag varian_v1): GET /api/matrix-items/{id}/variants
+class AtributVarian(BaseModel):
+    nama: str
+    nilai: str
+
+
+class AksiVarian(BaseModel):
+    tersedia: bool
+    alasan: Optional[str] = None
+
+
+class BarisVarian(BaseModel):
+    id: str
+    nama: str
+    item_code: Optional[str] = None
+    sku: Optional[str] = None
+    atribut: List[AtributVarian]
+    atribut_text: str
+    status: str = Field(..., description="aktif | nonaktif")
+    status_text: str
+    stok: float
+    stok_text: Optional[str] = Field(None, description="None bila stok barang tak dilacak / nonaktif")
+    stok_status: Optional[str] = Field(None, description="ada | habis | minus; None bila tak dilacak")
+    harga_jual_text: str
+    harga_beli_text: str
+    aksi_tersedia: Dict[str, AksiVarian] = Field(..., description="aksi barang biasa; jalankan lewat /api/items/{id}")
+
+
+class RingkasanVarian(BaseModel):
+    jumlah_varian: int
+    jumlah_varian_text: str
+    total_stok_text: str
+    jumlah_ada_stok_text: str
+    jumlah_habis_text: str
+
+
+class NilaiSaring(BaseModel):
+    nilai: str
+    jumlah: int
+
+
+class SaringAtribut(BaseModel):
+    nama: str
+    nilai: List[NilaiSaring]
+
+
+class IndukRingkas(BaseModel):
+    id: str
+    nama: str
+
+
+class DaftarVarianResponse(BaseModel):
+    success: bool = True
+    induk: IndukRingkas
+    data: List[BarisVarian]
+    total: int
+    has_more: bool
+    ringkasan: RingkasanVarian = Field(..., description="dihitung dari SEMUA varian tersaring (bukan satu halaman)")
+    filter_atribut: List[SaringAtribut] = Field(..., description="dari SEMUA varian induk; jumlah = banyak varian per nilai")

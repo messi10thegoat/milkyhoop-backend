@@ -3756,9 +3756,12 @@ async def get_item(request: Request, item_id: UUID):
 
         from ..services import gudang_daftar as _GD
         _spg = await _GD.stok_per_gudang(conn, tenant_id, item_id)  # P5: saldo ledger per gudang (minus ditandai)
+        from ..services import barang_varian as _BV
+        _var = await _BV.info_varian_barang(conn, tenant_id, row)  # U-V1 B7: FE tahu tab Varian / tautan induk
         return ItemDetailResponse(
             success=True,
             data={
+                **_var,
                 "stok_per_gudang": _spg,
                 "ada_stok_minus_gudang": any(g["minus"] for g in _spg),
                 "id": str(row["id"]),

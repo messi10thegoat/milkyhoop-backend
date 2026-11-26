@@ -214,3 +214,130 @@ async def detail(conn, tenant_id: str, induk_id) -> dict:
             "varian": [{"id": str(a["id"]), "name": a["nama_produk"], "atribut": atr(a["matrix_attributes"]), "item_code": a["item_code"],
                         "sku": a["sku"], "sales_price": _angka(a["sales_price"]), "purchase_price": _angka(a["purchase_price"]),
                         "status": a["status"]} for a in anak]}
+
+
+# ---------------------------------------------------------------- U-V1 (26 Nov, flag gelap varian_v1): daftar varian per induk
+FLAG_V1 = "varian_v1"
+MAKS_LIMIT_VARIAN = 100
+
+
+def _atr(x) -> dict:
+    return json.loads(x) if isinstance(x, str) else dict(x or {})
+
+
+def urut_dimensi(anak_atr: list) -> list:
+    """Urutan dimensi = urutan kemunculan kunci di atribut anak pertama (rakit: dimensi pertama paling luar). Murni."""
+    urut = []
+    for a in anak_atr:
+        for k in a:
+            if k not in urut:
+                urut.append(k)
+    return urut
+
+
+def parse_saring_atribut(atribut: list) -> dict:
+    """['ukuran:XL', 'warna:Hitam'] -> {ukuran: [XL], warna: [Hitam]} (nilai sama dimensi = ATAU, beda dimensi = DAN). Tak berformat -> 422."""
+    hasil: dict = {}
+    for s in atribut or []:
+        nama, sep, nilai = str(s).partition(":")
+        if not sep or not _rapi(nama) or not _rapi(nilai):
+            raise _galat(f"Saringan atribut '{s}' tidak dikenali; gunakan bentuk nama:nilai, mis. ukuran:XL.")
+        hasil.setdefault(_rapi(nama), []).append(_rapi(nilai))
+    return hasil
+
+
+def stok_status(b: dict, stok) -> Optional[str]:
+    from .barang_daftar import _d, dilacak
+    if not dilacak(b):
+        return None
+    s = _d(stok)
+    return "minus" if s < 0 else ("habis" if s == 0 else "ada")
+
+
+def baris_varian(r: dict, urut: list) -> dict:
+    """Satu baris varian (murni, teruji): teks & aksi dari server; aksi = aksi_tersedia_detail barang biasa (rute /api/items/{id})."""
+    from .barang_aksi import aksi_tersedia_detail, keadaan, keadaan_text, rp
+    from .barang_daftar import stok_fisik_text
+    atr = _atr(r.get("matrix_attributes"))
+    stok = r.get("stok") or 0
+    return {
+        "id": str(r["id"]), "nama": r["nama_produk"], "item_code": r.get("item_code"), "sku": r.get("sku"),
+        "atribut": [{"nama": k, "nilai": atr[k]} for k in urut if k in atr],
+        "atribut_text": " · ".join(str(atr[k]) for k in urut if k in atr),
+        "status": keadaan(r), "status_text": keadaan_text(r),
+        "stok": float(stok), "stok_text": stok_fisik_text(r, stok, r.get("base_unit")),
+        "stok_status": stok_status(r, stok),
+        "harga_jual_text": rp(r.get("sales_price")), "harga_beli_text": rp(r.get("purchase_price")),
+        "aksi_tersedia": aksi_tersedia_detail(r),
+    }
+
+
+def ringkasan_varian(baris: list, satuan: Optional[str]) -> dict:
+    """Server menjumlah (FE tak menjumlah). baris = keluaran baris_varian (SEMUA varian tersaring, bukan satu halaman)."""
+    from decimal import Decimal
+    from .barang_daftar import _q
+    total = sum((Decimal(str(b["stok"])) for b in baris if b["stok_status"] is not None), Decimal(0))
+    ada = sum(1 for b in baris if b["stok_status"] == "ada")
+    habis = sum(1 for b in baris if b["stok_status"] in ("habis", "minus"))
+    sat = f" {satuan}" if satuan else ""
+    return {"jumlah_varian": len(baris), "jumlah_varian_text": f"{len(baris)} varian",
+            "total_stok_text": f"{_q(total)}{sat}", "jumlah_ada_stok_text": f"{ada} ada stok", "jumlah_habis_text": f"{habis} habis"}
+
+
+def filter_atribut(atr_semua: list, urut: list) -> list:
+    """[{nama, nilai:[{nilai, jumlah}]}] dari SEMUA varian induk (tak tersaring), urut dimensi lalu kemunculan nilai."""
+    hasil = []
+    for k in urut:
+        hit: dict = {}
+        for a in atr_semua:
+            if k in a:
+                hit[str(a[k])] = hit.get(str(a[k]), 0) + 1
+        hasil.append({"nama": k, "nilai": [{"nilai": v, "jumlah": n} for v, n in hit.items()]})
+    return hasil
+
+
+async def daftar_varian(conn, tenant_id: str, induk_id, search: Optional[str], atribut: list, skip: int, limit: int) -> dict:
+    from .barang_aksi import SQL_HITUNG_JEJAK
+    from .barang_daftar import SQL_PER_STOK
+    induk = await conn.fetchrow(
+        "SELECT id, nama_produk, base_unit FROM products WHERE tenant_id = $1 AND id = $2 AND is_matrix_parent AND deleted_at IS NULL",
+        tenant_id, induk_id)
+    if not induk:
+        raise HTTPException(status_code=404, detail={"code": "BARANG_MATRIKS_TAK_ADA", "message": "Barang matriks tidak ditemukan."})
+    saring = parse_saring_atribut(atribut)
+    rows = await conn.fetch(
+        f"""SELECT p.id, p.nama_produk, p.item_code, p.sku, p.matrix_attributes, p.status, p.item_type, p.track_inventory,
+                   p.base_unit, p.sales_price, p.purchase_price, COALESCE(per.jumlah, 0) AS stok, ({SQL_HITUNG_JEJAK}) AS transaction_count
+            FROM products p {SQL_PER_STOK}
+            WHERE p.tenant_id = $1 AND p.matrix_parent_id = $2 AND p.deleted_at IS NULL
+            ORDER BY p.created_at, p.nama_produk""", tenant_id, induk_id)
+    semua = [dict(r) for r in rows]
+    atr_semua = [_atr(r["matrix_attributes"]) for r in semua]
+    urut = urut_dimensi(atr_semua)
+    kata = _rapi(search).lower() if search and _rapi(search) else None
+
+    def lolos(r, a) -> bool:
+        if any(str(a.get(k)) not in vs for k, vs in saring.items()):
+            return False
+        if kata:
+            teks = " ".join(str(x or "") for x in (r["nama_produk"], r["item_code"], r["sku"], *a.values())).lower()
+            return kata in teks
+        return True
+    tersaring = [baris_varian(r, urut) for r, a in zip(semua, atr_semua) if lolos(r, a)]
+    halaman = tersaring[skip:skip + limit]
+    return {"induk": {"id": str(induk["id"]), "nama": induk["nama_produk"]},
+            "data": halaman, "total": len(tersaring), "has_more": skip + len(halaman) < len(tersaring),
+            "ringkasan": ringkasan_varian(tersaring, induk["base_unit"]),
+            "filter_atribut": filter_atribut(atr_semua, urut)}
+
+
+async def info_varian_barang(conn, tenant_id: str, row) -> dict:
+    """Detail barang (GET /api/items/{id}): is_matrix_parent, matrix_parent{id,nama} (anak), atribut[{nama,nilai}] (anak). Selalu ada kunci."""
+    pid = row.get("matrix_parent_id")
+    induk = None
+    if pid:
+        r = await conn.fetchrow("SELECT id, nama_produk FROM products WHERE tenant_id = $1 AND id = $2", tenant_id, pid)
+        induk = {"id": str(r["id"]), "nama": r["nama_produk"]} if r else None
+    atr = _atr(row.get("matrix_attributes"))
+    return {"is_matrix_parent": bool(row.get("is_matrix_parent")), "matrix_parent": induk,
+            "atribut": [{"nama": k, "nilai": str(v)} for k, v in atr.items()] if pid else []}
