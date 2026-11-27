@@ -605,6 +605,7 @@ POST /api/sales-invoices/calculate
 POST /api/sales-invoices/preview-journal
 POST /api/sales-invoices/{invoice_id}/attachments
 POST /api/sales-invoices/{invoice_id}/fulfill
+POST /api/sales-invoices/{invoice_id}/fulfill/preview
 POST /api/sales-invoices/{invoice_id}/payments
 POST /api/sales-invoices/{invoice_id}/post
 POST /api/sales-invoices/{invoice_id}/post/preview
