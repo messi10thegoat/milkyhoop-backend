@@ -121,6 +121,25 @@ async def get_bank_transaction(request: Request, transaction_id: UUID):
         return {"success": True, "data": {**KD.baris_manual(r), "aksi_tersedia": await KD.aksi_tersedia_manual(conn, tid, transaction_id)}}
 
 
+@router.get("/{transaction_id}/pdf")
+async def get_bank_transaction_pdf(request: Request, transaction_id: UUID):
+    """Bukti Kas Keluar (PDF A5) untuk Uang Keluar manual -- G30; baca saja, templat kwitansi keluar (cetak_kas_keluar)."""
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+    from ..services.cetak_kas_keluar import muat_pdf_kas_keluar
+    from ..services.pdf_service import get_pdf_service
+    from ..utils.content_disposition import pdf_content_disposition
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        m = await muat_pdf_kas_keluar(conn, ctx, transaction_id)
+    ps = get_pdf_service()
+    pdf = ps.tulis_pdf(ps.render_payment_out(m["receipt_data"], m["tenant_info"]))
+    return StreamingResponse(BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition": pdf_content_disposition(m["receipt_data"]["receipt_number"] or "Bukti Kas Keluar"),
+                                      "Cache-Control": "no-store"})
+
+
 @router.get("/{transaction_id}/history")
 async def get_bank_transaction_history(request: Request, transaction_id: UUID, limit: int = Query(200, ge=1, le=500)):
     ctx = get_user_context(request)
