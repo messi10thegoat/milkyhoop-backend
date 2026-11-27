@@ -406,7 +406,7 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
             bl.galat(h["blok"]["code"], h["blok"]["status"], h["blok"]["message"])
             continue
         qty = h["qty_dasar"]
-        if product["track_serial"] or item.get("serials") is not None:   # Serial S3: penentu SAMA dengan pintu kartu (barang biasa nol kueri)
+        if product.get("track_serial") or item.get("serials") is not None:   # Serial S3: penentu SAMA dengan pintu kartu (barang biasa nol kueri)
             from . import serial_gerak
             bs = await serial_gerak.blok_serial(conn, tid, product["id"], product["nama_produk"] or product["item_code"], item.get("serials"), qty)
             if bs:

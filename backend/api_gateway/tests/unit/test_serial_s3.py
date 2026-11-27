@@ -52,6 +52,6 @@ def test_penulis_meneruskan_serial():
 
 
 def test_migrasi_v514_aditif():
-    m = Path(__file__).resolve().parents[3] / "backend/migrations/V514__serial_retur_pemindahan.sql"
+    m = Path(__file__).resolve().parents[3] / "migrations/V514__serial_retur_pemindahan.sql"
     isi = [l for l in m.read_text().splitlines() if l and not l.startswith("--")]
     assert isi == [f"ALTER TABLE {t} ADD COLUMN serials TEXT[];" for t in ("credit_note_items", "vendor_credit_items", "stock_transfer_items")]
