@@ -1156,8 +1156,9 @@ async def get_bank_account_history(request: Request, bank_account_id: UUID, limi
 
 
 @router.get("/{bank_account_id}/balance", response_model=BankAccountBalanceResponse)
-async def get_bank_balance(request: Request, bank_account_id: UUID):
-    """Get balance information for a bank account."""
+async def get_bank_balance(request: Request, bank_account_id: UUID,
+                           as_of: Optional[date] = Query(None, description="G2: saldo per tanggal (jurnal efektif s.d. tanggal itu); kosong = saldo kini")):
+    """Get balance information for a bank account. as_of (opsional): saldo/total/tanggal terakhir dihitung dari jurnal bertanggal <= as_of (tanggal jurnal, bukan tanggal input)."""
     try:
         ctx = get_user_context(request)
         pool = await get_pool()
@@ -1176,11 +1177,13 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                     WHERE jl.account_id = ba.coa_id
                       AND is_effective_journal(je.id)
                       AND je.tenant_id = $2
+                      AND ($3::date IS NULL OR je.journal_date <= $3::date)
                 ) lb ON true
                 WHERE ba.id = $1 AND ba.tenant_id = $2
             """,
                 bank_account_id,
                 ctx["tenant_id"],
+                as_of,
             )
 
             if not ba:
@@ -1199,9 +1202,11 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                 WHERE jl.account_id = (SELECT coa_id FROM bank_accounts WHERE id = $1 AND tenant_id = $2)
                     AND je.tenant_id = $2 AND is_effective_journal(je.id)
                     AND je.reversed_by_id IS NULL
+                    AND ($3::date IS NULL OR je.journal_date <= $3::date)
             """,
                 bank_account_id,
                 ctx["tenant_id"],
+                as_of,
             )
 
             # Keep bank_transactions stats for reconciliation counts only
@@ -1239,6 +1244,7 @@ async def get_bank_balance(request: Request, bank_account_id: UUID):
                     ].isoformat()
                     if journal_stats["last_journal_date"]
                     else None,
+                    "as_of": as_of.isoformat() if as_of else None,
                 },
             }
 

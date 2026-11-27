@@ -260,6 +260,7 @@ class BankAccountBalanceInfo(BaseModel):
     transaction_count: int
     unreconciled_count: int
     last_transaction_date: Optional[str] = None
+    as_of: Optional[str] = None  # G2: tanggal acuan bila ?as_of= dipakai; null = saldo kini
 
 
 # =============================================================================
