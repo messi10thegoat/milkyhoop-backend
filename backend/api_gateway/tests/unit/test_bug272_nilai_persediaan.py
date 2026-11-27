@@ -32,6 +32,9 @@ class Konn:
             return self.d["barang"]
         if sql == LN.SQL_GUDANG:
             return self.d["gudang"]
+        from app.services import transit_baca as TB
+        if sql == TB.SQL_NILAI:   # celah 8: irisan Transit -- tak ada saldo Transit di fake ini
+            return []
         raise AssertionError("SQL tak dikenal: " + sql[:60])
 
     async def fetchval(self, sql, *a):

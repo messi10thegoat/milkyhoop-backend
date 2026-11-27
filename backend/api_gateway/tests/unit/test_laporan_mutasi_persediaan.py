@@ -25,6 +25,9 @@ class Konn:
 
     async def fetchrow(self, sql, *a):
         self.log.append((sql, a))
+        from app.services import transit_baca as TB
+        if sql == TB.SQL_MUTASI:   # celah 8: tak ada saldo Transit di fake ini
+            return {"qty": D("0"), "nilai": D("0")}
         x = {LM.SQL_SEMUA: self.ledger, LM.SQL_GL: self.gl}[sql]
         return {"awal": D(x[0]), "akhir": D(x[1])}
 
