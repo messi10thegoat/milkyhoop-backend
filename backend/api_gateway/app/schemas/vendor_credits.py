@@ -39,6 +39,7 @@ class VendorCreditItemCreate(BaseModel):
     original_bill_item_id: Optional[str] = Field(None, description="Original bill item UUID")
     batch_no: Optional[str] = Field(None, max_length=100)
     exp_date: Optional[date] = None
+    serials: Optional[List[str]] = Field(None, max_length=10000, description="Serial S3 (flag serial_v1, V514): nomor seri barang track_serial; dinilai saat posting")
 
     @field_validator('description')
     @classmethod

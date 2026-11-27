@@ -39,6 +39,7 @@ class CreditNoteItemCreate(BaseModel):
     original_invoice_item_id: Optional[str] = Field(None, description="Original invoice item UUID")
     # JUMLAH BARIS (V427): jumlah baris bruto yang menggantikan qty x harga bila selisih <= qty x 0,005 (selainnya 422)
     line_amount: Optional[Decimal] = Field(None, ge=0)
+    serials: Optional[List[str]] = Field(None, max_length=10000, description="Serial S3 (flag serial_v1, V514): nomor seri barang track_serial; dinilai saat posting")
 
     @field_validator('description')
     @classmethod

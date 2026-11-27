@@ -393,7 +393,8 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
     for item in (items if items is not None else await conn.fetch("SELECT * FROM credit_note_items WHERE credit_note_id = $1", cn["id"])):
         if not item["item_id"]:
             continue
-        product = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", item["item_id"])
+        product = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory, COALESCE(track_serial, false) AS track_serial "
+                                      "FROM products WHERE id = $1", item["item_id"])
         if not product or not product["track_inventory"]:
             continue
         # QTY-DASAR R1: == penulis (satuan_dasar mode konversi; blok berkalimat sama)
@@ -405,6 +406,12 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
             bl.galat(h["blok"]["code"], h["blok"]["status"], h["blok"]["message"])
             continue
         qty = h["qty_dasar"]
+        if product["track_serial"] or item.get("serials") is not None:   # Serial S3: penentu SAMA dengan pintu kartu (barang biasa nol kueri)
+            from . import serial_gerak
+            bs = await serial_gerak.blok_serial(conn, tid, product["id"], product["nama_produk"] or product["item_code"], item.get("serials"), qty)
+            if bs:
+                bl.galat(bs[0], 422, bs[1])
+                continue
         if cn["original_invoice_id"]:
             asal = await R._keluar_faktur_untuk_retur(conn, tid, cn["original_invoice_id"], product["id"], cn["id"])
             nama = product["nama_produk"] or product["item_code"]

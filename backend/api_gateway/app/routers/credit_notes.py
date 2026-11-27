@@ -75,6 +75,7 @@ logger = logging.getLogger(__name__)
 from ..services.teks_galat import ALASAN_NK as LABEL_ALASAN_NK  # noqa: E402
 
 from ..services import sum_total_berlaku as SG  # BUG-196: satu penentu status berlaku untuk Σ
+from ..services import serial_gerak  # Serial S3 (V514)
 router = APIRouter()
 
 # Connection pool
@@ -1123,6 +1124,7 @@ async def buat_nota_kredit(conn, ctx: dict, body: CreateCreditNoteRequest) -> di
             UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
             item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
         )
+        await serial_gerak.simpan_draf(conn, "credit_note_items", cn_id, idx, body.items[idx - 1].serials)   # Serial S3 (V514)
 
     logger.info(f"Credit note created: {cn_id}, number={cn_number}")
 
@@ -1689,6 +1691,7 @@ async def update_credit_note(
                             UUID(str(item["original_invoice_item_id"])) if item.get("original_invoice_item_id") else None,
                             item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
                         )
+                        await serial_gerak.simpan_draf(conn, "credit_note_items", credit_note_id, idx, _items[idx - 1].get("serials"))   # S3
 
                     update_data.pop("items", None)
 
@@ -2220,6 +2223,7 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             source_number=cn["credit_note_number"],
             user_id=ctx["user_id"],
             notes=f"Restock from Credit Note {cn['credit_note_number']}",
+            serials=item.get("serials"),   # Serial S3 (V514): nomor seri baris draf; retur serial 'sold' masuk lagi
             movement_date=cn["credit_note_date"],
             movement_type="SALES_RETURN",  # #37 (dulu default 'PURCHASE')
             **({"transaction_unit": item.get("unit"), "transaction_quantity": Decimal(str(item["quantity"])),

@@ -28,6 +28,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from .ledger_kartu import tulis_kartu
+from . import serial_gerak  # Serial S3 (V514)
 from .galat_berkode import GalatDetailObjek  # BUG-248-c
 from pydantic import BaseModel, Field, model_validator
 
@@ -85,6 +86,7 @@ class BarangPratinjau(BaseModel):
     item_name: Optional[str] = None
     unit: Optional[str] = None
     unit_cost: Optional[Decimal] = None
+    serial_numbers: Optional[List[str]] = None   # Serial S3
 
 
 class PratinjauIn(BaseModel):
@@ -205,9 +207,18 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         if not p["track_inventory"]:
             blok("PB_BARANG_NON_STOK", f"{nama} tidak melacak stok; tak ada stok untuk dipindahkan.", 409, iid)
             continue
-        if p["track_batches"] or p["track_serial"]:
+        if p["track_batches"]:
             blok("PB_BARANG_BATCH_SERIAL", f"{nama} dilacak per batch/serial; pemindahan barang jenis ini belum didukung.", 409, iid)
             continue
+        # Serial S3 (flag serial_v1): penentu SAMA dengan pintu kartu; barang tanpa track_serial & tanpa nomor = nol kueri tambahan
+        if p["track_serial"] or b.get("serials") is not None:
+            bs = await serial_gerak.blok_serial(conn, tid, iid, nama, b.get("serials"), qty)
+            if bs and not (bs[0] == "SERIAL_WAJIB" and not p["track_serial"]):
+                blok(bs[0], bs[1], 422, iid)
+                continue
+            if p["track_serial"] and not await serial_gerak.wajib(conn, tid, iid):
+                blok("PB_BARANG_BATCH_SERIAL", f"{nama} dilacak per batch/serial; pemindahan barang jenis ini belum didukung.", 409, iid)
+                continue
         wac = Decimal(str(await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tid, iid) or 0))
         if kunci and asal and tujuan:
             for w in sorted({str(dari_id), str(ke_id)}):
@@ -226,7 +237,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
             "available_from": ada_asal, "available_to": ada_tuj, "unit_cost": wac, "value": nilai,
             "from_before": ada_asal, "from_after": (ada_asal - qty) if ada_asal is not None else None,
             "to_before": ada_tuj, "to_after": (ada_tuj + qty) if ada_tuj is not None else None,
-            "notes": b.get("notes"),
+            "notes": b.get("notes"), "serials": b.get("serials"),
         })
 
     so, catatan = None, None
@@ -252,7 +263,8 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
 
 
 def _baris_dari_isi(isi) -> list:
-    return [{"item_id": i.item_id, "qty": i.quantity_requested, "unit": i.unit, "notes": i.notes} for i in isi.items]
+    return [{"item_id": i.item_id, "qty": i.quantity_requested, "unit": i.unit, "notes": i.notes,
+             "serials": getattr(i, "serial_numbers", None)} for i in isi.items]
 
 
 def payload_dari(isi) -> dict:
@@ -392,6 +404,7 @@ async def _tulis_baris(conn, transfer_id, by: dict, items: List[BarangIn]) -> No
                                                  unit, unit_cost, total_value, line_number, notes)
                VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8)""",
             transfer_id, it.item_id, p["item_code"], p["nama_produk"], p["qty_dasar"], p["base_unit"], n, it.notes)
+        await serial_gerak.simpan_draf(conn, "stock_transfer_items", transfer_id, n, it.serial_numbers)   # Serial S3 (V514)
 
 
 async def _validasi_isi(conn, tid: str, isi: PemindahanIn) -> dict:
@@ -403,7 +416,8 @@ async def _validasi_isi(conn, tid: str, isi: PemindahanIn) -> dict:
         b = struktural[0]
         raise GalatDetailObjek(b["status"], b["code"], b["message"])
     qty = {ln["item_id"]: ln["quantity"] for ln in r["lines"]}
-    return {ln["item_id"]: {"item_code": ln["item_code"], "nama_produk": ln["name"], "base_unit": ln["unit"], "qty_dasar": qty[ln["item_id"]]}
+    return {ln["item_id"]: {"item_code": ln["item_code"], "nama_produk": ln["name"], "base_unit": ln["unit"], "qty_dasar": qty[ln["item_id"]],
+                            "serials": ln.get("serials")}
             for ln in r["lines"]}
 
 
@@ -482,13 +496,13 @@ async def _saldo_produk(conn, tid: str, product_id) -> Decimal:
 
 async def _tulis_ledger(conn, tid: str, user_id, *, product_id, kode, nama, tipe: str, sumber: str, tanggal, transfer_id,
                         nomor: str, qty: Decimal, masuk: bool, saldo: Decimal, unit_cost: Decimal, total: Decimal,
-                        wac: Decimal, gudang_id, catatan: str) -> None:
+                        wac: Decimal, gudang_id, catatan: str, serials=None, balik_ledger=None) -> None:
     await tulis_kartu(
         conn,
         tenant_id=tid, product_id=product_id, product_code=kode, product_name=nama, movement_type=tipe, movement_date=tanggal,
         source_type=sumber, source_id=transfer_id, source_number=nomor, quantity_in=qty if masuk else _NOL,
         quantity_out=_NOL if masuk else qty, quantity_balance=saldo, unit_cost=unit_cost, total_cost=total, average_cost=wac,
-        warehouse_id=gudang_id, created_by=user_id, notes=catatan)
+        warehouse_id=gudang_id, created_by=user_id, notes=catatan, serials=serials, balik_ledger=balik_ledger)
 
 
 async def _fase_so(conn, ctx: dict, h, ke_fase: Optional[str], gudang_id) -> Optional[str]:
@@ -519,7 +533,8 @@ async def selesaikan(conn, ctx: dict, transfer_id) -> dict:
         raise _blok("PB_TANPA_BARANG", "Pemindahan tak punya baris barang.", 422)
     # SATU penentu yang sama dengan pratinjau; kunci=True mengunci baris stok FOR UPDATE. Blok pertama = galat tulis.
     rencana = await _rencana(conn, tid, h["from_warehouse_id"], h["to_warehouse_id"],
-                             [{"item_id": i["item_id"], "qty": Decimal(str(i["quantity_requested"])), "notes": i["notes"]} for i in items],
+                             [{"item_id": i["item_id"], "qty": Decimal(str(i["quantity_requested"])), "notes": i["notes"],
+                               "serials": i.get("serials")} for i in items],
                              h["sales_order_id"], kunci=True)
     angkat_blok_pertama(rencana)
     by_item = {i["item_id"]: i for i in items}
@@ -533,9 +548,9 @@ async def selesaikan(conn, ctx: dict, transfer_id) -> dict:
         kw = dict(product_id=ln["item_id"], kode=ln["item_code"], nama=ln["name"], sumber=SUMBER, tanggal=hari,
                   transfer_id=transfer_id, nomor=h["transfer_number"], qty=qty, unit_cost=wac, total=nilai, wac=wac)
         await _tulis_ledger(conn, tid, uid, tipe=KELUAR, masuk=False, saldo=saldo - qty, gudang_id=h["from_warehouse_id"],
-                            catatan=f"Pemindahan ke {tujuan['name']}", **kw)
+                            catatan=f"Pemindahan ke {tujuan['name']}", serials=ln.get("serials"), **kw)
         await _tulis_ledger(conn, tid, uid, tipe=MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
-                            catatan=f"Pemindahan dari {asal['name']}", **kw)
+                            catatan=f"Pemindahan dari {asal['name']}", serials=ln.get("serials"), **kw)
         # quantity_variance = kolom GENERATED (shipped - received): TIDAK ditulis (galat nyata di harness 12 Okt).
         await conn.execute(
             "UPDATE stock_transfer_items SET quantity_shipped = $2, quantity_received = $2, "
@@ -589,7 +604,7 @@ async def void(conn, ctx: dict, transfer_id, alasan: str) -> dict:
             sumber=SUMBER_BATAL, tanggal=hari, transfer_id=transfer_id, nomor=h["transfer_number"], qty=qty,
             masuk=not masuk_asli, saldo=saldo + (qty if not masuk_asli else -qty),
             unit_cost=Decimal(str(r["unit_cost"])), total=Decimal(str(r["total_cost"])), wac=wac_kini,
-            gudang_id=r["warehouse_id"], catatan=f"Void pemindahan {h['transfer_number']}: {alasan}")
+            gudang_id=r["warehouse_id"], catatan=f"Void pemindahan {h['transfer_number']}: {alasan}", balik_ledger=r["id"])
     await conn.execute(
         "UPDATE stock_transfers SET status = 'voided', voided_at = NOW(), voided_by = $3, void_reason = $4, updated_at = NOW() "
         "WHERE id = $1 AND tenant_id = $2", transfer_id, tid, uid, alasan)

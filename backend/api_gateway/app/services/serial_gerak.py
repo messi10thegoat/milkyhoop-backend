@@ -17,7 +17,12 @@ from typing import Optional
 from .galat_berkode import GalatBerkode
 
 FLAG = "serial_v1"
-STATUS_KELUAR = {"STOCK_ADJUSTMENT": "adjusted_out", "VENDOR_CREDIT": "returned_vendor", "PURCHASE_RETURN": "returned_vendor"}
+STATUS_KELUAR = {"STOCK_ADJUSTMENT": "adjusted_out", "VENDOR_CREDIT": "returned_vendor", "PURCHASE_RETURN": "returned_vendor",
+                 "RELOKASI_GUDANG": "transit"}
+# S3: kaki masuk Pemindahan menerima serial 'transit' (keluar dari gudang asal di dokumen yang sama) -> available di tujuan.
+SUMBER_PINDAH = {"RELOKASI_GUDANG"}
+# S3 (V514): tabel baris draf yang menyimpan nomor seri (kolom aditif serials TEXT[]); kolom hanya disentuh bila ada nomor seri.
+_DRAF = {"credit_note_items": "credit_note_id", "vendor_credit_items": "vendor_credit_id", "stock_transfer_items": "stock_transfer_id"}
 GERAK_MASUK, GERAK_KELUAR, GERAK_BALIK = "received", "sold", "reversed"
 
 
@@ -77,7 +82,9 @@ async def _jejak(conn, tenant_id, serial_id, jenis, dari_gudang, ke_gudang, dari
 
 async def masuk(conn, tenant_id: str, product_id, nama: str, warehouse_id, ledger_id, serials: list, ref: dict) -> None:
     ada = await _muat(conn, tenant_id, product_id, serials)
-    salah = [s for s in serials if s.upper() in ada and ada[s.upper()]["status"] in ("available", "reserved", "transit")]
+    pindah = str(ref.get("source_type") or "").upper() in SUMBER_PINDAH
+    salah = [s for s in serials if s.upper() in ada and ada[s.upper()]["status"] in ("available", "reserved", "transit")
+             and not (pindah and ada[s.upper()]["status"] == "transit")]
     if salah:
         raise GalatBerkode(422, "SERIAL_SUDAH_ADA", f"Nomor seri {', '.join(salah)} untuk {nama} masih tercatat di stok.")
     for s in serials:
@@ -115,9 +122,11 @@ async def balik(conn, tenant_id: str, ledger_asal, ledger_id, ref: dict) -> None
     """Pulihkan serial baris asal. Serial yang punya taut LEBIH BARU dari baris asal (sudah bergerak lagi) -> 409, void ditolak."""
     taut = await conn.fetch(
         """SELECT t.serial_id, t.arah, t.status_sebelum, t.gudang_sebelum, s.serial_number, s.status, s.warehouse_id,
-                  EXISTS (SELECT 1 FROM inventory_ledger_serials t2 WHERE t2.serial_id = t.serial_id AND t2.tenant_id = t.tenant_id
-                          AND t2.created_at > t.created_at) AS bergerak
+                  EXISTS (SELECT 1 FROM inventory_ledger_serials t2 JOIN inventory_ledger l2 ON l2.id = t2.ledger_id
+                          WHERE t2.serial_id = t.serial_id AND t2.tenant_id = t.tenant_id AND t2.created_at > t.created_at
+                          AND l2.source_id IS DISTINCT FROM l.source_id) AS bergerak
            FROM inventory_ledger_serials t JOIN item_serials s ON s.id = t.serial_id AND s.tenant_id = t.tenant_id
+           JOIN inventory_ledger l ON l.id = t.ledger_id
            WHERE t.ledger_id = $1 AND t.tenant_id = $2 FOR UPDATE OF s""", ledger_asal, tenant_id)
     lanjut = [t["serial_number"] for t in taut if t["bergerak"]]
     if lanjut:
@@ -169,3 +178,22 @@ async def blok_serial(conn, tenant_id: str, product_id, nama: str, serials, qty=
     except GalatBerkode as e:
         return (e.code, e.detail)
     return None
+
+
+async def simpan_draf(conn, tabel: str, induk_id, nomor_baris: int, serials) -> None:
+    """S3 (V514): nomor seri baris draf disimpan apa adanya, dinilai pintu kartu stok saat posting. serials None = tak menyentuh kolom
+    (kode aman hidup SEBELUM migrasi; barang biasa nol kueri tambahan). Baris dikenali (induk, line_number)."""
+    if serials is None:
+        return
+    await conn.execute(f"UPDATE {tabel} SET serials = $3 WHERE {_DRAF[tabel]} = $1 AND line_number = $2", induk_id, nomor_baris, list(serials))
+
+
+async def baca_draf(conn, tabel: str, baris_id) -> Optional[list]:
+    """Nomor seri baris draf (S3). to_jsonb -> aman sebelum kolom V514 ada (None)."""
+    _DRAF[tabel]
+    v = await conn.fetchval(f"SELECT to_jsonb(t) -> 'serials' FROM {tabel} t WHERE id = $1", baris_id)
+    if v is None:
+        return None
+    import json
+    v = json.loads(v) if isinstance(v, str) else v
+    return list(v) if isinstance(v, list) else None

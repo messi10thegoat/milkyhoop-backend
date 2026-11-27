@@ -35,6 +35,7 @@ from ..services.sales_doc_calc import q2 as _q2  # item 7: 0.01 HALF_UP (simetri
 
 from ..services.pihak_helpers import segarkan_cache_hutang_tagihan
 from ..services import audit_dokumen as _ad  # AUDIT-DOKUMEN: jejak audit posting/void/hapus (Law 12)
+from ..services import serial_gerak  # Serial S3 (V514)
 from ..services import nota_debit as ND  # U3a (22 Okt 2026): terapkan/lepas/sisa jurnal/void lengkap
 from ..services import teks_jurnal as TJ  # TEKS-JURNAL-NKND
 from ..services import teks_galat as tg  # BUG-112 (b): Rupiah baku untuk pesan
@@ -779,6 +780,7 @@ async def create_vendor_credit(request: Request, body: CreateVendorCreditRequest
                         item["total"],
                         idx,
                     )
+                    await serial_gerak.simpan_draf(conn, "vendor_credit_items", vc_id, idx, body.items[idx - 1].serials)   # Serial S3 (V514)
 
                 logger.info(f"Vendor credit created: {vc_id}, number={vc_number}")
 
@@ -1167,6 +1169,7 @@ async def update_vendor_credit(
                             item["total"],
                             idx,
                         )
+                        await serial_gerak.simpan_draf(conn, "vendor_credit_items", vendor_credit_id, idx, body.items[idx - 1].serials)   # Serial S3 (V514)
 
                     del update_data["items"]
 
@@ -1445,6 +1448,7 @@ async def post_vendor_credit(request: Request, vendor_credit_id: UUID, response:
                         notes=f"Return to vendor - Vendor Credit {vc['credit_number']}",
                         receipt_date=vc["credit_date"],
                         jurnal_pemanggil=journal_id,
+                        serials=await serial_gerak.baca_draf(conn, "vendor_credit_items", _b["item_row_id"]),   # Serial S3 (V514)
                     )
                     if _b["akun"] and _g["total_cost"] != _b["total"]:  # GL == kartu stok (HC15): biaya dibaca ulang harus SAMA dengan baris jurnal
                         raise HTTPException(status_code=409, detail="Biaya persediaan berubah saat posting nota debit. Coba lagi.")
