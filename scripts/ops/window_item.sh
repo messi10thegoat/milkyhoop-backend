@@ -60,3 +60,9 @@ m=$(docker exec $G grep -cF -- "$MT" "/app/backend/api_gateway/app/$MF" 2>/dev/n
 for i in $(seq 1 30); do h=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8001/healthz); [ "$h" = 200 ] && break; sleep 2; done
 [ "$h" = 200 ] || { log "LIVE-RED: healthz $h"; exit 10; }
 echo "ROW|$N|$(git -C $MAIN rev-parse --short HEAD)|$after|marker=$m healthz=$h mode=$MODE"
+# VERIF (WORKSPACE #13a, 27 Nov): sha live = server HEAD = deploy/master + healthz, satu baris; juga ke /root/logs/kejadian-be.log
+# (Mac menariknya ke rantai/kejadian.log lewat rantai/tarik-verif.sh). Hanya pelapor: keputusan rc di atas tidak berubah.
+git -C $MAIN fetch -q deploy 2>/dev/null
+hs=$(git -C $MAIN rev-parse --short HEAD); ds=$(git -C $MAIN rev-parse --short deploy/master)
+v="VERIF $N sha=$hs $([ "$hs" = "$ds" ] && echo "=server HEAD=deploy/master" || echo "!= deploy/master $ds") healthz=$h mulai=$after"
+echo "$v"; mkdir -p /root/logs; echo "[$(TZ=Asia/Jakarta date '+%Y-%m-%d %H:%M') WIB] window_item: $v" >> /root/logs/kejadian-be.log
