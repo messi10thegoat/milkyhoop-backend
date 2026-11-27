@@ -8,7 +8,7 @@ from fastapi import Depends, APIRouter, HTTPException, Request, Query
 from ..services.fitur_parkir import fitur_belum_tersedia
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..utils.periode import periode_laporan
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, computed_field
 from typing import Optional, List, Literal
 import logging
@@ -4109,6 +4109,92 @@ async def get_inventory_valuation(
     except Exception as e:
         logger.error(f"Error inventory valuation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Gagal menyusun laporan nilai persediaan.")
+
+
+async def _ekspor_laporan(request: Request, format: str, jenis: str, muat):
+    """LP-4: ekspor xlsx/csv. `muat(conn, tid, hari, presisi, akun)` = loader laporan yang SAMA dgn GET JSON-nya. Baca saja."""
+    from ..services import ekspor_laporan_persediaan as ELP
+    from ..services.role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
+    from ..services.uang_presisi import presisi_tenant
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx atau csv.", "field": "format"})
+    ctx = get_user_context(request)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True, isolation="repeatable_read"):
+            try:
+                akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE)
+            except AccountRoleUnmappedError:
+                akun = None
+            hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+            data, tabel = await muat(conn, ctx["tenant_id"], hari, await presisi_tenant(conn, ctx["tenant_id"]), akun)
+        kolom, baris, bawah = tabel(data)
+        if len(baris) > ELP.MAKS_BARIS:
+            raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {ELP.MAKS_BARIS} baris per ekspor; saring per gudang atau kategori."})
+        if format == "csv":
+            isi, mt = ELP.bangun_csv(kolom, baris, bawah), "text/csv; charset=utf-8"
+        else:
+            isi, mt = ELP.bangun_xlsx(jenis, kolom, baris, bawah), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=laporan-{jenis}-{hari.isoformat()}.{format}",
+                                                               "X-Ekspor-Jumlah": str(len(baris))})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error ekspor laporan {jenis}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menyusun ekspor laporan.")
+
+
+@router.get("/inventory-valuation/export")
+async def ekspor_inventory_valuation(
+    request: Request,
+    format: str = Query("xlsx"),
+    as_of: Optional[date] = Query(None),
+    kelompok: Literal["barang", "gudang"] = Query("barang"),
+    warehouse_id: Optional[uuid.UUID] = Query(None),
+    kategori: Optional[str] = Query(None, max_length=100),
+    sertakan_nol: bool = Query(False),
+):
+    """LP-4: ekspor Laporan Nilai Persediaan (parameter SAMA dgn GET /inventory-valuation). xlsx|csv; X-Ekspor-Jumlah; 422 TERLALU_BANYAK."""
+    from ..services import ekspor_laporan_persediaan as ELP
+    from ..services import laporan_nilai_persediaan as LNP
+
+    async def muat(conn, tid, hari, presisi, akun):
+        try:
+            d = await LNP.muat_nilai_persediaan(conn, tid, as_of or hari, presisi, kelompok, warehouse_id, kategori, sertakan_nol, akun)
+        except LNP.LaporanTerlaluBesar:
+            raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": "Terlalu banyak baris; saring per gudang atau kategori."})
+        return d, ELP.tabel_nilai
+
+    return await _ekspor_laporan(request, format, "nilai-persediaan", muat)
+
+
+@router.get("/inventory-mutation/export")
+async def ekspor_inventory_mutation(
+    request: Request,
+    format: str = Query("xlsx"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    kelompok: Literal["barang", "gudang"] = Query("barang"),
+    warehouse_id: Optional[uuid.UUID] = Query(None),
+    kategori: Optional[str] = Query(None, max_length=100),
+    sertakan_nol: bool = Query(False),
+):
+    """LP-4: ekspor Laporan Mutasi Persediaan (parameter SAMA dgn GET /inventory-mutation)."""
+    from ..services import ekspor_laporan_persediaan as ELP
+    from ..services import laporan_mutasi_persediaan as LMP
+
+    async def muat(conn, tid, hari, presisi, akun):
+        sampai = end_date or hari
+        dari = start_date or sampai.replace(day=1)
+        if dari > sampai:
+            raise HTTPException(status_code=422, detail="Tanggal awal tidak boleh sesudah tanggal akhir.")
+        try:
+            d = await LMP.muat_mutasi_persediaan(conn, tid, dari, sampai, presisi, kelompok, warehouse_id, kategori, sertakan_nol, akun)
+        except LMP.LaporanTerlaluBesar:
+            raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": "Terlalu banyak baris; saring per gudang atau kategori."})
+        return d, ELP.tabel_mutasi
+
+    return await _ekspor_laporan(request, format, "mutasi-persediaan", muat)
 
 
 @router.get("/inventory-mutation")
