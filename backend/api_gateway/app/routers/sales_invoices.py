@@ -3752,7 +3752,7 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         item["dpp_harga_jual"],
                         item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
                     )
-                    await batch_alokasi.simpan(conn, ctx["tenant_id"], invoice_id, item["line_number"], item_uuid, item["quantity"],
+                    await batch_alokasi.tulis(conn, ctx["tenant_id"], invoice_id, item["line_number"], item_uuid, item["quantity"],
                                                item.get("unit"), body.items[item["line_number"] - 1].allocations)   # butir 9 (V515)
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
@@ -4152,7 +4152,7 @@ async def update_invoice(
                                 calc["dpp_harga_jual"],
                                 calc["line_amount"] if calc.get("line_amount") is not None else calc.get("jumlah_baris"),  # V427
                             )
-                            await batch_alokasi.simpan(conn, ctx["tenant_id"], invoice_id, calc["line_number"], item_uuid, item.quantity,
+                            await batch_alokasi.tulis(conn, ctx["tenant_id"], invoice_id, calc["line_number"], item_uuid, item.quantity,
                                                        item.unit, item.allocations)   # butir 9 (V515)
 
                         await _apply_so_invoiced_deltas(conn, _so_deltas)

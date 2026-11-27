@@ -53,16 +53,16 @@ def test_tanpa_alokasi_tak_berubah_dan_batch_pilihan_menang():
 
 def _kode(k, al, qty=10, unit=None):
     with pytest.raises(HTTPException) as e:
-        asyncio.run(BA.simpan(k, "t", "inv", 1, P, qty, unit, al))
+        asyncio.run(BA.tulis(k, "t", "inv", 1, P, qty, unit, al))
     return e.value.detail["code"]
 
 
 def test_simpan_validasi():
     ok = [{"batch_id": A, "quantity": 6}, {"batch_id": B, "quantity": 4}]
     k = K()
-    asyncio.run(BA.simpan(k, "t", "inv", 1, P, 10, "pcs", ok))
+    asyncio.run(BA.tulis(k, "t", "inv", 1, P, 10, "pcs", ok))
     assert [t[2] for t in k.tulis] == [A, B]
-    assert asyncio.run(BA.simpan(K(), "t", "inv", 1, P, 10, None, None)) is None
+    assert asyncio.run(BA.tulis(K(), "t", "inv", 1, P, 10, None, None)) is None
     assert _kode(K(), [{"batch_id": A, "quantity": 6}]) == "ALOKASI_JUMLAH_TAK_SAMA"
     assert _kode(K(), [{"batch_id": A, "quantity": 5}, {"batch_id": A, "quantity": 5}]) == "ALOKASI_BATCH_GANDA"
     assert _kode(K(milik=(A,)), ok) == "ALOKASI_BATCH_BUKAN_BARANG"

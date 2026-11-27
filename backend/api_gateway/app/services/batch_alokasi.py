@@ -25,7 +25,7 @@ async def _ada_tabel(conn) -> bool:
     return bool(await conn.fetchval("SELECT to_regclass('public.sales_invoice_item_batches') IS NOT NULL"))
 
 
-async def simpan(conn, tid: str, invoice_id, line_number: int, product_id, quantity, unit, allocations: Optional[list]) -> None:
+async def tulis(conn, tid: str, invoice_id, line_number: int, product_id, quantity, unit, allocations: Optional[list]) -> None:
     """Tulis alokasi baris (draf/buat/ubah). None = tak ada alokasi (perilaku lama). Validasi: barang ber-batch, satuan dasar,
     Σ = qty, batch milik barang, tanpa batch ganda. Ketersediaan per gudang dinilai saat kirim (BUG-286, baris batch dikunci)."""
     if allocations is None:

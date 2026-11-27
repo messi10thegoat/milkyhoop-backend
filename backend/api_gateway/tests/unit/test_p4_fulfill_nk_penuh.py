@@ -43,6 +43,8 @@ class Conn:
 
     async def fetchval(self, sql, *a):
         self.q.append((sql, a))
+        if "to_regclass" in sql:
+            return False   # V515 alokasi batch belum ada -> kirim tanpa pecah
         if "track_inventory" in sql and "FROM products" in sql:
             return True   # V318: baris berstok -> jalur stok (bukan kirim non-stok)
         if "FROM warehouse_stock" in sql:
