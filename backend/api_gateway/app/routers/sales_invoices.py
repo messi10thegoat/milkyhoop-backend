@@ -18,6 +18,7 @@ from ..services.nama_pengguna import nama_untuk
 from ..services import faktur_cetak as _fc_snap
 from ..services import teks_galat as tg
 from ..services import batch_aksi as BA  # flag gelap batch_kedaluwarsa_tolak
+from ..services import batch_alokasi  # butir 9 (V515): alokasi beberapa batch per baris
 from ..services import nomor_dokumen as NOMOR  # BUG-149: nomor dokumen SATU aturan
 from ..services.galat_berkode import GalatBerkode
 from ..services.dokumen_nol import tolak_faktur_nol  # SI-FPB-RP0
@@ -1515,6 +1516,7 @@ async def get_invoice(request: Request, invoice_id: UUID,
                 invoice_id,
                 ctx["tenant_id"],
             )
+            _alok = await batch_alokasi.baca(conn, [i["id"] for i in items])   # butir 9 (V515): alokasi batch per baris
 
             # Get payments from receive_payments (NOT deprecated sales_invoice_payments)
             payments = await conn.fetch(
@@ -1766,6 +1768,7 @@ async def get_invoice(request: Request, invoice_id: UUID,
                             "exp_date": item["exp_date"].isoformat()
                             if item.get("exp_date")
                             else None,
+                            "allocations": _alok.get(item["id"]),   # butir 9 (V515); None = tanpa alokasi
                         }
                         for item in items
                     ],
@@ -1802,6 +1805,7 @@ async def get_invoice(request: Request, invoice_id: UUID,
                             "exp_date": item["exp_date"].isoformat()
                             if item.get("exp_date")
                             else None,
+                            "allocations": _alok.get(item["id"]),   # butir 9 (V515); None = tanpa alokasi
                         }
                         for item in items
                     ],
@@ -2034,6 +2038,8 @@ async def _execute_fulfillment(
     cogs_items = []
     fulfillment_item_ids = []
 
+    # Paritas butir 9 (V515): baris ber-alokasi dipecah per batch (satu gerak kartu stok per batch)
+    items_to_fulfill = await batch_alokasi.pecah_kirim(conn, items_to_fulfill)
     # -- Per-item loop ---------------------------------------------------------
     for req in items_to_fulfill:
         inv_item_id = req["invoice_item_id"]
@@ -3746,6 +3752,8 @@ async def create_invoice(request: Request, body: CreateInvoiceRequest, response:
                         item["dpp_harga_jual"],
                         item["line_amount"] if item.get("line_amount") is not None else item.get("jumlah_baris"),  # V427
                     )
+                    await batch_alokasi.simpan(conn, ctx["tenant_id"], invoice_id, item["line_number"], item_uuid, item["quantity"],
+                                               item.get("unit"), body.items[item["line_number"] - 1].allocations)   # butir 9 (V515)
 
                 logger.info(f"Invoice created: {invoice_id}, number={invoice_number}")
 
@@ -4144,6 +4152,8 @@ async def update_invoice(
                                 calc["dpp_harga_jual"],
                                 calc["line_amount"] if calc.get("line_amount") is not None else calc.get("jumlah_baris"),  # V427
                             )
+                            await batch_alokasi.simpan(conn, ctx["tenant_id"], invoice_id, calc["line_number"], item_uuid, item.quantity,
+                                                       item.unit, item.allocations)   # butir 9 (V515)
 
                         await _apply_so_invoiced_deltas(conn, _so_deltas)
 

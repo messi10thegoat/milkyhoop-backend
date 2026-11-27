@@ -23,6 +23,9 @@ PAYMENT_METHODS = ["cash", "transfer", "check", "other"]
 # =============================================================================
 
 
+from ..services.batch_alokasi import Alokasi  # V515
+
+
 class InvoiceItemCreate(BaseModel):
     """Invoice line item for creation."""
 
@@ -55,6 +58,8 @@ class InvoiceItemCreate(BaseModel):
     batch_id: Optional[str] = None
     batch_no: Optional[str] = None
     exp_date: Optional[str] = None
+    # Paritas butir 9 (V515): beberapa batch per baris, qty SATUAN DASAR, Σ = quantity (services/batch_alokasi)
+    allocations: Optional[List[Alokasi]] = Field(None, max_length=50)
 
 
 class InvoiceItemResponse(BaseModel):
