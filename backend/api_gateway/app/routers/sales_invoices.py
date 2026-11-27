@@ -2006,6 +2006,19 @@ async def _update_invoice_fulfillment_status(conn, invoice_id, tenant_id):
     )
 
 
+async def _galat_batch(conn, tenant_id, batch_id, warehouse_id, p_name, tersedia, diminta, product_id=None):
+    """BUG-431: galat batch BERKODE (dulu 400 tanpa kode). Kueri hanya di jalur galat. batch_id None = FEFO tak cukup."""
+    gudang = await conn.fetchval("SELECT name FROM warehouses WHERE id = $1 AND tenant_id = $2", warehouse_id, tenant_id) if warehouse_id else None
+    gudang = gudang or "gudang ini"
+    if batch_id is None:
+        raise GalatBerkode(409, "BATCH_STOK_KURANG", f"Stok batch {p_name} di {gudang} tidak cukup: tersedia {tg.qty(tersedia)}, diminta {tg.qty(diminta)}.")
+    b = await conn.fetchrow("SELECT batch_number, item_id FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tenant_id)
+    if b is None or (product_id is not None and str(b["item_id"]) != str(product_id)):
+        raise GalatBerkode(422, "BATCH_TIDAK_DIKENAL", f"Batch yang dipilih bukan batch {p_name}. Pilih batch dari daftar.", field="batch_id")
+    raise GalatBerkode(409, "BATCH_STOK_KURANG", f"Stok batch {b['batch_number']} ({p_name}) di {gudang} tidak cukup: tersedia {tg.qty(tersedia)}, diminta {tg.qty(diminta)}.",
+                       field="batch_id")
+
+
 async def _execute_fulfillment(
     conn,
     tenant_id,
@@ -2246,9 +2259,9 @@ async def _execute_fulfillment(
                 if total_allocated_batch >= qd:
                     batch_id = fefo_batches[0]["batch_id"]
                 else:
-                    raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
+                    await _galat_batch(conn, tenant_id, None, warehouse_id, p_name, total_allocated_batch, qd)
             else:
-                raise HTTPException(400, f"Stok batch tidak cukup untuk {p_name}")
+                await _galat_batch(conn, tenant_id, None, warehouse_id, p_name, Decimal("0"), qd)
 
         await BA.tolak_jual_kedaluwarsa(conn, tenant_id, batch_id, today)   # flag gelap batch_kedaluwarsa_tolak: 422 BATCH_KEDALUWARSA
         if batch_id:   # BUG-286: cek kecukupan batch SEBELUM kartu stok ditulis (trigger lalu menggeser saldo); baris batch dikunci
@@ -2263,11 +2276,8 @@ async def _execute_fulfillment(
                 tenant_id,
             )
             if bws_row is None or Decimal(str(bws_row["available_quantity"])) < qd:
-                available = Decimal(str(bws_row["available_quantity"])) if bws_row else 0
-                raise HTTPException(
-                    400,
-                    f"Stok batch tidak cukup. Tersedia {tg.qty(available)}, diminta {tg.qty(qd)}.",
-                )
+                available = Decimal(str(bws_row["available_quantity"])) if bws_row else Decimal("0")
+                await _galat_batch(conn, tenant_id, batch_id, warehouse_id, p_name, available, qd, product_id=product_id)
 
         # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE).
         _arg_sd = {"transaction_unit": inv_item.get("unit"), "transaction_quantity": str(req_qty), "conversion_factor": str(_f)} if _f != _SD.SATU else {}

@@ -27,7 +27,7 @@ def test_faktur_jual_tak_mengurangi_batch_manual_dan_cek_sebelum_ledger():
     assert "SELECT available_quantity FROM batch_warehouse_stock" in src and "FOR UPDATE" in src
     assert src.index("SELECT available_quantity FROM batch_warehouse_stock") < src.index("tulis_kartu(")   # cek kecukupan SEBELUM kartu stok (trigger menggeser sesudahnya)
     assert "tenant_id = $3 AND batch_id = $1" in src     # disaring tenant
-    assert "Stok batch tidak cukup" in src
+    assert "_galat_batch(" in src   # BUG-431: galat batch berkode
 
 
 class Kon:
