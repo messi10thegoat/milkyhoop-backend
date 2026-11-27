@@ -95,7 +95,7 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
                 continue
             gudang, asal = bawaan, None
         sr = it.get("serials") if hasattr(it, "get") else None
-        if p["track_serial"] or sr is not None:   # Serial S4: pratinjau ND menilai serial (penentu SAMA dgn pintu kartu; barang biasa nol kueri)
+        if p.get("track_serial") or sr is not None:   # Serial S4: pratinjau ND menilai serial (penentu SAMA dgn pintu kartu; barang biasa nol kueri)
             bs = (await SG.blok_serial(conn, tid, p["id"], nama, sr, qty)
                   or (await SG.blok_tersedia(conn, tid, p["id"], nama, gudang, sr) if await SG.wajib(conn, tid, p["id"]) else None))
             if bs:

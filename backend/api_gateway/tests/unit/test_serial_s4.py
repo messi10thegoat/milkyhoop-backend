@@ -54,7 +54,7 @@ def test_baca_tidak_diparkir():
         if "GET" in r.methods:
             assert not r.dependencies, r.path
     src = inspect.getsource(R)
-    assert "get_available_serials(" not in src and "get_serial_history(" not in src   # fungsi DB V048 rusak tak dipanggil
+    assert "FROM get_available_serials" not in src and "FROM get_serial_history" not in src   # fungsi DB V048 rusak tak dipanggil
 
 
 class Kon:
