@@ -189,6 +189,8 @@ class ForexGainLossReport(BaseModel):
     unrealized_loss: int
     net_unrealized: int
     items: List[ForexGainLossItem]
+    dicatat_otomatis: bool = False  # G37: tak ada kode yang menulis selisih kurs -> laporan ini bisa kosong walau ada selisih
+    catatan_text: Optional[str] = None
 
 
 class ForexReportResponse(BaseModel):

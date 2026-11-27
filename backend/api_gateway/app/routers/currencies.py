@@ -516,6 +516,11 @@ async def convert_amount(
 # ============================================================================
 
 
+# G37 (audit Kas&Bank): tak ada kode aplikasi yang menulis forex_gain_loss, jadi angka nol/kosong di laporan ini MENYESATKAN bila dibaca "tidak ada selisih kurs".
+CATATAN_FOREX = ("Selisih kurs belum dicatat otomatis oleh sistem, jadi laporan ini hanya memuat catatan yang dimasukkan manual dan bisa kosong. "
+                 "Kosong bukan berarti tidak ada selisih kurs.")
+
+
 @router.get("/forex/gain-loss", response_model=ForexReportResponse)
 async def get_forex_gain_loss_report(
     request: Request, start_date: date = Query(...), end_date: date = Query(...)
@@ -583,6 +588,8 @@ async def get_forex_gain_loss_report(
                     "unrealized_loss": unrealized_loss,
                     "net_unrealized": unrealized_gain - unrealized_loss,
                     "items": items,
+                    "dicatat_otomatis": False,
+                    "catatan_text": CATATAN_FOREX,
                 },
             )
     except HTTPException:
