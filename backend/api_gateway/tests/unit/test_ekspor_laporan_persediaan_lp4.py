@@ -50,3 +50,31 @@ def test_xlsx_terbuka():
     k, b, bawah = E.tabel_mutasi(MUTASI)
     ws = load_workbook(io.BytesIO(E.bangun_xlsx("mutasi-persediaan", k, b, bawah))).active
     assert [c.value for c in ws[1]] == k and ws["A2"].value == "A1"
+
+
+KARTU = {"item": {"code": "A1", "name": "Kaos"}, "periode_text": "1 Nov - 27 Nov 2026", "saldo_awal_text": "5 pcs", "dalam_perjalanan": {"qty_text": "2", "nilai_text": "200"},
+         "ringkasan": {"total_masuk_text": "10 pcs", "total_keluar_text": "3 pcs", "saldo_akhir_text": "12 pcs"},
+         "data": [{"tanggal_text": "20 Nov", "jenis_text": "Penjualan", "source_number": "INV-2", "warehouse_name": "Utama", "quantity_in_text": None, "quantity_out_text": "3 pcs",
+                   "quantity_balance_text": "12 pcs", "unit_cost_text": "100", "total_cost_text": "300"},
+                  {"tanggal_text": "10 Nov", "jenis_text": "Pembelian", "source_number": "BILL-1", "warehouse_name": "Utama", "quantity_in_text": "10 pcs", "quantity_out_text": None,
+                   "quantity_balance_text": "15 pcs", "unit_cost_text": "100", "total_cost_text": "1.000"}]}
+
+
+def test_tabel_kartu_kronologis_dan_ringkasan():
+    k, b, bawah = E.tabel_kartu(KARTU)
+    assert k[0] == "Tanggal" and [r[2] for r in b] == ["BILL-1", "INV-2"]   # terlama dulu
+    teks = str(bawah)
+    assert "Saldo akhir" in teks and "12 pcs" in teks and "Dalam perjalanan (Transit)" in teks and "A1 Kaos" in teks
+
+
+LABA = {"periode_text": "1 - 27 Nov 2026", "satuan_text": "(Rp)",
+        "items": [{"product_name": "Kaos", "qty_sold_text": "3 pcs", "revenue_gross_text": "900", "total_discount_text": "0", "cogs_text": "600", "gross_profit_text": "300",
+                   "margin_text": "33,3%", "invoice_count_text": "2 faktur", "retur_value_text": "0"}],
+        "summary": {"total_qty_sold_text": "3", "total_revenue_gross_text": "900", "total_discount_text": "0", "total_cogs_text": "600", "total_gross_profit_text": "300", "overall_margin_text": "33,3%"},
+        "reconciliation": {"status_text": "Cocok", "drift_amount_text": "0"}}
+
+
+def test_tabel_laba_barang():
+    k, b, bawah = E.tabel_laba_barang(LABA)
+    assert k[0] == "Barang" and b == [["Kaos", "3 pcs", "900", "0", "600", "300", "33,3%", "2 faktur", "0"]]
+    assert bawah[1][0] == "Total" and "Rekonsiliasi dengan laba rugi" in str(bawah)

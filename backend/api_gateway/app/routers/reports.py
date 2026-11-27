@@ -4197,6 +4197,39 @@ async def ekspor_inventory_mutation(
     return await _ekspor_laporan(request, format, "mutasi-persediaan", muat)
 
 
+@router.get("/inventory-card/export")
+async def ekspor_inventory_card(
+    request: Request,
+    item_id: uuid.UUID = Query(...),
+    format: str = Query("xlsx"),
+    warehouse_id: Optional[uuid.UUID] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+):
+    """LP-4: ekspor Kartu Stok satu barang (parameter SAMA dgn GET /items/{id}/history; halaman digabung, urut kronologis)."""
+    from ..services import ekspor_laporan_persediaan as ELP
+    from .items import get_item_history
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx atau csv.", "field": "format"})
+    d = await get_item_history(request, item_id, page=1, limit=200, warehouse_id=warehouse_id, date_from=date_from, date_to=date_to)
+    if d["total"] > ELP.MAKS_BARIS:
+        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {ELP.MAKS_BARIS} baris per ekspor; persempit periode atau gudang."})
+    hal = 2
+    while d["has_more"]:
+        n = await get_item_history(request, item_id, page=hal, limit=200, warehouse_id=warehouse_id, date_from=date_from, date_to=date_to)
+        d["data"] += n["data"]
+        d["has_more"] = n["has_more"]
+        hal += 1
+    kolom, baris, bawah = ELP.tabel_kartu(d)
+    hari = date.today() if not date_to else date_to
+    if format == "csv":
+        isi, mt = ELP.bangun_csv(kolom, baris, bawah), "text/csv; charset=utf-8"
+    else:
+        isi, mt = ELP.bangun_xlsx("kartu-stok", kolom, baris, bawah), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=laporan-kartu-stok-{hari.isoformat()}.{format}",
+                                                           "X-Ekspor-Jumlah": str(len(baris))})
+
+
 @router.get("/inventory-mutation")
 async def get_inventory_mutation(
     request: Request,

@@ -4,6 +4,7 @@ Endpoints: /api/reports/profitability/items, /services, /reconciliation
 """
 from datetime import date
 from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi.responses import Response
 from ..utils.tanggal_tenant import tanggal_dokumen
 from ..services.db_pool import get_db_pool
 from ..services.profitability_query import get_item_profitability, get_service_revenue
@@ -115,6 +116,36 @@ async def profitability_items(
             },
         }, presisi),
     }
+
+
+@router.get("/items/export")
+async def profitability_items_export(
+    request: Request,
+    format: str = Query("xlsx"),
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    sort_by: str = Query("margin_desc", regex="^(margin_desc|margin_asc|revenue_desc|qty_desc|margin_pct_desc)$"),
+):
+    """LP-4: ekspor Laba per Barang (parameter SAMA dgn GET /items; halaman digabung, teks = teks layar + total + rekonsiliasi). Baca saja."""
+    from ..services import ekspor_laporan_persediaan as ELP
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx atau csv.", "field": "format"})
+    d = (await profitability_items(request, start_date=start_date, end_date=end_date, sort_by=sort_by, limit=200, offset=0))["data"]
+    if d["pagination"]["total"] > ELP.MAKS_BARIS:
+        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {ELP.MAKS_BARIS} baris per ekspor; persempit periode."})
+    off = 200
+    while d["pagination"]["has_more"]:
+        n = (await profitability_items(request, start_date=start_date, end_date=end_date, sort_by=sort_by, limit=200, offset=off))["data"]
+        d["items"] += n["items"]
+        d["pagination"]["has_more"] = n["pagination"]["has_more"]
+        off += 200
+    kolom, baris, bawah = ELP.tabel_laba_barang(d)
+    if format == "csv":
+        isi, mt = ELP.bangun_csv(kolom, baris, bawah), "text/csv; charset=utf-8"
+    else:
+        isi, mt = ELP.bangun_xlsx("laba-per-barang", kolom, baris, bawah), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=laporan-laba-barang-{d['period']['end_date']}.{format}",
+                                                           "X-Ekspor-Jumlah": str(len(baris))})
 
 
 @router.get("/services")

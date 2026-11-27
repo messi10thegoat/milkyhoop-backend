@@ -49,6 +49,33 @@ def tabel_mutasi(d: dict) -> tuple:
     return kolom, baris, bawah
 
 
+def tabel_kartu(d: dict) -> tuple:
+    """d = respons GET /items/{id}/history (halaman digabung: data[] urut tampilan = terbaru dulu; berkas dibalik jadi kronologis)."""
+    kolom = ["Tanggal", "Jenis", "No. dokumen", "Gudang", "Masuk", "Keluar", "Saldo", "HPP satuan", "Total biaya"]
+    baris = [[m.get("tanggal_text"), m.get("jenis_text"), m.get("source_number"), m.get("warehouse_name"), m.get("quantity_in_text"), m.get("quantity_out_text"),
+              m.get("quantity_balance_text"), m.get("unit_cost_text"), m.get("total_cost_text")] for m in reversed(d["data"])]
+    it = d["item"]
+    bawah = [[], ["Barang", f"{it.get('code') or ''} {it.get('name') or ''}".strip()], ["Periode", d.get("periode_text") or "Semua tanggal"],
+             ["Saldo awal", d.get("saldo_awal_text")]]
+    rg = d.get("ringkasan")
+    if rg:
+        bawah += [["Total masuk", rg["total_masuk_text"]], ["Total keluar", rg["total_keluar_text"]], ["Saldo akhir", rg["saldo_akhir_text"]]]
+    if d.get("dalam_perjalanan"):
+        bawah.append(["Dalam perjalanan (Transit)", d["dalam_perjalanan"]["qty_text"], d["dalam_perjalanan"]["nilai_text"]])
+    return kolom, baris, bawah
+
+
+def tabel_laba_barang(d: dict) -> tuple:
+    """d = `data` GET /reports/profitability/items (halaman digabung)."""
+    kolom = ["Barang", "Qty terjual", "Pendapatan", "Diskon", "HPP", "Laba kotor", "Margin", "Faktur", "Retur"]
+    baris = [[x.get("product_name"), x["qty_sold_text"], x["revenue_gross_text"], x["total_discount_text"], x["cogs_text"], x["gross_profit_text"],
+              x["margin_text"], x["invoice_count_text"], x["retur_value_text"]] for x in d["items"]]
+    s, rk = d["summary"], d.get("reconciliation") or {}
+    bawah = [[], ["Total", s["total_qty_sold_text"], s["total_revenue_gross_text"], s["total_discount_text"], s["total_cogs_text"], s["total_gross_profit_text"], s["overall_margin_text"]],
+             ["Periode", d["periode_text"], d["satuan_text"]], [], ["Rekonsiliasi dengan laba rugi", rk.get("status_text"), rk.get("drift_amount_text")]]
+    return kolom, baris, bawah
+
+
 def bangun_csv(kolom: list, baris: list, bawah: list) -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf)
