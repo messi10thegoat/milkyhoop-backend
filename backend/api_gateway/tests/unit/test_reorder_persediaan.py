@@ -118,3 +118,14 @@ def test_po_terbuka_hanya_untuk_baris_halaman():
 def test_status_tak_dikenal_ditolak_422_di_router():
     inv = (APP / "routers" / "inventory.py").read_text()
     assert "status not in RP.STATUS" in inv and "status_code=422" in inv
+
+
+def test_cari_per_kata_semua_kata_dan_barcode():
+    perlu = [{"nama_produk": "Kaos Hitam 24s", "kode": "BRG-1", "barcode": "899001", "gudang": None},
+             {"nama_produk": "Kaos Putih", "kode": "BRG-2", "barcode": None, "gudang": None}]
+    nama = lambda q: [x["nama_produk"] for x in RP.saring(perlu, q, None)]
+    assert nama("hitam kaos") == ["Kaos Hitam 24s"]      # urutan kata bebas, semua kata harus cocok
+    assert nama("kaos") == ["Kaos Hitam 24s", "Kaos Putih"]
+    assert nama("899001") == ["Kaos Hitam 24s"]          # barcode ikut dicari
+    assert nama("kaos biru") == []
+    assert nama("  ") == ["Kaos Hitam 24s", "Kaos Putih"]

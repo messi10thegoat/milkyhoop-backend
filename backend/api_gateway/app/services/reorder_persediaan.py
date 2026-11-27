@@ -36,7 +36,7 @@ def _f(x) -> str:
 
 
 _SQL = """
-SELECT p.id::text AS id, p.nama_produk, p.item_code AS kode, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS unit, p.reorder_level AS minimum,
+SELECT p.id::text AS id, p.nama_produk, p.item_code AS kode, p.barcode, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS unit, p.reorder_level AS minimum,
        COALESCE(s.stok, 0) AS stok, COALESCE(o.dipesan, 0) AS dipesan, COALESCE(o.dipesan_lain, 0) AS dipesan_lain
 FROM products p
 LEFT JOIN LATERAL (SELECT COALESCE(SUM(l.quantity_in) - SUM(l.quantity_out), 0) AS stok FROM inventory_ledger l
@@ -69,8 +69,11 @@ def tandai(x: dict) -> dict:
 
 def saring(perlu: list, search: Optional[str], status: Optional[str]) -> list:
     if search and search.strip():
-        q = search.strip().lower()
-        perlu = [x for x in perlu if q in (x["nama_produk"] or "").lower() or q in (x.get("kode") or "").lower() or q in (x.get("gudang") or "").lower()]
+        kata = search.lower().split()   # per kata, semua kata harus cocok (aturan SAMA dgn daftar Barang: services/cari_kata.syarat_kata); kolom + kode & gudang
+        def _cocok(x):
+            gudang = " ".join(str(x.get(k) or "") for k in ("nama_produk", "barcode", "kode", "gudang")).lower()
+            return all(w in gudang for w in kata)
+        perlu = [x for x in perlu if _cocok(x)]
     if status in STATUS:
         perlu = [x for x in perlu if x[status]]
     return perlu
@@ -115,7 +118,7 @@ async def daftar(conn, tenant_id: str, limit: Optional[int] = None, search: Opti
     semua = []
     for r in rows:
         u = usulan_beli(r["stok"], r["minimum"], r["dipesan"])
-        semua.append({"id": r["id"], "nama_produk": r["nama_produk"], "kode": r.get("kode"), "satuan": r["unit"] or "pcs",
+        semua.append({"id": r["id"], "nama_produk": r["nama_produk"], "kode": r.get("kode"), "barcode": r.get("barcode"), "satuan": r["unit"] or "pcs",
                       "stok": Decimal(str(r["stok"])), "minimum": Decimal(str(r["minimum"])), "dipesan": Decimal(str(r["dipesan"])),
                       "dipesan_satuan_lain": Decimal(str(r["dipesan_lain"])), "usulan_beli": u,
                       "teks": teks_baris(r["nama_produk"], r["unit"], r["stok"], r["minimum"], r["dipesan"], u, r["dipesan_lain"])})
