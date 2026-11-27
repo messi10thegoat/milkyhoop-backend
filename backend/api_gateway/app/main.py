@@ -355,6 +355,9 @@ async def _gudang_terkunci_trigger_handler(request, exc):  # noqa: ANN001
     if getattr(exc, "sqlstate", None) == "P0409":
         pesan = str(exc).split("GUDANG_TERKUNCI:", 1)[-1].strip() or "Gudang sedang dihitung."
         return _JSONResp(status_code=409, content={"detail": pesan, "code": "GUDANG_TERKUNCI", "message": pesan})
+    if getattr(exc, "sqlstate", None) == "MH422":  # V512 trigger trg_tolak_induk_varian: induk varian di baris dokumen
+        pesan = str(exc).split("VARIAN_INDUK_DI_DOKUMEN:", 1)[-1].strip() or "Pilih variannya; barang induk varian tidak bisa dipakai di dokumen."
+        return _JSONResp(status_code=422, content={"detail": pesan, "code": "VARIAN_INDUK_DI_DOKUMEN", "message": pesan})
     raise exc
 
 
