@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from .ledger_kartu import tulis_kartu
+from . import serial_gerak as SG
 from . import pengiriman_serah as serah_mod
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import so_kirim
@@ -57,6 +58,7 @@ class BarisIn(BaseModel):
     sales_order_item_id: UUID
     quantity: Decimal = Field(..., gt=0)
     unit: Optional[str] = Field(None, max_length=50)  # BUG-085: satuan ketikan; dikonversi ke satuan baris SO (absen = satuan baris)
+    serials: Optional[List[str]] = Field(None, max_length=10000)  # Serial S2 (flag serial_v1): nomor seri keluar; dinilai pintu kartu stok
 
 
 class SJSOIn(BaseModel):
@@ -281,6 +283,7 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
     lines, total_nilai = [], _NOL
     from . import satuan_dasar as SD  # QTY-DASAR R2: SJ = jalur KELUAR -> qty dokumen dikonversi ke SATUAN DASAR (stok, kartu, HPP)
     ktx_sd = await SD.muat(conn, tid, [peta[x]["item_id"] for x in diminta if peta[x]["stok"] and peta[x]["item_id"] and SD.normal(peta[x]["unit"])])
+    nomor_seri = {it.sales_order_item_id: it.serials for it in (body.items or []) if it.serials is not None}   # Serial S2
     for bid, qty in diminta.items():
         b = peta[bid]
         nama = b["nama_produk"] or b["description"]
@@ -289,13 +292,14 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
               "unit": b["unit"], "ordered": Decimal(str(b["quantity"])), "delivered_before": ada, "quantity": qty,
               "remaining_after": Decimal(str(b["quantity"])) - ada - qty, "stok": bool(b["stok"]),
               "unit_cost": _NOL, "value": _NOL, "available": None, "item_code": b["item_code"],
-              "invoiced_quantity": faktur.get(bid, {}).get("q", _NOL)}
+              "invoiced_quantity": faktur.get(bid, {}).get("q", _NOL), "serials": nomor_seri.get(bid)}
         if b["stok"]:
             h_sd = SD.hitung(ktx_sd, b["item_id"], b["unit"], qty, "konversi")
             ln["qty_dasar"], ln["faktor"] = h_sd["qty_dasar"], h_sd["faktor"]
             if h_sd["blok"]:
                 blocks.append(_blok(h_sd["blok"]["code"], h_sd["blok"]["message"], h_sd["blok"]["status"], bid))
-            if b["batch"] or b["serial"]:
+            serial_v1 = bool(b["serial"]) and await SG.wajib(conn, tid, b["item_id"])   # Serial S2: flag serial_v1 nyala -> serial didukung
+            if b["batch"] or (b["serial"] and not serial_v1):
                 blocks.append(_blok("SJ_SO_BATCH_SERIAL_BELUM_DIDUKUNG",
                                     f"{nama} dilacak per batch/serial; belum didukung di Surat Jalan tanpa faktur.", 409, bid))
             wac = Decimal(str(await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tid, b["item_id"]) or 0))
@@ -314,6 +318,11 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
                 bk = SB.blok_kurang(nama, gudang["name"], avail, h_sd, qty, b["unit"], kode="SJ_SO_STOK_TIDAK_CUKUP")
                 if bk:  # terbit-pratinjau-1: penentu + kalimat SATU (stok_baris)
                     blocks.append(_blok(bk["code"], bk["message"], bk["status"], bid))
+        blokir_serial = (await SG.blok_serial(conn, tid, b["item_id"] if b["stok"] else None, nama, ln["serials"],
+                                              ln.get("qty_dasar") if b["stok"] else None)
+                         if (b["stok"] and b["serial"]) or ln["serials"] is not None else None)   # barang biasa: nol kueri tambahan
+        if blokir_serial:
+            blocks.append(_blok(blokir_serial[0], blokir_serial[1], 422, bid))
         lines.append(ln)
     if not lines and not any(b["code"] != "SJ_SO_STATUS_TIDAK_BOLEH" for b in blocks):
         if any(d["alasan"] == "SJ_SO_STOK_BELUM_DIDUKUNG" for d in dilewati):  # T-G4: sisa ada tapi tersaring flag stok -> kalimat jujur
@@ -336,7 +345,8 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
                            "source_label": LABEL_SUMBER_GUDANG[sumber_gudang]} if gudang else None),
             "total_value": total_nilai,
             "serah": serah, "serah_aktif": flag, "notes": body.notes,
-            "payload": {"items": [{"sales_order_item_id": l["sales_order_item_id"], "quantity": str(l["quantity"])} for l in lines],
+            "payload": {"items": [{"sales_order_item_id": l["sales_order_item_id"], "quantity": str(l["quantity"]),
+                                   **({"serials": l["serials"]} if l.get("serials") is not None else {})} for l in lines],
                         "fulfillment_date": tgl.isoformat(), "notes": body.notes,
                         "warehouse_id": str(gudang["id"]) if gudang else None}}
 
@@ -415,7 +425,7 @@ async def tulis(conn, ctx: dict, so_id, body: SJSOIn) -> dict:
                 movement_type='SALE', movement_date=tgl, source_type=SUMBER, source_id=fid, source_number=nomor, quantity_in=0,
                 quantity_out=qd, quantity_balance=saldo - qd, unit_cost=l.get("wac", l["unit_cost"]), total_cost=l["value"],
                 average_cost=l.get("wac", l["unit_cost"]), journal_id=jid, created_by=uid, notes=f"Surat Jalan {nomor}",
-                warehouse_id=gudang_id, **sd_arg)
+                warehouse_id=gudang_id, serials=l.get("serials"), **sd_arg)   # Serial S2: None = barang tanpa nomor seri
     if r.get("serah") is not None:   # SJ + serah + resi: SATU transaksi (Law 23); nol UPDATE ke SJ
         await serah_mod.tulis(conn, tid, uid, fid, r["serah"])
     await catat_riwayat(conn, tid, "invoice_fulfillments", fid, nomor, "SURAT_JALAN_SO_DIBUAT", uid,

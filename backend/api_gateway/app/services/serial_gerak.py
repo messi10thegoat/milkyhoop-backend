@@ -152,3 +152,20 @@ async def pada_kartu(conn, *, tenant_id, product_id, product_name, warehouse_id,
         await masuk(conn, tenant_id, product_id, product_name, warehouse_id, ledger_id, daftar, ref)
     else:
         await keluar(conn, tenant_id, product_id, product_name, warehouse_id, ledger_id, daftar, ref)
+
+
+async def blok_serial(conn, tenant_id: str, product_id, nama: str, serials, qty=None) -> Optional[tuple]:
+    """Pratinjau dokumen (penentu SAMA dengan pintu kartu): -> (code, message) atau None. product_id None = baris tanpa kartu stok.
+    Hanya aturan yang bisa dinilai tanpa menulis (wajib/tak dilacak/kembar/jumlah); ketersediaan per nomor dinilai saat tulis (FOR UPDATE)."""
+    perlu = bool(product_id) and await wajib(conn, tenant_id, product_id)
+    if not perlu:
+        return ("SERIAL_TAK_DILACAK", f"{nama} tidak memakai nomor seri; kosongkan nomor seri.") if serials else None
+    if serials is None:
+        return ("SERIAL_WAJIB", f"{nama} memakai nomor seri; isi nomor serinya.")
+    try:
+        daftar = rapikan(serials)
+        if qty is not None:
+            cek_jumlah(nama, qty, daftar)
+    except GalatBerkode as e:
+        return (e.code, e.detail)
+    return None

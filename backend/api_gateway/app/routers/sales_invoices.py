@@ -2019,7 +2019,7 @@ async def _execute_fulfillment(
     Core shared fulfillment function for 3-Event Revenue Recognition.
     Called by both auto-fulfill (posting) and manual /fulfill endpoint.
 
-    items_to_fulfill: list of {"invoice_item_id": uuid, "quantity": Decimal, "batch_id": uuid|None}
+    items_to_fulfill: list of {"invoice_item_id": uuid, "quantity": Decimal, "batch_id": uuid|None, "serials": [str]|None (Serial S2)}
     """
     import uuid
     from datetime import date as dt_date
@@ -2260,7 +2260,7 @@ async def _execute_fulfillment(
             movement_date=fulfillment_date, source_type='INVOICE_FULFILLMENT', source_id=invoice_id, source_number=invoice_number,
             quantity_in=0, quantity_out=str(qd), quantity_balance=str(new_balance), unit_cost=str(avg_cost), total_cost=str(line_cogs),
             average_cost=str(avg_cost), created_by=user_id, notes=f"Fulfillment: {invoice_number}", warehouse_id=warehouse_id,
-            batch_id=batch_id, **_arg_sd)
+            batch_id=batch_id, serials=req.get("serials"), **_arg_sd)   # Serial S2: None = tanpa nomor seri (pintu kartu menilai)
 
         # Batch: saldo digeser HANYA oleh trigger trg_update_batch_stock saat INSERT inventory_ledger di atas (BUG-286: UPDATE manual dulu
         # menggandakan pengurangan); kecukupan batch diperiksa SEBELUM INSERT ledger (blok di atas).
@@ -7251,6 +7251,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                     {
                         "invoice_item_id": UUID(i["invoice_item_id"]),
                         "quantity": Decimal(str(i["quantity"])),
+                        "serials": i.get("serials"),   # Serial S2 (flag serial_v1): nomor seri keluar per baris
                     }
                     for i in req_items
                 ]
