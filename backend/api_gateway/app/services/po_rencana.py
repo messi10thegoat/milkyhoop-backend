@@ -271,6 +271,12 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     JASA-TANPA-TERIMA (5 Nov 2026): baris jasa (grn_rencana.sql_jasa) tak pernah diterima -- dilewati bawaan, diblok bila dikirim, tak ikut
     baris[]/lengkap; PO tanpa baris barang = PO_TANPA_BARANG (jasa ditagih menurut qty pesanan)."""
     bloks, catatan = [], []
+    # BUG-438: batch per baris penerimaan {po_item_id: {batch_number, expiry_date?, manufacture_date?}} (dinilai grn_rencana)
+    batch_masuk = {}
+    for i in items or []:
+        if i.get("batch_number") is not None or i.get("expiry_date") is not None or i.get("manufacture_date") is not None:
+            batch_masuk[str(i["po_item_id"])] = {k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                                                 for k in ("batch_number", "expiry_date", "manufacture_date") if (v := i.get(k)) is not None}
     from . import grn_rencana as G
     aturan_d = po["status"] in STATUS_DITAGIH and await G.aktif(conn, po.get("tenant_id"))
     if po["status"] not in status_bisa_terima(aturan_d):
@@ -350,7 +356,8 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     payload = {"receive_date": receive_date.isoformat(),
                "items": [{"po_item_id": k, "quantity_received": str(akan.get(k, NOL)),
                           **({"quantity_rejected": str(tolak[k])} if tolak.get(k, NOL) > NOL else {}),
-                          **({"reject_reason": alasan[k]} if k in alasan else {})}
+                          **({"reject_reason": alasan[k]} if k in alasan else {}),
+                          **batch_masuk.get(k, {})}   # BUG-438: batch penerimaan ikut payload (pratinjau -> tulis apa adanya)
                          for k in dict.fromkeys([*akan, *tolak]) if akan.get(k, NOL) > NOL or tolak.get(k, NOL) > NOL]}
     # GRN-SJ-VENDOR (2 Nov 2026): payload = badan /receive LENGKAP (catatan + No. SJ vendor); tanpa nilai = kunci tak ditambahkan
     if notes is not None:
@@ -360,7 +367,7 @@ async def rencana_terima(conn, po, receive_date, items: Optional[list], hari_ini
     return {"blocks": bloks, "notes": catatan, "baris": baris, "nilai_diterima": sesudah - sebelum, "amount_received_sesudah": sesudah,
             "toleransi_persen": toleransi, "tolak": tolak, "alasan": alasan,
             # (D) PO yang sudah ditagih: status penagihan tetap (penerimaan tak menurunkannya; po_daftar.sinkron_tagih -- tagih menang)
-            "status_sesudah": po["status"] if aturan_d else ("received" if lengkap else "partial_received"), "payload": payload, "akan": akan,
+            "status_sesudah": po["status"] if aturan_d else ("received" if lengkap else "partial_received"), "payload": payload, "akan": akan, "batch": batch_masuk,
             "semua": semua}
 
 

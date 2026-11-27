@@ -148,6 +148,11 @@ class ReceiveItemRequest(BaseModel):
     reject_reason: Optional[str] = Field(None, max_length=200)
     # Serial S1 (flag serial_v1): nomor seri barang track_serial; jumlah = qty diterima dalam satuan dasar (PO bersatuan Dus x faktor)
     serials: Optional[List[str]] = Field(None, max_length=10000)
+    # BUG-438 (ikut Accurate): batch penerimaan untuk barang track_batches. Nomor yang sudah ada untuk barang ini = stok batch itu bertambah;
+    # nomor baru = batch dibuat. Tanggal kedaluwarsa wajib untuk batch BARU bila barang track_expiry. Dinilai grn_rencana (pratinjau == tulis).
+    batch_number: Optional[str] = Field(None, max_length=100)
+    expiry_date: Optional[date] = None
+    manufacture_date: Optional[date] = None
 
 
 class ReceiveGoodsRequest(BaseModel):

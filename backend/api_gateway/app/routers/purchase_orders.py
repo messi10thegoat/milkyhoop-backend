@@ -1058,6 +1058,9 @@ def _sidik_terima(body: ReceiveGoodsRequest) -> dict:
             it.pop("reject_reason", None)
         if it.get("serials") is None:   # Serial S1: kunci bawaan dibuang -> bentuk lama = hash lama
             it.pop("serials", None)
+        for k in ("batch_number", "expiry_date", "manufacture_date"):   # BUG-438: idem
+            if it.get(k) is None:
+                it.pop(k, None)
     return d
 
 

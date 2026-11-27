@@ -179,6 +179,38 @@ async def batas_tagih(conn, tenant_id: str, po_item_ids) -> dict:
     return out
 
 
+async def _nilai_batch(conn, tenant_id: str, baris: list, detail: dict, batch: dict, bloks: list) -> None:
+    """BUG-438 (ikut Accurate): batch penerimaan per baris. track_batches + qty > 0 -> nomor batch WAJIB; barang tanpa lacak batch tak boleh
+    diberi batch; nomor yang sudah ada untuk barang ini = dipakai (stok batch bertambah); nomor baru = dibuat saat tulis (kedaluwarsa wajib
+    bila track_expiry). Mengisi b['batch'] = {id|None, batch_number, expiry_date, manufacture_date, baru}. HPP TIDAK berubah (hanya lokasi)."""
+    from datetime import date
+    for b in baris:
+        r = detail[b["po_item_id"]]
+        m = batch.get(b["po_item_id"]) or {}
+        nomor = (m.get("batch_number") or "").strip()
+        if not b["ber_stok"] or b["qty"] <= NOL:
+            continue
+        if not r["track_batches"]:
+            if nomor:
+                bloks.append(blok("BATCH_TIDAK_BERLAKU", f"{b['nama']} tidak melacak batch; kosongkan nomor batch.", 422))
+            continue
+        if not nomor:
+            bloks.append(blok("BATCH_WAJIB", f"Isi nomor batch untuk {b['nama']}.", 422))
+            continue
+        ada = await conn.fetchrow("SELECT id, expiry_date FROM item_batches WHERE tenant_id = $1 AND item_id = $2 AND batch_number = $3",
+                                  tenant_id, b["item_id"], nomor)
+        kedal = date.fromisoformat(m["expiry_date"]) if m.get("expiry_date") else None
+        prod = date.fromisoformat(m["manufacture_date"]) if m.get("manufacture_date") else None
+        if ada is None and r["track_expiry"] and kedal is None:
+            bloks.append(blok("BATCH_KEDALUWARSA_WAJIB", f"Isi tanggal kedaluwarsa batch baru {nomor} ({b['nama']}).", 422))
+        if kedal and prod and kedal < prod:
+            bloks.append(blok("TANGGAL_KEDALUWARSA_SEBELUM_PRODUKSI", f"Tanggal kedaluwarsa batch {nomor} tidak boleh sebelum tanggal produksi.", 422))
+        if ada is not None and kedal and ada["expiry_date"] and kedal != ada["expiry_date"]:
+            bloks.append(blok("BATCH_KEDALUWARSA_BEDA", f"Batch {nomor} sudah ada dengan kedaluwarsa lain; pakai nomor batch baru atau kosongkan tanggal.", 409))
+        b["batch"] = {"id": ada["id"] if ada else None, "batch_number": nomor, "expiry_date": kedal or (ada["expiry_date"] if ada else None),
+                      "manufacture_date": prod, "baru": ada is None}
+
+
 async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None) -> dict:
     """terima = hasil po_rencana.rencana_terima (blok status/tanggal/qty sudah di sana). -> {blocks, baris[], gudang, jurnal[], nilai_grni}.
     Hanya membaca (pemanggil yang mengunci PO). Baris: {po_item_id, item_id, kode, nama, qty, harga_satuan, nilai, ber_stok}."""
@@ -191,7 +223,8 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
     ids = [peta[k]["id"] for k in akan if k in peta]
     detail = {str(r["id"]): r for r in await conn.fetch(
         """SELECT poi.id, poi.item_id, poi.quantity, poi.subtotal, poi.discount_amount, poi.description, poi.unit,
-                  p.kode_produk, p.nama_produk, p.item_type, p.track_inventory
+                  p.kode_produk, p.nama_produk, p.item_type, p.track_inventory,
+                  COALESCE(p.track_batches, false) AS track_batches, COALESCE(p.track_expiry, false) AS track_expiry
            FROM purchase_order_items poi LEFT JOIN products p ON p.id = poi.item_id AND p.tenant_id = $1
            WHERE poi.po_id = $2 AND poi.id = ANY($3::uuid[])""", tenant_id, po["id"], ids)} if ids else {}
     harga_ppn = await _harga_terima_kapital(conn, tenant_id, po["id"]) if detail else {}
@@ -213,6 +246,7 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
             b["faktor"], b["satuan"] = h["faktor"], h["satuan"]
             if h["blok"] and not any(x["message"] == h["blok"]["message"] for x in bloks):
                 bloks.append(blok(h["blok"]["code"], h["blok"]["message"], h["blok"]["status"]))
+    await _nilai_batch(conn, tenant_id, baris, detail, terima.get("batch") or {}, bloks)
     gudang = None
     if stok_baris:
         gudang = await _gudang(conn, tenant_id, warehouse_id, po.get("warehouse_id"))
@@ -270,6 +304,8 @@ def untuk_respons(r: dict) -> dict:
     return {"warehouse": ({"id": str(r["gudang"]["id"]), "name": r["gudang"]["name"]} if r.get("gudang") else None),
             "items": [{"po_item_id": b["po_item_id"], "description": b["nama"], "qty": str(b["qty"]), "unit_cost": str(r2(b["harga_satuan"])),
                        "amount": str(b["nilai"]), "stocked": b["ber_stok"], "qty_rejected": str(b.get("ditolak", NOL)),
+                       "batch_number": (b.get("batch") or {}).get("batch_number"),
+                       "batch_text": (f"{b['batch']['batch_number']} ({'baru' if b['batch']['baru'] else 'tambah stok'})" if b.get("batch") else None),
                        # (D) pemasangan ke tagihan yang lebih dulu (kosong = tak ada tagihan tertunda)
                        "matched_bills": [{"bill_item_id": str(x["bill_item_id"]), "qty": str(x["qty"]), "received_amount": str(x["nilai_terima"]),
                                           "billed_amount": str(x["nilai_tagih"]), "variance": str(x["selisih"])}
@@ -296,6 +332,20 @@ async def sj_vendor_dipakai(conn, tenant_id: str, vendor_id, sj_vendor: Optional
 def catatan_sj_dipakai(sj_vendor: str, nomor: list) -> dict:
     """Catatan pratinjau (BUKAN blok; vendor boleh memakai ulang nomor -- pola SAP/NetSuite memperingatkan)."""
     return {"code": KODE_SJ_DIPAKAI, "message": f"No. SJ vendor {sj_vendor} sudah dipakai di {', '.join(nomor)}."}
+
+
+async def _batch_terima(conn, tid: str, po, b: dict, receive_date, uid):
+    """BUG-438: id batch baris penerimaan (dibuat bila nomor baru; stok batch digeser trigger dari ledger.batch_id, bukan di sini)."""
+    m = b.get("batch")
+    if not m:
+        return None
+    if m["id"] is not None:
+        return m["id"]
+    return await conn.fetchval(
+        """INSERT INTO item_batches (tenant_id, item_id, batch_number, manufacture_date, expiry_date, received_date, initial_quantity, current_quantity,
+                                     unit_cost, total_value, purchase_order_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, 0, 0, 0, 0, $7, $8) RETURNING id""",
+        tid, b["item_id"], m["batch_number"], m["manufacture_date"], m["expiry_date"], receive_date, po["id"], uid)
 
 
 async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Optional[str] = None,
@@ -348,10 +398,11 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
             continue
         if p["qty_stok"] > NOL:  # (D) stok masuk qty bukan-legacy @ harga terima; tautan tagih_dulu ke baris ini
             f = b.get("faktor") or SD.SATU  # QTY-DASAR: kartu stok + WAC dalam satuan dasar; dokumen GRN tetap satuan PO
+            batch_id = await _batch_terima(conn, tid, po, b, receive_date, uid)   # BUG-438: None = barang tanpa batch
             ledger = (await record_inventory_inbound(
                 conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"] * f, p.get("biaya_dasar") or b["harga_satuan"] / f,
                 SUMBER, gid, nomor, uid,
-                f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid,
+                f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid, batch_id=batch_id,
                 serials=(serials or {}).get(str(b["po_item_id"])),   # Serial S1: None = barang tak bernomor seri (pintu kartu menilai)
                 **({"transaction_unit": b["satuan"], "transaction_quantity": p["qty_stok"], "conversion_factor": f} if f != SD.SATU else {})))["ledger_id"]
             gi = await baris_grn(b, p["qty_stok"], p["nilai_stok"], True, ledger)
