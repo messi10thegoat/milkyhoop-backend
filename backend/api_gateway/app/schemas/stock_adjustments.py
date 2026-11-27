@@ -9,7 +9,7 @@ Stock Adjustments are used to:
 Flow: draft -> posted -> void (optional)
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any, Literal
 from decimal import Decimal
 from datetime import date
@@ -17,11 +17,32 @@ from datetime import date
 from .aksi_tersedia import AksiTersediaPeta
 
 
+# Isian tak dikenal = 422 (dulu diabaikan diam-diam: TESTER kirim batch_id/unit_cost -> batch 0, harga 0). Yang sering salah diberi arah.
+ARAH_ISIAN = {
+    "batch_id": "Penyesuaian ini tidak memilih batch; pakai Penyesuaian Batch di halaman Batch.",
+    "unit_cost": "Harga pokok ditentukan server (rata-rata terakhir, cadangan harga beli); isi Harga beli barang bila kosong.",
+    "total_value": "Nilai dihitung server dari jumlah x harga pokok.",
+}
+
+
+class _Tegas(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _arah(cls, v):
+        if isinstance(v, dict):
+            for k, pesan in ARAH_ISIAN.items():
+                if k in v and k not in cls.model_fields:
+                    raise ValueError(f"{k}: {pesan}")
+        return v
+
+
 # =============================================================================
 # REQUEST MODELS - Items
 # =============================================================================
 
-class StockAdjustmentItemCreate(BaseModel):
+class StockAdjustmentItemCreate(_Tegas):
     """Item for creating a stock adjustment."""
     product_id: str = Field(..., description="Product UUID")
     quantity_adjustment: Decimal = Field(..., description="Adjustment quantity (positive=increase, negative=decrease)")
@@ -40,7 +61,7 @@ class StockAdjustmentItemCreate(BaseModel):
         return v.strip()
 
 
-class StockAdjustmentItemUpdate(BaseModel):
+class StockAdjustmentItemUpdate(_Tegas):
     """Item for updating a stock adjustment."""
     product_id: str
     quantity_adjustment: Decimal
@@ -56,7 +77,7 @@ class StockAdjustmentItemUpdate(BaseModel):
 # REQUEST MODELS - Stock Adjustment
 # =============================================================================
 
-class CreateStockAdjustmentRequest(BaseModel):
+class CreateStockAdjustmentRequest(_Tegas):
     """Request body for creating a stock adjustment (draft)."""
     adjustment_date: date
     adjustment_type: Literal["increase", "decrease", "recount", "damaged", "expired"]
@@ -67,7 +88,7 @@ class CreateStockAdjustmentRequest(BaseModel):
     items: List[StockAdjustmentItemCreate] = Field(..., min_length=1)
 
 
-class UpdateStockAdjustmentRequest(BaseModel):
+class UpdateStockAdjustmentRequest(_Tegas):
     """Request body for updating a stock adjustment (draft only)."""
     adjustment_date: Optional[date] = None
     adjustment_type: Optional[Literal["increase", "decrease", "recount", "damaged", "expired"]] = None
