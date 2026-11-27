@@ -158,6 +158,7 @@ async def record_inventory_outbound(
     notes: str,
     receipt_date=None,
     jurnal_pemanggil: Optional[UUID] = None,
+    serials: Optional[list] = None,
 ) -> dict:
     """
     Standard outbound flow: get WAC, insert inventory_ledger, create COGS journal.
@@ -249,7 +250,7 @@ async def record_inventory_outbound(
         id=ledger_id, tenant_id=tenant_id, product_id=product_id, product_code=product_code, product_name=product_name, movement_type='SALE',
         movement_date=movement_date, source_type=source_type, source_id=source_id, source_number=source_number, quantity_in=0,
         quantity_out=quantity, quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost_snapshot,
-        warehouse_id=warehouse_id, created_by=user_id, notes=notes)
+        warehouse_id=warehouse_id, created_by=user_id, notes=notes, serials=serials)
     if ambil is not None:
         await fifo_lapisan.catat_pakai(conn, tenant_id, ledger_id, ambil)
 
@@ -354,6 +355,7 @@ async def record_inventory_inbound(
     transaction_unit: Optional[str] = None,
     transaction_quantity=None,
     conversion_factor=None,
+    serials: Optional[list] = None,
 ) -> dict:
     """
     Standard inbound flow: calculate new WAC, insert inventory_ledger.
@@ -468,7 +470,7 @@ async def record_inventory_inbound(
         quantity_in=quantity_dec, quantity_out=0, quantity_balance=new_balance, unit_cost=unit_cost_dec, total_cost=total_cost,
         average_cost=new_avg_cost, warehouse_id=warehouse_id, journal_id=journal_id, created_by=user_id, notes=notes, batch_id=batch_id,
         transaction_unit=transaction_unit, transaction_quantity=txn_qty_dec, conversion_factor=conv_factor_dec,
-        storage_location_id=storage_location_id)
+        storage_location_id=storage_location_id, serials=serials)
     if await fifo_lapisan.fifo_aktif(conn, tenant_id, product_id):   # FIFO unit 2: satu baris masuk = satu lapisan
         await fifo_lapisan.catat_masuk(conn, tenant_id, product_id, ledger_id, movement_date, quantity_dec,
                                        fifo_lapisan.nilai_masuk(quantity_dec, unit_cost_dec), batch_id)

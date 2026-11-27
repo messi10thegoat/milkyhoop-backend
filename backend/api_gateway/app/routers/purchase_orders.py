@@ -1167,8 +1167,8 @@ async def receive_goods(request: Request, po_id: UUID, body: ReceiveGoodsRequest
                                     meta={"items": [{"po_item_id": i["po_item_id"], "qty": str(i["quantity_received"])} for i in items_received]},
                                     source="api:purchase_orders")
 
-                _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes,
-                                         body.vendor_delivery_note) if _grn is not None else None
+                _dok = await G.tulis_grn(conn, ctx, po, body.receive_date, _grn, body.notes, body.vendor_delivery_note,
+                                         {str(i.po_item_id): i.serials for i in body.items if i.serials is not None}) if _grn is not None else None
                 if _grn is not None and po["status"] in PR.STATUS_DITAGIH:
                     # GRN aturan D: PO sudah (sebagian) ditagih -> status dihitung ulang dgn aturan bersama (tagih menang atas terima), bukan
                     # diturunkan ke received/partial_received oleh UPDATE di atas. Flag mati: jalur ini tak tercapai (perilaku lama utuh).

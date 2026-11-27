@@ -146,6 +146,8 @@ class ReceiveItemRequest(BaseModel):
     quantity_received: Optional[Decimal] = Field(None, max_digits=18, decimal_places=4)  # absen = sisa - ditolak (penentu)
     quantity_rejected: Decimal = Field(Decimal("0"), max_digits=18, decimal_places=4)  # dicatat di GRN saja; bukan stok/HPP/tagih
     reject_reason: Optional[str] = Field(None, max_length=200)
+    # Serial S1 (flag serial_v1): nomor seri barang track_serial; jumlah = qty diterima dalam satuan dasar (PO bersatuan Dus x faktor)
+    serials: Optional[List[str]] = Field(None, max_length=10000)
 
 
 class ReceiveGoodsRequest(BaseModel):

@@ -299,7 +299,7 @@ def catatan_sj_dipakai(sj_vendor: str, nomor: list) -> dict:
 
 
 async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Optional[str] = None,
-                    sj_vendor: Optional[str] = None) -> dict:
+                    sj_vendor: Optional[str] = None, serials: Optional[dict] = None) -> dict:
     """Di transaksi PEMANGGIL sesudah PO dikunci & penghitung diterima ditulis. Blok rencana WAJIB sudah ditolak pemanggil.
     -> {goods_receipt_id, receipt_number, journal_id}."""
     from uuid import uuid4
@@ -352,6 +352,7 @@ async def tulis_grn(conn, ctx: dict, po, receive_date, rencana: dict, notes: Opt
                 conn, tid, b["item_id"], b["kode"], b["nama"], gudang_id, p["qty_stok"] * f, p.get("biaya_dasar") or b["harga_satuan"] / f,
                 SUMBER, gid, nomor, uid,
                 f"Penerimaan barang {nomor}", movement_date=receive_date, journal_id=jid,
+                serials=(serials or {}).get(str(b["po_item_id"])),   # Serial S1: None = barang tak bernomor seri (pintu kartu menilai)
                 **({"transaction_unit": b["satuan"], "transaction_quantity": p["qty_stok"], "conversion_factor": f} if f != SD.SATU else {})))["ledger_id"]
             gi = await baris_grn(b, p["qty_stok"], p["nilai_stok"], True, ledger)
             for x in p["pasangan"]:
