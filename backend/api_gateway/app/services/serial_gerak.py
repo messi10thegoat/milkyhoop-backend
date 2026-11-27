@@ -23,7 +23,8 @@ STATUS_KELUAR = {"STOCK_ADJUSTMENT": "adjusted_out", "VENDOR_CREDIT": "returned_
 SUMBER_PINDAH = {"RELOKASI_GUDANG"}
 # S3 (V514): tabel baris draf yang menyimpan nomor seri (kolom aditif serials TEXT[]); kolom hanya disentuh bila ada nomor seri.
 _DRAF = {"credit_note_items": "credit_note_id", "vendor_credit_items": "vendor_credit_id", "stock_transfer_items": "stock_transfer_id"}
-GERAK_MASUK, GERAK_KELUAR, GERAK_BALIK = "received", "sold", "reversed"
+# S4: pembalikan void dicatat "adjusted" -- "reversed" TIDAK ada di CHECK chk_sm_type (V048) -> void dokumen ber-serial gagal 23514.
+GERAK_MASUK, GERAK_KELUAR, GERAK_BALIK = "received", "sold", "adjusted"
 
 
 async def wajib(conn, tenant_id: str, product_id) -> bool:
@@ -178,6 +179,23 @@ async def blok_serial(conn, tenant_id: str, product_id, nama: str, serials, qty=
     except GalatBerkode as e:
         return (e.code, e.detail)
     return None
+
+
+async def blok_tersedia(conn, tenant_id: str, product_id, nama: str, warehouse_id, serials) -> Optional[tuple]:
+    """S4 pratinjau dokumen KELUAR: nomor seri harus 'available' di gudang baris (aturan SAMA dengan keluar(), tanpa kunci/tulis).
+    -> (code, message) atau None. Dipanggil sesudah blok_serial lolos."""
+    daftar = rapikan(serials or [])
+    if not daftar:
+        return None
+    ada = {r["serial_number"].upper(): r for r in await conn.fetch(
+        "SELECT serial_number, status, warehouse_id FROM item_serials WHERE tenant_id = $1 AND item_id = $2 AND upper(serial_number) = ANY($3::text[])",
+        tenant_id, product_id, [s.upper() for s in daftar])}
+    tak_ada = [s for s in daftar if s.upper() not in ada]
+    bukan = [s for s in daftar if s.upper() in ada and (ada[s.upper()]["status"] != "available" or ada[s.upper()]["warehouse_id"] != warehouse_id)]
+    if not (tak_ada or bukan):
+        return None
+    bagian = ([f"tidak dikenal: {', '.join(tak_ada)}"] if tak_ada else []) + ([f"tidak tersedia di gudang ini: {', '.join(bukan)}"] if bukan else [])
+    return ("SERIAL_TAK_TERSEDIA", f"Nomor seri {nama} " + "; ".join(bagian) + ".")
 
 
 async def simpan_draf(conn, tabel: str, induk_id, nomor_baris: int, serials) -> None:

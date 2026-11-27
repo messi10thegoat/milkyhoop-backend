@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Optional
 
 from . import teks_galat as tg
+from . import serial_gerak as SG  # Serial S4: pratinjau ND menilai serial
 
 NOL = Decimal("0")
 
@@ -68,7 +69,7 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
     for it in items:
         if not it["item_id"]:
             continue
-        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", it["item_id"])
+        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory, track_serial FROM products WHERE id = $1", it["item_id"])
         if not p or not p["track_inventory"]:
             continue
         nama = p["nama_produk"] or p["item_code"]
@@ -93,6 +94,13 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
             if not bawaan:
                 continue
             gudang, asal = bawaan, None
+        sr = it.get("serials") if hasattr(it, "get") else None
+        if p["track_serial"] or sr is not None:   # Serial S4: pratinjau ND menilai serial (penentu SAMA dgn pintu kartu; barang biasa nol kueri)
+            bs = (await SG.blok_serial(conn, tid, p["id"], nama, sr, qty)
+                  or (await SG.blok_tersedia(conn, tid, p["id"], nama, gudang, sr) if await SG.wajib(conn, tid, p["id"]) else None))
+            if bs:
+                bl.galat(bs[0], 422, bs[1])
+                continue
         kunci_b = (p["id"], gudang)
         butuh[kunci_b] = butuh.get(kunci_b, NOL) + qty
         keluar.append({"item_row_id": it.get("id"), "product_id": p["id"], "nama": nama, "qty": qty, "satuan": h_sd["satuan_dasar"],
