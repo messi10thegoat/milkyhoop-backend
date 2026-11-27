@@ -1172,3 +1172,72 @@ async def get_my_permissions(request: Request):
     except Exception as e:
         logger.error(f"Error getting permissions: {e}")
         raise HTTPException(status_code=500, detail="Failed to get permissions")
+
+
+# ---- PARITAS-4b (V516): Pengguna -> Akses Gudang (flag gelap akses_gudang_v1; OWNER saja, pola /overrides) ----
+
+class AksesGudangBody(BaseModel):
+    warehouse_ids: List[str] = []   # kosong = Semua gudang
+
+
+async def _akses_gudang_siap(conn, request: Request, member_id: str, tulis: bool):
+    from ..services import akses_gudang as AG
+    from ..services.galat_berkode import GalatBerkode
+    _validate_uuid(member_id, "member ID")
+    user = _get_user_context(request)
+    tid = user["tenant_id"]
+    if not await AG.flag_nyala(conn, tid):
+        raise GalatBerkode(404, "FITUR_BELUM_AKTIF", "Fitur akses gudang per pengguna belum aktif.")
+    if tulis and await _get_user_role_code(conn, user["user_id"], tid) != "OWNER":
+        raise GalatBerkode(403, "HANYA_OWNER", "Hanya Owner yang bisa mengubah akses gudang.")
+    m = await conn.fetchrow("SELECT user_id FROM user_tenant_roles WHERE id = $1 AND tenant_id = $2", member_id, tid)
+    if not m:
+        raise GalatBerkode(404, "ANGGOTA_TIDAK_DITEMUKAN", "Anggota tim tidak ditemukan.")
+    target = str(m["user_id"])
+    peran = await _get_user_role_code(conn, target, tid)
+    return user, tid, target, peran
+
+
+@router.get("/{member_id}/warehouse-access")
+async def get_member_warehouse_access(member_id: str, request: Request):
+    from ..services import akses_gudang as AG
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _u, tid, target, peran = await _akses_gudang_siap(conn, request, member_id, False)
+        semua = (peran or "").upper() in AG.PERAN_SEMUA
+        g = [] if semua else await AG.daftar(conn, tid, target)
+        return {"success": True, "data": {"gudang": g, "semua": semua or not g, "akses_text": "Semua gudang" if semua else AG.teks_akses(g),
+                                          "terkunci": semua, "terkunci_text": f"{peran} selalu dapat semua gudang." if semua else None}}
+
+
+async def _rencana_akses(conn, request, member_id, body):
+    from ..services import akses_gudang as AG
+    user, tid, target, peran = await _akses_gudang_siap(conn, request, member_id, True)
+    if (peran or "").upper() in AG.PERAN_SEMUA:
+        return user, tid, target, {"ok": False, "peringatan": [], "rencana": None,
+                                   "blocks": [{"code": "PERAN_SEMUA_GUDANG", "status": 409, "message": f"{peran} selalu dapat semua gudang."}]}
+    return user, tid, target, await AG.rencana_ganti(conn, tid, target, body.warehouse_ids)
+
+
+@router.post("/{member_id}/warehouse-access/preview")
+async def preview_member_warehouse_access(member_id: str, body: AksesGudangBody, request: Request):
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction(readonly=True):
+        _u, _t, _g, r = await _rencana_akses(conn, request, member_id, body)
+        return {"success": True, "data": r}
+
+
+@router.put("/{member_id}/warehouse-access")
+async def update_member_warehouse_access(member_id: str, body: AksesGudangBody, request: Request):
+    from ..services import akses_gudang as AG
+    from ..services.galat_berkode import GalatBerkode
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        user, tid, target, r = await _rencana_akses(conn, request, member_id, body)
+        if not r["ok"]:
+            b = r["blocks"][0]
+            raise GalatBerkode(b["status"], b["code"], b["message"], field=b.get("field"))
+        await AG.ganti(conn, tid, target, r["rencana"]["gudang"], user["user_id"])
+        await _tulis_audit(conn, event="WAREHOUSE_ACCESS_CHANGED", actor_id=user["user_id"], tenant_id=tid, entity_type="team_member",
+                           entity_id=member_id, metadata={"target_user_id": target, "dari": r["rencana"]["dari_text"], "ke": r["rencana"]["ke_text"]})
+        return {"success": True, "data": r["rencana"]}

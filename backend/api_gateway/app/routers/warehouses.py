@@ -38,6 +38,8 @@ from ..schemas.warehouses import (
     WarehouseStockValueResponse,
 )
 
+from ..services import akses_gudang as AG  # PARITAS-4b
+
 router = APIRouter()
 
 # BUG-077: nilai stok per gudang = qty gudang x WAC BARANG (WAC MH per barang, bukan per gudang; fungsi yang sama dengan
@@ -113,6 +115,13 @@ async def list_warehouses(
 
         if aksi in GD.AKSI:
             where_clauses.append(GD.sql_aksi(aksi))
+
+        # PARITAS-4b: pengguna terbatas hanya melihat gudang aksesnya (flag akses_gudang_v1; None = semua)
+        _izin = await AG.boleh(conn, AG.ctx_dari(request))
+        if _izin is not None:
+            where_clauses.append(AG.saring(_izin, "id", param_idx).lstrip().removeprefix("AND "))
+            params.append(sorted(_izin))
+            param_idx += 1
 
         where_sql = " AND ".join(where_clauses)
 

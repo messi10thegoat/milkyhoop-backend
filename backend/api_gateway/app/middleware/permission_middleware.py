@@ -944,6 +944,10 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     # -- [C] tim (team_management -> USER_MANAGEMENT U; guard hierarki di handler) --
     (r"^/api/team-members/[^/]+/role$", ["PATCH"], "team_management", "U"),
     (r"^/api/team-members/[^/]+/overrides$", ["PATCH"], "team_management", "U"),
+    # PARITAS-4b (V516): akses gudang per pengguna = izin SAMA dgn /overrides (butir 6); pratinjau = izin tulisnya
+    (r"^/api/team-members/[^/]+/warehouse-access$", ["GET"], "team_management", "R"),
+    (r"^/api/team-members/[^/]+/warehouse-access$", ["PUT"], "team_management", "U"),
+    (r"^/api/team-members/[^/]+/warehouse-access/preview$", ["POST"], "team_management", "U"),
     (r"^/api/team-members/invitations/[^/]+$", ["DELETE"], "team_management", "U"),
     (r"^/api/items/units$", ["POST"], "item", "C"),
     # nsfp
