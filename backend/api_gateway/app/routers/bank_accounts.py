@@ -1509,6 +1509,34 @@ async def get_bank_account_statement(
         raise HTTPException(status_code=500, detail="Failed to get statement")
 
 
+@router.get("/{bank_account_id}/statement/export")
+async def export_bank_account_statement(
+    request: Request,
+    bank_account_id: str,
+    start_date: str = Query(..., description="YYYY-MM-DD"),
+    end_date: str = Query(..., description="YYYY-MM-DD"),
+    format: str = Query("xlsx", description="xlsx atau csv"),
+):
+    """G1: ekspor Buku Kas/Statement rekening (parameter SAMA dgn GET /statement). Baca saja; X-Ekspor-Jumlah; 422 TERLALU_BANYAK >20000."""
+    from fastapi.responses import Response
+    from ..services import ekspor_kasbank as EK
+    from ..services.uang_presisi import presisi_tenant
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(status_code=422, detail={"code": "DATA_TIDAK_SAH", "message": "format: xlsx atau csv.", "field": "format"})
+    d = await get_bank_account_statement(request, bank_account_id, start_date=start_date, end_date=end_date)
+    if len(d["transactions"]) > EK.MAKS_BARIS:
+        raise HTTPException(status_code=422, detail={"code": "TERLALU_BANYAK", "message": f"Maksimal {EK.MAKS_BARIS} baris per ekspor; persempit periode."})
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        presisi = await presisi_tenant(conn, get_user_context(request)["tenant_id"])
+    kolom, baris, bawah = EK.tabel_statement(d, presisi)
+    if format == "csv":
+        isi, mt = EK.bangun_csv(kolom, baris, bawah), "text/csv; charset=utf-8"
+    else:
+        isi, mt = EK.bangun_xlsx("buku-kas", kolom, baris, bawah), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(content=isi, media_type=mt, headers={"Content-Disposition": f"attachment; filename=buku-kas-{end_date}.{format}", "X-Ekspor-Jumlah": str(len(baris))})
+
+
 # =============================================================================
 
 
