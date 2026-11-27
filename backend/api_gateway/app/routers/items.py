@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from ..services import teks_galat as tg
 from ..services import satuan_master as SM
+from ..services import barang_lacak  # form Barang: lacak serial + metode biaya (27 Nov)
 from ..services import harga_daftar as HDF  # BUG-337 harga_daftar[] di detail barang
 from ..services import impor_barang as IB  # BUG-021 impor Excel + 1 baris chatbox
 from ..services import idem_buat
@@ -554,6 +555,7 @@ async def list_items(
                     deskripsi=row.get("deskripsi"),
                     is_returnable=row.get("is_returnable", True),
                     track_batches=row.get("track_batches", False),
+                    track_serial=bool(row.get("track_serial") or False),
                     track_expiry=row.get("track_expiry", False),
                     default_expiry_days=row.get("default_expiry_days"),
                     sales_price=row.get("sales_price") or row.get("harga_jual"),
@@ -1015,6 +1017,10 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
             item_code_to_use = await _kode_otomatis(conn, tenant_id, body.item_type)
             if not body.sku:
                 sku_to_use = item_code_to_use
+        # Lacak serial + metode biaya (services/barang_lacak, flag serial_v1/fifo_v1): dinilai SEBELUM tulis, diterapkan sesudah INSERT
+        _lacak = await barang_lacak.rencana(conn, tenant_id, product_id=None, track_serial=body.track_serial or None,
+                                            costing_method=body.costing_method, lama={},
+                                            ber_stok=body.item_type == "goods" and bool(body.track_inventory))
         # Insert item
         # Parse opening_stock_date if provided
         opening_date = None
@@ -1098,6 +1104,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
             bool(body.bisa_dikirim),
             body.merek,  # V502 (sudah dipangkas oleh skema; None = tanpa merek)
         )
+        await barang_lacak.terapkan(conn, tenant_id, item_id, _lacak)   # sebelum stok awal: stok awal FIFO jadi lapisan pertama
 
         # Insert unit conversions (goods only)
         if body.item_type == "goods" and body.conversions:
@@ -1407,7 +1414,8 @@ async def _periksa_ubah(conn, ctx: dict, item_id, body):
                   kategori, merek, deskripsi, barcode, is_returnable,
                   sales_tax, purchase_tax, image_url,
                   inventory_account_id, cogs_account_id,
-                  sales_account_id, purchase_account_id, sales_tax_id, purchase_tax_id
+                  sales_account_id, purchase_account_id, sales_tax_id, purchase_tax_id,
+                  COALESCE(track_serial, false) AS track_serial, costing_method
            FROM products WHERE id = $1 AND tenant_id = $2""",
         str(item_id),
         tenant_id,
@@ -1501,7 +1509,6 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                 "sku": "sku",
                 "inventory_account_id": "inventory_account_id",
                 "cogs_account_id": "cogs_account_id",
-                "costing_method": "costing_method",
                 "opening_stock": "opening_stock",
                 "opening_stock_rate": "opening_stock_rate",
                 "opening_stock_date": "opening_stock_date",
@@ -1564,6 +1571,13 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                 body_dict["inventory_account_id"] = new_inv_acct
             if new_cogs_acct and new_cogs_acct != eff_cogs_acct:
                 body_dict["cogs_account_id"] = new_cogs_acct
+
+            # Lacak serial + metode biaya: SATU penentu (services/barang_lacak); terkunci sesudah ada riwayat stok
+            _lacak = await barang_lacak.rencana(
+                conn, tenant_id, product_id=item_id, track_serial=body_dict.pop("track_serial", None),
+                costing_method=body_dict.pop("costing_method", None), lama=dict(old_item) if old_item else {},
+                ber_stok=eff_item_type == "goods" and bool(eff_track_inventory))
+            await barang_lacak.terapkan(conn, tenant_id, item_id, _lacak)
 
             for field, db_field in field_mappings.items():
                 if field in body_dict:
@@ -3800,6 +3814,7 @@ async def get_item(request: Request, item_id: UUID):
                 "deskripsi": row.get("deskripsi"),
                 "is_returnable": row.get("is_returnable", True),
                 "track_batches": row.get("track_batches", False),
+                "track_serial": bool(row.get("track_serial") or False),   # form Barang: lacak nomor seri
                 "track_expiry": row.get("track_expiry", False),
                 "default_expiry_days": row.get("default_expiry_days"),
                 "image_url": row.get("image_url"),

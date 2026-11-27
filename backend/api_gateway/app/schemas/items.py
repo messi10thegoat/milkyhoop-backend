@@ -6,7 +6,7 @@ Items are the master data for goods and services used in transactions.
 """
 
 from decimal import Decimal
-from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator, AfterValidator
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_validator
 from typing import Annotated, Optional, List, Literal, Dict, Any
 
 from ..services.satuan_dasar import faktor_sah as _faktor_sah
@@ -43,13 +43,6 @@ TAX_CODES = ['', 'PPN_11', 'PPN_12', 'PPH_23_2', 'PPH_23_15']
 # =============================================================================
 
 FaktorKonversi = Annotated[Decimal, BeforeValidator(_faktor_sah)]  # SATU validator dgn units.set_conversion (putusan pemilik 5 Nov)
-
-
-def _fifo_belum_aktif(v):
-    """FIFO ditolak 422 sampai jalurnya hidup (putusan pemilik 24 Nov): dulu diterima tanpa efek pada HPP."""
-    if v == "fifo":
-        raise ValueError("Metode FIFO belum aktif; gunakan rata-rata.")
-    return v
 
 
 class UnitConversionInput(BaseModel):
@@ -182,7 +175,7 @@ class CreateItemRequest(_BadanItem):
     cogs_account_id: Optional[str] = Field(None, description="Cost of Goods Sold account UUID from CoA")
 
     # Costing method
-    costing_method: Annotated[Literal["weighted_average", "fifo"], AfterValidator(_fifo_belum_aktif)] = Field("weighted_average", description="Inventory costing method")
+    costing_method: Literal["weighted_average", "fifo"] = Field("weighted_average", description="Metode biaya; fifo hanya bila flag fifo_v1 tenant nyala (services/barang_lacak)")
 
     # Opening Stock (for importing existing inventory)
     opening_stock: Optional[float] = Field(None, ge=0, description="Initial stock quantity")
@@ -199,6 +192,7 @@ class CreateItemRequest(_BadanItem):
 
     # Lot/Batch and Expiry tracking
     track_batches: bool = Field(False, description="Enable lot/batch tracking")
+    track_serial: bool = Field(False, description="Lacak nomor seri (flag serial_v1, barang ber-stok)")
     track_expiry: bool = Field(False, description="Enable expiry date tracking")
     default_expiry_days: Optional[int] = Field(None, ge=1, description="Days before expiry to alert")
 
@@ -281,7 +275,8 @@ class UpdateItemRequest(_BadanItem):
     cogs_account_id: Optional[str] = None
 
     # Costing method
-    costing_method: Annotated[Optional[Literal["weighted_average", "fifo"]], AfterValidator(_fifo_belum_aktif)] = None
+    costing_method: Optional[Literal["weighted_average", "fifo"]] = None   # dinilai services/barang_lacak (flag fifo_v1, terkunci sesudah ada riwayat stok)
+    track_serial: Optional[bool] = None   # Lacak nomor seri (flag serial_v1); terkunci sesudah ada riwayat stok
 
     # Opening Stock
     opening_stock: Optional[float] = Field(None, ge=0)
@@ -356,6 +351,7 @@ class ItemListItem(BaseModel):
     deskripsi: Optional[str] = None
     is_returnable: bool
     track_batches: bool = False
+    track_serial: bool = False   # lacak nomor seri (flag serial_v1)
     track_expiry: bool = False
     default_expiry_days: Optional[int] = None
     sales_price: Optional[float] = None
