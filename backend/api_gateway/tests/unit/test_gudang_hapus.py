@@ -18,7 +18,7 @@ FK_LIVE = {
     ("sales_orders", "warehouse_id"), ("sales_receipts", "warehouse_id"), ("serial_movements", "from_warehouse_id"), ("serial_movements", "to_warehouse_id"),
     ("stock_adjustment_items", "warehouse_id"), ("stock_adjustments", "warehouse_id"), ("stock_opnames", "warehouse_id"), ("stock_transfers", "from_warehouse_id"),
     ("stock_transfers", "to_warehouse_id"), ("stok_minimum_gudang", "warehouse_id"), ("warehouse_bins", "warehouse_id"), ("warehouse_stock", "warehouse_id"),
-    ("work_centers", "warehouse_id"),
+    ("work_centers", "warehouse_id"), ("user_warehouse_access", "warehouse_id"),   # V516 (PARITAS-4b)
 }
 MIG = Path(__file__).parents[3] / "migrations"
 ROUTER = (Path(__file__).parents[2] / "app" / "routers" / "warehouses.py").read_text()

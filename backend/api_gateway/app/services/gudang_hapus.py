@@ -35,6 +35,7 @@ JEJAK_GUDANG = [
     ("work_centers", "warehouse_id", ""),
     ("warehouse_bins", "warehouse_id", ""),
     ("stok_minimum_gudang", "warehouse_id", ""),
+    ("user_warehouse_access", "warehouse_id", ""),   # PARITAS-4b V516: gudang yang masih diberikan ke pengguna = jejak
 ]
 PENANDA_UTAMA = [("branches", "default_warehouse_id"), ("pengiriman_preferensi", "default_lokasi_kirim_id")]
 LABEL_JEJAK = {
@@ -43,7 +44,7 @@ LABEL_JEJAK = {
     "purchase_orders": "Pesanan pembelian", "bills": "Faktur pembelian", "sales_orders": "Pesanan penjualan", "sales_invoices": "Faktur penjualan",
     "sales_receipts": "Penjualan tunai", "invoice_fulfillments": "Pengiriman", "production_orders": "Produksi", "production_order_materials": "Produksi",
     "production_completions": "Produksi", "item_serials": "Nomor seri", "serial_movements": "Nomor seri", "fixed_assets": "Aset tetap",
-    "work_centers": "Pusat kerja", "warehouse_bins": "Lokasi rak", "stok_minimum_gudang": "Stok minimum",
+    "work_centers": "Pusat kerja", "warehouse_bins": "Lokasi rak", "stok_minimum_gudang": "Stok minimum", "user_warehouse_access": "Akses gudang pengguna",
 }
 SQL_HITUNG_JEJAK = "SELECT COUNT(*) FROM (" + " UNION ALL ".join(
     f"SELECT 1 FROM {t} WHERE {c} = $1{s}" for t, c, s in JEJAK_GUDANG) + ") j"   # aksi_tersedia detail; sama dgn JEJAK_GUDANG
