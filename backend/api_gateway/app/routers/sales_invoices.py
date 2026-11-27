@@ -2012,7 +2012,7 @@ async def _galat_batch(conn, tenant_id, batch_id, warehouse_id, p_name, tersedia
     gudang = gudang or "gudang ini"
     if batch_id is None:
         raise GalatBerkode(409, "BATCH_STOK_KURANG", f"Stok batch {p_name} di {gudang} tidak cukup: tersedia {tg.qty(tersedia)}, diminta {tg.qty(diminta)}.")
-    b = await conn.fetchrow("SELECT batch_number, item_id FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tenant_id)
+    b = await BA.muat_batch(conn, tenant_id, batch_id)   # pembaca batch bersama (disaring tenant)
     if b is None or (product_id is not None and str(b["item_id"]) != str(product_id)):
         raise GalatBerkode(422, "BATCH_TIDAK_DIKENAL", f"Batch yang dipilih bukan batch {p_name}. Pilih batch dari daftar.", field="batch_id")
     raise GalatBerkode(409, "BATCH_STOK_KURANG", f"Stok batch {b['batch_number']} ({p_name}) di {gudang} tidak cukup: tersedia {tg.qty(tersedia)}, diminta {tg.qty(diminta)}.",
