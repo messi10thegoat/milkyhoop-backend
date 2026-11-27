@@ -71,7 +71,13 @@ async def hitung_po(conn, tenant_id: str, items: list, discount_percent=0, disco
     baris = [PH.hitung_baris(i, tolak=tolak, faktor=await faktor_masukan(conn, tenant_id, i.get("tax_rate"), cache)) if "quantity" in i else i
              for i in items]
     faktor = await faktor_masukan(conn, tenant_id, tax_rate, cache)
-    return {"baris": baris, "header": PH.hitung_header(baris, discount_percent, discount_amount, tax_rate, faktor=faktor)}
+    header = PH.hitung_header(baris, discount_percent, discount_amount, tax_rate, faktor=faktor)
+    # BUG-428b (ikut Accurate; pola tagihan c-2): TOTAL PO dibulatkan ke presisi tenant (Rp bulat bila tanpa uang_bersen); baris tetap bersen.
+    # PO tanpa jurnal -> selisih hanya ditampilkan (pembulatan_text); tagihan dari PO membulatkan sendiri saat posting.
+    from . import uang_presisi as UP
+    total, selisih = UP.pembulatan(header["total_amount"], await UP.presisi_tenant(conn, tenant_id))
+    header = {**header, "total_amount": total, "pembulatan": selisih}
+    return {"baris": baris, "header": header}
 
 
 def hitung_json(h: dict) -> dict:
@@ -80,6 +86,10 @@ def hitung_json(h: dict) -> dict:
     return {
         "subtotal": _f(t["subtotal"]), "discount_amount": _f(t["discount_amount"]), "tax_amount": _f(t["tax_amount"]),
         "total_amount": _f(t["total_amount"]),
+        # BUG-428b: selisih pembulatan total (0 = tanpa baris); teks siap tampil dari server
+        "pembulatan": _f(t.get("pembulatan") or NOL),
+        "pembulatan_text": (f"Pembulatan {'+' if t['pembulatan'] > NOL else '-'}Rp {abs(t['pembulatan']):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            if t.get("pembulatan") else None),
         "items": [{"line_number": n, "description": b.get("description"), "quantity": _f(b.get("quantity")) if b.get("quantity") is not None else None,
                    "unit": b.get("unit"), "unit_price": _f(b.get("unit_price")), "discount_percent": float(b.get("discount_percent") or 0),
                    "tax_rate": float(b.get("tax_rate") or 0), "subtotal": _f(b["subtotal"]), "discount_amount": _f(b["discount_amount"]),
