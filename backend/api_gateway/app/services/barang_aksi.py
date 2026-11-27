@@ -219,12 +219,17 @@ _PETA_UBAH = {"name": "nama_produk", "sales_price": "sales_price", "purchase_pri
               "sales_tax": "sales_tax", "purchase_tax": "purchase_tax",
               # FORM BARANG CW (Lanjutan): akun/pajak/merek ikut pratinjau
               "sales_account_id": "sales_account_id", "purchase_account_id": "purchase_account_id", "inventory_account_id": "inventory_account_id",
-              "cogs_account_id": "cogs_account_id", "sales_tax_id": "sales_tax_id", "purchase_tax_id": "purchase_tax_id", "merek": "merek"}
+              "cogs_account_id": "cogs_account_id", "sales_tax_id": "sales_tax_id", "purchase_tax_id": "purchase_tax_id", "merek": "merek",
+              # BUG-421: lacak ikut dirinci
+              "track_serial": "track_serial", "track_batches": "track_batches", "track_expiry": "track_expiry", "costing_method": "costing_method"}
 LABEL_MEDAN = {"name": "Nama", "sales_price": "Harga jual", "purchase_price": "Harga beli", "base_unit": "Satuan dasar", "reorder_level": "Titik pesan ulang",
                "item_type": "Jenis", "track_inventory": "Lacak stok", "bisa_dikirim": "Bisa dikirim", "kategori": "Kategori", "deskripsi": "Deskripsi", "barcode": "Barcode",
                "is_returnable": "Bisa diretur", "sales_tax": "Pajak jual", "purchase_tax": "Pajak beli", "sales_account_id": "Akun penjualan",
                "purchase_account_id": "Akun pembelian", "inventory_account_id": "Akun persediaan", "cogs_account_id": "Akun HPP", "sales_tax_id": "Pajak jual",
-               "purchase_tax_id": "Pajak beli", "merek": "Merek"}
+               "purchase_tax_id": "Pajak beli", "merek": "Merek",
+               "track_serial": "Lacak nomor seri", "track_batches": "Lacak batch", "track_expiry": "Lacak kedaluwarsa", "costing_method": "Metode biaya",
+               "conversions": "Konversi satuan"}
+TEKS_METODE = {"weighted_average": "Rata-rata", "fifo": "FIFO"}
 MEDAN_AKUN = ("sales_account_id", "purchase_account_id", "inventory_account_id", "cogs_account_id")
 MEDAN_PAJAK = ("sales_tax_id", "purchase_tax_id")
 TEKS_KEDEPAN = "Akun dan pajak yang diubah hanya berlaku untuk transaksi berikutnya; jurnal dan dokumen yang sudah ada tidak berubah."
@@ -260,6 +265,8 @@ def beri_teks_ubah(r: dict, nama: dict) -> dict:
             if m in MEDAN_AKUN + MEDAN_PAJAK:
                 p[f"{k}_text"] = nama.get(v) or v or TEKS_KOSONG
                 ada_akun_pajak = True
+            elif m == "costing_method":
+                p[f"{k}_text"] = TEKS_METODE.get(v, v or TEKS_KOSONG)
             elif v in ("True", "False"):
                 p[f"{k}_text"] = "Ya" if v == "True" else "Tidak"
             else:
@@ -305,8 +312,46 @@ def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:
             dari = None
         if _s(baru[medan]) != _s(dari):
             perubahan.append({"medan": medan, "dari": _s(dari), "ke": _s(baru[medan])})
+    if "conversions" in baru and baru["conversions"] is not None:
+        perubahan += rinci_konversi(lama.get("_konversi") or [], baru["conversions"], baru.get("base_unit") or lama.get("base_unit") or lama.get("satuan") or "")
     per = [] if perubahan else [_blok("TANPA_PERUBAHAN", "Tidak ada perubahan pada data barang.")]
     return _hasil([], {"perubahan": perubahan, "efek": []}, per)
+
+
+def _konv_teks(unit, faktor, dasar) -> str:
+    return f"1 {unit} = {_s(Decimal(str(faktor)))} {dasar}".strip()
+
+
+def rinci_konversi(lama: list, baru: list, dasar: str) -> list:
+    """Rincian konversi satuan (PUT = ganti semua): cocok per id, lalu per nama satuan (tanpa beda huruf besar). Aktif lama yang tak dikirim /
+    is_active=false = dinonaktifkan. Perubahan: medan 'conversions' + dari/ke berupa kalimat siap tampil."""
+    hasil, terpakai = [], set()
+    per_id = {str(x["id"]): x for x in lama}
+    per_nama = {str(x["conversion_unit"]).strip().lower(): x for x in lama}
+    for c in baru:
+        c = c if isinstance(c, dict) else dict(c)
+        unit, aktif = str(c.get("conversion_unit") or "").strip(), c.get("is_active", True) is not False
+        x = per_id.get(str(c.get("id"))) if c.get("id") else None
+        x = x or per_nama.get(unit.lower())
+        if x is not None:
+            terpakai.add(str(x["id"]))
+        if not aktif:
+            if x is not None:
+                hasil.append({"medan": "conversions", "dari": _konv_teks(x["conversion_unit"], x["conversion_factor"], dasar), "ke": f"{x['conversion_unit']} dinonaktifkan"})
+            continue
+        if x is None:
+            hasil.append({"medan": "conversions", "dari": "", "ke": "+ " + _konv_teks(unit, c.get("conversion_factor"), dasar)})
+            continue
+        if _s(Decimal(str(x["conversion_factor"]))) != _s(Decimal(str(c.get("conversion_factor")))) or str(x["conversion_unit"]) != unit:
+            hasil.append({"medan": "conversions", "dari": _konv_teks(x["conversion_unit"], x["conversion_factor"], dasar),
+                          "ke": _konv_teks(unit, c.get("conversion_factor"), dasar)})
+        for k, label in (("sales_price", "harga jual"), ("purchase_price", "harga beli")):
+            if c.get(k) is not None and _s(Decimal(str(c[k]))) != _s(Decimal(str(x[k] or 0))):
+                hasil.append({"medan": "conversions", "dari": f"{label} per {unit}: {_s(Decimal(str(x[k] or 0)))}", "ke": f"{label} per {unit}: {_s(Decimal(str(c[k])))}"})
+    for x in lama:
+        if str(x["id"]) not in terpakai:
+            hasil.append({"medan": "conversions", "dari": _konv_teks(x["conversion_unit"], x["conversion_factor"], dasar), "ke": f"{x['conversion_unit']} dinonaktifkan"})
+    return hasil
 
 
 def _uuid_atau_none(x):

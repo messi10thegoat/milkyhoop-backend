@@ -1415,7 +1415,8 @@ async def _periksa_ubah(conn, ctx: dict, item_id, body):
                   sales_tax, purchase_tax, image_url,
                   inventory_account_id, cogs_account_id,
                   sales_account_id, purchase_account_id, sales_tax_id, purchase_tax_id,
-                  COALESCE(track_serial, false) AS track_serial, costing_method
+                  COALESCE(track_serial, false) AS track_serial, costing_method,
+                  COALESCE(track_batches, false) AS track_batches, COALESCE(track_expiry, false) AS track_expiry
            FROM products WHERE id = $1 AND tenant_id = $2""",
         str(item_id),
         tenant_id,
@@ -1818,7 +1819,12 @@ async def preview_ubah_barang(request: Request, item_id: UUID, body: dict):
             if e.status_code == 404:
                 return BA.rencana_ubah(None, {})
             return {"ok": False, "blocks": [blok_dari_galat(e)], "peringatan": [], "rencana": None}
-        r = BA.rencana_ubah(dict(lama), baru)
+        lama = dict(lama)
+        if b.conversions is not None:   # BUG-421 kelas: rincian konversi satuan (tambah/ubah faktor/harga/nonaktif)
+            lama["_konversi"] = [dict(x) for x in await conn.fetch(
+                """SELECT id::text AS id, conversion_unit, conversion_factor, purchase_price, sales_price FROM unit_conversions
+                   WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"])]
+        r = BA.rencana_ubah(lama, baru)
         ids = BA.ids_perubahan(r)
         nama = {}
         if ids:   # FORM BARANG CW: id akun/pajak -> nama (satu kueri tiap jenis, disaring tenant)
