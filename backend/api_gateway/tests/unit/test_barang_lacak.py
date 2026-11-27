@@ -18,15 +18,18 @@ class K:
         return self.riwayat
 
 
-def _r(k, **kw):
-    import app.services.barang_lacak as m
-    async def fa(conn, tid):
-        return set(k.fitur)
-    m.fitur_aktif = fa
+@pytest.fixture(autouse=True)
+def _tiruan(monkeypatch):
+    import app.utils.tanggal_tenant as tt
     async def tgl(conn, tid):
         return "2026-11-27"
-    import app.utils.tanggal_tenant as tt
-    tt.tanggal_dokumen = tgl
+    monkeypatch.setattr(tt, "tanggal_dokumen", tgl)
+    async def fa(conn, tid):
+        return set(conn.fitur)
+    monkeypatch.setattr(BL, "fitur_aktif", fa)
+
+
+def _r(k, **kw):
     dasar = dict(product_id="p", track_serial=None, costing_method=None, lama={}, ber_stok=True)
     dasar.update(kw)
     return asyncio.run(BL.rencana(k, "t", **dasar))
