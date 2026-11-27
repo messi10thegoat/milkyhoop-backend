@@ -309,6 +309,14 @@ def rencana_ubah(lama: Optional[dict], baru: dict) -> dict:
     return _hasil([], {"perubahan": perubahan, "efek": []}, per)
 
 
+def _uuid_atau_none(x):
+    from uuid import UUID
+    try:
+        return x if isinstance(x, UUID) else UUID(str(x))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 async def idem_aksi(conn, ctx: dict, request, prefix: str, doc_id, isi, kerja, response=None):
     """Idempotensi tulis barang (X-Idempotency-Key opsional): kunci sama + isi sama = respons asli (replay), isi beda = 409. WAJIB di dalam
     transaksi. kerja() -> respons (dict); disimpan di transaksi yang sama bila berkunci."""
@@ -317,7 +325,10 @@ async def idem_aksi(conn, ctx: dict, request, prefix: str, doc_id, isi, kerja, r
     if _lama is not None:
         return _lama
     resp = await kerja()
-    return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, doc_id)
+    # BUG-407: result_id = kolom uuid -> doc_id teks (nama kategori, "id:ke", ...) JANGAN dikirim; ganti id di respons bila UUID, selain itu None
+    data = resp.get("data") if isinstance(resp, dict) else None
+    rid = _uuid_atau_none(doc_id) or _uuid_atau_none(data.get("id") if isinstance(data, dict) else None)
+    return await idem_buat.simpan(conn, ctx, kp, sd, prefix, resp, rid)
 
 
 async def catat_hapus(conn, tenant_id: str, product_id: str, nama: str, kode: Optional[str], user_id) -> None:
