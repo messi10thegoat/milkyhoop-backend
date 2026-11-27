@@ -34,9 +34,10 @@ Badan = badan `POST /fulfill` (persis, tanpa kolom baru):
       {
         "invoice_item_id": "uuid", "description": "Kaos Polos", "item_name": "Kaos Polos", "unit": "Dus",
         "quantity": "6", "quantity_text": "6 Dus",
-        "ordered": "10", "shipped_before": "0", "remaining_after": "4",
+        "ordered": "10", "shipped_before": "0", "remaining_before": "10", "remaining_after": "4",
         "ordered_text": "10 Dus", "shipped_before_text": "0 Dus", "remaining_before_text": "10 Dus", "remaining_after_text": "4 Dus",
         "summary_text": "Kaos Polos — 6 Dus dari 10 · sisa 4",
+        "detail_text": "Kaos Polos — 6 Dus dari 10 · sisa 4",
         "stock_before_text": "20 Dus", "stock_after_text": "14 Dus",
         "batches": [
           {"batch_id": "uuid", "batch_no": "B-2611-01", "expiry_text": "31 Des 2026",
@@ -52,7 +53,7 @@ Badan = badan `POST /fulfill` (persis, tanpa kolom baru):
   }
 }
 ```
-BUG-436 (MASTER): per baris wajib `item_name`, `quantity`, `unit`, `ordered`, `shipped_before`, `remaining_after` (+ `*_text`) dan `summary_text` ringkas server (pola `<nama> — <qty satuan> dari <dipesan> · sisa <sisa>`; sisa 0 -> `· lunas terkirim`) sehingga FE tidak menghitung.
+BUG-436 (MASTER): per baris wajib `item_name`, `quantity`, `unit`, `ordered`, `shipped_before`, `remaining_after` (+ `*_text`) dan `summary_text` ringkas server (pola `<nama> — <qty satuan> dari <dipesan> · sisa <sisa>`; sisa 0 -> `· lunas terkirim`) sehingga FE tidak menghitung. `detail_text` = isi sama dengan `summary_text` (nama kunci yang diminta KEPALA FE; pakai salah satu). Satuan CAMPURAN (Pcs + meter) = per BARIS: tiap baris memakai satuan barisnya sendiri; `totals` tidak menjumlahkan kuantitas lintas satuan. Jalur SO `/sales-orders/{id}/fulfill/preview` sudah mengirim `lines[].remaining_after` (tak berubah).
 
 Semua `*_text` = teks SERVER siap tampil (FE tidak memformat/menghitung). Angka `quantity`/`cogs`/`revenue` string desimal apa adanya dari inti (angka journal-derived; FE hanya menampilkan). `lines[].batches` terisi hanya untuk barang ber-batch; `serials` hanya barang ber-serial. Bila diblok: `can_fulfill=false`, `lines` tetap memuat baris yang bisa diukur, `totals`/`journal_text` = null.
 
