@@ -40,7 +40,6 @@ Endpoints:
 from fastapi import Depends, APIRouter, HTTPException, Request, Query
 from ..services.pihak_helpers import pelanggan_kanonik_tenant  # pelanggan WAJIB satu tenant (30 Sep)
 from ..utils.tanggal_tenant import tanggal_dokumen
-from ..services.fitur_parkir import fitur_belum_tersedia
 from typing import Optional, Literal
 from uuid import UUID
 import logging
@@ -448,91 +447,34 @@ async def list_pending_cheques(
         raise HTTPException(status_code=500, detail="Failed to list pending cheques")
 
 
-@router.get("/due-today", dependencies=[Depends(fitur_belum_tersedia)])
-async def list_due_today(request: Request):
-    """List cheques due for deposit today."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_cheques_due_for_deposit($1, CURRENT_DATE)
-            """,
-                ctx["tenant_id"],
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(row["id"]),
-                        "cheque_number": row["cheque_number"],
-                        "cheque_date": row["cheque_date"],
-                        "bank_name": row["bank_name"],
-                        "amount": row["amount"],
-                        "party_name": row["party_name"],
-                        "customer_id": str(row["customer_id"])
-                        if row["customer_id"]
-                        else None,
-                        "days_until_due": row["days_until_due"],
-                    }
-                    for row in rows
-                ],
-                "count": len(rows),
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing due today: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list cheques due today")
+@router.get("/due-today")
+async def list_due_today(request: Request, cheque_type: Optional[Literal["received", "issued"]] = Query(None)):
+    """G33: giro MENUNGGU yang jatuh tempo HARI INI (tanggal bisnis tenant). Baca saja; teks tampil dari server."""
+    from ..services import giro_laporan as GL
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(GL.SQL_HARI_INI, ctx["tenant_id"], hari, cheque_type)
+        return {"success": True, **GL.daftar(rows, hari, await presisi_tenant(conn, ctx["tenant_id"]))}
 
 
-@router.get("/upcoming", dependencies=[Depends(fitur_belum_tersedia)])
+@router.get("/upcoming")
 async def list_upcoming_cheques(
     request: Request,
     days: int = Query(30, ge=1, le=365),
     cheque_type: Optional[Literal["received", "issued"]] = Query(None),
 ):
-    """List upcoming cheques."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_upcoming_cheques($1, $2, $3)
-            """,
-                ctx["tenant_id"],
-                days,
-                cheque_type,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(row["id"]),
-                        "cheque_number": row["cheque_number"],
-                        "cheque_date": row["cheque_date"],
-                        "cheque_type": row["cheque_type"],
-                        "amount": row["amount"],
-                        "party_name": row["party_name"],
-                        "days_until_due": row["days_until_due"],
-                    }
-                    for row in rows
-                ],
-                "days": days,
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing upcoming cheques: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list upcoming cheques")
+    """G33: giro MENUNGGU yang jatuh tempo dalam `days` hari ke depan (mulai besok). Baca saja."""
+    from ..services import giro_laporan as GL
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(GL.SQL_AKAN, ctx["tenant_id"], hari, cheque_type, days)
+        return {"success": True, "days": days, **GL.daftar(rows, hari, await presisi_tenant(conn, ctx["tenant_id"]))}
 
 
 @router.get("/bounced")
@@ -585,111 +527,34 @@ async def list_bounced_cheques(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list bounced cheques")
 
 
-@router.get("/by-customer/{customer_id}", dependencies=[Depends(fitur_belum_tersedia)])
-async def list_customer_cheques(
-    request: Request,
-    customer_id: UUID,
-    status: Optional[str] = Query(None),
-):
-    """List cheques by customer."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            # get_customer_cheques() menyaring customer_id SAJA, tanpa tenant: tanpa pagar ini tenant mana pun bisa membaca
-            # cek milik tenant lain lewat id-nya (tertutup sementara hanya oleh 500 tipe bigint).
-            if not await conn.fetchval(
-                "SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, ctx["tenant_id"]
-            ):
-                raise HTTPException(status_code=404, detail="Customer not found")
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_customer_cheques($1, $2)
-            """,
-                customer_id,
-                status,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(row["id"]),
-                        "cheque_number": row["cheque_number"],
-                        "cheque_date": row["cheque_date"],
-                        "bank_name": row["bank_name"],
-                        "amount": row["amount"],
-                        "status": row["status"],
-                        "reference_number": row["reference_number"],
-                        "deposited_date": row["deposited_date"],
-                        "cleared_date": row["cleared_date"],
-                    }
-                    for row in rows
-                ],
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing customer cheques: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list customer cheques")
+@router.get("/by-customer/{customer_id}")
+async def list_customer_cheques(request: Request, customer_id: UUID, status: Optional[Literal["pending", "deposited", "cleared", "bounced", "cancelled", "replaced"]] = Query(None)):
+    """G33: semua giro satu customer (saringan status opsional), terbaru dulu. Pagar tenant: pihak harus milik tenant."""
+    from ..services import giro_laporan as GL
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id = $1 AND tenant_id = $2", customer_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Customer not found")
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(GL.SQL_PIHAK.format(kolom="customer_id"), ctx["tenant_id"], customer_id, status)
+        return {"success": True, **GL.daftar(rows, hari, await presisi_tenant(conn, ctx["tenant_id"]))}
 
 
-@router.get("/by-vendor/{vendor_id}", dependencies=[Depends(fitur_belum_tersedia)])
-async def list_vendor_cheques(
-    request: Request,
-    vendor_id: UUID,
-    status: Optional[str] = Query(None),
-):
-    """List cheques by vendor."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            # get_vendor_cheques() menyaring vendor_id SAJA, tanpa tenant: tanpa pagar ini tenant mana pun bisa membaca
-            # cek milik tenant lain lewat id-nya (tertutup sementara hanya oleh 500 tipe bigint).
-            if not await conn.fetchval(
-                "SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, ctx["tenant_id"]
-            ):
-                raise HTTPException(status_code=404, detail="Vendor not found")
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_vendor_cheques($1, $2)
-            """,
-                vendor_id,
-                status,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": str(row["id"]),
-                        "cheque_number": row["cheque_number"],
-                        "cheque_date": row["cheque_date"],
-                        "bank_name": row["bank_name"],
-                        "amount": row["amount"],
-                        "status": row["status"],
-                        "reference_number": row["reference_number"],
-                        "issued_date": row["issued_date"],
-                        "cleared_date": row["cleared_date"],
-                    }
-                    for row in rows
-                ],
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing vendor cheques: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to list vendor cheques")
-
-
-# =============================================================================
-# GET CHEQUE DETAIL
-# =============================================================================
+@router.get("/by-vendor/{vendor_id}")
+async def list_vendor_cheques(request: Request, vendor_id: UUID, status: Optional[Literal["pending", "deposited", "cleared", "bounced", "cancelled", "replaced"]] = Query(None)):
+    """G33: semua giro satu vendor (saringan status opsional), terbaru dulu. Pagar tenant: pihak harus milik tenant."""
+    from ..services import giro_laporan as GL
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM vendors WHERE id = $1 AND tenant_id = $2", vendor_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Vendor not found")
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(GL.SQL_PIHAK.format(kolom="vendor_id"), ctx["tenant_id"], vendor_id, status)
+        return {"success": True, **GL.daftar(rows, hari, await presisi_tenant(conn, ctx["tenant_id"]))}
 
 
 @router.get("/summary", response_model=ChequeSummaryResponse)
@@ -756,43 +621,17 @@ async def get_cheque_summary(request: Request):
         logger.error(f"Error getting cheque summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get cheque summary")
 
-@router.get("/aging", dependencies=[Depends(fitur_belum_tersedia)], response_model=ChequeAgingResponse)
-async def get_cheque_aging(
-    request: Request,
-    cheque_type: Literal["received", "issued"] = Query("received"),
-):
-    """Get aging of pending cheques."""
-    try:
-        ctx = get_user_context(request)
-        pool = await get_pool()
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM get_cheque_aging($1, $2)
-            """,
-                ctx["tenant_id"],
-                cheque_type,
-            )
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "aging_bucket": row["aging_bucket"],
-                        "count": row["count"],
-                        "total_amount": row["total_amount"],
-                    }
-                    for row in rows
-                ],
-                "cheque_type": cheque_type,
-            }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting cheque aging: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get cheque aging")
+@router.get("/aging", response_model=ChequeAgingResponse)
+async def get_cheque_aging(request: Request, cheque_type: Literal["received", "issued"] = Query("received")):
+    """G33: umur giro MENUNGGU terhadap tanggal jatuh tempo (belum jatuh tempo / lewat 1-30 / 31-60 / 61-90 / >90 hari). Baca saja."""
+    from ..services import giro_laporan as GL
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        hari = await tanggal_dokumen(conn, ctx["tenant_id"])
+        rows = await conn.fetch(GL.SQL_UMUR, ctx["tenant_id"], cheque_type)
+        return {"success": True, "data": GL.susun_umur(rows, hari, await presisi_tenant(conn, ctx["tenant_id"])), "cheque_type": cheque_type}
 
 
 @router.get("/{cheque_id}", response_model=ChequeDetailResponse)

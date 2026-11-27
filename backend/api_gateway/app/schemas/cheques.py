@@ -218,6 +218,7 @@ class ChequeAgingItem(BaseModel):
     aging_bucket: str
     count: int
     total_amount: float  # NUMERIC(18,2); int menolak sen -> 500
+    total_text: Optional[str] = None  # G33: teks tampil server
 
 
 class ChequeSummary(BaseModel):
