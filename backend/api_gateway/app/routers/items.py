@@ -18,7 +18,7 @@ Endpoints:
 
 from ..services.cari_kata import syarat_kata
 from fastapi import APIRouter, HTTPException, Request, Query, Response, UploadFile, File
-from typing import Optional
+from typing import Literal, Optional
 import logging
 import asyncpg
 import json
@@ -327,6 +327,9 @@ def _syarat_cari(search, idx: int):
     return syarat_kata(search, ("p.nama_produk", "p.barcode"), idx)   # BUG-181: SATU fungsi per-kata + escape (services/cari_kata)
 
 
+from ..services import barang_varian as _BV  # noqa: E402  U-V3: kolom varian daftar barang
+
+
 @router.get("/items", response_model=ItemListResponse)
 async def list_items(
     request: Request,
@@ -356,6 +359,8 @@ async def list_items(
     offset: int = Query(0, ge=0),
     aksi: Optional[str] = Query(None, description="Kunci aksi: stok_habis, di_bawah_titik_pesan, tanpa_harga_jual, nonaktif"),
     with_totals: bool = Query(False, description="Sertakan sum_nilai_stok (Σ server baris tersaring)"),
+    varian: Optional[Literal["induk", "anak", "tanpa_anak"]] = Query(
+        None, description="Varian (DESAIN-varian): induk = barang induk saja; anak = varian saja; tanpa_anak = sembunyikan varian (induk jadi pengelompok)"),
 ):
     """
     List all items with optional filtering.
@@ -373,6 +378,7 @@ async def list_items(
         query_parts = [
             """SELECT p.*, COALESCE(per.jumlah, 0) as current_stock, per.total_nilai as stock_value, per.transaction_count,
             v.name as vendor_name,
+            (SELECT ip.nama_produk FROM products ip WHERE ip.id = p.matrix_parent_id AND ip.tenant_id = p.tenant_id) as nama_induk,
             """ + BD.sql_aksi("di_bawah_titik_pesan") + """ as low_stock,
             COALESCE(
                 (SELECT json_agg(json_build_object(
@@ -444,6 +450,10 @@ async def list_items(
             query_parts.append(f"AND p.status = ${param_idx}")
             params.append(status)
             param_idx += 1
+
+        if isinstance(varian, str) and varian:   # tes memanggil handler langsung: Query() default = objek
+            query_parts.append({"induk": "AND COALESCE(p.is_matrix_parent, false)", "anak": "AND p.matrix_parent_id IS NOT NULL",
+                                "tanpa_anak": "AND p.matrix_parent_id IS NULL"}[varian])
 
         cari_sql, cari_params = _syarat_cari(search, param_idx)
         if cari_sql:
@@ -577,6 +587,7 @@ async def list_items(
                     position_text_ket=BD.position_text_ket(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                            sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual=sb.get("bisa_dijual"),
+                    **_BV.kolom_varian_daftar(row),
                     stok_fisik_text=BD.stok_fisik_text(row, row.get("current_stock"),
                                                        sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual_text=BD.bisa_dijual_text(row, row.get("current_stock"), sb.get("bisa_dijual"),

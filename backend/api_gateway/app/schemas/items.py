@@ -393,6 +393,11 @@ class ItemListItem(BaseModel):
     bisa_dijual: Optional[Decimal] = None
     stok_fisik_text: Optional[str] = None  # BUG-260: "172 pcs"; None bila barang tak dilacak stoknya
     bisa_dijual_text: Optional[str] = None  # BUG-260: "160 pcs"; selalu terisi untuk barang ber-stok
+    # U-V3 varian (DESAIN-varian, pola Accurate: daftar menampilkan varian, induk = pengelompok)
+    is_matrix_parent: bool = False
+    matrix_parent_id: Optional[str] = None
+    nama_induk_text: Optional[str] = Field(None, description="nama barang induk bila baris ini varian")
+    atribut_text: Optional[str] = Field(None, description="mis. 'M · Hitam' bila baris ini varian")
 
 
 class ItemListResponse(BaseModel):

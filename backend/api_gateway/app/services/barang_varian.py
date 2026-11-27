@@ -474,3 +474,12 @@ async def terapkan_harga(conn, ctx: dict, induk_id, body) -> dict:
         await conn.execute("UPDATE products SET purchase_price = $3, updated_at = NOW() WHERE tenant_id = $1 AND matrix_parent_id = $2 "
                            "AND deleted_at IS NULL", tid, induk_id, r["purchase_price"])
     return r
+
+
+def kolom_varian_daftar(row) -> dict:
+    """GET /api/items per baris (U-V3): penanda induk + nama induk + atribut varian (teks server). Murni."""
+    pid = row.get("matrix_parent_id")
+    atr = _atr(row.get("matrix_attributes"))
+    return {"is_matrix_parent": bool(row.get("is_matrix_parent")), "matrix_parent_id": str(pid) if pid else None,
+            "nama_induk_text": row.get("nama_induk") if pid else None,
+            "atribut_text": " · ".join(str(v) for v in atr.values()) if pid and atr else None}
