@@ -164,7 +164,8 @@ def test_create_menyimpan_total_dari_baris_dengan_diskon_header(monkeypatch):
     assert r["success"] is True and r["data"]["po_number"] == "PO-2610-0001"
     ins = next(a for q, a in kon.writes if q.startswith("INSERT INTO purchase_orders"))
     # a = tenant, nomor, vendor_id, vendor_name, subtotal, disc%, disc_amt, rate, tax, total, ...
-    assert ins[4] == D("100.02") and ins[9] == ins[4] - ins[6] + ins[8]
+    from app.services import uang_presisi as UP
+    assert ins[4] == D("100.02") and ins[9] == UP.pembulatan(ins[4] - ins[6] + ins[8], 0)[0]   # BUG-428b: total dibulatkan
     assert any(q.startswith("UPDATE purchase_orders SET subtotal") for q, a in kon.writes)    # total dihitung ulang dari baris DB (satu jalur)
     baris = [a for q, a in kon.writes if q.startswith("INSERT INTO purchase_order_items")]
     assert len(baris) == 1 and baris[0][6] == D("33.34") and baris[0][12] == D("100.02")

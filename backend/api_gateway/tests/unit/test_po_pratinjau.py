@@ -122,6 +122,8 @@ def test_calculate_sama_dengan_kalkulator_create(kon):
     baris = [PH.hitung_baris(i.model_dump()) for i in b.items]
     t = PH.hitung_header(baris, b.discount_percent, b.discount_amount, b.tax_rate)
     assert r["ok"] is True and r["blocks"] == []
+    from app.services import uang_presisi as UP
+    t = {**t, "total_amount": UP.pembulatan(t["total_amount"], 0)[0]}   # BUG-428b: total PO dibulatkan ke presisi tenant (bawaan Rp bulat)
     assert (r["subtotal"], r["discount_amount"], r["tax_amount"], r["total_amount"]) == tuple(
         float(t[k]) for k in ("subtotal", "discount_amount", "tax_amount", "total_amount"))
     assert r["items"][0]["total"] == float(baris[0]["total"]) and r["items"][0]["line_number"] == 1
