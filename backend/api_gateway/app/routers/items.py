@@ -3656,8 +3656,16 @@ async def get_item_history(
         konv = [(r["conversion_unit"], r["conversion_factor"]) for r in await conn.fetch(   # BUG-108: satuan besar campuran ("14 Karton 4 Pcs")
             "SELECT conversion_unit, conversion_factor FROM unit_conversions WHERE tenant_id = $1 AND product_id = $2 AND COALESCE(is_active, true) "
             "AND conversion_factor > 1 ORDER BY conversion_factor DESC", tenant_id, item_id)]
+        transit = None   # celah 8: saldo Transit barang ini (sampai date_to / hari ini); hanya bila kartu tak disaring ke satu gudang
+        if not wid:
+            from ..services import transit_baca as TB
+            _sd = dt or await tanggal_dokumen(conn, tenant_id)
+            _tq = await conn.fetchval(TB.SQL_KARTU_QTY, tenant_id, str(item_id), _sd)
+            _hpp = await conn.fetchval(TB.SQL_KARTU_HPP, tenant_id, str(item_id), _sd)
+            transit = TB.bentuk(_tq, (Decimal(str(_tq or 0)) * Decimal(str(_hpp or 0))).quantize(Decimal("0.01")), await presisi_tenant(conn, tenant_id))
         return TLP.tambah_teks_kartu_stok({   # BUG-272: teks tampil server aditif (medan lama utuh)
             "success": True,
+            "dalam_perjalanan": transit,
             "data": movements,
             "total": total or 0,
             "page": page,
