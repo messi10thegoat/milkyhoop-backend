@@ -105,9 +105,10 @@ async def keluar(conn, tenant_id: str, product_id, nama: str, warehouse_id, ledg
     ke = STATUS_KELUAR.get(str(ref.get("source_type") or "").upper(), "sold")
     for s in serials:
         r = ada[s.upper()]
-        await conn.execute("UPDATE item_serials SET status = $3, updated_at = now() WHERE id = $1 AND tenant_id = $2", r["id"], tenant_id, ke)
-        await _taut(conn, tenant_id, ledger_id, r["id"], "keluar", r["status"], r["warehouse_id"])
-        await _jejak(conn, tenant_id, r["id"], GERAK_KELUAR, r["warehouse_id"], None, r["status"], ke, ref)
+        sid, st0, g0 = r["id"], r["status"], r["warehouse_id"]   # keadaan SEBELUM diubah (dasar pembalikan)
+        await _taut(conn, tenant_id, ledger_id, sid, "keluar", st0, g0)
+        await conn.execute("UPDATE item_serials SET status = $3, updated_at = now() WHERE id = $1 AND tenant_id = $2", sid, tenant_id, ke)
+        await _jejak(conn, tenant_id, sid, GERAK_KELUAR, g0, None, st0, ke, ref)
 
 
 async def balik(conn, tenant_id: str, ledger_asal, ledger_id, ref: dict) -> None:
@@ -123,6 +124,7 @@ async def balik(conn, tenant_id: str, ledger_asal, ledger_id, ref: dict) -> None
         raise GalatBerkode(409, "SERIAL_SUDAH_BERGERAK", "Dokumen tidak bisa dibatalkan: nomor seri " + ", ".join(lanjut)
                            + " sudah dipakai transaksi sesudahnya. Batalkan transaksi itu dulu.")
     for t in taut:
+        t = dict(t)   # salinan: keadaan sekarang dibaca sebelum diubah
         # masuk dibatalkan: kembali ke status sebelum masuk; serial yang LAHIR di baris asal (status_sebelum None) -> 'scrapped' (baris & jejak tetap, Law 2)
         st, g = t["status_sebelum"] or "scrapped", t["gudang_sebelum"]
         await conn.execute("UPDATE item_serials SET status = $3, warehouse_id = $4, updated_at = now() WHERE id = $1 AND tenant_id = $2",
