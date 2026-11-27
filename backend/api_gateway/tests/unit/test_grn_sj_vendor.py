@@ -123,7 +123,7 @@ def test_rute_meneruskan_medan():
     assert "sj_vendor=body.vendor_delivery_note if body else None" in pv and "notes=body.notes if body else None" in pv
     assert "body.vendor_delivery_note if body else None))" in pv
     tulis = inspect.getsource(RPO)
-    assert re.search(r"G\.tulis_grn\(conn, ctx, po, body\.receive_date, _grn, body\.notes,\s+body\.vendor_delivery_note\)", tulis)
+    assert re.search(r"G\.tulis_grn\(conn, ctx, po, body\.receive_date, _grn, body\.notes,\s*body\.vendor_delivery_note\b", tulis)  # + serial S1 sesudahnya
 
 
 def test_tulis_grn_menyimpan_kolom():

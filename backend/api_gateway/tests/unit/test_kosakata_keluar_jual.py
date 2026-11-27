@@ -4,6 +4,7 @@ Terukur: penjualan lewat Pengiriman = INVOICE_FULFILLMENT (kaos 5/5) tak terhitu
 (daftar lama SALES_INVOICE/POS_SALE/CASH_SALE/SALES_RECEIPT_COGS); label riwayat & nama pelanggan hanya untuk
 SALES_INVOICE. Putusan MASTER: analitik BERSIH dari pembatalan jual (*_VOID).
 """
+import re
 import ast
 from pathlib import Path
 
@@ -83,7 +84,7 @@ def test_penulis_sql_mentah_dikenal():
             continue
         for n in ast.walk(t):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if any((isinstance(c, ast.Constant) and isinstance(c.value, str) and "INSERT INTO inventory_ledger" in c.value)
+                if any((isinstance(c, ast.Constant) and isinstance(c.value, str) and re.search(r"INSERT INTO inventory_ledger\b", c.value))   # \b: inventory_ledger_serials (taut serial, V513) bukan kartu stok
                        or (isinstance(c, ast.Call) and getattr(c.func, "id", getattr(c.func, "attr", None)) == "tulis_kartu") for c in ast.walk(n)):
                     dapat.add((str(p.relative_to(APP)), n.name))
     baru = {d for d in dapat if d not in PENULIS_SQL}

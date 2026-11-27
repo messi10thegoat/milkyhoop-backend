@@ -1056,6 +1056,8 @@ def _sidik_terima(body: ReceiveGoodsRequest) -> dict:
         if Decimal(str(it.get("quantity_rejected") or 0)) == 0 and it.get("reject_reason") is None:
             it.pop("quantity_rejected", None)
             it.pop("reject_reason", None)
+        if it.get("serials") is None:   # Serial S1: kunci bawaan dibuang -> bentuk lama = hash lama
+            it.pop("serials", None)
     return d
 
 

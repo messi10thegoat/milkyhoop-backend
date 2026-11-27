@@ -19,6 +19,10 @@ def _tulis(**kw):
     class K:
         async def execute(self, sql, *a):
             self.p = (sql, a)
+
+        async def fetchval(self, sql, *a):   # Serial S1: pintu kartu menanyakan track_serial
+            assert "track_serial" in sql
+            return False
     k = K()
     b = dict(tenant_id="t", product_id="p", product_code="c", product_name="n", movement_type="SALE", movement_date="d", source_type="S", source_id="s", quantity_in=0,
              quantity_out=2, quantity_balance=3, unit_cost=D("5"), total_cost=D("10"), average_cost=D("6"), warehouse_id="w")

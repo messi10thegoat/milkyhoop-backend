@@ -47,9 +47,12 @@ class K:
     async def execute(self, sql, *a):
         if "UPDATE item_serials" in sql:
             s = self._s(a[0])
-            s["status"] = a[2]
-            if len(a) > 3:
-                s["warehouse_id"] = a[3]
+            if "status = 'available', warehouse_id = $3" in sql:   # masuk
+                s["status"], s["warehouse_id"] = "available", a[2]
+            else:                                                  # keluar: status=$3 ; balik: status=$3, warehouse_id=$4
+                s["status"] = a[2]
+                if len(a) > 3:
+                    s["warehouse_id"] = a[3]
         elif "inventory_ledger_serials" in sql:
             self.taut.append({"ledger_id": a[0], "serial_id": a[1], "arah": a[3], "status_sebelum": a[4], "gudang_sebelum": a[5], "urut": len(self.taut)})
         elif "serial_movements" in sql:

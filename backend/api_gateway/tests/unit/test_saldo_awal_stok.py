@@ -58,6 +58,8 @@ class Konek:
 
     async def fetchval(self, sql, *a):
         sql = " ".join(sql.split())
+        if "track_serial" in sql:
+            return False   # Serial S1: pintu kartu stok bertanya track_serial (tak dicatat: urutan jurnal/kartu yang diuji)
         self.log.append(("fetchval", sql, a))
         if sql.startswith("SELECT EXISTS"):
             return self.berjalan

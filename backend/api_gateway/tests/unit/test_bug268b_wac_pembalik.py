@@ -42,6 +42,8 @@ class Buku:
         return {"balance": q, "nilai": v}
 
     async def fetchval(self, sql, *a):
+        if "track_serial" in sql:
+            return False  # Serial S1: barang tanpa nomor seri (pintu kartu stok)
         if "stock_opnames" in sql:
             return None   # Stok Opname: penjaga gudang terkunci (assert_gudang_tidak_terkunci) -- tak ada opname
         if "tenant_features" in sql:
