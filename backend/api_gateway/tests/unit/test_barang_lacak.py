@@ -66,3 +66,10 @@ def test_router_memakai_penentu():
     src = inspect.getsource(R)
     assert src.count("barang_lacak.rencana(") == 2 and src.count("barang_lacak.terapkan(") == 2
     assert '"costing_method": "costing_method"' not in src
+
+
+def test_kirim_faktur_memakai_batch_baris():
+    from app.routers import sales_invoices as SI
+    src = inspect.getsource(SI._execute_fulfillment)
+    assert 'inv_item.get("batch_id")' in src and "perlu_kirim, unit, batch_id" in src
+    assert '"batch_id": UUID(str(i["batch_id"])) if i.get("batch_id") else None' in inspect.getsource(SI)

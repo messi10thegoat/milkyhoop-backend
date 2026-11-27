@@ -2043,7 +2043,7 @@ async def _execute_fulfillment(
         inv_item = await conn.fetchrow(
             """
             SELECT id, item_id, description, quantity, fulfilled_qty,
-                   allocated_amount, recognized_amount, perlu_kirim, unit
+                   allocated_amount, recognized_amount, perlu_kirim, unit, batch_id
             FROM sales_invoice_items WHERE id=$1 AND invoice_id=$2 FOR UPDATE
         """,
             inv_item_id,
@@ -2057,6 +2057,9 @@ async def _execute_fulfillment(
         product_id = inv_item["item_id"]
         description = inv_item["description"] or ""
         quantity_total = Decimal(str(inv_item["quantity"]))
+        # Paritas butir 9: batch dipilih DI BARIS faktur dipakai saat kirim (dulu diabaikan -> selalu FEFO); permintaan kirim boleh menimpa
+        if not req.get("batch_id") and inv_item.get("batch_id"):
+            req = {**req, "batch_id": inv_item.get("batch_id")}
         fulfilled_so_far = Decimal(str(inv_item["fulfilled_qty"] or 0))
         allocated = Decimal(str(inv_item["allocated_amount"] or 0))
         recognized_so_far = Decimal(str(inv_item["recognized_amount"] or 0))
@@ -7252,6 +7255,7 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                         "invoice_item_id": UUID(i["invoice_item_id"]),
                         "quantity": Decimal(str(i["quantity"])),
                         "serials": i.get("serials"),   # Serial S2 (flag serial_v1): nomor seri keluar per baris
+                        "batch_id": UUID(str(i["batch_id"])) if i.get("batch_id") else None,   # butir 9: batch pilihan saat kirim
                     }
                     for i in req_items
                 ]
