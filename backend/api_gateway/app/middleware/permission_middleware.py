@@ -364,6 +364,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/bills/[^/]+/payments$", ["POST"], "send_payment", "C"),
     (r"^/api/bills/[^/]+/payments/preview$", ["POST"], "send_payment", "C"),  # PAY-PREVIEW U1
     (r"^/api/sales-invoices/[^/]+/fulfill$", ["POST"], "sales_invoice", "P"),
+    (r"^/api/sales-invoices/[^/]+/fulfill/preview$", ["POST"], "sales_invoice", "P"),  # BUG-430: salinan izin /fulfill (butir 6)
     # Rute CW (26 Sep+): PRATINJAU = izin yang SAMA dengan tulisnya (1 Okt 2026, insiden ADMIN grapgrap
     # 403 PERMISSION_UNMAPPED di halaman Pembayaran). Dijaga test_izin_rute_pratinjau: tiap .../preview
     # harus terpetakan = izin rute tulisnya. Pola ber-$ dan DI ATAS prefiks ^/api/sales-orders (= C).
