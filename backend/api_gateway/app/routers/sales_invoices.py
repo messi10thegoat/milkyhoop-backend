@@ -7,9 +7,10 @@ Handles draft -> posted -> paid lifecycle with AR and journal entry creation.
 
 from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, HTTPException, Request, Query, UploadFile, File, Body
+from fastapi.exceptions import RequestValidationError
 from typing import List, Optional, Literal
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 import logging
 import asyncpg
 
@@ -7161,6 +7162,45 @@ def penjaga_kirim_faktur(invoice) -> None:
         )
 
 
+from datetime import date as _dt_date_kirim  # noqa: E402
+
+
+class _KirimBaris(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    invoice_item_id: UUID
+    quantity: Decimal
+    batch_id: Optional[UUID] = None
+    serials: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _arah(cls, v):
+        if isinstance(v, dict) and "allocations" in v:
+            raise ValueError("allocations: pilih batch per kiriman dengan batch_id; untuk dua batch, kirim dua baris dengan invoice_item_id yang sama.")
+        return v
+
+
+class _KirimBadan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    warehouse_id: Optional[UUID] = None
+    fulfillment_date: Optional[_dt_date_kirim] = None
+    recognize_revenue: Optional[bool] = True
+    idempotency_key: Optional[str] = None
+    notes: Optional[str] = None
+    items: List[_KirimBaris] = Field(default_factory=list)
+
+
+def _validasi_kirim(body) -> None:
+    """Skema tegas POST /{id}/fulfill: hanya MEMVALIDASI (badan asli tetap dipakai pemanggil). Galat -> 422 VALIDASI_GAGAL berbahasa Indonesia."""
+    from pydantic import ValidationError
+    if not isinstance(body, dict):
+        raise RequestValidationError([{"type": "dict_type", "loc": ("body",), "msg": "Badan harus objek.", "input": None}])
+    try:
+        _KirimBadan.model_validate(body)
+    except ValidationError as e:
+        raise RequestValidationError([{**x, "loc": ("body", *x["loc"])} for x in e.errors()])
+
+
 @router.post("/{invoice_id}/fulfill")
 async def fulfill_invoice(request: Request, invoice_id: UUID):
     """
@@ -7174,8 +7214,9 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
         ctx = get_user_context(request)
         pool = await get_pool()
 
-        # Parse body manually (no Pydantic schema yet)
+        # Badan dibaca manual (hash/idempotensi), tapi DIVALIDASI skema tegas dulu: isian asing (mis. 'allocations') = 422, bukan diabaikan.
         body = await request.json()
+        _validasi_kirim(body)
         warehouse_id_str = body.get("warehouse_id")
         # t10b-3b: default = tanggal bisnis tenant, diisi di dalam conn di bawah
         fulfillment_date_str = body.get("fulfillment_date")
@@ -7305,6 +7346,8 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
 
                 return {"success": True, "data": result}
 
+    except RequestValidationError:
+        raise
     except HTTPException:
         raise
     except Exception as e:
