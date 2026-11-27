@@ -145,3 +145,23 @@ def test_migrasi_v513_aditif_dan_pembalik():
     assert "CREATE TABLE inventory_ledger_serials" in up and "chk_item_serials_status" in up
     assert not re.search(r"^\s*(BEGIN|COMMIT)\s*;", up, re.M | re.I)
     assert "DROP TABLE IF EXISTS inventory_ledger_serials" in rb and "DROP CONSTRAINT IF EXISTS chk_item_serials_status" in rb
+
+
+def test_penyesuaian_menyimpan_serial_di_draf_dan_meneruskan_saat_posting():
+    import inspect
+    from app.routers import stock_adjustments as SA
+    from app.schemas.stock_adjustments import StockAdjustmentItemCreate, StockAdjustmentItemUpdate
+    from app.services import stok_sesuai as SS
+    assert "serials" in StockAdjustmentItemCreate.model_fields and "serials" in StockAdjustmentItemUpdate.model_fields
+    src = inspect.getsource(SA._tulis_baris_draf)
+    assert '", serials" if b.get("serials") is not None else ""' in src   # kolom hanya disebut bila ada serial (aman sebelum migrasi)
+    assert inspect.getsource(SA).count('serials=g.get("serials")') == 2   # masuk + keluar
+    s = inspect.getsource(SS)
+    assert '"serials": i.get("serials")' in s and "SERIAL_TAK_DILACAK" in s
+
+
+def test_migrasi_v513_kolom_draf_penyesuaian():
+    up = (MIG / "V513__serial_taut_ledger.sql").read_text()
+    rb = (MIG / "V513__serial_taut_ledger_ROLLBACK.sql").read_text()
+    assert "ALTER TABLE stock_adjustment_items ADD COLUMN serials TEXT[]" in up
+    assert "ALTER TABLE stock_adjustment_items DROP COLUMN IF EXISTS serials" in rb

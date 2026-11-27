@@ -360,6 +360,11 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
         harga = Decimal(int(p["unit_cost"] or 0))
         if harga == 0 and isyarat is not None:
             isyarat.append(isyarat_tanpa_harga(nama))
+        if getattr(item, "serials", None) is not None:   # Serial S1: nomor seri hanya untuk barang wajib serial (flag serial_v1 + track_serial)
+            from . import serial_gerak
+            if not await serial_gerak.wajib(conn, tid, pid):
+                bl.galat("SERIAL_TAK_DILACAK", 422, f"{nama} tidak memakai nomor seri; kosongkan nomor seri.")
+                continue
         hasil.append({"product_id": pid, "product_code": p["code"], "product_name": nama, "unit": p["unit"],
                       "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
@@ -367,7 +372,7 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
                       "warehouse_id": wid_simpan, "source_transfer_id": transfer["id"] if transfer is not None else None,
                       "source_transfer_number": transfer["transfer_number"] if transfer is not None else None,
                       "unit_masuk": unit_masuk if unit_masuk and hq["faktor"] != 1 else None, "jumlah_masuk": _d(item.physical_quantity if tipe == "recount" else item.quantity_adjustment) if unit_masuk and hq["faktor"] != 1 else None,
-                      "konversi": konv_semua.get(str(pid), [])})
+                      "konversi": konv_semua.get(str(pid), []), "serials": getattr(item, "serials", None)})
     return hasil
 
 
@@ -541,7 +546,8 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, 
         sebelum = await stok_gudang(conn, tid, i["product_id"], gid)
         hasil["gerak"].append({"product_id": i["product_id"], "product_code": i["product_code"], "product_name": i["product_name"],
                                "masuk": q if q > 0 else NOL, "keluar": -q if q < 0 else NOL, "unit_cost": _d(i["unit_cost"]),
-                               "stok_sebelum": sebelum, "stok_sesudah": sebelum + q, "warehouse_id": gid, "gudang": nama_gudang[gid]})
+                               "stok_sebelum": sebelum, "stok_sesudah": sebelum + q, "warehouse_id": gid, "gudang": nama_gudang[gid],
+                               "serials": i.get("serials")})   # Serial S1: dinilai pintu kartu stok (serial_gerak) saat posting
         if q != 0 and _d(i["unit_cost"]) == 0:
             hasil["isyarat"].append(isyarat_tanpa_harga(i["product_name"]))
         if i.get("source_transfer_id") and sebelum + q < 0:

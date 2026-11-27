@@ -30,6 +30,7 @@ class StockAdjustmentItemCreate(BaseModel):
     warehouse_id: Optional[str] = Field(None, description="BUG-261: gudang baris; kosong = gudang dokumen")
     source_transfer_id: Optional[str] = Field(None, description="BUG-261: baris penyelesaian selisih terima Pemindahan (gudang = Transit, terkunci)")
     unit: Optional[str] = Field(None, max_length=50, description="BUG-123: satuan jumlah baris (mis. Karton); kosong = satuan dasar. Server mengonversi (satuan_dasar), FE tak menghitung")
+    serials: Optional[List[str]] = Field(None, max_length=10000, description="Serial S1 (flag serial_v1): nomor seri barang track_serial; jumlah = |selisih| satuan dasar; dinilai saat posting")
 
     @field_validator('product_id')
     @classmethod
@@ -48,6 +49,7 @@ class StockAdjustmentItemUpdate(BaseModel):
     warehouse_id: Optional[str] = None            # BUG-261
     source_transfer_id: Optional[str] = None      # BUG-261
     unit: Optional[str] = Field(None, max_length=50)   # BUG-123: satuan jumlah baris; kosong = satuan dasar
+    serials: Optional[List[str]] = Field(None, max_length=10000)   # Serial S1
 
 
 # =============================================================================

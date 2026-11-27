@@ -545,19 +545,20 @@ async def _tulis_baris_draf(conn, sa_id, baris) -> None:
     """Baris draf dari penentu SS.susun_baris (== pratinjau). Total induk diisi trigger trg_update_sa_totals (diukur pg_trigger)."""
     for b in baris:
         await conn.execute(
-            """
+            f"""
             INSERT INTO stock_adjustment_items (
                 id, stock_adjustment_id, product_id, product_code, product_name,
                 quantity_before, quantity_adjustment, quantity_after, unit,
                 unit_cost, total_value, reason_detail,
-                system_quantity, physical_quantity, line_number, warehouse_id, source_transfer_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                system_quantity, physical_quantity, line_number, warehouse_id, source_transfer_id{", serials" if b.get("serials") is not None else ""}
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17{", $18" if b.get("serials") is not None else ""})
         """,
             uuid_module.uuid4(), sa_id, b["product_id"], b["product_code"], b["product_name"],
             b["quantity_before"], b["quantity_adjustment"], b["quantity_after"], b["unit"],
             b["unit_cost"], b["total_value"], b["reason_detail"], b["system_quantity"], b["physical_quantity"], b["line_number"],
             b.get("warehouse_id"), b.get("source_transfer_id"),     # BUG-261 (V503): NULL = ikut gudang dokumen / baris biasa
-        )
+            *([b["serials"]] if b.get("serials") is not None else []),   # Serial S1 (V513): kolom hanya disebut bila ada nomor seri
+        )                                                                     # (kode aman hidup SEBELUM migrasi; 0 data lama)
 
 
 async def _lokasi(conn, tid: str, storage_location_id) -> Optional[str]:
@@ -892,6 +893,7 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
                 journal_id=journal_id,
                 movement_type="STOCK_ADJUSTMENT",
                 storage_location_id=sa["storage_location_id"],
+                serials=g.get("serials"),   # Serial S1 (V513)
             )
         else:
             # OUTBOUND: WAC does NOT change (Rule 3). Snapshot current net-on-hand WAC, insert outbound row.
@@ -933,7 +935,8 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
                 source_id=adjustment_id, source_number=sa["adjustment_number"], quantity_in=0, quantity_out=qty_out,
                 quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=new_avg_cost,
                 warehouse_id=adj_warehouse_id, storage_location_id=sa["storage_location_id"], journal_id=journal_id,
-                created_by=ctx["user_id"], notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}")
+                created_by=ctx["user_id"], notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
+                serials=g.get("serials"))   # Serial S1 (V513)
 
     # Update stock adjustment status (+ gudang yang benar-benar dipakai, untuk draf lama tanpa warehouse_id)
     await conn.execute(
