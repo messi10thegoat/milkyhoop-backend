@@ -241,3 +241,7 @@ class StockAdjustmentSummaryResponse(BaseModel):
     """Response for stock adjustments summary."""
     success: bool = True
     data: Dict[str, Any]
+
+
+# Isian masukan baris dari GET /dari-pemindahan (sisanya medan tampil). Dijaga tes kontrak test_sa_isian_tegas.
+ISIAN_DARI_PEMINDAHAN = ("product_id", "quantity_adjustment", "unit", "warehouse_id", "source_transfer_id", "reason_detail")

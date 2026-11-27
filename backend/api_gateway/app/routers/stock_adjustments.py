@@ -411,7 +411,7 @@ async def daftar_pemindahan_tertunda(request: Request):
 @router.get("/dari-pemindahan/{transfer_id}")
 async def tarik_dari_pemindahan(request: Request, transfer_id: UUID):
     """BUG-261: baris Pengurangan siap pakai (gudang Transit terkunci, qty = tertunda, source_transfer_id, alasan 'Hilang (selisih terima <no>)'); kirim apa adanya
-    (qty boleh diperkecil = tarik sebagian) ke POST /stock-adjustments + /preview. Baca saja."""
+    (qty boleh diperkecil = tarik sebagian) ke POST /stock-adjustments + /preview -- HANYA isian masukan (ISIAN_DARI_PEMINDAHAN); medan tampil (product_name, unit_cost, ...) ditolak 422 sejak isian tegas. Baca saja."""
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn, conn.transaction(readonly=True):
