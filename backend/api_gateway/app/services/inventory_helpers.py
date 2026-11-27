@@ -656,7 +656,8 @@ async def record_inventory_reversal(
             movement_type=movement_type, movement_date=movement_date, source_type=void_source_type, source_id=source_id,
             source_number=entry["source_number"], quantity_in=rev_qty_in, quantity_out=rev_qty_out, quantity_balance=new_balance,
             unit_cost=unit_cost, total_cost=total_cost, average_cost=avg_cost, warehouse_id=entry["warehouse_id"],
-            journal_id=reversal_journal_id, created_by=created_by, notes=f"{notes_prefix} - inventory reversal", batch_id=entry["batch_id"])
+            journal_id=reversal_journal_id, created_by=created_by, notes=f"{notes_prefix} - inventory reversal", batch_id=entry["batch_id"],
+            balik_ledger=entry["id"])  # Serial S1: nomor seri baris asal dipulihkan (serial_gerak.balik)
         if rencana_fifo is not None:
             await fifo_lapisan.catat_balik(conn, tenant_id, ledger_id, rencana_fifo)
 

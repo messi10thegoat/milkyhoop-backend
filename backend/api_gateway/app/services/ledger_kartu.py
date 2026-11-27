@@ -9,10 +9,16 @@ SQL = """INSERT INTO inventory_ledger (id, tenant_id, product_id, product_code, 
 async def tulis_kartu(conn, *, tenant_id, product_id, product_code, product_name, movement_type, movement_date, source_type, source_id, quantity_in, quantity_out,
                       quantity_balance, unit_cost, total_cost, average_cost, warehouse_id, created_by=None, notes=None, source_number=None, journal_id=None, batch_id=None,
                       storage_location_id=None, transaction_unit=None, transaction_quantity=0, conversion_factor=None, id: Optional[UUID] = None,
-                      jam_nyata: bool = False) -> UUID:
+                      jam_nyata: bool = False, serials: Optional[list] = None, balik_ledger: Optional[UUID] = None) -> UUID:
     """-> id baris. transaction_quantity bawaan 0 = bawaan kolom (None eksplisit tetap NULL). jam_nyata: created_at = clock_timestamp() (urutan di dalam satu transaksi)."""
     id = id or uuid4()
     await conn.execute(SQL, id, tenant_id, product_id, product_code, product_name, movement_type, movement_date, source_type, source_id, source_number, quantity_in,
                        quantity_out, quantity_balance, unit_cost, total_cost, average_cost, warehouse_id, journal_id, created_by, notes, batch_id,
                        storage_location_id, transaction_unit, transaction_quantity, conversion_factor, jam_nyata)
+    # Serial S1 (flag gelap serial_v1): nomor seri ikut baris kartu di transaksi yang sama; barang tanpa track_serial = satu SELECT, tak berubah
+    from . import serial_gerak
+    await serial_gerak.pada_kartu(conn, tenant_id=tenant_id, product_id=product_id, product_name=product_name, warehouse_id=warehouse_id, ledger_id=id,
+                                  quantity_in=quantity_in, quantity_out=quantity_out, serials=serials, balik_ledger=balik_ledger,
+                                  ref={"source_type": source_type, "source_id": source_id, "source_number": source_number, "created_by": created_by,
+                                       "movement_date": movement_date})
     return id
