@@ -22,7 +22,7 @@ def test_kolom_varian_anak_induk_dan_biasa():
 def test_saringan_varian_dan_kolom_di_skema():
     src = inspect.getsource(I.list_items)
     for frag in ('"induk": "AND COALESCE(p.is_matrix_parent, false)"', '"anak": "AND p.matrix_parent_id IS NOT NULL"',
-                 '"tanpa_anak": "AND p.matrix_parent_id IS NULL"', "kolom_varian_daftar(row)", "ip.tenant_id = p.tenant_id"):
+                 '"tanpa_anak": "AND p.matrix_parent_id IS NULL"', "_BV.kolom_varian_daftar(row)", "ip.tenant_id = p.tenant_id"):
         assert frag in src, frag
     for f in ("is_matrix_parent", "matrix_parent_id", "nama_induk_text", "atribut_text"):
         assert f in ItemListItem.model_fields

@@ -539,6 +539,7 @@ async def list_items(
                 else []
             )
 
+            _kv = _BV.kolom_varian_daftar(row)
             items.append(
                 ItemListItem(
                     id=row["id"],
@@ -587,7 +588,8 @@ async def list_items(
                     position_text_ket=BD.position_text_ket(row, row.get("current_stock"), sb.get("bisa_dijual"),
                                                            sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual=sb.get("bisa_dijual"),
-                    **_BV.kolom_varian_daftar(row),
+                    is_matrix_parent=_kv["is_matrix_parent"], matrix_parent_id=_kv["matrix_parent_id"],
+                    nama_induk_text=_kv["nama_induk_text"], atribut_text=_kv["atribut_text"],
                     stok_fisik_text=BD.stok_fisik_text(row, row.get("current_stock"),
                                                        sb.get("satuan_dasar") or row.get("base_unit") or row.get("satuan")),
                     bisa_dijual_text=BD.bisa_dijual_text(row, row.get("current_stock"), sb.get("bisa_dijual"),
