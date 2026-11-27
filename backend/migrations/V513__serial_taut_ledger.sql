@@ -14,6 +14,8 @@ CREATE TABLE inventory_ledger_serials (
 );
 CREATE INDEX idx_ils_serial ON inventory_ledger_serials (tenant_id, serial_id);
 
+-- CHECK lama V048 chk_is_status (available/reserved/sold/returned/damaged/scrapped) diganti SUPERSET (+ transit, returned_vendor, adjusted_out).
+ALTER TABLE item_serials DROP CONSTRAINT chk_is_status;
 ALTER TABLE item_serials ADD CONSTRAINT chk_item_serials_status
     CHECK (status IN ('available', 'reserved', 'transit', 'sold', 'returned', 'returned_vendor', 'adjusted_out', 'damaged', 'scrapped'));
 

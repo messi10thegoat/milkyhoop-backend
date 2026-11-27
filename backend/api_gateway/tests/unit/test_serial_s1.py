@@ -145,7 +145,7 @@ def test_grn_meneruskan_serial_per_baris():
 def test_migrasi_v513_aditif_dan_pembalik():
     up = (MIG / "V513__serial_taut_ledger.sql").read_text()
     rb = (MIG / "V513__serial_taut_ledger_ROLLBACK.sql").read_text()
-    assert "CREATE TABLE inventory_ledger_serials" in up and "chk_item_serials_status" in up
+    assert "CREATE TABLE inventory_ledger_serials" in up and "chk_item_serials_status" in up and "DROP CONSTRAINT chk_is_status" in up
     assert not re.search(r"^\s*(BEGIN|COMMIT)\s*;", up, re.M | re.I)
     assert "DROP TABLE IF EXISTS inventory_ledger_serials" in rb and "DROP CONSTRAINT IF EXISTS chk_item_serials_status" in rb
 
