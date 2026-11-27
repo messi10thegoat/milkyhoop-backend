@@ -2006,6 +2006,21 @@ async def _update_invoice_fulfillment_status(conn, invoice_id, tenant_id):
     )
 
 
+async def _cek_sisa_total(conn, invoice, items_to_fulfill):
+    """Total diminta per baris faktur (jumlah semua potongan/batch) <= sisa baris; pesan memakai angka yang dikirim pengguna."""
+    minta: dict = {}
+    for r in items_to_fulfill:
+        minta[str(r["invoice_item_id"])] = minta.get(str(r["invoice_item_id"]), Decimal("0")) + Decimal(str(r["quantity"]))
+    if not minta:
+        return
+    for b in await conn.fetch("SELECT id, description, quantity, fulfilled_qty FROM sales_invoice_items WHERE invoice_id = $1 AND id = ANY($2::uuid[])",
+                              invoice["id"], list(minta)):
+        sisa = Decimal(str(b["quantity"])) - Decimal(str(b["fulfilled_qty"] or 0))
+        q = minta[str(b["id"])]
+        if q > sisa:
+            raise HTTPException(409, f"Sisa {b['description'] or ''} hanya {tg.qty(sisa)}, diminta {tg.qty(q)}.")
+
+
 async def _execute_fulfillment(
     conn,
     tenant_id,
@@ -2038,6 +2053,9 @@ async def _execute_fulfillment(
     cogs_items = []
     fulfillment_item_ids = []
 
+    # Sisa baris dinilai atas TOTAL permintaan per baris faktur SEBELUM dipecah per batch (dulu potongan kedua melapor "hanya 0, diminta 2"
+    # padahal yang diminta 4 dan sisanya 2).
+    await _cek_sisa_total(conn, invoice, items_to_fulfill)
     # Paritas butir 9 (V515): baris ber-alokasi dipecah per batch (satu gerak kartu stok per batch)
     items_to_fulfill = await batch_alokasi.pecah_kirim(conn, items_to_fulfill)
     # -- Per-item loop ---------------------------------------------------------
