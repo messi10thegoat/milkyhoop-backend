@@ -7201,6 +7201,39 @@ def _validasi_kirim(body) -> None:
         raise RequestValidationError([{**x, "loc": ("body", *x["loc"])} for x in e.errors()])
 
 
+@router.post("/{invoice_id}/fulfill/preview")
+async def preview_fulfill_invoice(request: Request, invoice_id: UUID):
+    """PRATINJAU "Kirim barang" faktur (BUG-430): badan = POST /fulfill; inti SAMA di transaksi yang SELALU di-ROLLBACK. 200 walau diblok
+    (blocks[] berkode). Kontrak backend/docs/KONTRAK-fulfill-preview-faktur-20261128.md; services/faktur_kirim_pratinjau.py."""
+    try:
+        from ..services.faktur_kirim_pratinjau import pratinjau_kirim_faktur
+        ctx = get_user_context(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        _validasi_kirim(body)   # skema tegas SAMA dengan POST /fulfill (d0c7d5bf9): kolom asing/allocations = 422 berarah
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tr = conn.transaction()
+            await tr.start()
+            try:
+                await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(ctx["tenant_id"]))
+
+                async def _kunci(c, tid, iid):
+                    await c.execute("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", tid, f"INVOICE_FULFILL:{str(iid)}")
+                data = await pratinjau_kirim_faktur(conn, ctx, invoice_id, body if isinstance(body, dict) else {}, _execute_fulfillment,
+                                                    penjaga_kirim_faktur, check_period_is_open, _kunci)
+            finally:
+                await tr.rollback()  # SELALU: pratinjau tak pernah menulis
+        return {"success": True, "data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing fulfill invoice {invoice_id}: {e}", exc_info=True)
+        raise HTTPException(500, "Gagal menampilkan pratinjau pengiriman.")
+
+
 @router.post("/{invoice_id}/fulfill")
 async def fulfill_invoice(request: Request, invoice_id: UUID):
     """

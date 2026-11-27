@@ -22,7 +22,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 
 from . import teks_galat as tg
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
@@ -33,11 +33,15 @@ _NOL = Decimal("0")
 
 
 class SOFulfillLine(BaseModel):
+    model_config = ConfigDict(extra="forbid")   # BUG-430: kolom tak dikenal = 422 (dulu diabaikan diam-diam)
     sales_order_item_id: str
     quantity: Decimal
+    batch_id: Optional[str] = None              # batch pilihan (kosong = FEFO / alokasi baris faktur)
+    serials: Optional[List[str]] = None         # nomor seri keluar (flag serial_v1); hanya bila baris SO jatuh di SATU baris faktur
 
 
 class SOFulfillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     items: Optional[List[SOFulfillLine]] = None   # absen/null -> semua sisa yang bisa dikirim; [] -> tidak ada
     warehouse_id: Optional[str] = None            # kosong -> gudang SO -> gudang bawaan tenant
     fulfillment_date: Optional[date] = None       # kosong -> tanggal bisnis tenant
@@ -235,8 +239,12 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
                 if sisa <= 0:
                     break
                 a = min(b["sisa"], sisa)
-                alokasi.append({"b": b, "qty": a})
+                alokasi.append({"b": b, "qty": a, "batch_id": it.batch_id, "serials": it.serials})
                 sisa -= a
+            if it.serials and sum(1 for x in alokasi if x["b"]["sales_order_item_id"] == sid) > 1:
+                blocks.append({"code": "SO_FULFILL_SERIAL_TERPECAH",
+                               "message": f"'{nama}' jatuh di lebih dari satu faktur/baris; kirim per faktur agar nomor seri bisa dipasangkan.",
+                               "sales_order_item_id": str(sid)})
     else:
         for b in baris:
             if b["sisa"] <= 0:
@@ -391,7 +399,8 @@ async def tulis_kirim_so(conn, ctx: dict, r: dict, kunci: Optional[str] = None) 
     from ..routers.sales_invoices import _execute_fulfillment
     hasil = []
     for f in r["faktur"]:
-        items = [{"invoice_item_id": a["b"]["id"], "quantity": a["qty"]} for a in r["kelompok"][f["id"]]]
+        items = [{"invoice_item_id": a["b"]["id"], "quantity": a["qty"], "batch_id": UUID(str(a["batch_id"])) if a.get("batch_id") else None,
+                  "serials": a.get("serials")} for a in r["kelompok"][f["id"]]]
         h = await _execute_fulfillment(
             conn, ctx["tenant_id"], ctx["user_id"], f, items, UUID(r["warehouse"]["id"]) if r["warehouse"] else None, r["fulfillment_date"],
             recognize_revenue=True,
