@@ -112,7 +112,12 @@ async def muat_mutasi_persediaan(conn, tid: str, dari: date, sampai: date, presi
     if len(baris) > BATAS_BARIS:
         raise LaporanTerlaluBesar()
     baris.sort(key=lambda x: ((x.get("gudang") or {}).get("nama") or "", x["kode"] or "~", x["nama"] or "", x["item_id"]))
-    return {"dari": dari.isoformat(), "sampai": sampai.isoformat(), "periode_text": tg.rentang_tanggal(dari, sampai), "kelompok": kelompok,
+    transit = None
+    if gudang_id is None and kat is None:
+        from . import transit_baca as TB
+        t = await conn.fetchrow(TB.SQL_MUTASI, tid, sampai)
+        transit = TB.bentuk(t["qty"], _r2(t["nilai"]), presisi)
+    return {"dalam_perjalanan": transit, "dari": dari.isoformat(), "sampai": sampai.isoformat(), "periode_text": tg.rentang_tanggal(dari, sampai), "kelompok": kelompok,
             "saringan": {"gudang_id": None if gudang_id is None else str(gudang_id), "kategori": kat, "sertakan_nol": bool(sertakan_nol)},
             "satuan_text": "(Disajikan dalam Rupiah)",
             "kolom_text": {"awal": "Saldo awal", "masuk": "Masuk", "keluar": "Keluar", "pindah": "Pindah gudang", "revaluasi": "Penyesuaian nilai", "akhir": "Saldo akhir"},

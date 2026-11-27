@@ -94,7 +94,13 @@ async def muat_nilai_persediaan(conn, tid: str, per_tanggal: date, presisi: int,
     if len(baris) > BATAS_BARIS:
         raise LaporanTerlaluBesar()
     total = sum((_d(x["nilai"]) for x in baris), Decimal(0))
-    return {"per_tanggal": per_tanggal.isoformat(), "kelompok": kelompok,
+    transit = None
+    if gudang_id is None and kat is None:   # irisan Transit hanya bermakna untuk laporan tanpa saringan gudang/kategori
+        from . import transit_baca as TB
+        tq = await conn.fetch(TB.SQL_NILAI, tid, per_tanggal)
+        transit = TB.bentuk(sum((_d(r["qty"]) for r in tq), Decimal(0)),
+                            sum((_r2(_d(r["qty"]) * wac.get(str(r["product_id"]), Decimal(0))) for r in tq), Decimal(0)), presisi)
+    return {"dalam_perjalanan": transit, "per_tanggal": per_tanggal.isoformat(), "kelompok": kelompok,
             "saringan": {"gudang_id": None if gudang_id is None else str(gudang_id), "kategori": kat, "sertakan_nol": bool(sertakan_nol)},
             "satuan_text": "(Disajikan dalam Rupiah)", "baris": baris, "jumlah_baris": len(baris), "jumlah_minus": sum(1 for x in baris if x["minus"]),
             "total_nilai": float(_r2(total)), "total_nilai_text": tg.angka_laporan(total, presisi),
