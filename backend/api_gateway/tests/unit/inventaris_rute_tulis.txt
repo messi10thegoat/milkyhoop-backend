@@ -672,6 +672,7 @@ POST /api/tax-invoices/{tax_invoice_id}/cancel
 POST /api/tax-invoices/{tax_invoice_id}/replace
 POST /api/team-members/invitations/{invitation_id}/resend
 POST /api/team-members/invite
+POST /api/team-members/{member_id}/warehouse-access/preview
 POST /api/tenant/profile/logo
 POST /api/tenant/{tenant_id}/chat
 POST /api/transactions/parse-guided
@@ -892,4 +893,5 @@ POST /api/stock-opnames/{opname_id}/batal/preview
 POST /api/stock-opnames/{opname_id}/void
 POST /api/stock-opnames/{opname_id}/void/preview
 PUT /api/stock-opnames/{opname_id}/baris
+PUT /api/team-members/{member_id}/warehouse-access
 POST /api/item-batches/{batch_id}/ubah/preview
