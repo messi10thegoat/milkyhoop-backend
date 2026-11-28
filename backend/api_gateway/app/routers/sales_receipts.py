@@ -333,8 +333,8 @@ async def create_sales_receipt(request: Request, body: CreateSalesReceiptRequest
 
                 # Get product cost from products table
                 prod_row = await conn.fetchrow(
-                    "SELECT purchase_price, item_code, nama_produk, item_type, track_inventory FROM products WHERE id = $1",
-                    item.item_id,
+                    "SELECT purchase_price, item_code, nama_produk, item_type, track_inventory FROM products WHERE id = $1 AND tenant_id = $2",
+                    item.item_id, ctx["tenant_id"],   # sensus pagar tenant
                 )
                 unit_cost = (
                     Decimal(str(prod_row["purchase_price"]))

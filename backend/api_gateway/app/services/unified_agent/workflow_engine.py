@@ -1896,9 +1896,9 @@ class WorkflowEngine:
         result = await self.db.execute(
             """UPDATE chat_workflow_state
                SET status = 'cancelled', updated_at = NOW()
-               WHERE chat_session_id = $1 AND workflow_type = $2
+               WHERE chat_session_id = $1 AND workflow_type = $2 AND tenant_id = $3
                  AND status IN ('active', 'failed')""",
-            bakukan_session_id(chat_session_id), workflow_type
+            bakukan_session_id(chat_session_id), workflow_type, self.tenant_id   # sensus pagar tenant: sesi milik tenant ini saja
         )
         cancelled = result and result != "UPDATE 0"
         if cancelled:
@@ -2308,9 +2308,10 @@ class WorkflowEngine:
             SET current_state = $1, status = 'active', data = '{}'::jsonb, updated_at = NOW()
             WHERE chat_session_id = $2
               AND workflow_type = $3
+              AND tenant_id = $4
               AND status NOT IN ('active', 'failed')
             RETURNING id, current_state, status, data""",
-            initial_state, chat_session_id, workflow_type
+            initial_state, chat_session_id, workflow_type, self.tenant_id   # sensus pagar tenant
         )
 
         if row:
@@ -2346,9 +2347,9 @@ class WorkflowEngine:
         row = await self.db.fetchrow(
             """SELECT id, tenant_id, user_id, current_state, status, data, updated_at
                FROM chat_workflow_state
-               WHERE chat_session_id = $1 AND workflow_type = $2
+               WHERE chat_session_id = $1 AND workflow_type = $2 AND tenant_id = $3
                  AND status IN ('active', 'failed')""",
-            chat_session_id, workflow_type
+            chat_session_id, workflow_type, self.tenant_id   # sensus pagar tenant
         )
 
         if not row:
@@ -2414,7 +2415,7 @@ class WorkflowEngine:
         await self.db.execute(
             """UPDATE chat_workflow_state
                SET current_state = $1, status = $2, data = $3, updated_at = NOW()
-               WHERE id = $4""",
+               WHERE id = $4 AND tenant_id = $5""",
             ctx.current_state, ctx.status, json.dumps(ctx.data),
-            __import__('uuid').UUID(ctx.workflow_id)
+            __import__('uuid').UUID(ctx.workflow_id), self.tenant_id   # sensus pagar tenant
         )
