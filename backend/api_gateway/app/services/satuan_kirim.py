@@ -9,6 +9,17 @@ from . import teks_galat as tg
 KODE_TAK_DIKENAL = "SATUAN_TAK_DIKENAL"
 
 
+def _unik(daftar: List[str]) -> List[str]:
+    """Dedupe tanpa beda huruf, urutan tetap (satuan dasar bisa sama dengan kunci konversi)."""
+    lihat, hasil = set(), []
+    for x in daftar:
+        k = SD.normal(x)
+        if k and k not in lihat:
+            lihat.add(k)
+            hasil.append(x)
+    return hasil
+
+
 def _pesan_tak_dikenal(unit, nama: str, ada: List[str]) -> str:
     return f'Satuan "{unit}" tak dikenal — {nama} tak punya satuan {unit}; ada: {", ".join(ada)}'
 
@@ -18,7 +29,7 @@ def konversi(ktx: dict, product_id, unit_baris, nama: str, unit, qin):
     b = ktx["barang"].get(str(product_id)) if product_id else None
     al = ktx["alias"]
     if b is None or (SD.kanon(unit, al) != SD.kanon(b["dasar"], al) and SD.kanon(unit, al) not in b["konversi"]):
-        ada = [b["dasar"], *b["konversi"].keys()] if b else [unit_baris]
+        ada = _unik([b["dasar"], *b["konversi"].keys()] if b else [unit_baris])
         return None, {"code": KODE_TAK_DIKENAL, "status": 422, "message": _pesan_tak_dikenal(unit, nama, ada)}, None
     k = SD.ke_satuan_baris(ktx, product_id, unit, qin, unit_baris, nama)
     if k["blok"]:

@@ -44,3 +44,7 @@ def test_satuan_tak_dikenal_diblok():
 def test_satuan_sama_baris_tak_dikonversi():
     items, _, blok = _jalan("pcs", "7")
     assert not blok and items[0]["quantity"] == 7
+
+
+def test_daftar_satuan_di_pesan_tanpa_ganda():
+    assert SK._unik(["Peti", "dus", "peti", "Palet", "DUS"]) == ["Peti", "dus", "Palet"]
