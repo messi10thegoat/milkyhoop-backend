@@ -499,6 +499,11 @@ async def adjust_batch_quantity(
             await conn.execute(
                 "UPDATE item_batches SET status = 'depleted' WHERE id = $1 AND tenant_id = $2 AND current_quantity <= 0 AND status = 'active'",
                 batch_id, tid)
+            # BUG-455: penyesuaian NAIK pada batch yang sudah habis ('depleted') mengaktifkannya lagi, kalau tidak FEFO melewatinya
+            # (get_available_batches hanya membaca status 'active') dan 'tersedia' kurang dari Σ batch.
+            await conn.execute(
+                "UPDATE item_batches SET status = 'active' WHERE id = $1 AND tenant_id = $2 AND current_quantity > 0 AND status = 'depleted' "
+                "AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)", batch_id, tid)
 
             row = await conn.fetchrow("SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
             ws = await conn.fetchrow(
