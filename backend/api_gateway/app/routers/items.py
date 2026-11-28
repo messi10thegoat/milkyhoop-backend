@@ -1462,10 +1462,12 @@ async def _periksa_konversi(conn, ctx: dict, item_id, body) -> None:
     from ..services import satuan_dasar as _SDK
     _dasar = body.base_unit or await conn.fetchval(
         "SELECT COALESCE(NULLIF(base_unit, ''), satuan) FROM products WHERE id = $1 AND tenant_id = $2", str(item_id), ctx["tenant_id"])
-    await _SDK.cek_konversi_barang(conn, ctx["tenant_id"], _dasar, body.conversions)   # BUG-446
-    await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
+    _tersimpan = await conn.fetch(
         """SELECT conversion_unit, conversion_factor FROM unit_conversions
-           WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),
+           WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"])
+    await _SDK.cek_konversi_barang(conn, ctx["tenant_id"], _dasar, body.conversions,
+                                   [(r["conversion_unit"], r["conversion_factor"]) for r in _tersimpan])   # BUG-446: hanya baris baru/berubah
+    await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), _tersimpan,
         [(c.conversion_unit, c.conversion_factor) for c in body.conversions if c.is_active is not False])
 
 

@@ -235,25 +235,32 @@ FAKTOR_MAKS = Decimal("10000")
 PESAN_FAKTOR = "Faktor konversi harus lebih dari 0, paling besar 10.000, dan paling banyak 6 angka desimal."
 
 
-async def cek_konversi_barang(conn, tid: str, base_unit, conversions) -> None:
+async def cek_konversi_barang(conn, tid: str, base_unit, conversions, tersimpan=None) -> None:
     """BUG-446 (MASTER 28 Nov): baris konversi form Barang (POST/PUT /api/items, pratinjau == tulis). Ditolak 422:
     satuan konversi = satuan dasar (juga lewat alias kamus satuan) -> KONVERSI_SATUAN_DASAR; satuan kembar -> KONVERSI_GANDA.
-    Faktor <= 0 / > 10.000 / > 6 desimal sudah ditolak faktor_sah (skema). Konversi selalu satu tingkat ke satuan dasar -> siklus = kasus satuan dasar."""
+    tersimpan = [(satuan, faktor)] konversi aktif yang sudah ada (PUT): baris yang sama persis TIDAK dinilai ulang, jadi data lama tak memblok
+    ubah harga; kembar hanya ditolak bila melibatkan baris baru/berubah. Faktor <= 0 / > 10.000 / > 6 desimal = faktor_sah (skema)."""
     aktif = [c for c in (conversions or []) if getattr(c, "is_active", True) is not False]
     if not aktif:
         return
+    lama = {(normal(u), Decimal(str(f))) for u, f in (tersimpan or [])}
+
+    def baru(c) -> bool:
+        return (normal(c.conversion_unit), Decimal(str(c.conversion_factor))) not in lama
+    if not any(baru(c) for c in aktif):
+        return
     alias = await _alias(conn, tid)
     dasar = kanon(base_unit, alias)
-    lihat = set()
+    pertama: dict = {}
     for c in aktif:
         k = kanon(c.conversion_unit, alias)
-        if dasar and k == dasar:
+        if baru(c) and dasar and k == dasar:
             raise GalatBerkode(422, "KONVERSI_SATUAN_DASAR",
                                f"Satuan {c.conversion_unit} adalah satuan dasar barang ini; konversi harus ke satuan lain (mis. 1 Dus = 24 {base_unit}).",
                                field="conversions")
-        if k in lihat:
+        if k in pertama and (baru(c) or baru(pertama[k])):
             raise GalatBerkode(422, "KONVERSI_GANDA", f"Satuan {c.conversion_unit} muncul lebih dari sekali; gabungkan jadi satu baris.", field="conversions")
-        lihat.add(k)
+        pertama.setdefault(k, c)
 
 
 def faktor_sah(v) -> Decimal:
