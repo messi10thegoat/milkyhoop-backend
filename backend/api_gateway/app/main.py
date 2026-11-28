@@ -303,7 +303,17 @@ _is_production = settings.ENVIRONMENT == "production"
 from .utils.log_tautan import pasang as _pasang_saring_log_tautan
 _pasang_saring_log_tautan()
 
+from fastapi import Depends as _Depends, Request as _Request  # noqa: E402
+from .services import akses_gudang as _AG  # noqa: E402
+
+
+async def _ag_ctx(request: _Request) -> None:
+    """PARITAS-4b 4b-3: ctx pengguna aktif untuk penentu akses gudang (contextvar; flag mati = tanpa efek)."""
+    await _AG.pasang_ctx(request)
+
+
 app = FastAPI(
+    dependencies=[_Depends(_ag_ctx)],
     title="MilkyHoop API Gateway",
     description="Enterprise Multi-Tenant Chatbot Platform with Phase 2 Authentication",
     version="3.0.0",

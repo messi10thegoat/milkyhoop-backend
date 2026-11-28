@@ -12,6 +12,9 @@ async def tulis_kartu(conn, *, tenant_id, product_id, product_code, product_name
                       jam_nyata: bool = False, serials: Optional[list] = None, balik_ledger: Optional[UUID] = None) -> UUID:
     """-> id baris. transaction_quantity bawaan 0 = bawaan kolom (None eksplisit tetap NULL). jam_nyata: created_at = clock_timestamp() (urutan di dalam satu transaksi)."""
     id = id or uuid4()
+    from . import akses_gudang as AG
+    if AG.ada_ctx():  # PARITAS-4b 4b-3: pengaman SATU jalur gerak stok (semua dokumen); penentu tiap dokumen memblok lebih dulu di pratinjau
+        await AG.wajib_dok(conn, tenant_id, [warehouse_id])
     await conn.execute(SQL, id, tenant_id, product_id, product_code, product_name, movement_type, movement_date, source_type, source_id, source_number, quantity_in,
                        quantity_out, quantity_balance, unit_cost, total_cost, average_cost, warehouse_id, journal_id, created_by, notes, batch_id,
                        storage_location_id, transaction_unit, transaction_quantity, conversion_factor, jam_nyata)

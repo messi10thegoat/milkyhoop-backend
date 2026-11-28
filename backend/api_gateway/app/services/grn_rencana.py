@@ -25,6 +25,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from . import akses_gudang as AG  # PARITAS-4b 4b-3
 from . import gudang_bawaan  # GUDANG-NONSTOK (2 Nov 2026)
 from . import satuan_dasar as SD  # QTY-DASAR R1 (3 Nov 2026): stok masuk dalam SATUAN DASAR barang
 
@@ -252,6 +253,10 @@ async def rencana_grn(conn, tenant_id: str, po, terima: dict, warehouse_id=None)
         gudang = await _gudang(conn, tenant_id, warehouse_id, po.get("warehouse_id"))
         if gudang is None or not gudang["is_active"]:
             bloks.append(blok("GUDANG_WAJIB", "Pilih gudang penerima: barang ber-stok wajib masuk ke gudang yang aktif."))
+        else:
+            b = await AG.tolak(conn, tenant_id, [gudang["id"]])  # PARITAS-4b 4b-3: pratinjau == tulis
+            if b:
+                bloks.append(blok(b["code"], b["message"], 403))
     tanggal = terima.get("payload", {}).get("receive_date")
     if stok_baris and tanggal:
         from datetime import date
@@ -423,6 +428,7 @@ async def rencana_void(conn, tenant_id: str, gr_id, alasan: Optional[str], hari_
     gr = await conn.fetchrow("SELECT * FROM goods_receipts WHERE id = $1 AND tenant_id = $2", gr_id, tenant_id)
     if gr is None:
         raise HTTPException(status_code=404, detail={"code": "GRN_TIDAK_DITEMUKAN", "message": "Penerimaan barang tidak ditemukan."})
+    await AG.wajib_dok(conn, tenant_id, [gr["warehouse_id"]])  # PARITAS-4b 4b-3
     if kunci:
         await conn.fetchrow("SELECT id FROM purchase_orders WHERE id = $1 AND tenant_id = $2 FOR UPDATE", gr["purchase_order_id"], tenant_id)
         gr = await conn.fetchrow("SELECT * FROM goods_receipts WHERE id = $1 AND tenant_id = $2 FOR UPDATE", gr_id, tenant_id)

@@ -1,6 +1,7 @@
 """PARITAS-4b (28 Nov 2026; DESAIN-akses-gudang-20261128; V516): akses gudang per pengguna, ikut Accurate (Pengguna -> Akses Gudang).
 SATU penentu untuk pratinjau DAN tulis. Flag gelap `akses_gudang_v1` mati = semua gudang (perilaku lama).
 Tanpa baris akses = SEMUA gudang. OWNER/ADMIN selalu semua."""
+import contextvars
 from typing import Iterable, Optional
 
 from .galat_berkode import GalatBerkode
@@ -8,6 +9,52 @@ from .galat_berkode import GalatBerkode
 FLAG = "akses_gudang_v1"
 PERAN_SEMUA = ("OWNER", "ADMIN")
 KODE_TANPA_AKSES = "GUDANG_TANPA_AKSES"
+
+# 4b-3: ctx pengguna AKTIF per permintaan (dipasang dependensi aplikasi `pasang_ctx`). Penentu bersama (stok_sesuai.gudang, pemindahan _rencana,
+# grn_rencana, ...) memanggil `tolak()` TANPA mengubah tanda tangannya -> pratinjau DAN tulis lewat satu pemeriksaan. Tanpa ctx (tes/latar) = dilewati.
+_CTX: contextvars.ContextVar = contextvars.ContextVar("akses_gudang_ctx", default=None)
+
+
+async def pasang_ctx(request) -> None:
+    u = getattr(request.state, "user", None)
+    _CTX.set(ctx_dari(request) if u else None)
+
+
+def pakai_ctx(ctx: Optional[dict]):
+    """Untuk agen/latar (4b-5): jalankan penentu atas nama pengguna. -> token untuk _CTX.reset."""
+    return _CTX.set(ctx)
+
+
+def ada_ctx() -> bool:
+    return _CTX.get() is not None
+
+
+def kalimat(nama: str) -> str:
+    return f"Anda tidak punya akses ke gudang {nama}. Minta pemilik menambahkannya di Pengguna → Akses Gudang."
+
+
+async def tolak(conn, tid: str, warehouse_ids: Iterable, medan: str = "warehouse_id") -> Optional[dict]:
+    """-> blok {code, status 403, message, field} untuk gudang PERTAMA di luar akses pengguna aktif, atau None. Baca saja."""
+    ctx = _CTX.get()
+    if not ctx or ctx.get("tenant_id") != tid:
+        return None
+    ids = [str(w) for w in warehouse_ids if w]
+    if not ids:
+        return None
+    izin = await boleh(conn, ctx)
+    if izin is None:
+        return None
+    luar = [w for w in dict.fromkeys(ids) if w not in izin]
+    if not luar:
+        return None
+    rows = await conn.fetch("SELECT id::text AS id, name, is_system FROM warehouses WHERE tenant_id = $1 AND id::text = ANY($2::text[])", tid, luar)
+    info = {r["id"]: r for r in rows}
+    for w in luar:
+        r = info.get(w)
+        if r is not None and r["is_system"]:  # gudang sistem (Transit) bukan pilihan pengguna: tak dibatasi
+            continue
+        return {"code": KODE_TANPA_AKSES, "status": 403, "message": kalimat(r["name"] if r else "ini"), "field": medan}
+    return None
 
 
 async def flag_nyala(conn, tid: str) -> bool:
@@ -44,8 +91,14 @@ async def wajib(conn, ctx: dict, warehouse_ids: Iterable, medan: str = "warehous
     for w in ids:
         if w not in izin:
             nama = await conn.fetchval("SELECT name FROM warehouses WHERE id::text = $1 AND tenant_id = $2", w, ctx["tenant_id"]) or "ini"
-            raise GalatBerkode(403, KODE_TANPA_AKSES,
-                               f"Anda tidak punya akses ke gudang {nama}. Minta pemilik menambahkannya di Pengguna → Akses Gudang.", field=medan)
+            raise GalatBerkode(403, KODE_TANPA_AKSES, kalimat(nama), field=medan)
+
+
+async def wajib_dok(conn, tid: str, warehouse_ids: Iterable) -> None:
+    """Dokumen yang SUDAH ada: gudang (header/baris) di luar akses pengguna aktif -> 403 berkode (pola detail 403, DESAIN §5)."""
+    b = await tolak(conn, tid, warehouse_ids)
+    if b:
+        raise GalatBerkode(b["status"], b["code"], b["message"], b["field"])
 
 
 def saring(izin: Optional[set], kolom: str, nomor_param: int) -> str:

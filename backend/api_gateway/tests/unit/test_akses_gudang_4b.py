@@ -75,3 +75,61 @@ def test_daftar_gudang_disaring():
     from app.routers import warehouses as W
     src = inspect.getsource(W.list_warehouses)
     assert "AG.boleh(" in src and "AG.saring(" in src
+
+
+# ---------------------------------------------------------------- 4b-3: titik tulis dokumen persediaan
+class KonSis(Kon):
+    """warehouses dengan is_system (Transit) untuk tolak()."""
+    async def fetch(self, sql, *a):
+        if "is_system" in sql:
+            return [{"id": w, "name": "Transit" if w == "tr" else "Gudang Cabang", "is_system": w == "tr"} for w in a[1]]
+        return await super().fetch(sql, *a)
+
+
+def _dgn_ctx(ctx, aw):
+    async def f():
+        tok = AG.pakai_ctx(ctx)
+        try:
+            return await aw()
+        finally:
+            AG._CTX.reset(tok)
+    return jalan(f())
+
+
+def test_tolak_tanpa_ctx_atau_tenant_lain_dilewati():
+    assert jalan(AG.tolak(KonSis(akses=["g1"]), "t", ["g2"])) is None                       # latar/tes: tanpa ctx
+    assert _dgn_ctx({**CTX, "tenant_id": "lain"}, lambda: AG.tolak(KonSis(akses=["g1"]), "t", ["g2"])) is None
+
+
+def test_tolak_blok_403_dan_transit_bebas():
+    b = _dgn_ctx(CTX, lambda: AG.tolak(KonSis(akses=["g1"]), "t", ["g1", "g2"], "to_warehouse_id"))
+    assert b["code"] == "GUDANG_TANPA_AKSES" and b["status"] == 403 and b["field"] == "to_warehouse_id" and "Gudang Cabang" in b["message"]
+    assert _dgn_ctx(CTX, lambda: AG.tolak(KonSis(akses=["g1"]), "t", ["g1", "tr"])) is None  # gudang sistem
+    assert _dgn_ctx({**CTX, "business_role_code": "OWNER"}, lambda: AG.tolak(KonSis(akses=["g1"]), "t", ["g2"])) is None
+
+
+# Daftar titik TETAP (DESAIN §7): situs baru yang memanggil penentu akses wajib didaftarkan di sini.
+_APP = Path(__file__).resolve().parents[2] / "app"
+TITIK_4B3 = {
+    "services/stok_sesuai.py": 2,          # gudang() -> _akses (Penyesuaian, Opname, Batch adjust) + muat() dokumen
+    "services/pemindahan_barang.py": 2,    # _rencana asal+tujuan + _header (kirim/terima/selesai/void/batal)
+    "services/grn_rencana.py": 2,          # rencana_grn + rencana_void
+    "services/sj_so.py": 1,                # Surat Jalan dari SO
+    "services/so_pengiriman.py": 1,        # Kirim SO
+    "services/faktur_kirim_pratinjau.py": 1,  # pratinjau Kirim faktur
+    "services/ledger_kartu.py": 1,         # pengaman SATU jalur gerak stok (Faktur Beli, fulfill, semua penulis)
+    "routers/stock_opnames.py": 1,         # _muat dokumen opname
+}
+
+
+def test_titik_tulis_4b3_terdaftar():
+    for f, n in TITIK_4B3.items():
+        s = (_APP / f).read_text()
+        assert s.count("AG.tolak(") + s.count("AG.wajib_dok(") + s.count("await _akses(") - s.count("async def _akses(") >= n, f
+    assert "AG.tolak(" in (_APP / "services/stok_sesuai.py").read_text()
+    assert "_Depends(_ag_ctx)" in (_APP / "main.py").read_text()
+
+
+def test_tulis_kartu_pengaman():
+    src = inspect.getsource(__import__("app.services.ledger_kartu", fromlist=["x"]).tulis_kartu)
+    assert src.index("AG.wajib_dok") < src.index("conn.execute(SQL")

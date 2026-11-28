@@ -25,6 +25,8 @@ def _pesan(e: HTTPException) -> str:
 def kode_blok(e: HTTPException) -> str:
     """Kode berkode dari detail dict bila ada; selain itu dari status + kalimat (kosakata kontrak)."""
     d, m = e.detail, _pesan(e)
+    if getattr(e, "code", None) == "GUDANG_TANPA_AKSES":  # PARITAS-4b 4b-3 (GalatBerkode dari pengaman tulis_kartu)
+        return e.code
     if isinstance(d, dict) and d.get("code") in KODE_DIKENAL:
         return d["code"]
     if isinstance(d, dict) and d.get("code"):
@@ -89,6 +91,11 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
         from ..utils.tanggal_tenant import tanggal_dokumen
         tgl = await tanggal_dokumen(conn, tid)
     gnama = await SB.nama_gudang(conn, tid, gudang) if gudang else None
+    if gudang:
+        from . import akses_gudang as AG
+        b = await AG.tolak(conn, tid, [gudang])  # PARITAS-4b 4b-3: pratinjau == tulis (tulis: pengaman tulis_kartu)
+        if b:
+            blocks.append(_blok(b["code"], b["message"]))
     try:
         penjaga(invoice)
         await cek_periode(conn, tid, tgl)

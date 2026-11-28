@@ -276,6 +276,11 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
                            if any(a["b"]["dilacak"] for a in alokasi) else (None, None))
     if blok_gudang:
         blocks.append(blok_gudang)
+    elif gudang is not None:
+        from . import akses_gudang as AG
+        b = await AG.tolak(conn, tid, [gudang["id"]])  # PARITAS-4b 4b-3: pratinjau == tulis
+        if b:
+            blocks.append({"code": b["code"], "message": b["message"]})
     serah = None
     if flag:
         try:

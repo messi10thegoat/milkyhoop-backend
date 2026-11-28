@@ -26,6 +26,7 @@ from ..services import idem_buat
 from ..services import stok_opname_tampil as TP
 from ..services import stok_sesuai as SS
 from ..services.bayar_keluar_rencana import Blok
+from ..services import akses_gudang as AG
 from ..services.galat_berkode import GalatBerkode
 from ..services.tenant_features import fitur_aktif
 
@@ -83,7 +84,10 @@ async def _flag(conn, tid: str) -> None:
 
 
 async def _muat(conn, tid: str, oid, kunci: bool = False):
-    return await conn.fetchrow("SELECT * FROM stock_opnames WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""), oid, tid)
+    o = await conn.fetchrow("SELECT * FROM stock_opnames WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""), oid, tid)
+    if o:
+        await AG.wajib_dok(conn, tid, [o["warehouse_id"]])  # PARITAS-4b 4b-3
+    return o
 
 
 async def _baris(conn, oid):

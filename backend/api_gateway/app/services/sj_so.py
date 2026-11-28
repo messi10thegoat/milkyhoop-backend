@@ -276,6 +276,11 @@ async def rencana(conn, ctx: dict, so_id, body: SJSOIn, kunci: bool = False) -> 
             blocks.append(_blok("SJ_SO_GUDANG_WAJIB", "Pilih gudang asal barang.", 422))
         elif not gudang["is_active"]:
             blocks.append(_blok("SJ_SO_GUDANG_NONAKTIF", f"Gudang {gudang['name']} tidak aktif."))
+        if gudang is not None:
+            from . import akses_gudang as AG
+            b = await AG.tolak(conn, tid, [gudang["id"]])  # PARITAS-4b 4b-3: pratinjau == tulis
+            if b:
+                blocks.append(_blok(b["code"], b["message"], 403))
         msg = await _periode_terbuka(conn, tid, tgl)
         if msg:
             blocks.append(_blok("SJ_SO_PERIODE_TUTUP", msg))

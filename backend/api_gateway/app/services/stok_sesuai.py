@@ -192,12 +192,23 @@ async def gudang(conn, tid: str, warehouse_id, bl: Blok):
             return None
         if not g["is_active"]:
             bl.galat("GUDANG_NONAKTIF", 400, f"Gudang {g['name']} nonaktif.")
+        await _akses(conn, tid, g["id"], bl)
         return g
     g = await conn.fetchrow("SELECT id, name, is_active FROM warehouses WHERE tenant_id = $1 AND is_active AND NOT is_system "
                             "ORDER BY is_default DESC, created_at LIMIT 1", tid)
     if not g:
         bl.galat("GUDANG_TIDAK_ADA", 400, "Belum ada gudang aktif. Buat gudang dulu.")
+    else:
+        await _akses(conn, tid, g["id"], bl)
     return g
+
+
+async def _akses(conn, tid: str, gid, bl: Blok) -> None:
+    """PARITAS-4b 4b-3: gudang di luar akses pengguna aktif -> blok 403 GUDANG_TANPA_AKSES (pratinjau == tulis)."""
+    from . import akses_gudang as AG
+    b = await AG.tolak(conn, tid, [gid])
+    if b:
+        bl.galat(b["code"], b["status"], b["message"], b["field"])
 
 
 async def stok_gudang(conn, tid: str, product_id, warehouse_id) -> Decimal:
@@ -396,8 +407,14 @@ async def rencana_buat(conn, tid: str, body, bl: Blok) -> dict:
 
 
 async def muat(conn, tid: str, sa_id, kunci: bool = False):
-    return await conn.fetchrow("SELECT * FROM stock_adjustments WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""),
-                               sa_id, tid)
+    sa = await conn.fetchrow("SELECT * FROM stock_adjustments WHERE id = $1 AND tenant_id = $2" + (" FOR UPDATE" if kunci else ""),
+                             sa_id, tid)
+    from . import akses_gudang as AG
+    if sa and AG.ada_ctx():  # PARITAS-4b 4b-3: dokumen bergudang terlarang (header ATAU baris) tak bisa diubah/diposting/dibatalkan -> 403
+        gids = [sa["warehouse_id"]] + [r["warehouse_id"] for r in await conn.fetch(
+            "SELECT DISTINCT warehouse_id FROM stock_adjustment_items WHERE stock_adjustment_id = $1 AND warehouse_id IS NOT NULL", sa_id)]
+        await AG.wajib_dok(conn, tid, gids)
+    return sa
 
 
 async def rencana_ubah(conn, tid: str, sa_id, body, bl: Blok) -> dict:

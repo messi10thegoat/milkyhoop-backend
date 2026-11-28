@@ -32,6 +32,7 @@ from . import serial_gerak  # Serial S3 (V514)
 from .galat_berkode import GalatDetailObjek  # BUG-248-c
 from pydantic import BaseModel, Field, model_validator
 
+from . import akses_gudang as AG  # PARITAS-4b 4b-3
 from . import satuan_dasar as SD  # K1 (5 Nov): satuan baris -> satuan dasar lewat penentu SATU jalur stok
 from . import so_fase_lokasi
 from .so_riwayat import catat_riwayat
@@ -161,6 +162,9 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
             return None
         if not g["is_active"]:
             blok("PB_GUDANG_NONAKTIF", f"Gudang {peran} ({g['name']}) tidak aktif.")
+        b = await AG.tolak(conn, tid, [g["id"]], "from_warehouse_id" if peran == "asal" else "to_warehouse_id")
+        if b:  # PARITAS-4b 4b-3: asal DAN tujuan
+            blok(b["code"], b["message"], 403)
         return g
 
     asal = await gud(dari_id, "asal")
@@ -292,6 +296,7 @@ async def _header(conn, tid: str, transfer_id, kunci: bool = False):
                             transfer_id, tid)
     if not h:
         raise _blok("PB_TAK_ADA", "Pemindahan barang tidak ditemukan.", 404)
+    await AG.wajib_dok(conn, tid, [h["from_warehouse_id"], h["to_warehouse_id"]])  # PARITAS-4b 4b-3: asal ATAU tujuan terlarang -> 403
     return h
 
 
