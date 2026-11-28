@@ -169,3 +169,21 @@ def test_bug428c_usulan_berubah_peringatan(monkeypatch):
     k.usulan = [{"id": str(B1), "stok": D(8), "minimum": D(20), "dipesan": D(0)}]
     r, _ = jalan(k, req([(B1, 12)]))
     assert not [x for x in r["peringatan"] if x["kode"] == "USULAN_BERUBAH"]
+
+
+def test_bug454_vendor_per_baris_untuk_barang_tanpa_vendor(monkeypatch):
+    _hitung_nol(monkeypatch)
+    k = Kon([barang(B1, "Kain", pref=V1, harga=1000), barang(B2, "Benang", harga=500)])
+    b = PoDraftRequest(baris=[PoDraftBaris(item_id=str(B1), jumlah=D(2)), PoDraftBaris(item_id=str(B2), jumlah=D(3), vendor_id=str(V2))])
+    r, bl = jalan(k, b)
+    assert bl == [] and r["diblok"] == []
+    assert {g["vendor_nama"]: len(g["items"]) for g in r["kelompok"]} == {"PT Satu": 1, "CV Dua": 1}
+
+
+def test_bug454_tanpa_vendor_tetap_diblok_dan_vendor_body_menang(monkeypatch):
+    _hitung_nol(monkeypatch)
+    k = Kon([barang(B2, "Benang", harga=500)])
+    r, _ = jalan(k, PoDraftRequest(baris=[PoDraftBaris(item_id=str(B2), jumlah=D(3))]))
+    assert r["diblok"][0]["alasan_kode"] == "VENDOR_TIDAK_ADA"
+    r, _ = jalan(k, PoDraftRequest(baris=[PoDraftBaris(item_id=str(B2), jumlah=D(3), vendor_id=str(V2))], vendor_id=str(V1)))
+    assert [g["vendor_nama"] for g in r["kelompok"]] == ["PT Satu"]

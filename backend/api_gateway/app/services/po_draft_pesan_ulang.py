@@ -38,6 +38,15 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
     bl.extend(vblok)
     if vblok:
         return hasil
+    vendor_baris = {}   # BUG-454: vendor per BARIS (menang atas vendor utama/terakhir; vendor_id body tetap menang atas semua)
+    for i in body.baris:
+        vb_id = getattr(i, "vendor_id", None)
+        if vb_id and str(vb_id) not in vendor_baris:
+            v, vb = await PR.blok_vendor(conn, tid, vb_id)
+            bl.extend(vb)
+            vendor_baris[str(vb_id)] = v
+    if bl:
+        return hasil
     terakhir = {}
     ktx = await SD.muat(conn, tid, pids)
     for r in await conn.fetch(SQL_TERAKHIR, tid, pids):
@@ -67,8 +76,11 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
             d = draf[str(i.item_id)]
             hasil["peringatan"].append({"kode": "PO_DRAF_ADA", "teks": f"Sudah ada PO draf untuk {b['nama_produk']} ({d[0]['po_number']}"
                                         + (f" dan {len(d) - 1} lainnya" if len(d) > 1 else "") + "). PO draf belum dihitung sebagai dipesan; periksa dulu agar tidak dobel."})
+        v_baris = vendor_baris.get(str(getattr(i, "vendor_id", None) or ""))
         if vendor_pilihan:
             vid = str(vendor_pilihan["id"])
+        elif v_baris:
+            vid = str(v_baris["id"])
         elif b["preferred_vendor_id"]:
             vid = str(b["preferred_vendor_id"])
         elif harga_vendor:

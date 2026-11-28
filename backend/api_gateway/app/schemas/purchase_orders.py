@@ -397,6 +397,7 @@ class PoDraftBaris(BaseModel):
     item_id: str = Field(..., description="Barang (UUID)")
     jumlah: Decimal = Field(..., gt=0, description="Jumlah beli (satuan dasar barang)")
     gudang_id: Optional[str] = Field(None, description="Gudang tujuan (opsional)")
+    vendor_id: Optional[str] = Field(None, description="BUG-454: vendor untuk BARIS ini (menimpa vendor utama/terakhir; kosong = ikut aturan lama). Untuk barang yang belum punya vendor")
 
 
 class PoDraftRequest(BaseModel):
