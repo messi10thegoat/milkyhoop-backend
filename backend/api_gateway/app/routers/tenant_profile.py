@@ -253,9 +253,7 @@ async def upload_tenant_logo(request: Request, file: UploadFile = File(...)):
     LOGO_DIR.mkdir(parents=True, exist_ok=True)
 
     # Remove any previous logo for this tenant (fixed-name AND prior versioned)  # FIX_LOGO_CACHEBUST 2026-06-16
-    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")) + glob.glob(
-        str(LOGO_DIR / f"{tenant_id}-*")
-    ):
+    for old in _logo_milik(tenant_id):
         try:
             os.remove(old)
         except OSError:
@@ -294,9 +292,7 @@ async def delete_tenant_logo(request: Request):
         raise HTTPException(status_code=401, detail="Konteks usaha tidak ditemukan.")
 
     # Remove logo files (fixed-name AND versioned)  # FIX_LOGO_CACHEBUST 2026-06-16
-    for old in glob.glob(str(LOGO_DIR / f"{tenant_id}.*")) + glob.glob(
-        str(LOGO_DIR / f"{tenant_id}-*")
-    ):
+    for old in _logo_milik(tenant_id):
         try:
             os.remove(old)
         except OSError:
@@ -318,6 +314,14 @@ async def delete_tenant_logo(request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete logo")
     finally:
         await conn.close()
+
+
+def _logo_milik(tenant_id: str) -> list:
+    """TIKET keamanan B3 (injeksi-4): berkas logo MILIK tenant ini saja = '<tenant>.<ext>' atau '<tenant>-<detik>.<ext>'.
+    Dulu glob '<tenant>-*' ikut menghapus logo tenant lain yang slug-nya berawalan sama ('abc' menghapus 'abc-def-...')."""
+    import re as _re
+    pola = _re.compile(rf"^{_re.escape(tenant_id)}(-\d+)?\.[A-Za-z0-9]+$")
+    return [str(p) for p in LOGO_DIR.glob("*") if pola.match(p.name)] if LOGO_DIR.exists() else []
 
 
 @router.get("/profile/logo/{filename}")

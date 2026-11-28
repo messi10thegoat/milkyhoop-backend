@@ -160,6 +160,16 @@ class AddPointsResponse(BaseModel):
 # ========================================
 
 
+
+def _tenant(request) -> str:
+    """TIKET keamanan B4 (isolasi-tenant-2): tenant dari JWT pemanggil (request.state.user). Dulu terpaku 'evlogia' untuk SEMUA pemanggil."""
+    u = getattr(request.state, "user", None) or {}
+    tid = u.get("tenant_id") if isinstance(u, dict) else None
+    if not tid:
+        raise HTTPException(status_code=401, detail="Silakan masuk terlebih dahulu.")
+    return tid
+
+
 @router.get("/list")
 async def list_members(
     request: Request,
@@ -174,7 +184,7 @@ async def list_members(
     """
     try:
         # Get tenant_id from auth context
-        tenant_id = getattr(request.state, "tenant_id", "evlogia")
+        tenant_id = _tenant(request)
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -320,7 +330,7 @@ async def search_members(
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, "tenant_id", "evlogia")
+        tenant_id = _tenant(request)
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -396,7 +406,7 @@ async def get_member(request: Request, member_id: str):
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, "tenant_id", "evlogia")
+        tenant_id = _tenant(request)
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -460,7 +470,7 @@ async def add_points(request: Request, data: AddPointsRequest):
     Pure Ledger: AR/AP balances from journal_entries + journal_lines.
     """
     try:
-        tenant_id = getattr(request.state, "tenant_id", "evlogia")
+        tenant_id = _tenant(request)
 
         pool = await get_pool()
         async with pool.acquire() as conn:

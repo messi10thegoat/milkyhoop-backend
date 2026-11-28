@@ -213,10 +213,14 @@ async def create_transaction(
                     f"IC_CREATE:{ctx['tenant_id']}",
                 )
 
+                # TIKET keamanan B3 (isolasi-tenant-6): tujuan WAJIB entitas grup konsolidasi milik usaha pemanggil (pola Accurate/NetSuite: antar-
+                # perusahaan hanya di dalam grup). Dulu tenant mana pun yang ada -> daftar korban + orakel keberadaan tenant. Galat SAMA untuk tak ada / bukan grup.
                 if not await conn.fetchval(
-                    'SELECT 1 FROM "Tenant" WHERE id = $1 AND suspended_at IS NULL', body.to_entity_tenant_id
+                    """SELECT 1 FROM consolidation_entities ce JOIN consolidation_groups cg ON cg.id = ce.group_id
+                       JOIN "Tenant" t ON t.id = ce.entity_tenant_id AND t.suspended_at IS NULL
+                       WHERE cg.tenant_id = $1 AND ce.entity_tenant_id = $2 LIMIT 1""", ctx["tenant_id"], body.to_entity_tenant_id
                 ):
-                    raise HTTPException(status_code=404, detail="Usaha tujuan tidak ditemukan.")
+                    raise HTTPException(status_code=404, detail="Usaha tujuan tidak ditemukan di grup usaha Anda.")
 
                 # Law 5: Period check before journal creation
                 await _check_period_is_open(
