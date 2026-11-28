@@ -127,7 +127,8 @@ async def terapkan_diterima(conn, tid: str, transfer_id, status: str, items: lis
 async def rencana_kirim(conn, tid: str, h, items, kunci: bool = False) -> dict:
     """draft -> in_transit. Validasi barang/gudang/stok asal = penentu SATU langkah (pb._rencana); fase SO TIDAK disentuh di Kirim (baru saat diterima seluruhnya)."""
     r = await pb._rencana(conn, tid, h["from_warehouse_id"], h["to_warehouse_id"],
-                          [{"item_id": i["item_id"], "qty": _d(i["quantity_requested"]), "notes": i["notes"]} for i in items], None, kunci=kunci)
+                          [{"item_id": i["item_id"], "qty": _d(i["quantity_requested"]), "notes": i["notes"],
+                            "batch_id": i.get("batch_id")} for i in items], None, kunci=kunci)   # BUG-453: batch pilihan / FEFO
     r["ulang"] = h["status"] == "in_transit"
     if h["status"] == "in_transit":
         r["blocks"] = []
@@ -174,10 +175,12 @@ async def kirim(conn, ctx: dict, transfer_id) -> dict:
         saldo = await pb._saldo_produk(conn, tid, ln["item_id"])
         kw = dict(product_id=ln["item_id"], kode=ln["item_code"], nama=ln["name"], sumber=SUMBER_KIRIM, tanggal=hari, transfer_id=transfer_id,
                   nomor=h["transfer_number"], qty=qty, unit_cost=wac, total=nilai, wac=wac)
-        await pb._tulis_ledger(conn, tid, uid, tipe=KIRIM_KELUAR, masuk=False, saldo=saldo - qty, gudang_id=h["from_warehouse_id"],
-                               catatan=f"Kirim ke {tujuan['name']} (Transit)", **kw)
-        await pb._tulis_ledger(conn, tid, uid, tipe=KIRIM_MASUK, masuk=True, saldo=saldo, gudang_id=transit_id,
-                               catatan=f"Transit dari {asal['name']} ke {tujuan['name']}", **kw)
+        for q_b, v_b, bid in pb.potong_batch(ln):   # BUG-453: per batch asal -> Transit (batch_id SAMA)
+            kw.update(qty=q_b, total=v_b)
+            await pb._tulis_ledger(conn, tid, uid, tipe=KIRIM_KELUAR, masuk=False, saldo=saldo - q_b, gudang_id=h["from_warehouse_id"],
+                                   catatan=f"Kirim ke {tujuan['name']} (Transit)", batch_id=bid, **kw)
+            await pb._tulis_ledger(conn, tid, uid, tipe=KIRIM_MASUK, masuk=True, saldo=saldo, gudang_id=transit_id,
+                                   catatan=f"Transit dari {asal['name']} ke {tujuan['name']}", batch_id=bid, **kw)
         await conn.execute("UPDATE stock_transfer_items SET quantity_shipped = $2, unit_cost = $3, total_value = $4 WHERE id = $1", it["id"], qty, wac, nilai)
         total += nilai
     await conn.execute(
@@ -277,6 +280,31 @@ async def pratinjau_terima(conn, ctx: dict, transfer_id, baris: Optional[List[di
     return r
 
 
+async def potong_terima(conn, tid: str, transfer_id, transit_id, item_id, qty: Decimal, nilai: Decimal) -> list:
+    """BUG-453: qty diterima -> [(qty, nilai, batch_id)] dari sisa per batch di Transit milik pemindahan ini (Σ masuk − keluar kartu ber-batch,
+    urut kedaluwarsa terdekat). Barang tanpa batch / tak ada sisa ber-batch = satu potongan tanpa batch (perilaku lama)."""
+    rows = await conn.fetch(
+        "SELECT l.batch_id, SUM(COALESCE(l.quantity_in, 0) - COALESCE(l.quantity_out, 0)) AS sisa, MIN(b.expiry_date) AS exp "
+        "FROM inventory_ledger l LEFT JOIN item_batches b ON b.id = l.batch_id AND b.tenant_id = l.tenant_id "
+        "WHERE l.tenant_id = $1 AND l.source_id = $2 AND l.warehouse_id = $3 AND l.product_id = $4 AND l.batch_id IS NOT NULL "
+        "GROUP BY l.batch_id HAVING SUM(COALESCE(l.quantity_in, 0) - COALESCE(l.quantity_out, 0)) > 0 ORDER BY exp NULLS LAST, l.batch_id",
+        tid, transfer_id, transit_id, item_id)
+    if not rows:
+        return [(qty, nilai, None)]
+    hasil, sisa_q, sisa_v = [], qty, nilai
+    for r in rows:
+        if sisa_q <= _NOL:
+            break
+        q = min(_d(r["sisa"]), sisa_q)
+        v = sisa_v if q == sisa_q else (nilai * q / qty).quantize(Decimal("0.01"))
+        hasil.append((q, v, r["batch_id"]))
+        sisa_q -= q
+        sisa_v -= v
+    if sisa_q > _NOL:
+        hasil.append((sisa_q, sisa_v, None))
+    return hasil
+
+
 async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = None) -> dict:
     tid, uid = ctx["tenant_id"], ctx.get("user_id")
     h = await pb._draf_terkunci(conn, tid, transfer_id)
@@ -301,10 +329,13 @@ async def terima(conn, ctx: dict, transfer_id, baris: Optional[List[dict]] = Non
         nilai = (a * _d(it["unit_cost"])).quantize(Decimal("0.01"))
         kw = dict(product_id=ln["item_id"], kode=ln["item_code"], nama=ln["name"], sumber=SUMBER_TERIMA, tanggal=hari, transfer_id=transfer_id,
                   nomor=h["transfer_number"], qty=a, unit_cost=_d(it["unit_cost"]), total=nilai, wac=wac_kini)
-        await pb._tulis_ledger(conn, tid, uid, tipe=TERIMA_KELUAR, masuk=False, saldo=saldo - a, gudang_id=transit_id,
-                               catatan=f"Terima di {tujuan['name']} (keluar Transit)", **kw)
-        await pb._tulis_ledger(conn, tid, uid, tipe=TERIMA_MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
-                               catatan=f"Terima dari {asal_nama} (via Transit)", **kw)
+        potong = await potong_terima(conn, tid, transfer_id, transit_id, ln["item_id"], a, nilai)
+        for q_b, v_b, bid in potong:   # BUG-453: batch dibaca dari kartu Transit pemindahan INI (bukan FEFO ulang), Transit -> tujuan
+            kw.update(qty=q_b, total=v_b)
+            await pb._tulis_ledger(conn, tid, uid, tipe=TERIMA_KELUAR, masuk=False, saldo=saldo - q_b, gudang_id=transit_id,
+                                   catatan=f"Terima di {tujuan['name']} (keluar Transit)", batch_id=bid, **kw)
+            await pb._tulis_ledger(conn, tid, uid, tipe=TERIMA_MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
+                                   catatan=f"Terima dari {asal_nama} (via Transit)", batch_id=bid, **kw)
         total += nilai
     if rencana["tuntas"]:   # satu-satunya tulisan header sesudah Kirim yang diizinkan trigger (status berubah + received_date/by)
         await conn.execute("UPDATE stock_transfers SET status = 'received', received_date = $3, received_by = $4 WHERE id = $1 AND tenant_id = $2",
@@ -361,7 +392,8 @@ async def void_kirim(conn, ctx: dict, transfer_id, alasan: str) -> dict:
         await pb._tulis_ledger(conn, tid, uid, product_id=r["product_id"], kode=r["product_code"], nama=r["product_name"], tipe=SUMBER_KIRIM_BATAL,
                                sumber=SUMBER_KIRIM_BATAL, tanggal=hari, transfer_id=transfer_id, nomor=h["transfer_number"], qty=qty,
                                masuk=not masuk_asli, saldo=saldo + (qty if not masuk_asli else -qty), unit_cost=_d(r["unit_cost"]),
-                               total=_d(r["total_cost"]), wac=wac_kini, gudang_id=r["warehouse_id"], catatan=f"Void pengiriman {h['transfer_number']}: {alasan}")
+                               total=_d(r["total_cost"]), wac=wac_kini, gudang_id=r["warehouse_id"], catatan=f"Void pengiriman {h['transfer_number']}: {alasan}",
+                               batch_id=r.get("batch_id"))   # BUG-453: pembalik per baris kartu kiriman, batch ikut
     await conn.execute("UPDATE stock_transfers SET status = 'voided', voided_at = NOW(), voided_by = $3, void_reason = $4, updated_at = NOW() WHERE id = $1 AND tenant_id = $2",
                        transfer_id, tid, uid, alasan)
     await catat_riwayat(conn, tid, "stock_transfers", transfer_id, h["transfer_number"], "PEMINDAHAN_BARANG_DI_VOID", uid,
