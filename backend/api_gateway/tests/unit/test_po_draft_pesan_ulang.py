@@ -22,6 +22,8 @@ class Kon:
         self.barang, self.terakhir, self.vendor, self.draf = barang, list(terakhir), vendor, list(draf)
 
     async def fetch(self, sql, *a):
+        if "inventory_ledger" in sql:   # usulan terkini (reorder_persediaan._SQL)
+            return getattr(self, "usulan", None) or []
         if "FROM products p" in sql:
             return self.barang
         if "FROM bill_items" in sql:
@@ -30,8 +32,6 @@ class Kon:
             return self.draf
         if "FROM vendors" in sql:
             return [{"id": i, "name": n} for i, n in self.vendor if i in a[1]]
-        if "inventory_ledger" in sql:
-            return getattr(self, "usulan", None) or []
         raise AssertionError(sql)
 
     async def fetchrow(self, sql, *a):
