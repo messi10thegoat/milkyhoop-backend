@@ -85,6 +85,15 @@ async def peringatan(conn, tid: str, baris: list, arah: str) -> list:
 async def peringatan_baris(conn, tid: str, items, arah: str) -> list:
     """Baris dokumen apa adanya ({item_id|product_id, quantity, unit}) -> peringatan min qty. Qty dikonversi ke SATUAN DASAR (penentu satuan_dasar);
     satuan tanpa konversi dilewati (blok satuan sudah dilaporkan penentunya sendiri). Flag mati = [] tanpa kueri barang."""
+    try:
+        return await _peringatan_baris(conn, tid, items, arah)
+    except Exception:  # peringatan non-fatal (pola BUG-207/BUG-040): pratinjau tetap jalan
+        import logging
+        logging.getLogger(__name__).error("V517 peringatan min qty gagal", exc_info=True)
+        return []
+
+
+async def _peringatan_baris(conn, tid: str, items, arah: str) -> list:
     if not await nyala(conn, tid):
         return []
     from . import satuan_dasar as SD

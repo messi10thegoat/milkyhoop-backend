@@ -93,6 +93,15 @@ class _BadanItem(BaseModel):
     quantity_pricing_enabled: Optional[bool] = None
     default_bin_id: Optional[str] = None
     is_matrix_parent: Optional[bool] = None
+    # V517 (flag gelap dimensi_barang_v1): dimensi/berat + minimal kuantitas jual/beli per transaksi (SATUAN DASAR; hanya peringatan)
+    weight: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
+    weight_unit: Optional[Literal['g', 'kg']] = None
+    length: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
+    width: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
+    height: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
+    dimension_unit: Optional[Literal['cm', 'm']] = None
+    min_qty_jual: Optional[Decimal] = Field(None, gt=0, max_digits=18, decimal_places=4)
+    min_qty_beli: Optional[Decimal] = Field(None, gt=0, max_digits=18, decimal_places=4)
     _kunci_asing: List[str] = PrivateAttr(default_factory=list)
 
     @field_validator('merek', check_fields=False)
@@ -157,16 +166,6 @@ class CreateItemRequest(_BadanItem):
 
     # Image
     image_url: Optional[str] = Field(None, description="Primary product image URL")
-
-    # V517 (flag gelap dimensi_barang_v1): dimensi/berat + minimal kuantitas jual/beli per transaksi (SATUAN DASAR; hanya peringatan)
-    weight: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
-    weight_unit: Optional[Literal['g', 'kg']] = None
-    length: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
-    width: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
-    height: Optional[Decimal] = Field(None, ge=0, max_digits=14, decimal_places=3)
-    dimension_unit: Optional[Literal['cm', 'm']] = None
-    min_qty_jual: Optional[Decimal] = Field(None, gt=0, max_digits=18, decimal_places=4)
-    min_qty_beli: Optional[Decimal] = Field(None, gt=0, max_digits=18, decimal_places=4)
 
     # Reorder & Vendor
     reorder_level: Optional[float] = Field(None, ge=0, description="Reorder point (stock level trigger)")

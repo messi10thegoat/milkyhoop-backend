@@ -78,7 +78,8 @@ def test_url_tampil_non_s3_apa_adanya():
 
 def test_migrasi_v517_aditif_berpembalik():
     up = (MIG / "V517__dimensi_minqty_barang.sql").read_text()
-    assert up.count("ADD COLUMN IF NOT EXISTS") == 8 and "UPDATE" not in up.upper().split("NOT VALID")[0].replace("UPDATE PRODUCTS", "") and "BEGIN" not in up
+    sql = "\n".join(x for x in up.splitlines() if not x.startswith("--"))
+    assert sql.count("ADD COLUMN IF NOT EXISTS") == 8 and "UPDATE " not in sql.upper() and "BEGIN" not in sql.upper()
     assert "DROP COLUMN IF EXISTS min_qty_beli" in (MIG / "V517__dimensi_minqty_barang_ROLLBACK.sql").read_text()
 
 
