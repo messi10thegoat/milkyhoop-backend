@@ -4230,6 +4230,39 @@ async def ekspor_inventory_card(
                                                            "X-Ekspor-Jumlah": str(len(baris))})
 
 
+@router.get("/inventory-gl-difference")
+async def get_inventory_gl_difference(
+    request: Request,
+    start_date: Optional[date] = Query(None, description="Bawaan: tanggal 1 bulan dari end_date"),
+    end_date: Optional[date] = Query(None, description="Bawaan: tanggal bisnis tenant"),
+):
+    """Selisih saldo akun persediaan vs nilai barang per dokumen (ikut Accurate) + ringkasan awal/mutasi/akhir. Hanya baca."""
+    from ..services import laporan_selisih_persediaan as LSP
+    from ..services.role_resolver import AccountRole, AccountRoleUnmappedError, resolve_account_id_by_role
+    from ..services.uang_presisi import presisi_tenant
+    ctx = get_user_context(request)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn, conn.transaction(readonly=True, isolation="repeatable_read"):
+            sampai = end_date or await tanggal_dokumen(conn, ctx["tenant_id"])
+            dari = start_date or sampai.replace(day=1)
+            if dari > sampai:
+                raise HTTPException(status_code=422, detail="Tanggal awal tidak boleh sesudah tanggal akhir.")
+            try:
+                akun = await resolve_account_id_by_role(conn, ctx["tenant_id"], AccountRole.INVENTORY_MERCHANDISE)
+            except AccountRoleUnmappedError:
+                akun = None
+            data = await LSP.muat_selisih_persediaan(conn, ctx["tenant_id"], dari, sampai, await presisi_tenant(conn, ctx["tenant_id"]), akun)
+        return {"success": True, "data": data}
+    except LSP.LaporanTerlaluBesar:
+        raise HTTPException(status_code=422, detail=f"Lebih dari {LSP.BATAS_BARIS} dokumen selisih. Persempit periode.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error inventory gl difference: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Gagal menyusun laporan selisih persediaan.")
+
+
 @router.get("/inventory-mutation")
 async def get_inventory_mutation(
     request: Request,
