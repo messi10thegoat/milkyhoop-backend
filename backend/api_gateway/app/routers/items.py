@@ -763,6 +763,9 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
     # BUG-282 (putusan pemilik 17 Nov): akun barang yang KOSONG disalin dari kategori (isian eksplisit menang); barang lama/jurnal lama tak tersentuh
     await KAK.salin_ke_barang(conn, tenant_id, body)
     await DIMB.cek(conn, tenant_id, body)   # V517: medan dimensi/min qty hanya saat flag dimensi_barang_v1 nyala (pratinjau == tulis)
+    if body.item_type == "goods" and body.conversions:   # BUG-446: konversi ke satuan dasar / kembar -> 422 (pratinjau == tulis)
+        from ..services import satuan_dasar as _SDK
+        await _SDK.cek_konversi_barang(conn, tenant_id, body.base_unit, body.conversions)
 
     # Auto-default inventory/COGS accounts for stockable goods so the
     # COGS/restock path no longer relies on an implicit silent role fallback.
@@ -1457,6 +1460,9 @@ async def _periksa_konversi(conn, ctx: dict, item_id, body) -> None:
     if body.conversions is None:
         return
     from ..services import satuan_dasar as _SDK
+    _dasar = body.base_unit or await conn.fetchval(
+        "SELECT COALESCE(NULLIF(base_unit, ''), satuan) FROM products WHERE id = $1 AND tenant_id = $2", str(item_id), ctx["tenant_id"])
+    await _SDK.cek_konversi_barang(conn, ctx["tenant_id"], _dasar, body.conversions)   # BUG-446
     await _SDK.tolak_ubah_konversi(conn, ctx["tenant_id"], str(item_id), await conn.fetch(
         """SELECT conversion_unit, conversion_factor FROM unit_conversions
            WHERE product_id = $1 AND tenant_id = $2 AND COALESCE(is_active, true)""", str(item_id), ctx["tenant_id"]),
