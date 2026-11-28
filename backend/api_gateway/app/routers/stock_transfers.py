@@ -297,8 +297,13 @@ def _pw(daftar) -> list:
 
 def _pv(r: dict) -> dict:
     """Bentuk JSON pratinjau (Decimal -> float, UUID -> str)."""
+    def _batch(b):   # BUG-453: rincian batch per baris (FEFO/pilihan) untuk Tinjau
+        e = b.get("expiry_date")
+        return {"batch_id": str(b["batch_id"]), "batch_number": b.get("batch_number"), "expiry_date": e.isoformat() if hasattr(e, "isoformat") else e,
+                "quantity": _f(b["quantity"])}
+
     def baris(ln):
-        return {k: (str(v) if isinstance(v, UUID) else _f(v)) for k, v in ln.items()}
+        return {k: ([_batch(b) for b in v] if k == "batches" and v else (str(v) if isinstance(v, UUID) else _f(v))) for k, v in ln.items()}
     out = {
         "ok": r["ok"],
         "blocks": [{"code": b["code"], "message": b["message"], "item_id": b.get("item_id")} for b in r["blocks"]],
