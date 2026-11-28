@@ -254,8 +254,9 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         if p["track_batches"] and asal:   # BUG-453: barang berlot dipindah per batch, FEFO dari gudang asal (atau batch pilihan)
             batches = await _alokasi_batch(conn, tid, iid, dari_id, qty, b.get("batch_id"))
             if sum((x["quantity"] for x in batches), _NOL) < qty:
+                from . import teks_galat as _tg   # KEPALA FE: angka tanpa nol ekor ("6", "6,5"), pola teks server lain
                 blok("PB_BATCH_STOK_KURANG", f"Stok ber-batch {nama} di {asal['name']} hanya "
-                     f"{sum((x['quantity'] for x in batches), _NOL):f}, diminta {qty:f}.", 409, iid)
+                     f"{_tg.qty(sum((x['quantity'] for x in batches), _NOL))}, diminta {_tg.qty(qty)}.", 409, iid)
         nilai = _nilai(qty, wac)
         total_q += qty
         total_v += nilai
