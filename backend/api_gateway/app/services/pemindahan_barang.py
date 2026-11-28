@@ -52,6 +52,7 @@ class BarangIn(BaseModel):
     quantity_requested: Decimal = Field(..., gt=0)
     notes: Optional[str] = Field(None, max_length=500)
     unit: Optional[str] = None  # K1: satuan qty (kosong = satuan dasar); dikonversi lewat satuan_dasar, tanpa konversi = blok
+    batch_id: Optional[UUID] = None  # BUG-453: batch pilihan (barang berlot); kosong = FEFO dari gudang asal
     # Diabaikan (server memakai WAC & data master); dipertahankan agar klien lama tak 422.
     item_code: Optional[str] = None
     item_name: Optional[str] = None
@@ -88,6 +89,7 @@ class BarangPratinjau(BaseModel):
     unit: Optional[str] = None
     unit_cost: Optional[Decimal] = None
     serial_numbers: Optional[List[str]] = None   # Serial S3
+    batch_id: Optional[UUID] = None   # BUG-453
 
 
 class PratinjauIn(BaseModel):
@@ -142,6 +144,23 @@ async def _stok(conn, tid: str, gudang_id, item_id, kunci: bool) -> Decimal:
 # ============================================================================
 # PENENTU (satu sumber angka: pratinjau == tulis)
 # ============================================================================
+async def _alokasi_batch(conn, tid: str, item_id, gudang_id, qty: Decimal, batch_id=None) -> list:
+    """BUG-453: -> [{batch_id, batch_number, expiry_date, quantity}] satuan dasar. batch_id dipilih = hanya batch itu; selain itu FEFO
+    (get_available_batches, penentu SAMA dgn kirim faktur BUG-445). Σ < qty = stok ber-batch kurang (pemanggil memblok)."""
+    if batch_id is not None:
+        r = await conn.fetchrow(
+            "SELECT b.id AS batch_id, b.batch_number, b.expiry_date, COALESCE(s.quantity, 0) AS q FROM item_batches b "
+            "LEFT JOIN batch_warehouse_stock s ON s.batch_id = b.id AND s.warehouse_id = $3 AND s.tenant_id = b.tenant_id "
+            "WHERE b.id = $1 AND b.tenant_id = $2 AND b.item_id = $4", batch_id, tid, gudang_id, item_id)
+        if not r:
+            return []
+        return [{"batch_id": r["batch_id"], "batch_number": r["batch_number"], "expiry_date": r["expiry_date"],
+                 "quantity": min(Decimal(str(r["q"])), qty)}]
+    rows = await conn.fetch("SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')", tid, item_id, gudang_id, qty)
+    return [{"batch_id": r["batch_id"], "batch_number": r.get("batch_number"), "expiry_date": r.get("expiry_date"),
+             "quantity": Decimal(str(r["quantity_to_use"]))} for r in rows if Decimal(str(r["quantity_to_use"])) > 0]
+
+
 async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bool = False, ctx: Optional[dict] = None) -> dict:
     """baris: [{"item_id": UUID|None, "qty": Decimal|None, "unit": str|None, "notes": str|None}]. Mengumpulkan SEMUA blok.
     K1 (putusan pemilik LANGSUNG 5 Nov): qty bersatuan dikonversi ke SATUAN DASAR (satuan_dasar, mode konversi; 2 Dus -> 24 Botol);
@@ -211,9 +230,6 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         if not p["track_inventory"]:
             blok("PB_BARANG_NON_STOK", f"{nama} tidak melacak stok; tak ada stok untuk dipindahkan.", 409, iid)
             continue
-        if p["track_batches"]:
-            blok("PB_BARANG_BATCH_SERIAL", f"{nama} dilacak per batch/serial; pemindahan barang jenis ini belum didukung.", 409, iid)
-            continue
         # Serial S3 (flag serial_v1): penentu SAMA dengan pintu kartu; barang tanpa track_serial & tanpa nomor = nol kueri tambahan
         if p["track_serial"] or b.get("serials") is not None:
             bs = await serial_gerak.blok_serial(conn, tid, iid, nama, b.get("serials"), qty)
@@ -233,6 +249,12 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
             blok("PB_WAC_NOL", f"Biaya rata-rata {nama} belum ada (0); tak bisa memindahkan tanpa nilai.", 409, iid)
         if ada_asal is not None and ada_asal < qty:
             blok("PB_STOK_TIDAK_CUKUP", f"Stok {nama} di {asal['name']} hanya {ada_asal:f}, diminta {qty:f}.", 409, iid)
+        batches = None
+        if p["track_batches"] and asal:   # BUG-453: barang berlot dipindah per batch, FEFO dari gudang asal (atau batch pilihan)
+            batches = await _alokasi_batch(conn, tid, iid, dari_id, qty, b.get("batch_id"))
+            if sum((x["quantity"] for x in batches), _NOL) < qty:
+                blok("PB_BATCH_STOK_KURANG", f"Stok ber-batch {nama} di {asal['name']} hanya "
+                     f"{sum((x['quantity'] for x in batches), _NOL):f}, diminta {qty:f}.", 409, iid)
         nilai = _nilai(qty, wac)
         total_q += qty
         total_v += nilai
@@ -241,7 +263,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
             "available_from": ada_asal, "available_to": ada_tuj, "unit_cost": wac, "value": nilai,
             "from_before": ada_asal, "from_after": (ada_asal - qty) if ada_asal is not None else None,
             "to_before": ada_tuj, "to_after": (ada_tuj + qty) if ada_tuj is not None else None,
-            "notes": b.get("notes"), "serials": b.get("serials"),
+            "notes": b.get("notes"), "serials": b.get("serials"), "batches": batches,
         })
 
     so, catatan = None, None
@@ -268,7 +290,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
 
 def _baris_dari_isi(isi) -> list:
     return [{"item_id": i.item_id, "qty": i.quantity_requested, "unit": i.unit, "notes": i.notes,
-             "serials": getattr(i, "serial_numbers", None)} for i in isi.items]
+             "serials": getattr(i, "serial_numbers", None), "batch_id": getattr(i, "batch_id", None)} for i in isi.items]
 
 
 def payload_dari(isi) -> dict:
