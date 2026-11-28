@@ -32,7 +32,7 @@ class SessionManager:
         Args:
             redis_url: Redis connection URL with password (default: env REDIS_URL)
         """
-        self.redis_url = redis_url or os.environ["REDIS_URL"]   # keamanan: tanpa sandi tertanam
+        self.redis_url = redis_url or os.getenv("REDIS_URL")   # keamanan: tanpa sandi tertanam
         self.redis = None
         logger.info(f"SessionManager initialized with Redis URL: {self.redis_url.split('@')[-1]}")
     

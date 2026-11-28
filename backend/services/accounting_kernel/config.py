@@ -9,10 +9,7 @@ from typing import Optional
 @dataclass
 class DatabaseConfig:
     """Database connection configuration"""
-    url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL",
-        os.environ["DATABASE_URL"]
-    ))
+    url: str = field(default_factory=lambda: os.getenv("DATABASE_URL"))
     pool_size: int = 5
     max_overflow: int = 10
     pool_timeout: int = 30

@@ -7,7 +7,7 @@ class Settings:
     DB_HOST = os.getenv("DB_HOST", "postgres")
     DB_PORT = int(os.getenv("DB_PORT", "5432"))
     DB_USER = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = os.environ["DB_PASSWORD"]
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
     DB_NAME = os.getenv("DB_NAME", "milkydb")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

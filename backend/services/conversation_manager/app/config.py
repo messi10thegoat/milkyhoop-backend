@@ -9,7 +9,7 @@ class Settings:
 
     # Redis Configuration (INSIDE class!)
     # Format: redis://:<REDIS_PASSWORD>@[HOST]:[PORT]
-    REDIS_URL: str = os.environ["REDIS_URL"]
-    REDIS_PASSWORD: str = os.environ["REDIS_PASSWORD"]
+    REDIS_URL: str = os.getenv("REDIS_URL")
+    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD")
 
 settings = Settings()

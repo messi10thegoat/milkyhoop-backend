@@ -26,7 +26,7 @@ class Settings:
     # Redis Configuration (Phase 2: Caching)
     REDIS_HOST: str = os.getenv("REDIS_HOST", "redis")
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))
-    REDIS_PASSWORD: str = os.environ["REDIS_PASSWORD"]
+    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD")
     REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))  # DB 0 for business_parser
     REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "300"))  # 5 minutes
     
