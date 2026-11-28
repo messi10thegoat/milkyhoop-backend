@@ -946,6 +946,8 @@ async def calculate_quote(request: Request, body: CreateQuoteRequest):
         from ..services import jual_bawah_hpp as JB
         _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(_doc["items"]))  # BUG-207
         _peringatan = _peringatan + await HMN.peringatan_jual(conn, ctx["tenant_id"], body.customer_id, body.quote_date, HMN.baris_dari_hasil(_doc["items"]))  # BUG-040
+        from ..services import dimensi_barang as DIMB
+        _peringatan = _peringatan + await DIMB.peringatan_baris(conn, ctx["tenant_id"], [i.model_dump() for i in body.items], "jual")  # V517
     dp = resolve_dp(_doc["total_amount"], body.dp_amount, body.dp_percent)
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     return {"success": True, "data": {

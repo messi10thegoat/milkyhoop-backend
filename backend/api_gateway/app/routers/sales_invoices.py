@@ -605,6 +605,8 @@ async def calculate_invoice(request: Request, body: CreateInvoiceRequest):
             _peringatan = _peringatan + await HMN.peringatan_jual(  # BUG-040: konversi SO -> Faktur tak mengulang bila harga baris tak berubah
                 _conn, ctx["tenant_id"], body.customer_id, body.invoice_date, HMN.baris_dari_hasil(res["items"]),
                 await HMN.harga_asal_so(_conn, ctx["tenant_id"], getattr(body, "sales_order_id", None)))
+            from ..services import dimensi_barang as DIMB
+            _peringatan = _peringatan + await DIMB.peringatan_baris(_conn, ctx["tenant_id"], _items, "jual")  # V517
         if body.auto_post:  # SI-FPB-RP0: == penulis (create auto_post -> _internal_post_invoice)
             tolak_faktur_nol("si", res["total_amount"])
         return {
