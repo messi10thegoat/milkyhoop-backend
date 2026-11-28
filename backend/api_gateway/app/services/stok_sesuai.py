@@ -203,6 +203,16 @@ async def gudang(conn, tid: str, warehouse_id, bl: Blok):
     return g
 
 
+async def _blok_seri(conn, tid: str, pid, nama: str, serials, ubah, gid, bl: Blok) -> None:
+    """BUG-449: penentu nomor seri penyesuaian (serial_gerak.blok_serial + blok_tersedia untuk pengurangan) -> blok 422 berkode."""
+    from . import serial_gerak
+    bs = await serial_gerak.blok_serial(conn, tid, pid, nama, serials, abs(ubah))
+    if bs is None and ubah < 0 and gid is not None:
+        bs = await serial_gerak.blok_tersedia(conn, tid, pid, nama, gid, serials)
+    if bs:
+        bl.galat(bs[0], 422, bs[1], "serials")
+
+
 async def _akses(conn, tid: str, gid, bl: Blok) -> None:
     """PARITAS-4b 4b-3: gudang di luar akses pengguna aktif -> blok 403 GUDANG_TANPA_AKSES (pratinjau == tulis)."""
     from . import akses_gudang as AG
@@ -376,6 +386,8 @@ async def susun_baris(conn, tid: str, items, tipe: str, gudang_id, bl: Blok, isy
             if not await serial_gerak.wajib(conn, tid, pid):
                 bl.galat("SERIAL_TAK_DILACAK", 422, f"{nama} tidak memakai nomor seri; kosongkan nomor seri.")
                 continue
+            if ubah != 0:   # BUG-449: nomor yang DIISI dinilai sejak buat/ubah (draf tanpa nomor tetap boleh; wajib isi dinilai saat posting)
+                await _blok_seri(conn, tid, pid, nama, item.serials, ubah, gid, bl)
         hasil.append({"product_id": pid, "product_code": p["code"], "product_name": nama, "unit": p["unit"],
                       "quantity_before": sebelum, "quantity_adjustment": ubah, "quantity_after": fisik if fisik is not None else sebelum + ubah,
                       "unit_cost": int(harga), "total_value": (abs(ubah) * harga).quantize(Decimal("1")),
@@ -565,6 +577,8 @@ async def rencana_posting(conn, tid: str, sa_id, bl: Blok, kunci: bool = False, 
                                "masuk": q if q > 0 else NOL, "keluar": -q if q < 0 else NOL, "unit_cost": _d(i["unit_cost"]),
                                "stok_sebelum": sebelum, "stok_sesudah": sebelum + q, "warehouse_id": gid, "gudang": nama_gudang[gid],
                                "serials": i.get("serials")})   # Serial S1: dinilai pintu kartu stok (serial_gerak) saat posting
+        if q != 0:   # BUG-449: pratinjau posting == pintu kartu (wajib isi / kembar / jumlah / tersedia di gudang baris untuk pengurangan)
+            await _blok_seri(conn, tid, i["product_id"], i["product_name"], i.get("serials"), q, gid, bl)
         if q != 0 and _d(i["unit_cost"]) == 0:
             hasil["isyarat"].append(isyarat_tanpa_harga(i["product_name"]))
         if i.get("source_transfer_id") and sebelum + q < 0:
