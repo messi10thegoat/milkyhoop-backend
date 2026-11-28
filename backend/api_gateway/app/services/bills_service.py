@@ -2996,8 +2996,8 @@ class BillsService:
                                 if not _tcid:
                                     continue
                                 tc_coa = await conn.fetchval(
-                                    "SELECT coa_id FROM tax_codes WHERE id = $1",
-                                    _tcid,
+                                    "SELECT coa_id FROM tax_codes WHERE id = $1 AND tenant_id = $2",
+                                    _tcid, tenant_id,   # sensus pagar tenant: akun pajak tenant lain tak masuk document_tax_lines
                                 )
                                 dpp_val = (
                                     float(ti["dpp"] or 0)
@@ -3464,8 +3464,8 @@ class BillsService:
                         for ti in taxable_items:
                             if ti["tax_code_id"]:
                                 tc_coa = await conn.fetchval(
-                                    "SELECT coa_id FROM tax_codes WHERE id = $1",
-                                    ti["tax_code_id"],
+                                    "SELECT coa_id FROM tax_codes WHERE id = $1 AND tenant_id = $2",
+                                    ti["tax_code_id"], tenant_id,   # sensus pagar tenant
                                 )
                                 await conn.execute(
                                     """

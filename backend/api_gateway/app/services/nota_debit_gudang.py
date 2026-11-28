@@ -69,7 +69,7 @@ async def rencana_keluar(conn, tid: str, vc, items, kunci: bool, bl) -> list:
     for it in items:
         if not it["item_id"]:
             continue
-        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory, track_serial FROM products WHERE id = $1", it["item_id"])
+        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory, track_serial FROM products WHERE id = $1 AND tenant_id = $2", it["item_id"], tid)   # sensus pagar tenant
         if not p or not p["track_inventory"]:
             continue
         nama = p["nama_produk"] or p["item_code"]

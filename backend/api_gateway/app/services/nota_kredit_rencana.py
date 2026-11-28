@@ -394,7 +394,7 @@ async def _rencana_restock_nk(conn, ctx: dict, cn, bl: Blok, items: list = None,
         if not item["item_id"]:
             continue
         product = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory, COALESCE(track_serial, false) AS track_serial "
-                                      "FROM products WHERE id = $1", item["item_id"])
+                                      "FROM products WHERE id = $1 AND tenant_id = $2", item["item_id"], tid)   # sensus pagar tenant
         if not product or not product["track_inventory"]:
             continue
         # QTY-DASAR R1: == penulis (satuan_dasar mode konversi; blok berkalimat sama)
