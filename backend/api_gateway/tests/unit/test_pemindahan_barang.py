@@ -205,7 +205,7 @@ def test_gudang_sama_ditolak_pydantic():
 
 
 def test_barang_non_stok_batch_serial_ditolak():
-    for p, kd in ((barang(P1, track=False), "PB_BARANG_NON_STOK"), (barang(P1, batch=True), "PB_BARANG_BATCH_SERIAL"),
+    for p, kd in ((barang(P1, track=False), "PB_BARANG_NON_STOK"), (barang(P1, batch=True), "PB_BATCH_STOK_KURANG"),   # BUG-453: berlot tak lagi "belum didukung"; tanpa stok ber-batch = kurang
                   (barang(P1, serial=True), "PB_BARANG_BATCH_SERIAL")):
         c = Konek(produk={P1: p})
         with pytest.raises(HTTPException) as e:
