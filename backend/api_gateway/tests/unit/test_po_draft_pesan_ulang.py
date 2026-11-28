@@ -30,6 +30,8 @@ class Kon:
             return self.draf
         if "FROM vendors" in sql:
             return [{"id": i, "name": n} for i, n in self.vendor if i in a[1]]
+        if "inventory_ledger" in sql:
+            return getattr(self, "usulan", None) or []
         raise AssertionError(sql)
 
     async def fetchrow(self, sql, *a):
@@ -138,3 +140,32 @@ def test_peringatan_po_draf_sudah_ada(monkeypatch):
     r, _ = jalan(k, req([(B1, 5)]))
     p = [x for x in r["peringatan"] if x["kode"] == "PO_DRAF_ADA"]
     assert p and "PO-2611-0019" in p[0]["teks"] and "dobel" in p[0]["teks"]
+
+
+def _hitung_nol(monkeypatch):
+    async def hitung(conn, tid, items, *a, **k):
+        return {"baris": [{"subtotal": D(i["quantity"]) * D(i["unit_price"])} for i in items], "header": {"total_amount": sum(D(i["quantity"]) * D(i["unit_price"]) for i in items)}}
+    monkeypatch.setattr(PDP.PR, "hitung_po", hitung)
+
+
+def test_bug428a_jumlah_habis_dibagi_faktor_pakai_satuan_tagihan(monkeypatch):
+    _hitung_nol(monkeypatch)
+    k = Kon([barang(B1, "Minyak", pref=V1, harga=12000)],
+            terakhir=[{"product_id": B1, "vendor_id": V1, "unit_price": D("140000"), "unit": "Dus", "waktu": datetime(2026, 11, 16)}])
+    r, _ = jalan(k, req([(B1, 72)]))
+    it = r["kelompok"][0]["items"][0]
+    assert (it["quantity"], it["unit"], it["unit_price"]) == (D(6), "Dus", D("140000"))
+    b = r["kelompok"][0]["baris"][0]
+    assert (b["jumlah_text"], b["satuan_text"], b["harga_text"], b["subtotal_text"]) == ("6", "Dus", "Rp 140.000", "Rp 840.000")
+
+
+def test_bug428c_usulan_berubah_peringatan(monkeypatch):
+    _hitung_nol(monkeypatch)
+    k = Kon([barang(B1, "Kain", pref=V1, harga=1000)])
+    k.usulan = [{"id": str(B1), "stok": D(2), "minimum": D(20), "dipesan": D(0)}]
+    r, bl = jalan(k, req([(B1, 12)]))
+    w = [x for x in r["peringatan"] if x["kode"] == "USULAN_BERUBAH"]
+    assert bl == [] and len(w) == 1 and "usulan kini 18" in w[0]["teks"] and "layar 12" in w[0]["teks"] and "muat ulang" in w[0]["teks"]
+    k.usulan = [{"id": str(B1), "stok": D(8), "minimum": D(20), "dipesan": D(0)}]
+    r, _ = jalan(k, req([(B1, 12)]))
+    assert not [x for x in r["peringatan"] if x["kode"] == "USULAN_BERUBAH"]

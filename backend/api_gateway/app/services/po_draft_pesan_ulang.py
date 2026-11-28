@@ -6,6 +6,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from . import po_rencana as PR
+from . import reorder_persediaan as RP   # BUG-428c: usulan terkini untuk peringatan USULAN_BERUBAH
 from . import satuan_dasar as SD   # BUG-401: harga tagihan per satuan BARIS -> per satuan DASAR (pola konversi satuan)
 from . import teks_galat as tg
 
@@ -43,10 +44,13 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
         h = SD.hitung(ktx, r["product_id"], r["unit"], 1, "konversi")   # BUG-401: 140.000/Dus -> per Pcs = 140.000 / faktor
         if h["blok"] or not h["faktor"]:
             continue   # satuan tagihan tak terkonversi: JANGAN pakai mentah (jatuh ke harga beli barang)
-        terakhir.setdefault(str(r["product_id"]), {})[str(r["vendor_id"])] = ((Decimal(str(r["unit_price"] or 0)) / h["faktor"]).quantize(Decimal("0.01")), r["waktu"])
+        # BUG-428a: simpan juga satuan + harga MENTAH tagihan; baris PO memakai satuan itu bila jumlah dasar habis dibagi faktor (ikut Accurate)
+        terakhir.setdefault(str(r["product_id"]), {})[str(r["vendor_id"])] = ((Decimal(str(r["unit_price"] or 0)) / h["faktor"]).quantize(Decimal("0.01")), r["waktu"],
+                                                                              r["unit"], Decimal(str(r["unit_price"] or 0)), h["faktor"])
     draf = {}
     for r in await conn.fetch(SQL_DRAF, tid, pids):   # BUG-402: PO draf TIDAK dihitung 'dipesan' (ikut Accurate) -> peringatkan agar tak dobel
         draf.setdefault(str(r["item_id"]), []).append(r)
+    usulan = {str(r["id"]): RP.usulan_beli(r["stok"], r["minimum"], r["dipesan"]) for r in await conn.fetch(RP._SQL, tid)} if body.baris else {}
     # vendor tiap barang
     per_vendor, tanpa = {}, []
     for i in body.baris:
@@ -55,6 +59,10 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
             bl.append(PR.blok("BARANG_TIDAK_DITEMUKAN", "Ada barang yang tidak ditemukan di usaha ini.", 422))
             continue
         harga_vendor = terakhir.get(str(i.item_id), {})
+        u_kini = usulan.get(str(i.item_id))
+        if u_kini is not None and Decimal(str(i.jumlah)) != u_kini:   # BUG-428c: layar basi -> peringatan berteks server (tanpa blok, tanpa uang)
+            hasil["peringatan"].append({"kode": "USULAN_BERUBAH", "teks": f"{b['nama_produk']}: usulan kini {RP._f(u_kini)} {b['satuan'] or 'pcs'} "
+                                        f"(layar {RP._f(i.jumlah)}) — muat ulang?"})
         if draf.get(str(i.item_id)):
             d = draf[str(i.item_id)]
             hasil["peringatan"].append({"kode": "PO_DRAF_ADA", "teks": f"Sudah ada PO draf untuk {b['nama_produk']} ({d[0]['po_number']}"
@@ -68,22 +76,28 @@ async def rencana(conn, tid: str, body, bl: list) -> dict:
         else:
             tanpa.append(b)
             continue
-        harga = (harga_vendor.get(vid) or (NOL, None))[0] or Decimal(str(b["harga_beli"] or 0))
-        per_vendor.setdefault(vid, []).append((i, b, harga))
+        tv = harga_vendor.get(vid)
+        harga = (tv[0] if tv else NOL) or Decimal(str(b["harga_beli"] or 0))
+        satuan, jumlah = b["satuan"], i.jumlah
+        if tv and tv[3] and tv[4] and tv[4] != 1:   # BUG-428a: 6 Dus @140.000, bukan 72 pcs @11.666,67
+            q = Decimal(str(i.jumlah)) / tv[4]
+            if q == q.to_integral_value() and q > 0:
+                satuan, jumlah, harga = tv[2], q, tv[3]
+        per_vendor.setdefault(vid, []).append((i, b, harga, satuan, jumlah))
     for b in tanpa:
         hasil["diblok"].append({"item_id": str(b["id"]), "nama": b["nama_produk"], "alasan_kode": "VENDOR_TIDAK_ADA",
                                 "alasan_text": f"{b['nama_produk']}: belum ada vendor. Pilih vendor untuk barang ini."})
     nama_vendor = {str(r["id"]): r["name"] for r in await conn.fetch(SQL_VENDOR, tid, [UUID(v) for v in per_vendor])} if per_vendor else {}
     for vid in sorted(per_vendor, key=lambda v: nama_vendor.get(v, "")):
         baris_in = per_vendor[vid]
-        items = [{"item_id": str(b["id"]), "item_code": b["item_code"], "description": b["nama_produk"], "quantity": i.jumlah, "unit": b["satuan"],
-                  "unit_price": harga, "discount_percent": 0, "discount_amount": 0, "tax_rate": 0} for i, b, harga in baris_in]
+        items = [{"item_id": str(b["id"]), "item_code": b["item_code"], "description": b["nama_produk"], "quantity": jml, "unit": sat,
+                  "unit_price": harga, "discount_percent": 0, "discount_amount": 0, "tax_rate": 0} for i, b, harga, sat, jml in baris_in]
         h = await PR.hitung_po(conn, tid, items, 0, 0, 0)
         baris = []
-        for (i, b, harga), hb in zip(baris_in, h["baris"]):
-            q = Decimal(str(i.jumlah))
+        for (i, b, harga, sat, jml), hb in zip(baris_in, h["baris"]):
+            q = Decimal(str(jml))
             baris.append({"item_id": str(b["id"]), "nama": b["nama_produk"], "jumlah_text": tg.angka_laporan(q, 0) if q == q.to_integral_value() else tg.angka_laporan(q, 2),
-                          "satuan_text": b["satuan"] or "", "harga_text": tg.rp(harga), "subtotal_text": tg.rp(hb["subtotal"])})
+                          "satuan_text": sat or "", "harga_text": tg.rp(harga), "subtotal_text": tg.rp(hb["subtotal"])})
             if not harga:
                 hasil["peringatan"].append({"kode": "HARGA_KOSONG", "teks": f"{b['nama_produk']}: harga beli belum ada; isi harga di PO."})
         hasil["kelompok"].append({"vendor_id": vid, "vendor_nama": nama_vendor.get(vid, ""), "baris": baris,
