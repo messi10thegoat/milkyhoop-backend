@@ -1936,6 +1936,22 @@ def canonical_json(data) -> str:
     return _json.dumps(_norm(data), separators=(",", ":"), ensure_ascii=False)
 
 
+async def _biaya_kirim(conn, tenant_id, product_id, qd, description):
+    """BUG-450: HPP baris kirim. Barang FIFO aktif (flag fifo_v1 + costing fifo + costing_mulai) = Σ nilai lapisan yang dimakan (T4: kurang -> 409
+    STOK_FIFO_KURANG) -- penentu SAMA dgn record_inventory_outbound; selain itu WAC (perilaku lama, WAC 0 -> 409).
+    -> {"avg_cost": biaya per satuan dasar (2dp utk FIFO), "line_cogs", "ambil": daftar lapisan | None}."""
+    from ..services import inventory_helpers as _IH
+    ambil = await _IH._fifo_ambil(conn, tenant_id, product_id, qd)
+    if ambil is not None:
+        total = _r2d(sum((a.nilai for a in ambil), Decimal("0")))
+        return {"avg_cost": (total / qd).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "line_cogs": total, "ambil": ambil}
+    avg_cost = await conn.fetchval("SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id)
+    if not avg_cost or Decimal(str(avg_cost)) == 0:
+        raise HTTPException(409, f"WAC = 0 untuk '{description}'. Catat penerimaan barang terlebih dahulu.")
+    avg_cost = Decimal(str(avg_cost))
+    return {"avg_cost": avg_cost, "line_cogs": _r2d(avg_cost * qd), "ambil": None}  # QTY-DASAR R2: HPP = WAC dasar x qty dasar
+
+
 def _r2d(v) -> Decimal:
     """Round to 2 decimals, returning Decimal (NOT float). Use instead of _r2 for DB writes."""
     if not isinstance(v, Decimal):
@@ -2178,17 +2194,9 @@ async def _execute_fulfillment(
                                  inv_item.get("unit"))
             raise HTTPException(409, _bk["message"])
 
-        # 4. Get WAC
-        avg_cost = await conn.fetchval(
-            "SELECT get_weighted_average_cost($1, $2)", tenant_id, product_id
-        )
-        if not avg_cost or Decimal(str(avg_cost)) == 0:
-            raise HTTPException(
-                409,
-                f"WAC = 0 untuk '{description}'. Catat penerimaan barang terlebih dahulu.",
-            )
-        avg_cost = Decimal(str(avg_cost))
-        line_cogs = _r2d(avg_cost * qd)  # QTY-DASAR R2: HPP = WAC dasar x qty dasar; jurnal HPP dari total (bukan biaya x qty dokumen)
+        # 4. HPP: FIFO bila barang FIFO aktif (BUG-450), selain itu WAC
+        _bk2 = await _biaya_kirim(conn, tenant_id, product_id, qd, description)
+        avg_cost, line_cogs, _ambil = _bk2["avg_cost"], _bk2["line_cogs"], _bk2["ambil"]
         total_cogs += line_cogs
         # biaya per satuan DOKUMEN (presisi penuh, Law 9/25) untuk baris kirim/alokasi SJ; satuan dasar = WAC apa adanya (perilaku lama)
         biaya_dok = avg_cost if _f == _SD.SATU else line_cogs / req_qty
@@ -2285,13 +2293,21 @@ async def _execute_fulfillment(
 
         # QTY-DASAR R2: baris bersatuan BUKAN dasar mencatat satuan dokumen di kartu (append-only: kolom ikut INSERT, tak di-UPDATE).
         _arg_sd = {"transaction_unit": inv_item.get("unit"), "transaction_quantity": str(req_qty), "conversion_factor": str(_f)} if _f != _SD.SATU else {}
+        _lid = uuid.uuid4()
+        _rata = None
+        if _ambil is not None:   # BUG-450: average_cost kartu FIFO = nilai sisa lapisan / qty sisa SESUDAH baris ini (aturan 3.3)
+            from ..services import fifo_lapisan as _FL
+            _rata = await _FL.rata_sisa_sesudah(conn, tenant_id, product_id, _ambil)
         await tulis_kartu(
-            conn,
+            conn, id=_lid,
             tenant_id=tenant_id, product_id=product_id, product_code=p_code, product_name=p_name, movement_type='SALE',
             movement_date=fulfillment_date, source_type='INVOICE_FULFILLMENT', source_id=invoice_id, source_number=invoice_number,
             quantity_in=0, quantity_out=str(qd), quantity_balance=str(new_balance), unit_cost=str(avg_cost), total_cost=str(line_cogs),
-            average_cost=str(avg_cost), created_by=user_id, notes=f"Fulfillment: {invoice_number}", warehouse_id=warehouse_id,
+            average_cost=str(_rata or avg_cost), created_by=user_id, notes=f"Fulfillment: {invoice_number}", warehouse_id=warehouse_id,
             batch_id=batch_id, serials=req.get("serials"), **_arg_sd)   # Serial S2: None = tanpa nomor seri (pintu kartu menilai)
+        if _ambil is not None:
+            from ..services import fifo_lapisan as _FL2
+            await _FL2.catat_pakai(conn, tenant_id, _lid, _ambil)   # BUG-450: lapisan yang dimakan tercatat (void pulih persis)
 
         # Batch: saldo digeser HANYA oleh trigger trg_update_batch_stock saat INSERT inventory_ledger di atas (BUG-286: UPDATE manual dulu
         # menggandakan pengurangan); kecukupan batch diperiksa SEBELUM INSERT ledger (blok di atas).
