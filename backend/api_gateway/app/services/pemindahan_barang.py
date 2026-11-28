@@ -428,9 +428,10 @@ async def _tulis_baris(conn, transfer_id, by: dict, items: List[BarangIn]) -> No
         p = by[it.item_id]
         await conn.execute(
             """INSERT INTO stock_transfer_items (stock_transfer_id, item_id, item_code, item_name, quantity_requested,
-                                                 unit, unit_cost, total_value, line_number, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8)""",
-            transfer_id, it.item_id, p["item_code"], p["nama_produk"], p["qty_dasar"], p["base_unit"], n, it.notes)
+                                                 unit, unit_cost, total_value, line_number, notes, batch_id)
+               VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8, $9)""",
+            transfer_id, it.item_id, p["item_code"], p["nama_produk"], p["qty_dasar"], p["base_unit"], n, it.notes,
+            getattr(it, "batch_id", None))   # BUG-453: batch pilihan draf (kosong = FEFO saat kirim/selesai)
         await serial_gerak.simpan_draf(conn, "stock_transfer_items", transfer_id, n, it.serial_numbers)   # Serial S3 (V514)
 
 
@@ -523,13 +524,27 @@ async def _saldo_produk(conn, tid: str, product_id) -> Decimal:
 
 async def _tulis_ledger(conn, tid: str, user_id, *, product_id, kode, nama, tipe: str, sumber: str, tanggal, transfer_id,
                         nomor: str, qty: Decimal, masuk: bool, saldo: Decimal, unit_cost: Decimal, total: Decimal,
-                        wac: Decimal, gudang_id, catatan: str, serials=None, balik_ledger=None) -> None:
+                        wac: Decimal, gudang_id, catatan: str, serials=None, balik_ledger=None, batch_id=None) -> None:
     await tulis_kartu(
         conn,
         tenant_id=tid, product_id=product_id, product_code=kode, product_name=nama, movement_type=tipe, movement_date=tanggal,
         source_type=sumber, source_id=transfer_id, source_number=nomor, quantity_in=qty if masuk else _NOL,
         quantity_out=_NOL if masuk else qty, quantity_balance=saldo, unit_cost=unit_cost, total_cost=total, average_cost=wac,
-        warehouse_id=gudang_id, created_by=user_id, notes=catatan, serials=serials, balik_ledger=balik_ledger)
+        warehouse_id=gudang_id, created_by=user_id, notes=catatan, serials=serials, balik_ledger=balik_ledger, batch_id=batch_id)
+
+
+def potong_batch(ln: dict) -> list:
+    """BUG-453: baris rencana -> [(qty, nilai, batch_id)] satu gerak kartu per batch; nilai baris dibagi proporsional, sisa sen ke potongan terakhir
+    (Σ nilai potongan == nilai baris). Tanpa batch = satu potongan (perilaku lama)."""
+    bs = ln.get("batches") or []
+    if not bs:
+        return [(ln["quantity"], ln["value"], None)]
+    hasil, sisa = [], ln["value"]
+    for n, b in enumerate(bs):
+        v = sisa if n == len(bs) - 1 else _nilai(b["quantity"], ln["unit_cost"])
+        hasil.append((b["quantity"], v, b["batch_id"]))
+        sisa -= v
+    return hasil
 
 
 async def _fase_so(conn, ctx: dict, h, ke_fase: Optional[str], gudang_id) -> Optional[str]:
@@ -561,7 +576,7 @@ async def selesaikan(conn, ctx: dict, transfer_id) -> dict:
     # SATU penentu yang sama dengan pratinjau; kunci=True mengunci baris stok FOR UPDATE. Blok pertama = galat tulis.
     rencana = await _rencana(conn, tid, h["from_warehouse_id"], h["to_warehouse_id"],
                              [{"item_id": i["item_id"], "qty": Decimal(str(i["quantity_requested"])), "notes": i["notes"],
-                               "serials": i.get("serials")} for i in items],
+                               "serials": i.get("serials"), "batch_id": i.get("batch_id")} for i in items],
                              h["sales_order_id"], kunci=True)
     angkat_blok_pertama(rencana)
     by_item = {i["item_id"]: i for i in items}
@@ -574,10 +589,12 @@ async def selesaikan(conn, ctx: dict, transfer_id) -> dict:
         saldo = await _saldo_produk(conn, tid, ln["item_id"])
         kw = dict(product_id=ln["item_id"], kode=ln["item_code"], nama=ln["name"], sumber=SUMBER, tanggal=hari,
                   transfer_id=transfer_id, nomor=h["transfer_number"], qty=qty, unit_cost=wac, total=nilai, wac=wac)
-        await _tulis_ledger(conn, tid, uid, tipe=KELUAR, masuk=False, saldo=saldo - qty, gudang_id=h["from_warehouse_id"],
-                            catatan=f"Pemindahan ke {tujuan['name']}", serials=ln.get("serials"), **kw)
-        await _tulis_ledger(conn, tid, uid, tipe=MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
-                            catatan=f"Pemindahan dari {asal['name']}", serials=ln.get("serials"), **kw)
+        for q_b, v_b, bid in potong_batch(ln):   # BUG-453: satu pasang gerak per batch (batch_id SAMA di asal & tujuan; trigger menggeser saldo batch)
+            kw.update(qty=q_b, total=v_b)
+            await _tulis_ledger(conn, tid, uid, tipe=KELUAR, masuk=False, saldo=saldo - q_b, gudang_id=h["from_warehouse_id"],
+                                catatan=f"Pemindahan ke {tujuan['name']}", serials=ln.get("serials"), batch_id=bid, **kw)
+            await _tulis_ledger(conn, tid, uid, tipe=MASUK, masuk=True, saldo=saldo, gudang_id=h["to_warehouse_id"],
+                                catatan=f"Pemindahan dari {asal['name']}", serials=ln.get("serials"), batch_id=bid, **kw)
         # quantity_variance = kolom GENERATED (shipped - received): TIDAK ditulis (galat nyata di harness 12 Okt).
         await conn.execute(
             "UPDATE stock_transfer_items SET quantity_shipped = $2, quantity_received = $2, "
@@ -631,7 +648,8 @@ async def void(conn, ctx: dict, transfer_id, alasan: str) -> dict:
             sumber=SUMBER_BATAL, tanggal=hari, transfer_id=transfer_id, nomor=h["transfer_number"], qty=qty,
             masuk=not masuk_asli, saldo=saldo + (qty if not masuk_asli else -qty),
             unit_cost=Decimal(str(r["unit_cost"])), total=Decimal(str(r["total_cost"])), wac=wac_kini,
-            gudang_id=r["warehouse_id"], catatan=f"Void pemindahan {h['transfer_number']}: {alasan}", balik_ledger=r["id"])
+            gudang_id=r["warehouse_id"], catatan=f"Void pemindahan {h['transfer_number']}: {alasan}", balik_ledger=r["id"],
+            batch_id=r.get("batch_id"))   # BUG-453: pembalik per baris kartu asli, batch ikut
     await conn.execute(
         "UPDATE stock_transfers SET status = 'voided', voided_at = NOW(), voided_by = $3, void_reason = $4, updated_at = NOW() "
         "WHERE id = $1 AND tenant_id = $2", transfer_id, tid, uid, alasan)
