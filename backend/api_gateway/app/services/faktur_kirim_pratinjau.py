@@ -22,6 +22,14 @@ def _pesan(e: HTTPException) -> str:
     return str(d.get("message") or d.get("detail") or d) if isinstance(d, dict) else str(d)
 
 
+_TEKS_STATUS = {"pending": "Belum dikirim", "unfulfilled": "Belum dikirim", "partial": "Sebagian", "fulfilled": "Lunas terkirim",
+                "not_applicable": "Tak perlu dikirim"}
+
+
+def teks_status_kirim(st):
+    return _TEKS_STATUS.get(st) if st else None   # BUG-443: teks Indonesia dari server (FE tak memetakan nilai mentah)
+
+
 def kode_blok(e: HTTPException) -> str:
     """Kode berkode dari detail dict bila ada; selain itu dari status + kalimat (kosakata kontrak)."""
     d, m = e.detail, _pesan(e)
@@ -121,6 +129,7 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
 
     hasil = None
     batch_per_baris: dict = {}
+    status_sesudah = None
     stok_akhir: dict = {}
     if not blocks:
         try:
@@ -137,6 +146,7 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
                     for k, r in awal.items():
                         if r["item_id"]:
                             stok_akhir[k] = await SB.tersedia_gudang(conn, tid, gudang, r["item_id"], "quantity")
+                status_sesudah = await conn.fetchval("SELECT fulfillment_status FROM sales_invoices WHERE id = $1", invoice_id)
         except HTTPException as e:
             blocks.append(_blok(kode_blok(e), _pesan(e)))
             hasil = None
@@ -171,12 +181,19 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
         if sesudah > 0 and hasil is not None:
             warnings.append({"code": "MASIH_SISA", "message": f"Sisa {nama} {_t(sesudah, unit)} belum dikirim."})
     ok = not blocks and hasil is not None
+    if not ok:   # BUG-443: diblok = tak ada yang berubah -> nilai 'sesudah'/rincian hasil dikosongkan (medan mentah SEBELUM tetap)
+        for ln in lines:
+            for f in ("remaining_after", "remaining_after_text", "summary_text", "detail_text", "stock_after_text", "batches", "serials", "cogs_text"):
+                ln[f] = None
     totals = {"cogs": hasil["total_cogs"], "cogs_text": tg.rp(hasil["total_cogs"]),
               "revenue": hasil["total_revenue"], "revenue_text": tg.rp(hasil["total_revenue"])} if ok else None
     return {
-        "can_fulfill": ok, "blocks": blocks, "warnings": warnings,
+        "can_fulfill": ok, "ok": ok, "blocks": blocks, "warnings": warnings,
         "invoice": {"id": str(invoice["id"]), "number": invoice["invoice_number"], "customer_name": invoice["customer_name"],
-                    "fulfillment_status_before": invoice["fulfillment_status"]},
+                    "fulfillment_status_before": invoice["fulfillment_status"],
+                    "fulfillment_status_before_text": teks_status_kirim(invoice["fulfillment_status"]),
+                    "fulfillment_status_after": status_sesudah if ok else None,
+                    "fulfillment_status_after_text": teks_status_kirim(status_sesudah) if ok else None},
         "warehouse": {"id": str(gudang), "name": gnama} if gudang else None,
         "fulfillment_date": tgl.isoformat(), "lines": lines, "totals": totals,
         "journal_text": (f"HPP {totals['cogs_text']} dijurnal Dr HPP / Cr Persediaan; pendapatan {totals['revenue_text']} diakui.")

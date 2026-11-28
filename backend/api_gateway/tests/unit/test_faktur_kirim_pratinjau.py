@@ -37,6 +37,7 @@ class _Conn:
     async def fetchval(self, sql, *a):
         if "warehouse_stock" in sql: return self.stok
         if "FROM warehouses" in sql: return "Gudang Utama"
+        if "SELECT fulfillment_status FROM sales_invoices" in sql: return "partial"
         return None
 
     async def fetch(self, sql, *a):
@@ -124,3 +125,22 @@ def test_rute_dan_izin_preview_faktur():
     f = PM.PermissionMiddleware(lambda *a: None, False)._find_permission
     assert f("/api/sales-invoices/X/fulfill/preview", "POST") == f("/api/sales-invoices/X/fulfill", "POST") == ("sales_invoice", "P")
     assert any(getattr(r, "path", "") == "/{invoice_id}/fulfill/preview" for r in SI.router.routes)
+
+
+def test_bug443_diblok_kosongkan_sesudah_tapi_medan_mentah_tetap():
+    d = _jalan(_tolak)
+    ln = d["lines"][0]
+    for f in ("remaining_after", "remaining_after_text", "summary_text", "detail_text", "stock_after_text", "batches", "serials", "cogs_text"):
+        assert ln[f] is None, f
+    assert (ln["item_name"], ln["quantity"], ln["unit"], ln["ordered"], ln["shipped_before"], ln["remaining_before"]) == ("Kaos Polos", "6", "Dus", "10", "0", "10")
+    assert ln["stock_before_text"] == "20"
+    assert d["ok"] is False and d["can_fulfill"] is False and d["totals"] is None and d["journal_text"] is None
+    iv = d["invoice"]
+    assert iv["fulfillment_status_after"] is None and iv["fulfillment_status_after_text"] is None and iv["fulfillment_status_before_text"] == "Belum dikirim"
+
+
+def test_bug443_sukses_bentuk_lama_plus_status_teks():
+    d = _jalan(_ok)
+    assert d["ok"] is True and d["lines"][0]["remaining_after"] == "4" and isinstance(d["lines"][0]["batches"], list)
+    iv = d["invoice"]
+    assert iv["fulfillment_status_after"] == "partial" and iv["fulfillment_status_after_text"] == "Sebagian"
