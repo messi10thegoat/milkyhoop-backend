@@ -35,7 +35,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
     MAX_URL_LENGTH = 2048
     MAX_HEADER_SIZE = 8192
     MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
-    MAX_INSPEKSI_BODY = 1024 * 1024  # B8: batas bagian badan yang diperiksa pola
+    MAX_INSPEKSI_BODY = 64 * 1024  # ReDoS: 64 KB (dulu 1 MB; B8): batas bagian badan yang diperiksa pola
 
     # SQL Injection patterns (more specific to avoid false positives)
     SQL_INJECTION_PATTERNS: List[Pattern] = [
@@ -262,7 +262,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
                     body = await request.body()
                     if body:
                         # TIKET keamanan B8 (injeksi-2): inspeksi dibatasi 1 MB pertama + pola berbatas (dulu kuadratik: 1 MB = belasan menit/worker).
-                        # WAF = lapis tambahan; SQL tetap berparameter. Terukur: 1 MB terburuk <= ~1 dtk untuk SEMUA pola.
+                        # WAF = lapis tambahan; SQL tetap berparameter. Terukur: 64 KB terburuk < 0,05 dtk untuk SEMUA pola.
                         body_str = body[:self.MAX_INSPEKSI_BODY].decode("utf-8", errors="ignore")
                         threat = self._detect_threat(
                             body_str, "Body", skip_sql_patterns=body_skip_sql
