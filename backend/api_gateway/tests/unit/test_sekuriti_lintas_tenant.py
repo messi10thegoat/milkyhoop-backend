@@ -192,7 +192,7 @@ def test_c_kontrol_positif_from_sendiri_lanjut_ke_db(pool_jebakan):
 
 def test_c_tujuan_dicek_ada_sebelum_insert():
     f = _fungsi("intercompany.py", "create_transaction")
-    cek = _baris(f, _sql('FROM "Tenant" WHERE id = $1 AND suspended_at IS NULL'))
+    cek = _baris(f, _sql("FROM consolidation_entities ce JOIN consolidation_groups cg"))   # keamanan B3: tujuan = entitas grup sendiri (Tenant aktif ikut dicek)
     assert cek and min(cek) < min(_baris(f, _sql("INSERT INTO intercompany_transactions")))
 
 
