@@ -77,3 +77,12 @@ Catatan keras: preview TIDAK menyimpan nomor Surat Jalan/jurnal (rollback); nomo
 ## B. `POST /api/sales-orders/{id}/fulfill` dan `/fulfill/preview` — `batch_id?`/`serials?` per baris
 
 `SOFulfillRequest.items[]` kini: `{"sales_order_item_id": "uuid", "quantity": "6", "batch_id": "uuid|null", "serials": ["SN-1"]}` — diteruskan apa adanya ke inti faktur (sama dengan A). **`extra=forbid`** pada item DAN badan: kolom tak dikenal = 422 (dulu diabaikan diam-diam). Bentuk respons preview/tulis SO TIDAK berubah, kecuali `lines[].batches`/`serials` kini terisi sesuai pilihan. Klien lama yang hanya mengirim kolom lama tetap valid.
+
+
+## Pembaruan 28 Nov (BUG-443 + BUG-445, LIVE 2fb74542a / 00bf833ed)
+- `data.ok` (= `can_fulfill`) ditambahkan; FE boleh tetap membaca `can_fulfill`.
+- `data.invoice`: `fulfillment_status_before_text`, `fulfillment_status_after`, `fulfillment_status_after_text` (teks server: "Belum dikirim" / "Sebagian" / "Lunas terkirim" / "Tak perlu dikirim"); `*_after*` = null saat diblok.
+- Saat `blocks[]` TIDAK kosong, per baris `lines[]` berikut = null: `remaining_after`, `remaining_after_text`, `summary_text`, `detail_text`, `stock_after_text`, `batches`, `serials`, `cogs_text`. Medan mentah tetap terisi: `item_name`, `description`, `unit`, `quantity`, `quantity_text`, `ordered`, `shipped_before`, `remaining_before` (+`*_text`), `stock_before_text`. `totals` dan `journal_text` = null (seperti sebelumnya). `blocks[]` kosong = bentuk lama persis.
+- `lines[]` DIGABUNG per `invoice_item_id` (beberapa baris items dengan id sama -> satu entri; `quantity` = jumlah, `remaining_after` kumulatif, `batches[]` memuat tiap batch).
+- `lines[].batches[]` memuat: `batch_id`, `batch_no`, `expiry_text`, `quantity`, `quantity_text`. Field `available_before_text` TIDAK diisi (abaikan di contoh di atas).
+- FEFO (batch_id kosong, barang ber-batch): memecah antar-batch bila batch pertama kurang; `BATCH_STOK_KURANG` hanya bila total ber-batch < diminta. Batch hasil FEFO tercatat -> `batches[]` terisi.
