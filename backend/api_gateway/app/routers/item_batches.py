@@ -503,7 +503,7 @@ async def adjust_batch_quantity(
             # (get_available_batches hanya membaca status 'active') dan 'tersedia' kurang dari Σ batch.
             await conn.execute(
                 "UPDATE item_batches SET status = 'active' WHERE id = $1 AND tenant_id = $2 AND current_quantity > 0 AND status = 'depleted' "
-                "AND (expiry_date IS NULL OR expiry_date >= $3)", batch_id, tid, tgl)   # t10-tanggal-bisnis: tanggal bisnis tenant, bukan CURRENT_DATE
+                "AND (expiry_date IS NULL OR expiry_date >= $3)", batch_id, tid, tgl)   # t10-tanggal-bisnis: tanggal bisnis tenant
 
             row = await conn.fetchrow("SELECT * FROM item_batches WHERE id = $1 AND tenant_id = $2", batch_id, tid)
             ws = await conn.fetchrow(
