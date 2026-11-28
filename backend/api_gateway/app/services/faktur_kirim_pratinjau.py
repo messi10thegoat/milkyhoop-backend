@@ -154,6 +154,8 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
     per_baris: dict = {}
     for m in minta:
         per_baris[m["invoice_item_id"]] = per_baris.get(m["invoice_item_id"], Decimal("0")) + m["quantity"]
+    from . import serial_gerak as SG
+    seri = await SG.wajib_banyak(conn, tid, [r["item_id"] for r in awal.values() if r["item_id"]])
     lines = []
     for k, q in per_baris.items():
         r = awal.get(k)
@@ -164,6 +166,7 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
         sebelum, sesudah = ordered - kirim_lalu, ordered - kirim_lalu - q
         ringkas = _ringkas(nama, q, unit, ordered, sesudah)
         lines.append({
+            "track_serial": str(r["item_id"]) in seri if r["item_id"] else False,   # KEPALA FE 28 Nov: pemilih seri tanpa tebak
             "invoice_item_id": str(k), "description": nama, "item_name": nama, "unit": unit,
             "quantity": str(q), "quantity_text": _t(q, unit),
             "ordered": str(ordered), "shipped_before": str(kirim_lalu), "remaining_before": str(sebelum), "remaining_after": str(sesudah),

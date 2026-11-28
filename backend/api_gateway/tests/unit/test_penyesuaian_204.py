@@ -134,6 +134,9 @@ class _Pool:
             async def __aexit__(s, *e):
                 return False
 
+            async def fetch(s, sql, *a):   # track_serial pratinjau (serial_gerak.wajib_banyak): tanpa barang ber-serial
+                return []
+
             def transaction(s, readonly=False):
                 class Tx:
                     async def __aenter__(s2):
