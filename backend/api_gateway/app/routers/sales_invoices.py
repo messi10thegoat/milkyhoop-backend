@@ -2059,6 +2059,7 @@ async def _execute_fulfillment(
         total_minta[str(_r["invoice_item_id"])] = total_minta.get(str(_r["invoice_item_id"]), Decimal("0")) + Decimal(str(_r["quantity"]))
     # Paritas butir 9 (V515): baris ber-alokasi dipecah per batch (satu gerak kartu stok per batch)
     items_to_fulfill = await batch_alokasi.pecah_kirim(conn, items_to_fulfill)
+    items_to_fulfill = await batch_alokasi.pecah_fefo(conn, tenant_id, warehouse_id, items_to_fulfill)   # BUG-445: FEFO memecah antar-batch
     # -- Per-item loop ---------------------------------------------------------
     for req in items_to_fulfill:
         inv_item_id = req["invoice_item_id"]
@@ -2204,18 +2205,17 @@ async def _execute_fulfillment(
 
         # 6. INSERT fulfillment item (fulfillment_id set after header insert)
         fi_id = uuid.uuid4()
-        fulfillment_item_ids.append(
-            {
-                "id": fi_id,
-                "invoice_item_id": inv_item_id,
-                "product_id": product_id,
-                "quantity": req_qty,
-                "unit_cost": biaya_dok,
-                "total_cost": line_cogs,
-                "batch_id": req.get("batch_id"),
-                "notes": notes,
-            }
-        )
+        _fi_rec = {
+            "id": fi_id,
+            "invoice_item_id": inv_item_id,
+            "product_id": product_id,
+            "quantity": req_qty,
+            "unit_cost": biaya_dok,
+            "total_cost": line_cogs,
+            "batch_id": req.get("batch_id"),
+            "notes": notes,
+        }
+        fulfillment_item_ids.append(_fi_rec)
 
         cogs_items.append(
             {
@@ -2264,6 +2264,7 @@ async def _execute_fulfillment(
             else:
                 await _galat_batch(conn, tenant_id, None, warehouse_id, p_name, Decimal("0"), qd)
 
+        _fi_rec["batch_id"] = batch_id   # BUG-445: catat batch hasil FEFO (dulu kosong -> pratinjau/riwayat tak menampilkan batch)
         await BA.tolak_jual_kedaluwarsa(conn, tenant_id, batch_id, today)   # flag gelap batch_kedaluwarsa_tolak: 422 BATCH_KEDALUWARSA
         if batch_id:   # BUG-286: cek kecukupan batch SEBELUM kartu stok ditulis (trigger lalu menggeser saldo); baris batch dikunci
             bws_row = await conn.fetchrow(

@@ -111,3 +111,44 @@ async def pecah_kirim(conn, items_to_fulfill: List[dict]) -> List[dict]:
         if sisa_minta > 0:
             hasil.append({**req, "quantity": sisa_minta})
     return hasil
+
+
+async def pecah_fefo(conn, tenant_id: str, warehouse_id, items_to_fulfill: List[dict]) -> List[dict]:
+    """BUG-445: permintaan kirim TANPA batch pilihan pada barang ber-batch (track_batches) yang batch FEFO pertamanya tak cukup -> dipecah per batch
+    berurutan (FEFO, get_available_batches) selama TOTAL ber-batch cukup; selain itu tak berubah (inti memblok BATCH_STOK_KURANG). Pecahan memakai
+    satuan dokumen baris; bila pecahan dasar tak habis dibagi faktor satuan, baris tak dipecah."""
+    if warehouse_id is None:
+        return items_to_fulfill
+    kandidat = [r["invoice_item_id"] for r in items_to_fulfill if not r.get("batch_id") and not r.get("serials")]
+    if not kandidat:
+        return items_to_fulfill
+    info = {r["id"]: r for r in await conn.fetch(
+        """SELECT ii.id, ii.item_id, ii.unit FROM sales_invoice_items ii JOIN products p ON p.id = ii.item_id
+           WHERE ii.id = ANY($1::uuid[]) AND p.track_batches""", kandidat)}
+    if not info:
+        return items_to_fulfill
+    from fastapi import HTTPException
+    from . import satuan_dasar as SD
+    hasil = []
+    for req in items_to_fulfill:
+        i = info.get(req["invoice_item_id"]) if not req.get("batch_id") and not req.get("serials") else None
+        if not i:
+            hasil.append(req)
+            continue
+        try:
+            q = await SD.qty_dasar(conn, tenant_id, i["item_id"], i["unit"], Decimal(str(req["quantity"])), "konversi")
+        except HTTPException:
+            hasil.append(req)   # satuan tak terkonversi: biar inti yang menolak dengan kalimatnya
+            continue
+        qd, f = q["qty_dasar"], q["faktor"]
+        rows = await conn.fetch("SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')", tenant_id, i["item_id"], warehouse_id, qd)
+        pakai = [(r["batch_id"], Decimal(str(r["quantity_to_use"]))) for r in rows]
+        if len(pakai) < 2 or sum(u for _, u in pakai) < qd or any(u % f for _, u in pakai):
+            hasil.append(req)
+            continue
+        total, sisa = Decimal(str(req["quantity"])), Decimal(str(req["quantity"]))
+        for n, (bid, u) in enumerate(pakai):
+            dok = sisa if n == len(pakai) - 1 else u / f
+            hasil.append({**req, "quantity": dok, "batch_id": bid})
+            sisa -= dok
+    return hasil
