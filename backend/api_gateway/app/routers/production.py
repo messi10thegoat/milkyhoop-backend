@@ -699,12 +699,12 @@ async def get_production_order(request: Request, order_id: UUID):
                 SELECT pom.*, p.nama_produk as product_name, p.sku as product_sku,
                        ib.batch_number
                 FROM production_order_materials pom
-                JOIN products p ON p.id = pom.product_id
-                LEFT JOIN item_batches ib ON ib.id = pom.batch_id
+                JOIN products p ON p.id = pom.product_id AND p.tenant_id = $2
+                LEFT JOIN item_batches ib ON ib.id = pom.batch_id AND ib.tenant_id = $2
                 WHERE pom.production_order_id = $1
                 ORDER BY p.nama_produk
                 """,
-                order_id,
+                order_id, ctx["tenant_id"],   # sensus pagar tenant
             )
 
             # Get labor
@@ -722,11 +722,11 @@ async def get_production_order(request: Request, order_id: UUID):
                 """
                 SELECT pc.*, ib.batch_number
                 FROM production_completions pc
-                LEFT JOIN item_batches ib ON ib.id = pc.batch_id
+                LEFT JOIN item_batches ib ON ib.id = pc.batch_id AND ib.tenant_id = $2
                 WHERE pc.production_order_id = $1
                 ORDER BY pc.completion_date DESC
                 """,
-                order_id,
+                order_id, ctx["tenant_id"],   # sensus pagar tenant
             )
 
             return {
