@@ -152,3 +152,21 @@ async def pecah_fefo(conn, tenant_id: str, warehouse_id, items_to_fulfill: List[
             hasil.append({**req, "quantity": dok, "batch_id": bid})
             sisa -= dok
     return hasil
+
+
+async def fefo_keluar(conn, tenant_id: str, product_id, warehouse_id, qty) -> List[tuple]:
+    """BUG-452: pengeluaran stok (penyesuaian KURANG) barang ber-batch -> [(batch_id, qty_dasar)] urut FEFO (get_available_batches). Bagian yang melebihi stok
+    ber-batch di gudang itu = (None, sisa) (stok tanpa batch tetap boleh keluar seperti sebelumnya; tak ada blok baru). Barang tanpa track_batches = [(None, qty)].
+    Jumlah semua potongan = qty persis."""
+    qty = Decimal(str(qty))
+    if not await conn.fetchval("SELECT track_batches FROM products WHERE id = $1 AND tenant_id = $2", product_id, tenant_id):
+        return [(None, qty)]
+    hasil, sisa = [], qty
+    for r in await conn.fetch("SELECT * FROM get_available_batches($1, $2, $3, $4, 'FEFO')", tenant_id, product_id, warehouse_id, qty):
+        ambil = min(Decimal(str(r["quantity_to_use"])), sisa)
+        if ambil > 0:
+            hasil.append((r["batch_id"], ambil))
+            sisa -= ambil
+    if sisa > 0:
+        hasil.append((None, sisa))
+    return hasil

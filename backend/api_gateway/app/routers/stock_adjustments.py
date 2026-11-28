@@ -928,15 +928,25 @@ async def _tulis_posting(conn, ctx, adjustment_id, r):
             else:
                 new_avg_cost = unit_cost
 
-            await tulis_kartu(
-                conn,
-                tenant_id=ctx["tenant_id"], product_id=g["product_id"], product_code=g["product_code"], product_name=g["product_name"],
-                movement_type='STOCK_ADJUSTMENT', movement_date=sa["adjustment_date"], source_type='STOCK_ADJUSTMENT',
-                source_id=adjustment_id, source_number=sa["adjustment_number"], quantity_in=0, quantity_out=qty_out,
-                quantity_balance=new_balance, unit_cost=unit_cost, total_cost=total_cost, average_cost=new_avg_cost,
-                warehouse_id=adj_warehouse_id, storage_location_id=sa["storage_location_id"], journal_id=journal_id,
-                created_by=ctx["user_id"], notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
-                serials=g.get("serials"))   # Serial S1 (V513)
+            # BUG-452: barang ber-batch keluar per batch (FEFO bawaan); satu baris kartu per batch, trigger trg_update_batch_stock menggeser saldo batch.
+            # Σ potongan = qty_out persis; total_cost potongan terakhir = sisa agar Σ = total_cost (jurnal dari penentu tak bergeser).
+            from ..services import batch_alokasi as _BAL
+            _potong = ([(None, qty_out)] if g.get("serials") else   # barang ber-serial: satu baris (jumlah seri harus = qty baris)
+                       await _BAL.fefo_keluar(conn, ctx["tenant_id"], g["product_id"], adj_warehouse_id, qty_out))
+            _sisa_nilai, _saldo = total_cost, current_balance
+            for _n, (_bid, _q) in enumerate(_potong):
+                _nilai = _sisa_nilai if _n == len(_potong) - 1 else unit_cost * _q
+                _sisa_nilai -= _nilai
+                _saldo -= _q
+                await tulis_kartu(
+                    conn,
+                    tenant_id=ctx["tenant_id"], product_id=g["product_id"], product_code=g["product_code"], product_name=g["product_name"],
+                    movement_type='STOCK_ADJUSTMENT', movement_date=sa["adjustment_date"], source_type='STOCK_ADJUSTMENT',
+                    source_id=adjustment_id, source_number=sa["adjustment_number"], quantity_in=0, quantity_out=_q,
+                    quantity_balance=_saldo, unit_cost=unit_cost, total_cost=_nilai, average_cost=new_avg_cost,
+                    warehouse_id=adj_warehouse_id, storage_location_id=sa["storage_location_id"], journal_id=journal_id,
+                    created_by=ctx["user_id"], notes=f"Stock Adjustment {sa['adjustment_number']} - {sa['adjustment_type'].title()}",
+                    serials=g.get("serials") if _n == 0 else None, batch_id=_bid)   # Serial S1 (V513): nomor seri hanya di potongan pertama
 
     # Update stock adjustment status (+ gudang yang benar-benar dipakai, untuk draf lama tanpa warehouse_id)
     await conn.execute(
