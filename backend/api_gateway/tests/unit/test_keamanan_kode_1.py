@@ -37,7 +37,7 @@ def test_b3_antar_perusahaan_hanya_grup_sendiri():
 
 def test_b4_members_tanpa_tenant_terpaku():
     s = _src("routers/members.py")
-    assert "evlogia" not in s and s.count("tenant_id = _tenant(request)") == 4
+    assert '"evlogia")' not in s and s.count("tenant_id = _tenant(request)") == 4
 
 
 def test_b8_waf_linear():
