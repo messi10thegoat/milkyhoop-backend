@@ -152,6 +152,19 @@ WHERE m.tenant_id = $1 AND m.minimum > 0 AND p.deleted_at IS NULL AND NOT w.is_s
 """
 
 
+_SQL_PESAN_BARANG = """
+SELECT p.id::text AS id, p.nama_produk, COALESCE(NULLIF(p.base_unit, ''), p.satuan) AS unit, w.id::text AS gudang_id, w.name AS gudang,
+       p.reorder_level AS minimum,
+       COALESCE((SELECT SUM(l.quantity_in) - SUM(l.quantity_out) FROM inventory_ledger l
+                 WHERE l.tenant_id = p.tenant_id AND l.product_id = p.id), 0) AS stok
+FROM products p
+JOIN LATERAL (SELECT id, name FROM warehouses WHERE tenant_id = p.tenant_id AND COALESCE(is_active, true) AND NOT is_system
+              ORDER BY is_default DESC NULLS LAST, created_at LIMIT 1) w ON true
+WHERE p.tenant_id = $1 AND COALESCE(p.reorder_level, 0) > 0 AND p.deleted_at IS NULL AND p.item_type = 'goods' AND COALESCE(p.track_inventory, true)
+  AND NOT EXISTS (SELECT 1 FROM stok_minimum_gudang m WHERE m.tenant_id = p.tenant_id AND m.product_id = p.id AND m.minimum > 0)
+"""
+
+
 async def daftar_pesan_ulang(conn, tid: str, limit: Optional[int] = None, search: Optional[str] = None, status: Optional[str] = None,
                             skip: int = 0, warehouse_id: Optional[str] = None) -> dict:
     """Pesan Ulang per gudang: baris (barang, gudang) yang stoknya di bawah minimum gudang. Urut kekurangan terbesar."""
@@ -162,6 +175,15 @@ async def daftar_pesan_ulang(conn, tid: str, limit: Optional[int] = None, search
         teks += f" — usul pesan {_f(u)} {s}." if u > 0 else " — aman."
         semua.append({"id": r["id"], "nama_produk": r["nama_produk"], "satuan": s, "gudang_id": r["gudang_id"], "gudang": r["gudang"],
                       "stok": Decimal(str(r["stok"])), "minimum": Decimal(str(r["minimum"])), "usulan_beli": u, "teks": teks})
+    # BUG-440 (ikut Accurate): barang yang minimumnya diatur per BARANG (reorder_level) tanpa satu pun minimum gudang -> ikut daftar SEKALI,
+    # dinilai dari stok SEMUA gudang, ditempatkan di gudang utama (tak dobel di banyak gudang).
+    for r in await conn.fetch(_SQL_PESAN_BARANG, tid):
+        u, s = usulan(r["stok"], r["minimum"]), r["unit"] or "pcs"
+        teks = f"{r['nama_produk']} (semua gudang): stok {_f(r['stok'])} {s}, minimum barang {_f(r['minimum'])}"
+        teks += f" — usul pesan {_f(u)} {s} ke {r['gudang']}." if u > 0 else " — aman."
+        semua.append({"id": r["id"], "nama_produk": r["nama_produk"], "satuan": s, "gudang_id": r["gudang_id"], "gudang": r["gudang"],
+                      "stok": Decimal(str(r["stok"])), "minimum": Decimal(str(r["minimum"])), "usulan_beli": u, "teks": teks,
+                      "sumber_minimum": "barang"})
     if warehouse_id:
         semua = [x for x in semua if x["gudang_id"] == str(warehouse_id)]
     perlu = sorted((x for x in semua if x["usulan_beli"] > 0), key=lambda x: (-x["usulan_beli"], x["nama_produk"].lower(), x["gudang"].lower()))
