@@ -50,6 +50,6 @@ def test_b8_waf_linear():
         for p in semua:
             p.search(badan)
         assert time.time() - t < 2.0, badan[:8]
-    assert W.MAX_INSPEKSI_BODY == 1024 * 1024
+    assert W.MAX_INSPEKSI_BODY == 64 * 1024
     # deteksi tetap
     assert any(p.search("1 UNION SELECT a FROM b") for p in semua) and any(p.search("<script>alert(1)</script>") for p in semua)
