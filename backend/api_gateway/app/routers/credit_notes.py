@@ -2157,8 +2157,8 @@ async def posting_nota_kredit(conn, ctx: dict, credit_note_id: UUID) -> dict:
             continue
         # Check if product tracks inventory
         product = await conn.fetchrow(
-            "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1",
-            item["item_id"],
+            "SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1 AND tenant_id = $2",
+            item["item_id"], ctx["tenant_id"],   # sensus pagar tenant (kembar pratinjau nota_kredit_rencana)
         )
         if not product or not product["track_inventory"]:
             continue
