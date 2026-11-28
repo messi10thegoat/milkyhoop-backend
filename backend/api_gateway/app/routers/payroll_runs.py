@@ -1644,7 +1644,9 @@ async def get_slips(request: Request, run_id: UUID):
     ctx = get_user_context(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(f"SET LOCAL app.tenant_id = '{ctx['tenant_id']}'")
+        # TIKET keamanan B3 (isolasi-tenant-4): run WAJIB milik tenant pemanggil; baris slip disaring tenant (SET LOCAL di luar transaksi tak berefek)
+        if not await conn.fetchval("SELECT 1 FROM payroll_runs WHERE id = $1 AND tenant_id = $2", run_id, ctx["tenant_id"]):
+            raise HTTPException(status_code=404, detail="Payroll run tidak ditemukan.")
 
         role_code, accessible_ids = await _pg_filter(conn, ctx)
         if role_code not in ("OWNER", "ADMIN") and accessible_ids:
@@ -1655,10 +1657,11 @@ async def get_slips(request: Request, run_id: UUID):
                    FROM payroll_slip_lines psl
                    JOIN employees e ON e.id = psl.employee_id
                    LEFT JOIN salary_components sc ON sc.id = psl.component_id
-                   WHERE psl.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[])
+                   WHERE psl.payroll_id = $1 AND e.pay_group_id = ANY($2::uuid[]) AND psl.tenant_id = $3 AND e.tenant_id = $3
                    ORDER BY e.name, psl.sort_order""",
                 run_id,
                 accessible_ids,
+                ctx["tenant_id"],
             )
         elif role_code not in ("OWNER", "ADMIN"):
             return {"success": True, "data": []}
@@ -1670,9 +1673,10 @@ async def get_slips(request: Request, run_id: UUID):
                    FROM payroll_slip_lines psl
                    JOIN employees e ON e.id = psl.employee_id
                    LEFT JOIN salary_components sc ON sc.id = psl.component_id
-                   WHERE psl.payroll_id = $1
+                   WHERE psl.payroll_id = $1 AND psl.tenant_id = $2 AND e.tenant_id = $2
                    ORDER BY e.name, psl.sort_order""",
                 run_id,
+                ctx["tenant_id"],
             )
 
         # Group by employee

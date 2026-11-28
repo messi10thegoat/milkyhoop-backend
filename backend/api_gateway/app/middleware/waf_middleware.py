@@ -35,12 +35,13 @@ class WAFMiddleware(BaseHTTPMiddleware):
     MAX_URL_LENGTH = 2048
     MAX_HEADER_SIZE = 8192
     MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_INSPEKSI_BODY = 1024 * 1024  # B8: batas bagian badan yang diperiksa pola
 
     # SQL Injection patterns (more specific to avoid false positives)
     SQL_INJECTION_PATTERNS: List[Pattern] = [
         # SQL keywords with dangerous context
         re.compile(r"(\bUNION\s+(ALL\s+)?SELECT\b)", re.IGNORECASE),
-        re.compile(r"(\bSELECT\s+.+\s+FROM\s+)", re.IGNORECASE),
+        re.compile(r"(\bSELECT\s+[^;]{1,200}?\s+FROM\s+)", re.IGNORECASE),
         re.compile(r"(\bINSERT\s+INTO\s+)", re.IGNORECASE),
         re.compile(r"(\bUPDATE\s+\w+\s+SET\b)", re.IGNORECASE),
         re.compile(r"(\bDELETE\s+FROM\s+)", re.IGNORECASE),
@@ -53,7 +54,7 @@ class WAFMiddleware(BaseHTTPMiddleware):
         ),
         # Comment-based injection (specific patterns)
         re.compile(r"(--\s*$|--\s+)", re.IGNORECASE),
-        re.compile(r"(/\*.*\*/)", re.IGNORECASE),
+        re.compile(r"(/\*.{0,500}?\*/)", re.IGNORECASE),
         # Time-based injection
         re.compile(r"(\bWAITFOR\s+DELAY|\bBENCHMARK\s*\(|\bSLEEP\s*\()", re.IGNORECASE),
         # System table access
@@ -66,14 +67,14 @@ class WAFMiddleware(BaseHTTPMiddleware):
 
     # XSS patterns
     XSS_PATTERNS: List[Pattern] = [
-        re.compile(r"<script\b[^>]*>.*?</script>", re.IGNORECASE | re.DOTALL),
+        re.compile(r"<script\b[^>]{0,200}>", re.IGNORECASE | re.DOTALL),
         re.compile(r"javascript\s*:", re.IGNORECASE),
         re.compile(r"(?:^|\s|['\"])on(click|error|load|mouseover|mouseout|keyup|keydown|focus|blur|change|submit|input|scroll|resize|unload|beforeunload|abort|afterprint|animationend|copy|cut|paste|drag|drop|hashchange|message|offline|online|pagehide|pageshow|popstate|progress|storage|touchstart|touchend|touchmove|wheel)\s*=", re.IGNORECASE),  # HTML event handlers
-        re.compile(r"<\s*img[^>]+src\s*=\s*['\"]?\s*javascript:", re.IGNORECASE),
+        re.compile(r"<\s*img[^>]{1,200}?src\s*=\s*['\"]?\s*javascript:", re.IGNORECASE),
         re.compile(r"<\s*iframe", re.IGNORECASE),
         re.compile(r"<\s*embed", re.IGNORECASE),
         re.compile(r"<\s*object", re.IGNORECASE),
-        re.compile(r"<\s*svg[^>]*onload", re.IGNORECASE),
+        re.compile(r"<\s*svg[^>]{0,200}?onload", re.IGNORECASE),
         re.compile(r"expression\s*\(", re.IGNORECASE),
         re.compile(r"document\.(cookie|location|write)", re.IGNORECASE),
         re.compile(r"(eval|alert|prompt|confirm)\s*\(", re.IGNORECASE),
@@ -95,8 +96,8 @@ class WAFMiddleware(BaseHTTPMiddleware):
     # Command injection patterns
     COMMAND_INJECTION_PATTERNS: List[Pattern] = [
         re.compile(r"[;&|`$]"),
-        re.compile(r"\$\(.*\)"),
-        re.compile(r"`.*`"),
+        re.compile(r"\$\([^)\n]{0,200}\)"),
+        re.compile(r"`[^`\n]{0,200}`"),
         re.compile(r"\|\s*\w+"),
         re.compile(r">\s*/"),
         re.compile(r"<\s*/"),
@@ -260,7 +261,9 @@ class WAFMiddleware(BaseHTTPMiddleware):
                 try:
                     body = await request.body()
                     if body:
-                        body_str = body.decode("utf-8", errors="ignore")
+                        # TIKET keamanan B8 (injeksi-2): inspeksi dibatasi 1 MB pertama + pola berbatas (dulu kuadratik: 1 MB = belasan menit/worker).
+                        # WAF = lapis tambahan; SQL tetap berparameter. Terukur: 1 MB terburuk <= ~1 dtk untuk SEMUA pola.
+                        body_str = body[:self.MAX_INSPEKSI_BODY].decode("utf-8", errors="ignore")
                         threat = self._detect_threat(
                             body_str, "Body", skip_sql_patterns=body_skip_sql
                         )

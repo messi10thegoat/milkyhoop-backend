@@ -1160,9 +1160,10 @@ async def register_barcode(
             duplicate_query = """
                 SELECT id, nama_produk
                 FROM public.products
-                WHERE barcode = $1 AND id != $2
+                WHERE barcode = $1 AND id != $2 AND tenant_id = $3
             """
-            duplicate = await conn.fetchrow(duplicate_query, barcode, product_id)
+            # TIKET keamanan B3 (isolasi-tenant-7): duplikat barcode hanya di tenant pemanggil (dulu lintas tenant + membocorkan nama barang)
+            duplicate = await conn.fetchrow(duplicate_query, barcode, product_id, tenant_id)
 
             if duplicate:
                 raise HTTPException(
