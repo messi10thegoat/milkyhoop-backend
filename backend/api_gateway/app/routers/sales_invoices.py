@@ -7174,6 +7174,7 @@ class _KirimBaris(BaseModel):
     quantity: Decimal
     batch_id: Optional[UUID] = None
     serials: Optional[List[str]] = None
+    unit: Optional[str] = None   # BUG-451: satuan ketikan ("peti"); kosong = satuan baris faktur
 
     @model_validator(mode="before")
     @classmethod
@@ -7279,6 +7280,13 @@ async def fulfill_invoice(request: Request, invoice_id: UUID):
                 # t10b-3b: tanggal bisnis tenant, bukan UTC
                 fulfillment_date = await tanggal_dokumen(conn, ctx["tenant_id"])
                 fulfillment_date_str = fulfillment_date.isoformat()
+            # BUG-451: satuan ketikan -> satuan baris (penentu SATU dengan pratinjau); diblok = 422 berkode, nol tulis
+            from ..services import satuan_kirim as _SK
+            req_items, _, _bk = await _SK.terapkan(conn, ctx["tenant_id"], invoice_id,
+                                                   [{**i, "quantity": Decimal(str(i["quantity"]))} for i in req_items])
+            if _bk:
+                from ..services.galat_berkode import GalatBerkode as _GB
+                raise _GB(422, _bk[0]["code"], _bk[0]["message"], "items")
             async with conn.transaction():
                 # Dual-int advisory lock (Law 13)
                 await conn.execute(

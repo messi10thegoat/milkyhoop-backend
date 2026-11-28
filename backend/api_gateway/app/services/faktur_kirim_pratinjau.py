@@ -91,10 +91,14 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
     try:
         gudang = UUID(str(body["warehouse_id"])) if body.get("warehouse_id") else None
         tgl = date.fromisoformat(str(body["fulfillment_date"])) if body.get("fulfillment_date") else None
-        minta = [{"invoice_item_id": UUID(str(i["invoice_item_id"])), "quantity": Decimal(str(i["quantity"])),
+        minta = [{"invoice_item_id": UUID(str(i["invoice_item_id"])), "quantity": Decimal(str(i["quantity"])), "unit": i.get("unit"),
                   "serials": i.get("serials"), "batch_id": UUID(str(i["batch_id"])) if i.get("batch_id") else None} for i in req_items]
     except (ValueError, KeyError, TypeError, ArithmeticError):
         raise HTTPException(422, "Isi pratinjau tidak sah (gudang/tanggal/baris/jumlah).")
+    from . import satuan_kirim as SK   # BUG-451: satuan ketikan -> satuan baris (penentu SATU dengan tulis)
+    minta, info_satuan, blok_satuan = await SK.terapkan(conn, tid, invoice_id, minta)
+    for b in blok_satuan:
+        blocks.append(_blok(b["code"], b["message"], b["invoice_item_id"]))
     if tgl is None:
         from ..utils.tanggal_tenant import tanggal_dokumen
         tgl = await tanggal_dokumen(conn, tid)
@@ -169,6 +173,8 @@ async def pratinjau_kirim_faktur(conn, ctx: dict, invoice_id: UUID, body: dict, 
             "track_serial": str(r["item_id"]) in seri if r["item_id"] else False,   # KEPALA FE 28 Nov: pemilih seri tanpa tebak
             "invoice_item_id": str(k), "description": nama, "item_name": nama, "unit": unit,
             "quantity": str(q), "quantity_text": _t(q, unit),
+            **({"unit_input": info_satuan[str(k)]["unit_input"], "quantity_input": info_satuan[str(k)]["quantity_input"],
+                "quantity_text_input": info_satuan[str(k)]["quantity_text"]} if str(k) in info_satuan else {}),
             "ordered": str(ordered), "shipped_before": str(kirim_lalu), "remaining_before": str(sebelum), "remaining_after": str(sesudah),
             "ordered_text": _t(ordered, unit), "shipped_before_text": _t(kirim_lalu, unit),
             "remaining_before_text": _t(sebelum, unit), "remaining_after_text": _t(sesudah, unit),

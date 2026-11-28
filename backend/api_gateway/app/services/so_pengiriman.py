@@ -36,6 +36,7 @@ class SOFulfillLine(BaseModel):
     model_config = ConfigDict(extra="forbid")   # BUG-430: kolom tak dikenal = 422 (dulu diabaikan diam-diam)
     sales_order_item_id: str
     quantity: Decimal
+    unit: Optional[str] = None                  # BUG-451: satuan ketikan ("peti"); kosong = satuan baris SO
     batch_id: Optional[str] = None              # batch pilihan (kosong = FEFO / alokasi baris faktur)
     serials: Optional[List[str]] = None         # nomor seri keluar (flag serial_v1); hanya bila baris SO jatuh di SATU baris faktur
 
@@ -48,6 +49,13 @@ class SOFulfillRequest(BaseModel):
     notes: Optional[str] = Field(None, max_length=1000)
     # 11 Okt 2026 (kontrak pengiriman serah): cara serah / alamat / resi. Tanpa flag `pengiriman_serah` -> 409.
     serah: Optional[serah_mod.SerahIn] = None
+
+
+def _uuid_aman(v):
+    try:
+        return UUID(str(v))
+    except (ValueError, TypeError):
+        return None
 
 
 def _f(v):
@@ -183,14 +191,29 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
     fnum = {f["id"]: f["invoice_number"] for f in faktur}
 
     soi = {r["id"]: dict(r) for r in await conn.fetch(
-        """SELECT soi.id, soi.description, soi.unit, soi.quantity, soi.sort_order,
+        """SELECT soi.id, soi.item_id, soi.description, soi.unit, soi.quantity, soi.sort_order,
                   (COALESCE(p.track_inventory, false) OR COALESCE(soi.perlu_kirim, false)) AS butuh_kirim
            FROM sales_order_items soi LEFT JOIN products p ON p.id = soi.item_id AND p.tenant_id = $2
            WHERE soi.sales_order_id = $1 ORDER BY soi.sort_order NULLS LAST, soi.id""", so_id, tid)}
 
     alokasi = []  # [{baris, qty}]
+    satuan_info: dict = {}   # BUG-451: soi id -> info satuan ketikan (dipakai bentuk())
     if body.items is not None:  # [] / semua 0 = TIDAK ada yang dikirim (bukan "kirim semua")
+        from . import satuan_dasar as _SD0, satuan_kirim as _SK
+        _itk = []
+        _ktx = await _SD0.muat(conn, tid, [soi[u]["item_id"] for u in
+                                           [_u for _u in (_uuid_aman(x.sales_order_item_id) for x in body.items if _SD0.normal(x.unit))] if u in soi])
         for it in body.items:
+            _u = _uuid_aman(it.sales_order_item_id)
+            if _SD0.normal(it.unit) and _u in soi:
+                _q2, _b, _inf = _SK.konversi(_ktx, soi[_u]["item_id"], soi[_u]["unit"], soi[_u]["description"] or "", it.unit, it.quantity)
+                if _b:
+                    blocks.append({"code": _b["code"], "message": _b["message"], "sales_order_item_id": str(_u)})
+                    continue
+                satuan_info[str(_u)] = _inf
+                it = it.model_copy(update={"quantity": _q2, "unit": None})
+            _itk.append(it)
+        for it in _itk:
             try:
                 sid = UUID(str(it.sales_order_item_id))
             except (ValueError, TypeError):
@@ -354,7 +377,9 @@ async def rencana_kirim_so(conn, ctx: dict, so_id: UUID, body: SOFulfillRequest)
                 alasan = "INVOICE_DRAFT"
             else:
                 alasan = "NOT_INVOICED"
-        lines.append({"sales_order_item_id": str(sid), "description": x["description"], "unit": x["unit"],
+        lines.append({**({"unit_input": satuan_info[str(sid)]["unit_input"], "quantity_input": satuan_info[str(sid)]["quantity_input"],
+                          "quantity_text_input": satuan_info[str(sid)]["quantity_text"]} if str(sid) in satuan_info else {}),
+                      "sales_order_item_id": str(sid), "description": x["description"], "unit": x["unit"],
                       "ordered": _f(x["quantity"]), "shipped": _f(terkirim), "shippable": _f(bisa),
                       "quantity": _f(dikirim), "reason": alasan})
 
