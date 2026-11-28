@@ -39,6 +39,7 @@ from ..services.uang_presisi import presisi_tenant
 from ..services import kategori_daftar as KD  # K-1 daftar standar master Kategori
 from ..services import stok_awal_barang as SAB  # FORM BARANG CW: stok awal per gudang
 from ..services import kategori_akun as KAK  # BUG-282 akun bawaan per kategori
+from ..services import dimensi_barang as DIMB  # V517
 from ..services import pajak_sah as PS  # pajak sah barang: SATU penentu (penulis + daftar pilihan)
 from ..services import kategori_aksi as KA  # K-2 pratinjau/tulis/audit master Kategori
 from ..services import impor_kategori as IK  # K-5 impor/ekspor master Kategori
@@ -560,7 +561,8 @@ async def list_items(
                     default_expiry_days=row.get("default_expiry_days"),
                     sales_price=row.get("sales_price") or row.get("harga_jual"),
                     purchase_price=row.get("purchase_price"),
-                    image_url=row.get("image_url"),
+                    image_url=await GB.url_tampil(row.get("image_url")),
+                    berat_text=DIMB.teks(row)["berat_text"],   # V517
                     reorder_level=row["reorder_level"]
                     if row.get("reorder_level")
                     else None,
@@ -760,6 +762,7 @@ async def _siapkan_buat_barang(conn, tenant_id: str, ctx: dict, body: CreateItem
 
     # BUG-282 (putusan pemilik 17 Nov): akun barang yang KOSONG disalin dari kategori (isian eksplisit menang); barang lama/jurnal lama tak tersentuh
     await KAK.salin_ke_barang(conn, tenant_id, body)
+    await DIMB.cek(conn, tenant_id, body)   # V517: medan dimensi/min qty hanya saat flag dimensi_barang_v1 nyala (pratinjau == tulis)
 
     # Auto-default inventory/COGS accounts for stockable goods so the
     # COGS/restock path no longer relies on an implicit silent role fallback.
@@ -1105,6 +1108,7 @@ async def tulis_barang_baru(conn, ctx: dict, body: CreateItemRequest, user_id, u
             body.merek,  # V502 (sudah dipangkas oleh skema; None = tanpa merek)
         )
         await barang_lacak.terapkan(conn, tenant_id, item_id, _lacak)   # sebelum stok awal: stok awal FIFO jadi lapisan pertama
+        await DIMB.tulis_buat(conn, tenant_id, item_id, body)   # V517 (cek() di _siapkan_buat_barang)
 
         # Insert unit conversions (goods only)
         if body.item_type == "goods" and body.conversions:
@@ -1371,6 +1375,7 @@ async def _alasan_tolak_ubah_tipe(conn, tenant_id, item_id, tipe_lama, lacak_lam
 
 
 async def _periksa_ubah(conn, ctx: dict, item_id, body):
+    await DIMB.cek(conn, ctx["tenant_id"], body)   # V517 pratinjau == tulis
     """SEMUA penghalang ubah barang yang dibaca sebelum menulis (ada, nama/barcode ganda, satuan dasar terkunci, ubah tipe/lacak):
     SATU penentu untuk PUT dan pratinjau /edit/preview. Mengembalikan baris lama; menormalkan body.track_inventory."""
     tenant_id = ctx["tenant_id"]
@@ -1519,6 +1524,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                 "track_batches": "track_batches",
                 "track_expiry": "track_expiry",
                 "default_expiry_days": "default_expiry_days",
+                **{k: k for k in DIMB.MEDAN},   # V517 (cek di _periksa_ubah)
             }
 
             body_dict = BA.normal_kosong(body.model_dump(exclude_unset=True, exclude={"conversions"}))   # BUG-381
@@ -3823,7 +3829,8 @@ async def get_item(request: Request, item_id: UUID):
                 "track_serial": bool(row.get("track_serial") or False),   # form Barang: lacak nomor seri
                 "track_expiry": row.get("track_expiry", False),
                 "default_expiry_days": row.get("default_expiry_days"),
-                "image_url": row.get("image_url"),
+                "image_url": await GB.url_tampil(row.get("image_url")),   # gambar_barang_v1: s3: -> URL bertanda tangan 1 jam
+                **DIMB.mentah(row), **DIMB.teks(row, row.get("base_unit") or row["satuan"]),   # V517
                 "reorder_level": row["reorder_level"]
                 if row.get("reorder_level")
                 else None,
@@ -4523,3 +4530,52 @@ async def create_single_item_stock_transfer(request: Request, item_id: str):
     except Exception as e:
         logger.error(f"Error creating stock transfer: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create stock transfer")
+
+
+# ---------------------------------------------------------------- Gambar barang (flag gelap gambar_barang_v1; services/gambar_barang)
+from fastapi import File as _File, UploadFile as _UploadFile  # noqa: E402
+from ..services import gambar_barang as GB  # noqa: E402
+from ..services.galat_berkode import GalatBerkode as _GB_Galat  # noqa: E402
+
+
+async def _gambar_siap(conn, tenant_id: str, item_id) -> str:
+    from ..services.tenant_features import fitur_aktif
+    if GB.FLAG not in await fitur_aktif(conn, tenant_id):
+        raise _GB_Galat(404, "FITUR_BELUM_AKTIF", "Unggah gambar barang belum diaktifkan untuk usaha ini.")
+    lama = await conn.fetchrow("SELECT id, image_url FROM products WHERE id = $1 AND tenant_id = $2", str(item_id), tenant_id)
+    if lama is None:
+        raise _GB_Galat(404, "BARANG_TIDAK_DITEMUKAN", "Barang tidak ditemukan.")
+    return lama["image_url"]
+
+
+@router.post("/items/{item_id}/image")
+async def unggah_gambar_barang(request: Request, item_id: UUID, file: _UploadFile = _File(..., description="JPG/PNG/WebP, maks 2 MB")):
+    """Unggah/ganti gambar utama barang. Tipe dari tanda tangan byte, maks 2 MB, nama acak, MinIO. -> {image_url} bertanda tangan 1 jam."""
+    tenant_id = get_tenant_id(request)
+    isi = await file.read(GB.MAKS_BYTE + 1)
+    ct, ext, galat = GB.tentukan(isi)
+    if galat:
+        raise _GB_Galat(*galat, field="file")
+    conn = await get_db_connection()
+    try:
+        await _gambar_siap(conn, tenant_id, item_id)
+        path = GB.jalur(tenant_id, isi, ext)
+        from ..services.storage_service import get_storage_service
+        await get_storage_service().upload_bytes(isi, path, ct)
+        await conn.execute("UPDATE products SET image_url = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2", str(item_id), tenant_id, GB.AWALAN + path)
+        return {"success": True, "data": {"image_url": await GB.url_tampil(GB.AWALAN + path)}}
+    finally:
+        await conn.close()
+
+
+@router.delete("/items/{item_id}/image")
+async def hapus_gambar_barang(request: Request, item_id: UUID):
+    """Lepas gambar barang (berkas di storage dibiarkan: isi beralamat sha256 bisa dipakai barang lain)."""
+    tenant_id = get_tenant_id(request)
+    conn = await get_db_connection()
+    try:
+        await _gambar_siap(conn, tenant_id, item_id)
+        await conn.execute("UPDATE products SET image_url = NULL, updated_at = NOW() WHERE id = $1 AND tenant_id = $2", str(item_id), tenant_id)
+        return {"success": True, "data": {"image_url": None}}
+    finally:
+        await conn.close()

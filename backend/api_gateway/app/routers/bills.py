@@ -1908,6 +1908,8 @@ async def calculate_bill_totals(request: Request, body: CalculateBillRequestV2):
                 bloks = await TR.blok_buat(conn, ctx["tenant_id"], req)
                 h = await TR.hitung(conn, ctx["tenant_id"], req)
                 peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], req.get("vendor_id"), h["akhir"]["tax_amount"])  # BUG-030-BE
+                from ..services import dimensi_barang as DIMB
+                peringatan = list(peringatan) + await DIMB.peringatan_baris(conn, ctx["tenant_id"], req.get("items") or [], "beli")  # V517
                 if req.get("status") == "posted":  # QTY-DASAR R1: == create_bill_v2 posted (blok_satuan_buat SAMA)
                     from ..services.bills_service import blok_satuan_buat
                     bs = [{"code": x["code"], "message": x["message"]} for x in await blok_satuan_buat(conn, ctx["tenant_id"], req.get("items") or [])]

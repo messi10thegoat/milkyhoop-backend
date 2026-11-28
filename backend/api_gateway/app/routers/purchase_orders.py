@@ -1514,6 +1514,8 @@ async def calculate_purchase_order(request: Request, body: CreatePurchaseOrderRe
                                body.tax_rate)
         _, bloks = await PR.blok_vendor(conn, ctx["tenant_id"], body.vendor_id)
         peringatan = await PPNV.peringatan(conn, ctx["tenant_id"], body.vendor_id, h["header"]["tax_amount"])  # BUG-030-BE non-fatal
+        from ..services import dimensi_barang as DIMB
+        peringatan = list(peringatan) + await DIMB.peringatan_baris(conn, ctx["tenant_id"], [i.model_dump() for i in body.items], "beli")  # V517
         _alamat = await PAK.tentukan(conn, ctx["tenant_id"], body.warehouse_id, body.ship_to_address)  # BUG-216-6: penentu SAMA dgn buat/ubah
     bloks = list(bloks) + [PR.blok(c, m, st) for c, m, st in _alamat["blocks"]] + PH.blok_diskon_baris([i.model_dump() for i in body.items])  # U-SI-LAW: kalimat == 400 create
     return {"success": True, "data": {"ok": not bloks, "blocks": PR.untuk_respons(bloks), "peringatan": peringatan, **PR.hitung_json(h),

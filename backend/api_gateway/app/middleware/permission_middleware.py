@@ -285,6 +285,7 @@ ROUTE_PERMISSIONS: List[Tuple[str, List[str], str, str]] = [
     (r"^/api/matrix-items/[^/]+/variants(/preview)?$", ["POST"], "item", "C"),
     (r"^/api/items/[^/]+$", ["GET"], "item", "R"),
     (r"^/api/items/[^/]+$", ["PATCH", "PUT"], "item", "U"),
+    (r"^/api/items/[^/]+/image$", ["POST", "DELETE"], "item", "U"),  # gambar barang == ubah barang (butir 6)
     (r"^/api/items/[^/]+$", ["DELETE"], "item", "D"),
     (r"^/api/products", ["GET", "POST", "PATCH", "PUT", "DELETE"], "item", "R"),
     # Expenses

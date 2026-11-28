@@ -999,6 +999,8 @@ async def calculate_sales_order(request: Request, body: CreateSalesOrderRequest)
                                     getattr(body, "warehouse_id", None))  # BE-B: gudang kepala bila baris tanpa gudang
         _peringatan = await JB.peringatan_jual(conn, ctx["tenant_id"], request.state.user, JB.baris_dari_hasil(doc["items"]))  # BUG-207
         _peringatan = _peringatan + await HMN.peringatan_jual(conn, ctx["tenant_id"], body.customer_id, body.order_date, HMN.baris_dari_hasil(doc["items"]))  # BUG-040
+        from ..services import dimensi_barang as DIMB
+        _peringatan = _peringatan + await DIMB.peringatan_baris(conn, ctx["tenant_id"], _items, "jual")  # V517
     f = lambda v: float(v) if v is not None else None  # noqa: E731
     _dp = hitung_dp(doc["total_amount"], body.dp_percent, body.dp_amount)  # SAMA dengan create
     return {

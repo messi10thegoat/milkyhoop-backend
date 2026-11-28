@@ -61,6 +61,7 @@ DELETE /api/fixed-assets/categories/{category_id}
 DELETE /api/fixed-assets/{asset_id}
 DELETE /api/items/categories
 DELETE /api/items/{item_id}
+DELETE /api/items/{item_id}/image
 DELETE /api/journals/{journal_id}
 DELETE /api/onboarding/conversation/{session_id}
 DELETE /api/pay-groups/{group_id}
@@ -451,6 +452,7 @@ POST /api/items/bulk-import
 POST /api/items/categories
 POST /api/items/units
 POST /api/items/{item_id}/duplicate
+POST /api/items/{item_id}/image
 POST /api/items/{item_id}/stock-adjustment
 POST /api/items/{item_id}/stock-transfer
 POST /api/items/bulk/status
