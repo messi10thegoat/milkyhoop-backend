@@ -218,14 +218,15 @@ async def get_recurring_bill(request: Request, recurring_bill_id: UUID):
                    coa.account_code, coa.name as account_name,
                    cc.name as cost_center_name, tc.name as tax_name
             FROM recurring_bill_items rbi
-            LEFT JOIN items i ON rbi.item_id = i.id
-            LEFT JOIN chart_of_accounts coa ON rbi.account_id = coa.id
-            LEFT JOIN cost_centers cc ON rbi.cost_center_id = cc.id
-            LEFT JOIN tax_codes tc ON rbi.tax_id = tc.id
+            LEFT JOIN items i ON rbi.item_id = i.id AND i.tenant_id = $2
+            LEFT JOIN chart_of_accounts coa ON rbi.account_id = coa.id AND coa.tenant_id = $2
+            LEFT JOIN cost_centers cc ON rbi.cost_center_id = cc.id AND cc.tenant_id = $2
+            LEFT JOIN tax_codes tc ON rbi.tax_id = tc.id AND tc.tenant_id = $2
             WHERE rbi.recurring_bill_id = $1
             ORDER BY rbi.sort_order
             """,
             recurring_bill_id,
+            ctx["tenant_id"],   # sensus pagar tenant: nama barang/akun/pusat biaya/pajak hanya dari tenant ini
         )
 
         return RecurringBillDetailResponse(
