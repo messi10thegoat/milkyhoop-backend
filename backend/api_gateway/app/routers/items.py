@@ -1645,7 +1645,7 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                                 conversion_unit = $1, conversion_factor = $2,
                                 purchase_price = $3, sales_price = $4,
                                 is_active = $5, updated_at = NOW()
-                            WHERE id = $6
+                            WHERE id = $6 AND tenant_id = $7 AND product_id = $8
                             """,
                             conv.conversion_unit,
                             conv.conversion_factor,
@@ -1653,7 +1653,9 @@ async def update_item(request: Request, item_id: UUID, body: UpdateItemRequest, 
                             conv.sales_price,
                             conv.is_active,
                             str(conv.id),
-                        )
+                            tenant_id,
+                            str(item_id),
+                        )   # sensus pagar tenant (WORKSPACE 28 Nov): id konversi dari badan -> hanya milik barang ini di tenant ini
                     else:
                         # Insert new
                         await conn.execute(

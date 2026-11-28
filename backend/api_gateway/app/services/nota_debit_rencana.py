@@ -215,7 +215,7 @@ async def rencana_retur(conn, tid: str, keluar: list, baris_dok) -> Optional[dic
         return None
     baris = []
     for k in keluar:
-        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1", k["product_id"])
+        p = await conn.fetchrow("SELECT id, item_code, nama_produk, track_inventory FROM products WHERE id = $1 AND tenant_id = $2", k["product_id"], tid)   # sensus pagar tenant
         biaya = await biaya_keluar_fifo(conn, tid, p["id"], k["qty"]) or await get_cost_for_sale(conn, tid, p["id"])   # FIFO unit 2: Σ lapisan, SAMA dgn penulis
         akun = await resolve_inventory_accounts(conn, tid, p["id"])
         baris.append({**k, "produk": p, "unit_cost": Decimal(str(biaya["unit_cost"])),

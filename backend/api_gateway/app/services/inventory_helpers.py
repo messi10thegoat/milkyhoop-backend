@@ -46,8 +46,8 @@ async def resolve_inventory_accounts(conn, tenant_id: str, product_id: UUID) -> 
     fallback to literal account codes).
     """
     product_accounts = await conn.fetchrow(
-        "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1",
-        product_id,
+        "SELECT cogs_account_id, inventory_account_id FROM products WHERE id = $1 AND tenant_id = $2",
+        product_id, tenant_id,   # sensus pagar tenant
     )
 
     cogs_acct = product_accounts["cogs_account_id"] if product_accounts else None
@@ -107,8 +107,8 @@ async def get_cost_for_sale(conn, tenant_id: str, product_id: UUID) -> dict:
 
     if not avg_cost or avg_cost == 0:
         avg_cost = await conn.fetchval(
-            "SELECT COALESCE(purchase_price_amount, purchase_price, 0) FROM products WHERE id = $1",
-            product_id,
+            "SELECT COALESCE(purchase_price_amount, purchase_price, 0) FROM products WHERE id = $1 AND tenant_id = $2",
+            product_id, tenant_id,   # sensus pagar tenant: harga beli tenant lain tak terbaca
         )
         cost_source = "PURCHASE_PRICE"
 

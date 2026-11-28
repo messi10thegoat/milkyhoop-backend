@@ -742,8 +742,8 @@ class BillsService:
                     p.nama_produk as product_name,
                     tc.name as tax_code_name
                 FROM bill_items bi
-                LEFT JOIN products p ON bi.product_id = p.id
-                LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
+                LEFT JOIN products p ON bi.product_id = p.id AND p.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
+                LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id AND tc.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
                 WHERE bi.bill_id = $1
                 ORDER BY bi.line_number
             """
@@ -3035,7 +3035,7 @@ class BillsService:
                                    p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                                    p.track_batches
                             FROM bill_items bi
-                            LEFT JOIN products p ON p.id = bi.product_id
+                            LEFT JOIN products p ON p.id = bi.product_id AND p.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
                             WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
                             """,
                             bill_id,
@@ -3515,7 +3515,7 @@ class BillsService:
                            p.nama_produk, p.item_code, p.track_inventory, p.item_type,
                            p.track_batches
                     FROM bill_items bi
-                    LEFT JOIN products p ON p.id = bi.product_id
+                    LEFT JOIN products p ON p.id = bi.product_id AND p.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
                     WHERE bi.bill_id = $1 AND bi.product_id IS NOT NULL
                     """,
                     bill_id,
@@ -3964,8 +3964,8 @@ class BillsService:
                 p.nama_produk as linked_product_name,
                 tc.name as tax_code_name
             FROM bill_items bi
-            LEFT JOIN products p ON bi.product_id = p.id
-            LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id
+            LEFT JOIN products p ON bi.product_id = p.id AND p.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
+            LEFT JOIN tax_codes tc ON bi.tax_code_id = tc.id AND tc.tenant_id = (SELECT b_t.tenant_id FROM bills b_t WHERE b_t.id = bi.bill_id)
             WHERE bi.bill_id = $1
             ORDER BY bi.line_number
         """
