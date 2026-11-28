@@ -361,9 +361,9 @@ async def list_fixed_assets(
             f"""
             SELECT fa.*, ac.name as category_name, v.name as vendor_name, w.name as warehouse_name
             FROM fixed_assets fa
-            LEFT JOIN asset_categories ac ON fa.category_id = ac.id
-            LEFT JOIN vendors v ON fa.vendor_id = v.id
-            LEFT JOIN warehouses w ON fa.warehouse_id = w.id
+            LEFT JOIN asset_categories ac ON fa.category_id = ac.id AND ac.tenant_id = fa.tenant_id
+            LEFT JOIN vendors v ON fa.vendor_id = v.id AND v.tenant_id = fa.tenant_id
+            LEFT JOIN warehouses w ON fa.warehouse_id = w.id AND w.tenant_id = fa.tenant_id
             WHERE {where_sql}
             ORDER BY fa.asset_number
             OFFSET ${param_idx} LIMIT ${param_idx + 1}
@@ -524,9 +524,9 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
             """
             SELECT fa.*, ac.name as category_name, v.name as vendor_name, w.name as warehouse_name
             FROM fixed_assets fa
-            LEFT JOIN asset_categories ac ON fa.category_id = ac.id
-            LEFT JOIN vendors v ON fa.vendor_id = v.id
-            LEFT JOIN warehouses w ON fa.warehouse_id = w.id
+            LEFT JOIN asset_categories ac ON fa.category_id = ac.id AND ac.tenant_id = fa.tenant_id
+            LEFT JOIN vendors v ON fa.vendor_id = v.id AND v.tenant_id = fa.tenant_id
+            LEFT JOIN warehouses w ON fa.warehouse_id = w.id AND w.tenant_id = fa.tenant_id
             WHERE fa.id = $1 AND fa.tenant_id = $2
             """,
             asset_id,
@@ -546,7 +546,7 @@ async def get_fixed_asset(request: Request, asset_id: UUID):
             """
             SELECT am.*, v.name as vendor_name
             FROM asset_maintenance am
-            LEFT JOIN vendors v ON am.vendor_id = v.id
+            LEFT JOIN vendors v ON am.vendor_id = v.id AND v.tenant_id = (SELECT f_t.tenant_id FROM fixed_assets f_t WHERE f_t.id = am.asset_id)
             WHERE am.asset_id = $1 ORDER BY am.maintenance_date DESC
             """,
             asset_id,
@@ -644,9 +644,9 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
                 """
                 SELECT fa.*, ac.name as category_name, v.name as vendor_name, w.name as warehouse_name
                 FROM fixed_assets fa
-                LEFT JOIN asset_categories ac ON fa.category_id = ac.id
-                LEFT JOIN vendors v ON fa.vendor_id = v.id
-                LEFT JOIN warehouses w ON fa.warehouse_id = w.id
+                LEFT JOIN asset_categories ac ON fa.category_id = ac.id AND ac.tenant_id = fa.tenant_id
+                LEFT JOIN vendors v ON fa.vendor_id = v.id AND v.tenant_id = fa.tenant_id
+                LEFT JOIN warehouses w ON fa.warehouse_id = w.id AND w.tenant_id = fa.tenant_id
                 WHERE fa.id = $1
                 """,
                 asset_id,
@@ -674,9 +674,9 @@ async def update_fixed_asset(request: Request, asset_id: UUID, data: FixedAssetU
             """
             SELECT fa.*, ac.name as category_name, v.name as vendor_name, w.name as warehouse_name
             FROM fixed_assets fa
-            LEFT JOIN asset_categories ac ON fa.category_id = ac.id
-            LEFT JOIN vendors v ON fa.vendor_id = v.id
-            LEFT JOIN warehouses w ON fa.warehouse_id = w.id
+            LEFT JOIN asset_categories ac ON fa.category_id = ac.id AND ac.tenant_id = fa.tenant_id
+            LEFT JOIN vendors v ON fa.vendor_id = v.id AND v.tenant_id = fa.tenant_id
+            LEFT JOIN warehouses w ON fa.warehouse_id = w.id AND w.tenant_id = fa.tenant_id
             WHERE fa.id = $1
             """,
             asset_id,
@@ -871,7 +871,7 @@ async def get_depreciation_schedule(request: Request, asset_id: UUID):
             """
             SELECT fa.*, ac.name as category_name
             FROM fixed_assets fa
-            LEFT JOIN asset_categories ac ON fa.category_id = ac.id
+            LEFT JOIN asset_categories ac ON fa.category_id = ac.id AND ac.tenant_id = fa.tenant_id
             WHERE fa.id = $1 AND fa.tenant_id = $2
             """,
             asset_id,
@@ -1556,7 +1556,7 @@ async def log_asset_maintenance(
         vendor_name = None
         if data.vendor_id:
             vendor_name = await conn.fetchval(
-                "SELECT name FROM vendors WHERE id = $1", data.vendor_id
+                "SELECT name FROM vendors WHERE id = $1 AND tenant_id = $2", data.vendor_id, ctx["tenant_id"]   # sensus pagar tenant
             )
 
         return AssetMaintenanceResponse(**dict(row), vendor_name=vendor_name)
