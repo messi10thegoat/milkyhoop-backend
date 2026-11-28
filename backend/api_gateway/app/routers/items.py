@@ -3759,8 +3759,10 @@ async def get_item(request: Request, item_id: UUID):
                    sa.account_code AS sales_acct_code, sa.name AS sales_acct_name,
                    pa.account_code AS purchase_acct_code, pa.name AS purchase_acct_name,
                    ia.account_code AS inventory_acct_code, ia.name AS inventory_acct_name,
-                   ca.account_code AS cogs_acct_code, ca.name AS cogs_acct_name
+                   ca.account_code AS cogs_acct_code, ca.name AS cogs_acct_name,
+                   pv.name AS preferred_vendor_name
             FROM products p
+            LEFT JOIN vendors pv ON pv.id::text = p.preferred_vendor_id::text AND pv.tenant_id = p.tenant_id
             LEFT JOIN chart_of_accounts sa ON sa.id = p.sales_account_id
             LEFT JOIN chart_of_accounts pa ON pa.id = p.purchase_account_id
             LEFT JOIN chart_of_accounts ia ON ia.id = p.inventory_account_id
@@ -3850,6 +3852,7 @@ async def get_item(request: Request, item_id: UUID):
                 "preferred_vendor_id": str(row["preferred_vendor_id"])
                 if row.get("preferred_vendor_id")
                 else None,
+                "preferred_vendor_name": row.get("preferred_vendor_name"),
                 "sales_account": f"{row['sales_acct_code']} - {row['sales_acct_name']}"
                 if row.get("sales_acct_code")
                 else None,
