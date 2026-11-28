@@ -89,6 +89,9 @@ class ConnInti:
         return {"id": a[0], "item_id": uuid.uuid4(), "description": "Kaos", "quantity": Decimal("5"), "fulfilled_qty": Decimal("0"),
                 "allocated_amount": Decimal("100"), "recognized_amount": Decimal("0"), "perlu_kirim": self.perlu_kirim}
 
+    async def fetch(self, sql, *a):
+        return []   # BUG-445 pecah_fefo: tak ada barang ber-batch
+
     async def fetchval(self, sql, *a):
         if "track_inventory" in sql:
             return self.dilacak

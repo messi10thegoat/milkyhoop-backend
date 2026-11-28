@@ -39,6 +39,8 @@ class Conn:
         self.q.append((sql, a))
         if "credit_note_deferral_lines" in sql:
             return [{"credit_note_number": n} for n in self.nk]
+        if "FROM sales_invoice_items ii JOIN products p" in sql:
+            return []   # BUG-445 pecah_fefo: tak ada barang ber-batch
         raise AssertionError(sql[:60])
 
     async def fetchval(self, sql, *a):
