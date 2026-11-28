@@ -11,6 +11,7 @@ Usage:
   python run_tests.py --output results.json    # custom output file
 """
 
+import os
 import asyncio
 import argparse
 import glob
@@ -26,7 +27,7 @@ from test_harness import TestHarness, TestScenario
 
 BASE_URL = "http://localhost:8001"
 AUTH_EMAIL = "grapmanado@gmail.com"
-AUTH_PASSWORD = "Jalanatputno.4"
+AUTH_PASSWORD = os.environ["E2E_AUTH_PASSWORD"]
 AUTH_TENANT = "evlogia"
 
 

@@ -57,7 +57,7 @@
 |-----|-----|
 | `run_migrations_v9.sh` hardcode `PGDB="milkydb_dryrun"` | `${PGDB:-milkydb_dryrun}` |
 | `gap_patch.sh` hardcode `DB="milkydb_dryrun"` | `${PGDB:-milkydb_dryrun}` |
-| docker-compose hardcode `Proyek771977` di 3 tempat | `${DB_PASSWORD}` |
+| docker-compose hardcode `<DB_PASSWORD>` di 3 tempat | `${DB_PASSWORD}` |
 | `MINIO_PUBLIC_ENDPOINT` IP lama `159.89.197.131` | `159.89.202.160` |
 | `Account`/`Session`/`VerificationToken` tidak dibuat Step 0 | Tambah Gap 8 di gap_patch |
 
@@ -65,7 +65,7 @@
 
 ## ⚠️ SECURITY — WAJIB ROTASI SEBELUM PRODUCTION
 
-**`DB_PASSWORD=Proyek771977`** ada di git history (docker-compose.yml line 366, 1339, 1376 sebelum fix).
+**`DB_PASSWORD=<DB_PASSWORD>`** ada di git history (docker-compose.yml line 366, 1339, 1376 sebelum fix).
 Siapapun yang punya akses ke repo GitHub dapat membaca password ini.
 
 **Sebelum production:**

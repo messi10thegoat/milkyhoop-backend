@@ -5,7 +5,7 @@ B=${B:-http://localhost:8001/api}; PW='KaosBiru2026!'
 PASS=0; FAIL=0; rm -f /tmp/inv_abort
 ok(){ if [ "$2" = "$3" ]; then echo "  ✓ $1: $2"; PASS=$((PASS+1));
       else echo "  ✗ $1: dapat=$2 HARAP=$3"; FAIL=$((FAIL+1)); fi; }
-Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
+Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
 c(){ local x=$(curl -s -o /dev/null -w '%{http_code}' "$@"); [ "$x" = "000" ] && { echo "!! HTTP 000 = KEGAGALAN ALAT" >&2; touch /tmp/inv_abort; }; printf '%s' "$x"; }
 abort(){ [ -f /tmp/inv_abort ] && { echo; echo "===== DIHENTIKAN: kegagalan alat ====="; exit 2; }; }
 

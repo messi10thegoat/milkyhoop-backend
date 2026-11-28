@@ -1,6 +1,6 @@
 import psycopg2
 
-DATABASE_URL = "postgresql://postgres:Proyek771977@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require"
+DATABASE_URL = "postgresql://postgres:<DB_PASSWORD>@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require"
 
 def test_db_connection():
     """Test koneksi ke PostgreSQL di Supabase."""

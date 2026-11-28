@@ -10,7 +10,7 @@ Run on the SERVER (where DB + .env live):
   scp -> /root/milkyhoop-dev/_userguide_rag/embed_chunks.py
   scp -> .../chunks.jsonl
   ssh root@... 'cd /root/milkyhoop-dev && OPENAI_API_KEY=$(grep ^OPENAI_API_KEY .env | cut -d= -f2-) \
-    DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb \
+    DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@postgres:5432/milkydb \
     python3 _userguide_rag/embed_chunks.py _userguide_rag/chunks.jsonl'
 """
 from __future__ import annotations

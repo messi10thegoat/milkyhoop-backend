@@ -24,16 +24,16 @@ class SessionManager:
     - Progress tracking per session
     """
     
-    def __init__(self, redis_url: str = "redis://:MilkyRedis2025Secure@redis:6379"):
+    def __init__(self, redis_url: str = "redis://:<REDIS_PASSWORD>@redis:6379"):
         """
         Initialize SessionManager with authenticated Redis connection
         
         Args:
-            redis_url: Redis connection URL with password (default: MilkyRedis2025Secure)
+            redis_url: Redis connection URL with password (default: <REDIS_PASSWORD>)
         """
         self.redis_url = redis_url
         self.redis = None
-        logger.info(f"SessionManager initialized with Redis URL: {redis_url.replace('MilkyRedis2025Secure', '***')}")
+        logger.info(f"SessionManager initialized with Redis URL: {redis_url.replace('<REDIS_PASSWORD>', '***')}")
     
     async def initialize(self):
         """Initialize Redis connection with authentication"""

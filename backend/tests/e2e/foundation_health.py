@@ -10,6 +10,7 @@ Usage:
   python foundation_health.py --output health.json  # save results
 """
 
+import os
 import asyncio
 import argparse
 import json
@@ -24,7 +25,7 @@ import httpx
 
 BASE_URL = "http://localhost:8001"
 AUTH_EMAIL = "grapmanado@gmail.com"
-AUTH_PASSWORD = "Jalanatputno.4"
+AUTH_PASSWORD = os.environ["E2E_AUTH_PASSWORD"]
 AUTH_TENANT = "evlogia"
 
 

@@ -6,8 +6,8 @@ API_URL="${API_URL:-http://localhost:8001}"
 
 # Login and get token
 login() {
-    local email="${1:-grapmanado@gmail.com}"
-    local password="${2:-Jalanatputno.4}"
+    local email="${1:-${API_TEST_EMAIL:?isi API_TEST_EMAIL}}"
+    local password="${2:-${API_TEST_PASSWORD:?isi API_TEST_PASSWORD}}"
 
     echo "Logging in as $email..."
 

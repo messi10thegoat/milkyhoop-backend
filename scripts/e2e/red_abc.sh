@@ -7,7 +7,7 @@ PW='KaosBiru2026!'
 # Kutip ganda ("User") tak selamat melewati ssh -> sh -> psql. Kirim base64.
 # (Versi pertama helper ini DIAM-DIAM gagal dan mencetak baris kosong — instrumen
 #  rusak yang menyamar sebagai data. Law 33.)
-Q(){ local b=$(printf '%s' "$1" | base64); ssh root@159.89.202.160 "echo $b | base64 -d > /tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1 | tr -d '\r' | tr -d ' '; }
+Q(){ local b=$(printf '%s' "$1" | base64); ssh root@159.89.202.160 "echo $b | base64 -d > /tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1 | tr -d '\r' | tr -d ' '; }
 # Jeda antar-login: rangkaian login cepat memicu rate limit (401/429) dan
 # hasilnya menyamar sebagai "uji tidak merah". Itu persis kelas kesalahan yang
 # sedang kita perangi — kegagalan alat dibaca sebagai hasil pengukuran.
@@ -70,7 +70,7 @@ echo "PREFLIGHT: gateway uji hidup (healthz=200)"
 # SALAH. Ditemukan saat run kedua; jangan dihapus.
 echo "=== SEED: menyiapkan pengguna sekali-pakai ==="
 scp -q "$(dirname "$0")/red_setup.sql" root@159.89.202.160:/tmp/red_setup.sql
-ssh root@159.89.202.160 'docker cp /tmp/red_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -v ON_ERROR_STOP=1 -f /tmp/red_setup.sql"' | tail -4
+ssh root@159.89.202.160 'docker cp /tmp/red_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -q -v ON_ERROR_STOP=1 -f /tmp/red_setup.sql"' | tail -4
 
 red(){ if [ "$2" = "$3" ]; then echo "  MERAH ✓ $1 (dapat: $2)"; PASS=$((PASS+1)); else echo "  !! TIDAK MERAH $1: dapat=$2 harap=$3"; FAIL=$((FAIL+1)); fi; }
 grn(){ if [ "$2" = "$3" ]; then echo "  HIJAU ✓ $1 ($2)"; PASS=$((PASS+1)); else echo "  !! PAGAR JEBOL $1: dapat=$2 harap=$3"; FAIL=$((FAIL+1)); fi; }
@@ -153,7 +153,7 @@ echo
 echo "=== 6. switch-tenant ke tenant UTAMA tak boleh otomatis OWNER ==="
 # Uji 2/3 sengaja MENGHAPUS bendahara. Pulihkan dulu — kalau tidak, uji 6/7
 # gagal karena prasyaratnya hilang, bukan karena perilakunya salah.
-ssh root@159.89.202.160 'docker cp /tmp/red_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/red_setup.sql"' >/dev/null 2>&1
+ssh root@159.89.202.160 'docker cp /tmp/red_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -q -f /tmp/red_setup.sql"' >/dev/null 2>&1
 # Cabang ketiga: `if target_tenant_id == primary_tenant_id: role_code = "OWNER"`.
 # redtest+bendahara punya User.tenantId = kaos-biru-konveksi (tenant utamanya)
 # TAPI perannya di sana BENDAHARA. Pra-fix, switch ke sana mengembalikan OWNER
@@ -195,7 +195,7 @@ echo "===== HASIL: $PASS lulus, $FAIL gagal ====="
 # tanpa filter tenant mengembalikan DUA uuid, yang lalu menyambung jadi URL
 # tak sah dan dibaca gate lain sebagai kegagalan PRODUK. Gate yang tak
 # membersihkan diri membuat gate BERIKUTNYA berbohong.
-_bersih(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/c.sql && docker cp /tmp/c.sql milkyhoop-dev-postgres-1:/tmp/c.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/c.sql'" >/dev/null 2>&1; }
+_bersih(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/c.sql && docker cp /tmp/c.sql milkyhoop-dev-postgres-1:/tmp/c.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -q -f /tmp/c.sql'" >/dev/null 2>&1; }
 _bersih "DELETE FROM user_permission_overrides WHERE user_id IN (SELECT id FROM \"User\" WHERE email LIKE 'redtest+%' OR email LIKE 'deact+%');
 DELETE FROM user_tenant_roles utr USING \"User\" u WHERE u.id::uuid=utr.user_id AND (u.email LIKE 'redtest+%' OR u.email LIKE 'deact+%');
 DELETE FROM user_tenant_roles WHERE tenant_id='redtest-tenant-kedua';

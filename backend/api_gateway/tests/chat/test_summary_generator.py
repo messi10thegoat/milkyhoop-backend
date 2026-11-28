@@ -76,7 +76,7 @@ async def test_gap_based_loading():
         host=os.environ.get("DB_HOST", "postgres"),
         port=int(os.environ.get("DB_PORT", "5432")),
         user=os.environ.get("DB_USER", "postgres"),
-        password=os.environ.get("DB_PASSWORD", "Proyek771977"),
+        password=os.environ.get("DB_PASSWORD", "<DB_PASSWORD>"),
         database=os.environ.get("DB_NAME", "milkydb"),
         min_size=1,
         max_size=2,

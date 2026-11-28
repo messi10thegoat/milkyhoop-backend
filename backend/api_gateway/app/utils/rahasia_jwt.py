@@ -12,7 +12,12 @@ import os
 
 PANJANG_MIN = 32
 # sha256 dari nilai cadangan yang pernah tertanam di repo (bukan nilainya)
-_HASH_BOCOR = frozenset({"90ec970de9cbe0e68ad8962ce756463f91cfe17256973240a24f525e7959278f"})
+_HASH_BOCOR = frozenset({
+    "2bd85b519dd8ed223e79c9b36ae241ae8c81cbcd093f3c7f618bb4aa208d5012",
+    "43e60f1de582b7536583283668bdaedd966ce06e174d618648d22d26566618d5",
+    "90ec970de9cbe0e68ad8962ce756463f91cfe17256973240a24f525e7959278f",
+    "dbb5b37cd6122ae71bea2bf9154bd3da43212903e01fe77d85b656b02a07ef39",
+})  # +audit 28 Nov (rahasia-rantai-pasok-6): literal generate_test_token.py, infra/env/.env_template, docker-compose.override.yml.test
 
 
 def jwt_secret_wajib() -> str:

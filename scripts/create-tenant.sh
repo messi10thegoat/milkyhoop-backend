@@ -7,7 +7,7 @@ echo ""
 
 TENANT_USERNAME="testshop$(date +%s)"
 TENANT_EMAIL="test${TENANT_USERNAME}@example.com"
-TENANT_PASSWORD="TestPass123!@#"
+TENANT_PASSWORD="${TENANT_PASSWORD:?isi TENANT_PASSWORD}"
 TENANT_DISPLAY="Test Shop $(date +%H:%M)"
 
 echo "--- 1. Create Tenant via CLI ---"
@@ -20,13 +20,13 @@ cd ~/milkyhoop-dev/scripts
 
 echo ""
 echo "--- 2. Verify Database Entry ---"
-PGPASSWORD=Proyek771977 psql -h db.ltrqrejrkbusvmknpnwb.supabase.co -U postgres -d postgres -c "
+PGPASSWORD=${PGPASSWORD:?isi PGPASSWORD} psql -h db.ltrqrejrkbusvmknpnwb.supabase.co -U postgres -d postgres -c "
 SELECT id, display_name, status FROM \"Tenant\" WHERE id='${TENANT_USERNAME}';
 "
 
 echo ""
 echo "--- 3. Verify User Entry ---"
-PGPASSWORD=Proyek771977 psql -h db.ltrqrejrkbusvmknpnwb.supabase.co -U postgres -d postgres -c "
+PGPASSWORD=${PGPASSWORD:?isi PGPASSWORD} psql -h db.ltrqrejrkbusvmknpnwb.supabase.co -U postgres -d postgres -c "
 SELECT email, username, \"tenantId\", role FROM \"User\" WHERE email='${TENANT_EMAIL}';
 "
 

@@ -23,7 +23,7 @@ import time
 # Configuration
 BASE_URL = "https://milkyhoop.com/api"
 EMAIL = "grapmanado@gmail.com"
-PASSWORD = "Jalanatputno.4"
+PASSWORD = "<E2E_AUTH_PASSWORD>"
 TENANT = "Evlogia"
 
 # Disable SSL warnings for testing (if needed)

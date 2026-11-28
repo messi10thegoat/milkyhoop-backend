@@ -17,7 +17,7 @@ OPTION 1: Full Database Restore (DESTRUCTIVE)
 ──────────────────────────────────────────────────────────
 
 1. Drop existing schema:
-   export PGPASSWORD="Proyek771977"
+   export PGPASSWORD="<DB_PASSWORD>"
    psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
         -p 5432 \
         -U postgres \
@@ -25,7 +25,7 @@ OPTION 1: Full Database Restore (DESTRUCTIVE)
         -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 2. Restore from backup:
-   export PGPASSWORD="Proyek771977"
+   export PGPASSWORD="<DB_PASSWORD>"
    psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
         -p 5432 \
         -U postgres \
@@ -33,7 +33,7 @@ OPTION 1: Full Database Restore (DESTRUCTIVE)
         -f /root/milkyhoop-dev/database/backups/milkyhoop_full_backup_20251014_080629.sql
 
 3. Verify restore:
-   export PGPASSWORD="Proyek771977"
+   export PGPASSWORD="<DB_PASSWORD>"
    psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
         -p 5432 \
         -U postgres \
@@ -49,7 +49,7 @@ OPTION 2: Selective Table Restore (SAFER)
    grep -A 1000 "CREATE TABLE specific_table" /root/milkyhoop-dev/database/backups/milkyhoop_full_backup_20251014_080629.sql > table_only.sql
 
 2. Restore specific table:
-   export PGPASSWORD="Proyek771977"
+   export PGPASSWORD="<DB_PASSWORD>"
    psql -h db.ltrqrejrkbusvmknpnwb.supabase.co \
         -p 5432 \
         -U postgres \

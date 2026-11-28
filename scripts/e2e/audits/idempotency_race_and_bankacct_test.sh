@@ -5,11 +5,11 @@ T=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"delivered+owner@resend.dev","password":"KaosBiru2026!"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['access_token'])")
 H=(-H "Authorization: Bearer $T" -H "Content-Type: application/json")
-VEND=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"SELECT id FROM vendors LIMIT 1\"" | tr -d '[:space:]')
-BILL=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"SELECT id FROM bills LIMIT 1\"" | tr -d '[:space:]')
-BK1=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"SELECT id FROM bank_accounts WHERE account_name='BCA Operasional'\"" | tr -d '[:space:]')
-BK2=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"SELECT id FROM bank_accounts WHERE account_name='Kas Kecil'\"" | tr -d '[:space:]')
-Q(){ docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"$1\"" | tr -d '[:space:]'; }
+VEND=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tAc \"SELECT id FROM vendors LIMIT 1\"" | tr -d '[:space:]')
+BILL=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tAc \"SELECT id FROM bills LIMIT 1\"" | tr -d '[:space:]')
+BK1=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tAc \"SELECT id FROM bank_accounts WHERE account_name='BCA Operasional'\"" | tr -d '[:space:]')
+BK2=$(docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tAc \"SELECT id FROM bank_accounts WHERE account_name='Kas Kecil'\"" | tr -d '[:space:]')
+Q(){ docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tAc \"$1\"" | tr -d '[:space:]'; }
 N(){ Q "SELECT count(*) FROM bill_payments_v2"; }
 ALLOC(){ Q "SELECT COALESCE(SUM(amount_applied),0)::bigint FROM bill_payment_allocations a JOIN bill_payments_v2 p ON p.id=a.payment_id WHERE a.bill_id='$BILL' AND p.status<>'voided'"; }
 PASS=0; FAIL=0

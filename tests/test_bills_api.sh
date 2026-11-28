@@ -6,7 +6,7 @@ set -e
 
 BASE_URL="http://localhost:8001"
 EMAIL="grapmanado@gmail.com"
-PASSWORD="Jalanatputno.4"
+PASSWORD="<E2E_AUTH_PASSWORD>"
 
 echo "================================================"
 echo "Bills API Test Suite"

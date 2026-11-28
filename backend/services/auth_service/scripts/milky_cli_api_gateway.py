@@ -56,7 +56,7 @@ def create_api_gateway_template():
     env_file = dest_dir / ".env"
     env_file.write_text(
         f"GRPC_PORT={grpc_port}\n"
-        f"DATABASE_URL=postgresql://postgres:Proyek771977@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require\n"
+        f"DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require\n"
     )
     print(f"📝 File .env dibuat dengan GRPC_PORT={grpc_port}.")
 

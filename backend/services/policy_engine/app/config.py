@@ -15,7 +15,7 @@ class DatabaseConfig:
     """Database connection configuration"""
     url: str = field(default_factory=lambda: os.getenv(
         "DATABASE_URL",
-        "postgresql://postgres:Proyek771977@postgres:5432/milkydb"
+        os.environ["DATABASE_URL"]
     ))
     pool_size: int = 5
     max_overflow: int = 10

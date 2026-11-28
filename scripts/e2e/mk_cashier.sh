@@ -1,7 +1,7 @@
 #!/bin/bash
 # Membuat anggota CASHIER NYATA lewat alur undangan penuh (bukan seed DB).
 B=http://localhost:8002/api; PW='KaosBiru2026!'; M='kasir.uji@kaosbiru.co.id'
-Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
+Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
 Q "DELETE FROM user_tenant_roles utr USING \"User\" u WHERE u.id::uuid=utr.user_id AND u.email='$M';
    DELETE FROM \"User\" WHERE email='$M'; DELETE FROM team_invitations WHERE email='$M';" >/dev/null
 sleep 12

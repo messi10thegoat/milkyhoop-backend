@@ -3,6 +3,7 @@ Redis Session Manager with Authentication
 Handles conversation session persistence and turn tracking
 """
 
+import os
 import json
 import logging
 from datetime import datetime
@@ -24,16 +25,16 @@ class SessionManager:
     - Progress tracking per session
     """
     
-    def __init__(self, redis_url: str = "redis://:MilkyRedis2025Secure@redis:6379"):
+    def __init__(self, redis_url: str = None):
         """
         Initialize SessionManager with authenticated Redis connection
         
         Args:
-            redis_url: Redis connection URL with password (default: MilkyRedis2025Secure)
+            redis_url: Redis connection URL with password (default: env REDIS_URL)
         """
-        self.redis_url = redis_url
+        self.redis_url = redis_url or os.environ["REDIS_URL"]   # keamanan: tanpa sandi tertanam
         self.redis = None
-        logger.info(f"SessionManager initialized with Redis URL: {redis_url.replace('MilkyRedis2025Secure', '***')}")
+        logger.info(f"SessionManager initialized with Redis URL: {self.redis_url.split('@')[-1]}")
     
     async def initialize(self):
         """Initialize Redis connection with authentication"""

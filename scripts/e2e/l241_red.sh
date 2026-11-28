@@ -6,7 +6,7 @@ B=${B:-http://localhost:8001/api}; PW='KaosBiru2026!'
 PASS=0; FAIL=0; rm -f /tmp/l241_abort
 ok(){ if [ "$2" = "$3" ]; then echo "  ✓ $1: $2"; PASS=$((PASS+1));
       else echo "  ✗ $1: dapat=$2 HARAP=$3"; FAIL=$((FAIL+1)); fi; }
-Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
+Q(){ local b=$(printf '%s' "$1"|base64); ssh root@159.89.202.160 "echo $b|base64 -d>/tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1|tr -d '\r '; }
 c(){ local x=$(curl -s -o /dev/null -w '%{http_code}' "$@"); [ "$x" = "000" ] && { echo "!! HTTP 000 = KEGAGALAN ALAT" >&2; touch /tmp/l241_abort; }; printf '%s' "$x"; }
 abort(){ [ -f /tmp/l241_abort ] && { echo; echo "===== DIHENTIKAN: kegagalan alat, TIDAK ADA HASIL SAH ====="; exit 2; }; }
 # 429 = pembatas laju yang dipicu gate ini sendiri (empat harness beruntun),
@@ -36,7 +36,7 @@ echo "PREFLIGHT: $B hidup"
 
 # ---------- fixture: satu anggota CASHIER ----------
 scp -q "$(dirname "$0")/deact_setup.sql" root@159.89.202.160:/tmp/deact_setup.sql
-ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' >/dev/null
+ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/>/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' >/dev/null
 
 OT=$(tok delivered+owner@resend.dev "$PW"); [ -z "$OT" ] && { echo "!! login owner gagal = ALAT"; exit 2; }
 KT=$(tok deact+kasir@kaosbiru.co.id "$PW"); [ -z "$KT" ] && { echo "!! login anggota gagal = ALAT"; exit 2; }

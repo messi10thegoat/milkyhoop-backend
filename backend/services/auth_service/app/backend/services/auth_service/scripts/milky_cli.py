@@ -221,7 +221,7 @@ def write_env_file(service_path: Path, grpc_port: int):
     env_file = service_path / ".env"
     content = (
         f"GRPC_PORT={grpc_port}\n"
-        f"DATABASE_URL=postgresql://postgres:Proyek771977@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require\n"
+        f"DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require\n"
     )
     env_file.write_text(content)
     print(f"📝 File .env dibuat dengan GRPC_PORT={grpc_port} & DATABASE_URL otomatis.")

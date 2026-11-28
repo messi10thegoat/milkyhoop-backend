@@ -6,7 +6,7 @@ Embed a query string and return top-K userguide_chunks by cosine similarity.
 No permission filter (owner-equivalent). For sanity check only.
 
 Usage (in api_gateway container):
-  DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb \
+  DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@postgres:5432/milkydb \
     python3 smoke_test.py "Cara bikin faktur penjualan baru"
 
 Or pass multiple queries via stdin (one per line):

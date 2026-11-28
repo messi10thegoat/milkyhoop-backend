@@ -137,7 +137,7 @@ async def fuzzy_search_rag_documents(
 
     # Try Redis cache first
     try:
-        redis_client = redis.Redis(host='milkyhoop-dev-redis-1', port=6379, password='MilkyRedis2025Secure', decode_responses=True)
+        redis_client = redis.Redis(host='milkyhoop-dev-redis-1', port=6379, password='<REDIS_PASSWORD>', decode_responses=True)
         cached_embedding = redis_client.get(cache_key)
         if cached_embedding:
             query_embedding = np.array(json.loads(cached_embedding))

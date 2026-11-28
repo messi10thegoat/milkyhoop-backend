@@ -138,7 +138,7 @@ struktural. **Jangan tambal diam-diam** — perbaikan masuk migrasi, bukan
   disajikan (container `:3001`?), lalu pasang Cloudflare Origin Cert untuk
   Full (strict). Ingat: `location = /service-worker.js` HARUS `proxy_pass`,
   bukan `try_files` (lihat gotcha #14 di `milkyhoop-env`).
-- **ROTASI DB PASSWORD** — `Proyek771977` ada di git history. `docker-compose.yml`
+- **ROTASI DB PASSWORD** — `<DB_PASSWORD>` ada di git history. `docker-compose.yml`
   sudah pakai `${DB_PASSWORD}` dari `.env`, tapi nilainya belum dirotasi.
 - **Follow-up V120** — `gross_margin` + `net_margin` dan `RETURNS JSON` milik
   V120 sengaja TIDAK di-port ke V199 karena mengubah kontrak keluaran ke
@@ -344,7 +344,7 @@ gaji admin yang seharusnya OpEx.
 Rekomendasi teknis: (b) paling bersih + auditable + sejajar pola CoA existing,
 tapi butuh payroll posting sadar-tipe-karyawan. Owner putuskan.
 
-### D2 — Rotasi DB_PASSWORD (Proyek771977 ada di git history). Sudah ${DB_PASSWORD} di compose, nilai belum dirotasi.
+### D2 — Rotasi DB_PASSWORD (<DB_PASSWORD> ada di git history). Sudah ${DB_PASSWORD} di compose, nilai belum dirotasi.
 
 ### D3 — Lapis 3: UI E2E (belum pernah tersentuh). Backend terbukti; drive A-Z dari browser setelah web hidup.
 

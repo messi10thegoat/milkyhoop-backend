@@ -64,7 +64,7 @@ def _intent_from_db(session_id=None):
         f"SELECT final_intent FROM intent_decision_log "
         f"WHERE session_id='{session_id}' ORDER BY ts DESC LIMIT 1;"
     )
-    pg_cmd = f'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -t -A -c "{sql}"'  # pragma: allowlist secret
+    pg_cmd = f'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -t -A -c "{sql}"'  # pragma: allowlist secret
     cmd = [
         "docker",
         "exec",

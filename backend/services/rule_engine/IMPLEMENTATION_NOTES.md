@@ -384,7 +384,7 @@ docker run -d \
   -p 7070:5070 \
   -e GRPC_PORT=5070 \
   -e SERVICE_NAME=RuleEngine \
-  -e 'DATABASE_URL=postgresql://postgres:Proyek771977@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require' \
+  -e 'DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@db.ltrqrejrkbusvmknpnwb.supabase.co:5432/postgres?sslmode=require' \
   milkyhoop-rule-engine
 ```
 

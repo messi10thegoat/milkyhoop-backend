@@ -12,7 +12,7 @@ class Settings:
     DB_HOST = os.getenv("DB_HOST", "postgres")
     DB_PORT = int(os.getenv("DB_PORT", "5432"))
     DB_USER = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "Proyek771977")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "<DB_PASSWORD>")
     DB_NAME = os.getenv("DB_NAME", "milkydb")
     DB_MIN_POOL = int(os.getenv("DB_MIN_POOL", "2"))
     DB_MAX_POOL = int(os.getenv("DB_MAX_POOL", "10"))

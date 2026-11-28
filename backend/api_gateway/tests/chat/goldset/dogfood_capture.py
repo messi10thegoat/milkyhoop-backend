@@ -32,7 +32,7 @@ SEP = "|~SEP~|"  # field separator unlikely to appear in data
 
 def _psql(sql):
     pg = (
-        "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb "  # pragma: allowlist secret
+        "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb "  # pragma: allowlist secret
         f"-t -A -F '{SEP}' -c \"{sql}\""
     )
     cmd = ["docker", "exec", "milkyhoop-dev-postgres-1", "sh", "-c", pg]

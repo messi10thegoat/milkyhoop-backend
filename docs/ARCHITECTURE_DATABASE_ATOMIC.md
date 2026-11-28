@@ -79,10 +79,10 @@ Host:     postgres              # Docker service name
 Port:     5432
 Database: milkydb
 User:     postgres
-Password: Proyek771977
+Password: <DB_PASSWORD>
 
 # Full Connection URL
-DATABASE_URL: postgresql://postgres:Proyek771977@postgres:5432/milkydb
+DATABASE_URL: postgresql://postgres:<DB_PASSWORD>@postgres:5432/milkydb
 ```
 
 ### 2.4 Docker Compose Configuration
@@ -95,7 +95,7 @@ services:
     container_name: milkyhoop-dev-postgres-1
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Proyek771977
+      POSTGRES_PASSWORD: <DB_PASSWORD>
       POSTGRES_DB: milkydb
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -108,11 +108,11 @@ services:
   # All services use hardcoded DATABASE_URL
   tenant_orchestrator:
     environment:
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@postgres:5432/milkydb
 
   transaction_service:
     environment:
-      - DATABASE_URL=postgresql://postgres:Proyek771977@postgres:5432/milkydb
+      - DATABASE_URL=postgresql://postgres:<DB_PASSWORD>@postgres:5432/milkydb
 
   # ... other services follow same pattern
 ```
@@ -812,7 +812,7 @@ docker exec milkyhoop-dev-postgres-1 psql -U postgres -d milkydb -c \
 # Get auth token
 TOKEN=$(curl -s -X POST http://localhost:8001/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "grapmanado@gmail.com", "password": "Jalanatputno.4"}' \
+  -d '{"email": "grapmanado@gmail.com", "password": "<E2E_AUTH_PASSWORD>"}' \
   | jq -r '.data.access_token')
 
 # Test transaction (purchase)

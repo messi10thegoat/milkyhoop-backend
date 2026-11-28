@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, '/root/milkyhoop-dev/backend/services')
 sys.path.insert(0, '/root/milkyhoop-dev/backend/services/reporting_service/app')
 
-os.environ['DATABASE_URL'] = 'postgresql://postgres:Proyek771977@localhost:5433/milkydb'
+os.environ['DATABASE_URL'] = 'postgresql://postgres:<DB_PASSWORD>@localhost:5433/milkydb'
 
 
 async def test_adapter():

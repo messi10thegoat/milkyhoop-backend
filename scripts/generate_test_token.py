@@ -2,11 +2,12 @@
 """
 Generate test JWT token for testing
 """
+import os
 import jwt
 from datetime import datetime, timedelta
 
 # JWT secret from auth service (check .env or config)
-SECRET_KEY = "fe9e6b579ad0d194aea51b325e6f0790ace8b2bd3d91c059a016abd2c0e54de2"  # JWT_SECRET from auth service
+SECRET_KEY = os.environ["JWT_SECRET"]  # JWT_SECRET from auth service
 
 payload = {
     "user_id": "d780b7fe-8b53-47e4-8ef1-aad067de0d58",

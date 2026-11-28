@@ -8,8 +8,8 @@ class Settings:
     SERVICE_NAME: str = os.getenv("SERVICE_NAME", "ConversationManager")
 
     # Redis Configuration (INSIDE class!)
-    # Format: redis://:[PASSWORD]@[HOST]:[PORT]
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://:MilkyRedis2025Secure@redis:6379")
-    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "MilkyRedis2025Secure")
+    # Format: redis://:<REDIS_PASSWORD>@[HOST]:[PORT]
+    REDIS_URL: str = os.environ["REDIS_URL"]
+    REDIS_PASSWORD: str = os.environ["REDIS_PASSWORD"]
 
 settings = Settings()

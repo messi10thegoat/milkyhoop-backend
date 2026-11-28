@@ -2,13 +2,13 @@
 # UJI ENAM ARAH lapis 1+3 (Law 33). Gateway uji :8002 melayani worktree.
 B=http://localhost:8002/api
 T=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"delivered+owner@resend.dev","password":"KaosBiru2026!"}' \
+  -d "{\"email\":\"${E2E_AUTH_EMAIL:?isi E2E_AUTH_EMAIL}\",\"password\":\"${E2E_AUTH_PASSWORD:?isi E2E_AUTH_PASSWORD}\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['access_token'])")
 H=(-H "Authorization: Bearer $T" -H "Content-Type: application/json")
 VEND=57b00d79-c627-4dc6-9014-ee33a08102c4
 BANK=c4d3874e-06ab-4c60-a220-69b078d52fbe
 BILL=315be101-4841-4ee6-b023-dcbc0a9881a6
-Q(){ docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tAc \"$1\"" | tr -d '[:space:]'; }
+Q(){ docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=${PGPASSWORD:?isi PGPASSWORD} psql -U postgres -d milkydb -tAc \"$1\"" | tr -d '[:space:]'; }
 POST(){ curl -s -X POST "$B/bill-payments" "${H[@]}" -d "$1"; }
 N(){ Q "SELECT count(*) FROM bill_payments_v2"; }
 KEYS(){ Q "SELECT count(*) FROM idempotency_keys"; }

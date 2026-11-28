@@ -22,7 +22,7 @@ class SessionManager:
     def __init__(self):
         self.redis_host = os.getenv('REDIS_HOST', 'redis')
         self.redis_port = int(os.getenv('REDIS_PORT', '6379'))
-        self.redis_password = os.getenv('REDIS_PASSWORD', 'MilkyRedis2025Secure')
+        self.redis_password = os.getenv('REDIS_PASSWORD', '<REDIS_PASSWORD>')
         self.default_ttl = 3600  # 1 hour
         
         try:

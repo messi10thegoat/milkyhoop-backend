@@ -28,7 +28,7 @@ from accounting_kernel.reports.cash_flow import CashFlowGenerator
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", "postgresql://postgres:Proyek771977@localhost:5433/milkydb"
+    "TEST_DATABASE_URL", "postgresql://postgres:<DB_PASSWORD>@localhost:5433/milkydb"
 )
 
 TENANT_A = "test-isolation-alpha"

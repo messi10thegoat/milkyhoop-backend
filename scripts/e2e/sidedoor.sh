@@ -4,7 +4,7 @@
 B=${B:-http://localhost:8001/api}
 PW='KaosBiru2026!'
 rm -f /tmp/sd_abort
-Q(){ local b=$(printf '%s' "$1" | base64); ssh root@159.89.202.160 "echo $b | base64 -d > /tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1 | tr -d '\r' | tr -d ' '; }
+Q(){ local b=$(printf '%s' "$1" | base64); ssh root@159.89.202.160 "echo $b | base64 -d > /tmp/q.sql && docker cp /tmp/q.sql milkyhoop-dev-postgres-1:/tmp/q.sql >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c 'PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -tA -f /tmp/q.sql'" 2>&1 | tr -d '\r' | tr -d ' '; }
 tok(){ sleep 6; local r=$(curl -s -X POST "$B/auth/login" -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$PW\"}"); printf '%s' "$r" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("data",{}).get("access_token") or "")
 except Exception: print("")'; }
@@ -14,7 +14,7 @@ HZ=$(curl -s -o /dev/null -w '%{http_code}' "${B%/api}/healthz")
 echo "PREFLIGHT: gateway hidup ($HZ)"
 
 scp -q "$(dirname "$0")/deact_setup.sql" root@159.89.202.160:/tmp/deact_setup.sql
-ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=Proyek771977 psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' | tail -2
+ssh root@159.89.202.160 'docker cp /tmp/deact_setup.sql milkyhoop-dev-postgres-1:/tmp/ >/dev/null && docker exec milkyhoop-dev-postgres-1 sh -c "PGPASSWORD=<DB_PASSWORD> psql -U postgres -d milkydb -q -f /tmp/deact_setup.sql"' | tail -2
 
 KT=$(tok deact+kasir@kaosbiru.co.id)
 [ -z "$KT" ] && { echo "!! GAGAL LOGIN — KEGAGALAN ALAT, bukan hasil"; exit 2; }
