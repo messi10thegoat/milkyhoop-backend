@@ -730,12 +730,16 @@ async def pratinjau(pool, tid: str, rencana, payload) -> dict:
             d.pop("saldo", None)
             d["gudang"] = {"id": str(r["gudang"]["id"]), "name": r["gudang"]["name"]} if r.get("gudang") else None
             d["gerak"] = [_gerak_json(g) for g in r.get("gerak", [])]
+            from . import serial_gerak as _sg   # KEPALA FE 28 Nov: track_serial per baris (true/false) untuk pemilih seri
+            _seri = await _sg.wajib_banyak(conn, tid, [g["product_id"] for g in r.get("gerak", [])] + [b["product_id"] for b in (r.get("baris_draf") or [])])
+            for _g in d["gerak"]:
+                _g["track_serial"] = str(_g.get("product_id")) in _seri
             d["isyarat"] = list(r.get("isyarat", []))
             if r.get("tanpa_jurnal") and not r.get("blocks"):  # BUG-212: pratinjau posting/batal menyatakan tanpa jurnal
                 d["tanpa_jurnal"] = True
                 d["jurnal_catatan"] = TEKS_TANPA_JURNAL_BATAL if "hapus_draf" in r else TEKS_TANPA_JURNAL_POSTING
             if r.get("baris_draf") is not None:
-                d["baris_draf"] = [_draf_json(b) for b in r["baris_draf"]]
+                d["baris_draf"] = [{**_draf_json(b), "track_serial": str(b["product_id"]) in _seri} for b in r["baris_draf"]]
             # BUG-204 (+ permintaan WORKSPACE): total nilai dokumen buat/ubah dari penentu YANG SAMA dgn yang tersimpan (trigger trg_update_sa_totals = Σ total_value baris);
             # FE tak menjumlah. Ubah tanpa `items` = total tersimpan sekarang. Ditolak (ada blok) = tanpa total (tak ada yang tersimpan).
             if "baris_draf" in r and not r.get("blocks"):

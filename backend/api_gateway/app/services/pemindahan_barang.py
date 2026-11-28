@@ -175,6 +175,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
         blok("PB_TANPA_BARANG", "Pemindahan tak punya baris barang.", 422)
 
     ids = [b["item_id"] for b in baris if b.get("item_id") is not None]
+    seri = await serial_gerak.wajib_banyak(conn, tid, ids)   # KEPALA FE 28 Nov: lines[].track_serial
     by = {}
     if ids:
         for r in await conn.fetch(
@@ -241,7 +242,7 @@ async def _rencana(conn, tid: str, dari_id, ke_id, baris: list, so_id, kunci: bo
             "available_from": ada_asal, "available_to": ada_tuj, "unit_cost": wac, "value": nilai,
             "from_before": ada_asal, "from_after": (ada_asal - qty) if ada_asal is not None else None,
             "to_before": ada_tuj, "to_after": (ada_tuj + qty) if ada_tuj is not None else None,
-            "notes": b.get("notes"), "serials": b.get("serials"),
+            "notes": b.get("notes"), "serials": b.get("serials"), "track_serial": str(iid) in seri,
         })
 
     so, catatan = None, None

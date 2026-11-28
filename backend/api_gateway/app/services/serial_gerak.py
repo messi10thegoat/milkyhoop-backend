@@ -27,6 +27,20 @@ _DRAF = {"credit_note_items": "credit_note_id", "vendor_credit_items": "vendor_c
 GERAK_MASUK, GERAK_KELUAR, GERAK_BALIK = "received", "sold", "adjusted"
 
 
+async def wajib_banyak(conn, tenant_id: str, product_ids) -> set:
+    """Pratinjau (permintaan KEPALA FE 28 Nov): {product_id str} yang WAJIB bernomor seri = track_serial DAN flag serial_v1 (aturan SAMA dgn wajib()).
+    Satu kueri untuk semua baris; flag mati / tanpa barang = set kosong."""
+    ids = sorted({str(i) for i in product_ids if i})
+    if not ids:
+        return set()
+    rows = await conn.fetch("SELECT id::text AS id FROM products WHERE tenant_id = $1 AND id::text = ANY($2::text[]) AND COALESCE(track_serial, false)",
+                            tenant_id, ids)
+    if not rows:
+        return set()
+    from .tenant_features import fitur_aktif
+    return {r["id"] for r in rows} if FLAG in await fitur_aktif(conn, tenant_id) else set()
+
+
 async def wajib(conn, tenant_id: str, product_id) -> bool:
     """Barang ini wajib bernomor seri di kartu stok? = track_serial DAN flag serial_v1 nyala (urutan: kolom dulu, flag hanya bila perlu)."""
     if not await conn.fetchval("SELECT COALESCE(track_serial, false) FROM products WHERE id = $1 AND tenant_id = $2", product_id, tenant_id):
